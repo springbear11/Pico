@@ -1,0 +1,52 @@
+{
+  "id": "simulated-can-dll-sequence",
+  "name": "Simulated CAN DLL Sequence",
+  "version": "0.1.0",
+  "moduleBindings": [
+    {
+      "moduleId": "project.can.decode",
+      "transport": "qprocess",
+      "program": "${PICOATE_NATIVE_HOST}",
+      "arguments": [
+        "--manifest",
+        "${PROJECT_DIR}/examples/nativehost/can_decode_manifest.json",
+        "--project-dir",
+        "${PROJECT_DIR}",
+        "--var",
+        "PICOATE_CAN_DLL=${PICOATE_CAN_DLL}"
+      ],
+      "timeoutMs": 3000
+    }
+  ],
+  "groups": [
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "decode-pack-voltage",
+          "name": "Decode Pack Voltage",
+          "kind": "action",
+          "moduleId": "project.can.decode",
+          "function": "decodeSignal",
+          "inputs": {
+            "frameId": "0x321",
+            "rawBytes": "10 27 00 00 00 00 00 00",
+            "signal": {
+              "name": "PackVoltage",
+              "startByte": 0,
+              "byteLength": 2,
+              "byteOrder": "littleEndian",
+              "signed": false,
+              "scale": 0.01,
+              "offset": 0.0,
+              "unit": "V",
+              "min": 95.0,
+              "max": 105.0
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

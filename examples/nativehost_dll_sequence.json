@@ -1,0 +1,45 @@
+{
+  "id": "nativehost-dll-sequence",
+  "name": "NativeHost DLL Sequence",
+  "version": "0.1.0",
+  "moduleBindings": [
+    {
+      "moduleId": "native.dll.echo",
+      "transport": "qprocess",
+      "program": "${PICOATE_NATIVE_HOST}",
+      "arguments": [
+        "--manifest",
+        "${PROJECT_DIR}/examples/nativehost/test_dll_manifest.json",
+        "--project-dir",
+        "${PROJECT_DIR}",
+        "--var",
+        "PICOATE_TEST_DLL=${PICOATE_TEST_DLL}"
+      ],
+      "timeoutMs": 3000
+    }
+  ],
+  "groups": [
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "native-dll-echo",
+          "name": "Native DLL Echo",
+          "kind": "action",
+          "moduleId": "native.dll.echo",
+          "function": "echo",
+          "inputs": {
+            "value": "from-nativehost-dll",
+            "numeric": 42,
+            "measurements": {
+              "name": "NATIVE_DLL_ECHO",
+              "value": 42,
+              "unit": "count"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

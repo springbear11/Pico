@@ -1,0 +1,40 @@
+{
+  "id": "python-echo-sequence",
+  "name": "Python Echo Sequence",
+  "version": "0.1.0",
+  "moduleBindings": [
+    {
+      "moduleId": "python.echo",
+      "transport": "qprocess",
+      "program": "${PYTHON_EXE}",
+      "arguments": [
+        "${PROJECT_DIR}/examples/modules/echo_module.py"
+      ],
+      "timeoutMs": 3000
+    }
+  ],
+  "groups": [
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "python-echo",
+          "name": "Python Echo",
+          "kind": "action",
+          "moduleId": "python.echo",
+          "function": "echo",
+          "inputs": {
+            "value": "from-python-host",
+            "numeric": 42,
+            "measurements": {
+              "name": "PY_ECHO",
+              "value": 42,
+              "unit": "count"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

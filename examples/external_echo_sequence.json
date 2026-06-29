@@ -1,0 +1,33 @@
+{
+  "id": "external-echo-sequence",
+  "name": "External Echo Sequence",
+  "version": "0.1.0",
+  "moduleBindings": [
+    {
+      "moduleId": "external.echo",
+      "transport": "qprocess",
+      "program": "${PICOATE_MOCK_HOST}",
+      "arguments": [],
+      "timeoutMs": 3000
+    }
+  ],
+  "groups": [
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "external-echo",
+          "name": "External Echo",
+          "kind": "action",
+          "moduleId": "external.echo",
+          "function": "echo",
+          "inputs": {
+            "value": "from-configured-host",
+            "numeric": 42
+          }
+        }
+      ]
+    }
+  ]
+}

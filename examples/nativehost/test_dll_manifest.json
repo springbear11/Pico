@@ -1,0 +1,11 @@
+{
+  "dll": "${PICOATE_TEST_DLL}",
+  "symbol": "PicoATE_Execute",
+  "bufferSize": 65536,
+  "dllTimeoutMs": 30000,
+  "metadata": {
+    "name": "PicoATE Test DLL",
+    "kind": "test-fixture",
+    "source": "${SEQUENCE_DIR}"
+  }
+}

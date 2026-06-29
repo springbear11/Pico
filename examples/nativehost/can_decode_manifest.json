@@ -1,0 +1,12 @@
+{
+  "dll": "${PICOATE_CAN_DLL}",
+  "symbol": "PicoATE_Execute",
+  "bufferSize": 65536,
+  "dllTimeoutMs": 30000,
+  "metadata": {
+    "name": "PicoATE Simulated CAN Decode DLL",
+    "kind": "software-only-example",
+    "requiresHardware": false,
+    "source": "${SEQUENCE_DIR}"
+  }
+}

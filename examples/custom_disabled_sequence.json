@@ -1,0 +1,77 @@
+{
+  "id": "custom-disabled-sequence",
+  "name": "Custom Disabled Sequence",
+  "version": "0.1.0",
+  "groups": [
+    {
+      "id": "setup",
+      "name": "Setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "open-fixture",
+          "name": "Open Fixture",
+          "kind": "action"
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "name": "Main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "warmup-wait",
+          "name": "Warmup Wait",
+          "kind": "wait",
+          "enabled": false,
+          "ms": 250
+        },
+        {
+          "id": "measure",
+          "name": "Measure",
+          "kind": "action",
+          "checkpointBefore": true,
+          "checkpointAfter": true
+        }
+      ]
+    },
+    {
+      "id": "operator-checks",
+      "name": "Operator Checks",
+      "kind": "custom",
+      "steps": [
+        {
+          "id": "operator-confirm",
+          "name": "Operator Confirm",
+          "kind": "action"
+        }
+      ]
+    },
+    {
+      "id": "disabled-diagnostics",
+      "name": "Disabled Diagnostics",
+      "kind": "custom",
+      "enabled": false,
+      "steps": [
+        {
+          "id": "disabled-diagnostic",
+          "name": "Disabled Diagnostic",
+          "kind": "action"
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "name": "Cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "power-off",
+          "name": "Power Off",
+          "kind": "cleanup"
+        }
+      ]
+    }
+  ]
+}

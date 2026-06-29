@@ -1,0 +1,39 @@
+{
+  "stationId": "bench-01",
+  "name": "PicoATE Bench 01",
+  "metadata": {
+    "site": "lab",
+    "owner": "ATE"
+  },
+  "devices": [
+    {
+      "deviceId": "DMM1",
+      "deviceType": "DMM",
+      "driverId": "fake.dmm",
+      "address": "${DMM1_ADDRESS}",
+      "lifetime": "Station",
+      "options": {
+        "defaultFunction": "DCV",
+        "nplc": 10
+      }
+    },
+    {
+      "deviceId": "CAN1",
+      "deviceType": "CAN",
+      "driverId": "fake.can",
+      "address": "${PROJECT_DIR}/virtual/can1",
+      "lifetime": "Run",
+      "options": {
+        "channel": 0,
+        "bitrate": 500000
+      }
+    },
+    {
+      "deviceId": "SPARE_PSU",
+      "deviceType": "PSU",
+      "driverId": "fake.psu",
+      "address": "GPIB0::5::INSTR",
+      "enabled": false
+    }
+  ]
+}

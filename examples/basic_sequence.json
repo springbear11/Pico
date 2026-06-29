@@ -1,0 +1,89 @@
+{
+  "id": "basic-sequence",
+  "name": "Basic Sequence",
+  "version": "0.1.0",
+  "groups": [
+    {
+      "id": "setup",
+      "name": "Setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "open-fixture",
+          "name": "Open Fixture",
+          "kind": "action"
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "name": "Main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "batch-ready",
+          "name": "Batch Ready",
+          "kind": "barrier",
+          "barrier": {
+            "barrierName": "batch-ready",
+            "cohortId": "batch-1",
+            "arrivalPolicy": "DropFailed",
+            "failurePolicy": "RemoveFailedMember",
+            "timeoutPolicy": "ReleaseArrived"
+          }
+        },
+        {
+          "id": "measure-voltage",
+          "name": "Measure Voltage",
+          "kind": "action",
+          "moduleId": "mock.measurement",
+          "function": "measureVoltage",
+          "inputs": {
+            "outputs": {
+              "actualVoltage": 4.999
+            },
+            "measurements": {
+              "name": "VOUT",
+              "value": 4.999,
+              "unit": "V"
+            }
+          },
+          "resources": [
+            {
+              "resourceId": "Instrument.DMM1",
+              "mode": "exclusive",
+              "priority": 5
+            }
+          ],
+          "retry": {
+            "maxAttempts": 2,
+            "delayMs": 0
+          },
+          "timeoutMs": 5000,
+          "errorPolicy": {
+            "onFail": "RunCleanup",
+            "onError": "RunCleanup",
+            "onTimeout": "RunCleanup"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "name": "Cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "power-off",
+          "name": "Power Off",
+          "kind": "cleanup"
+        },
+        {
+          "id": "close-fixture",
+          "name": "Close Fixture",
+          "kind": "cleanup"
+        }
+      ]
+    }
+  ]
+}

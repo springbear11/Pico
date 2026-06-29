@@ -1,0 +1,75 @@
+{
+  "id": "for-loop-sequence",
+  "name": "For Loop Sequence",
+  "version": "0.1.0",
+  "groups": [
+    {
+      "id": "setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "open-fixture",
+          "name": "Open Fixture",
+          "kind": "action"
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "repeat-measurements",
+          "name": "Repeat Measurements",
+          "kind": "loop",
+          "loop": {
+            "type": "for",
+            "variable": "sampleIndex",
+            "from": 0,
+            "to": 2,
+            "step": 1
+          },
+          "steps": [
+            {
+              "id": "measure-sample",
+              "name": "Measure Sample",
+              "kind": "action",
+              "moduleId": "mock.measurement",
+              "function": "measureVoltage",
+              "inputs": {
+                "outputs": {
+                  "sampleIndex": "${var.sampleIndex}",
+                  "sampleLabel": "sample-${var.sampleIndex}",
+                  "uutId": "${uut.id}",
+                  "attemptNumber": "${attempt.number}"
+                },
+                "measurements": {
+                  "name": "LOOP_SAMPLE_${var.sampleIndex}",
+                  "value": "${loop.value}",
+                  "loopIndex": "${loop.index}",
+                  "unit": "V"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "after-loop",
+          "name": "After Loop",
+          "kind": "action"
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "power-off",
+          "name": "Power Off",
+          "kind": "cleanup"
+        }
+      ]
+    }
+  ]
+}

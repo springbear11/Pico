@@ -1,0 +1,72 @@
+********* Start testing of CoreTests *********
+Config: Using QtTest library 6.9.1, Qt 6.9.1 (x86_64-little_endian-llp64 shared (dynamic) debug build; by MSVC 2022), windows 11
+INFO   : CoreTests::initTestCase() entering
+PASS   : CoreTests::initTestCase()
+INFO   : CoreTests::resourceManagerSerializesWaiters() entering
+PASS   : CoreTests::resourceManagerSerializesWaiters()
+INFO   : CoreTests::barrierControllerReleasesOnlyThroughDecision() entering
+PASS   : CoreTests::barrierControllerReleasesOnlyThroughDecision()
+INFO   : CoreTests::planCacheKeepsRunningPlanAlive() entering
+PASS   : CoreTests::planCacheKeepsRunningPlanAlive()
+INFO   : CoreTests::nodeRunnerRunsRegisteredModuleAndMapsModuleResult() entering
+PASS   : CoreTests::nodeRunnerRunsRegisteredModuleAndMapsModuleResult()
+INFO   : CoreTests::nodeRunnerReportsMissingModule() entering
+PASS   : CoreTests::nodeRunnerReportsMissingModule()
+INFO   : CoreTests::transportModuleAdapterMapsSuccessfulResponse() entering
+PASS   : CoreTests::transportModuleAdapterMapsSuccessfulResponse()
+INFO   : CoreTests::transportModuleAdapterMapsTimeout() entering
+PASS   : CoreTests::transportModuleAdapterMapsTimeout()
+INFO   : CoreTests::transportModuleAdapterMapsTransportError() entering
+PASS   : CoreTests::transportModuleAdapterMapsTransportError()
+INFO   : CoreTests::schedulerRetriesAndRunsCleanup() entering
+PASS   : CoreTests::schedulerRetriesAndRunsCleanup()
+INFO   : CoreTests::executionSessionReleasesBarrierAcrossUuts() entering
+PASS   : CoreTests::executionSessionReleasesBarrierAcrossUuts()
+INFO   : CoreTests::executionSessionDropsFailedUutBeforeBarrier() entering
+PASS   : CoreTests::executionSessionDropsFailedUutBeforeBarrier()
+INFO   : CoreTests::executionSessionStopRunsCleanupOnly() entering
+PASS   : CoreTests::executionSessionStopRunsCleanupOnly()
+INFO   : CoreTests::sequenceDefModelsSetupMainCleanup() entering
+PASS   : CoreTests::sequenceDefModelsSetupMainCleanup()
+INFO   : CoreTests::sequenceDefDetectsDuplicateStepIds() entering
+PASS   : CoreTests::sequenceDefDetectsDuplicateStepIds()
+INFO   : CoreTests::sequenceDefPreservesBarrierAndResourcePolicies() entering
+PASS   : CoreTests::sequenceDefPreservesBarrierAndResourcePolicies()
+INFO   : CoreTests::errorPolicyDefMapsFailureActions() entering
+PASS   : CoreTests::errorPolicyDefMapsFailureActions()
+INFO   : CoreTests::errorPolicyEngineUsesOutcomeSpecificActions() entering
+PASS   : CoreTests::errorPolicyEngineUsesOutcomeSpecificActions()
+INFO   : CoreTests::planBuilderBuildsSetupMainCleanupPlan() entering
+PASS   : CoreTests::planBuilderBuildsSetupMainCleanupPlan()
+INFO   : CoreTests::planBuilderRejectsDuplicateStepIds() entering
+PASS   : CoreTests::planBuilderRejectsDuplicateStepIds()
+INFO   : CoreTests::planBuilderSkipsDisabledAndBridgesCustomGroups() entering
+PASS   : CoreTests::planBuilderSkipsDisabledAndBridgesCustomGroups()
+INFO   : CoreTests::planBuilderPlanRunsInExecutionSession() entering
+PASS   : CoreTests::planBuilderPlanRunsInExecutionSession()
+INFO   : CoreTests::sequenceCompilerCompilesJsonToExecutablePlan() entering
+PASS   : CoreTests::sequenceCompilerCompilesJsonToExecutablePlan()
+INFO   : CoreTests::sequenceCompilerReportsUnsupportedStepKind() entering
+PASS   : CoreTests::sequenceCompilerReportsUnsupportedStepKind()
+INFO   : CoreTests::sequenceCompilerReportsFieldTypeErrors() entering
+PASS   : CoreTests::sequenceCompilerReportsFieldTypeErrors()
+INFO   : CoreTests::sequenceCompilerReportsUnknownFieldWarnings() entering
+PASS   : CoreTests::sequenceCompilerReportsUnknownFieldWarnings()
+INFO   : CoreTests::sequenceCompilerRunsSimpleExampleFile() entering
+PASS   : CoreTests::sequenceCompilerRunsSimpleExampleFile()
+INFO   : CoreTests::sequenceCompilerRunsBasicExampleFile() entering
+PASS   : CoreTests::sequenceCompilerRunsBasicExampleFile()
+INFO   : CoreTests::sequenceCompilerRunsCustomDisabledExampleFile() entering
+PASS   : CoreTests::sequenceCompilerRunsCustomDisabledExampleFile()
+INFO   : CoreTests::executionSessionJsonFailureRunsCleanup() entering
+PASS   : CoreTests::executionSessionJsonFailureRunsCleanup()
+INFO   : CoreTests::executionSessionJsonRetryAttemptsAreRecorded() entering
+PASS   : CoreTests::executionSessionJsonRetryAttemptsAreRecorded()
+INFO   : CoreTests::executionSessionReportCapturesRetryAttempts() entering
+PASS   : CoreTests::executionSessionReportCapturesRetryAttempts()
+INFO   : CoreTests::executionSessionReportFlagsErrorsWithoutTreatingSkippedAsError() entering
+PASS   : CoreTests::executionSessionReportFlagsErrorsWithoutTreatingSkippedAsError()
+INFO   : CoreTests::cleanupTestCase() entering
+PASS   : CoreTests::cleanupTestCase()
+Totals: 34 passed, 0 failed, 0 skipped, 0 blacklisted, 130ms
+********* Finished testing of CoreTests *********

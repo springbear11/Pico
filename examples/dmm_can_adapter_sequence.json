@@ -1,0 +1,122 @@
+{
+  "id": "dmm-can-adapter-sequence",
+  "name": "DMM CAN Adapter Sequence",
+  "version": "0.1.0",
+  "groups": [
+    {
+      "id": "setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "connect-dmm",
+          "name": "Connect DMM",
+          "kind": "action",
+          "moduleId": "example.dmm",
+          "function": "ConnectDMM",
+          "inputs": {
+            "dmm": "DMM1"
+          }
+        },
+        {
+          "id": "connect-can",
+          "name": "Connect CAN",
+          "kind": "action",
+          "moduleId": "example.can",
+          "function": "ConnectCAN",
+          "inputs": {
+            "can": "CAN1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "configure-dmm-dcv",
+          "name": "Configure DMM DCV",
+          "kind": "action",
+          "moduleId": "example.dmm",
+          "function": "ConfigureDCV",
+          "resources": [
+            {
+              "resourceId": "DMM1",
+              "mode": "exclusive"
+            }
+          ],
+          "inputs": {
+            "dmm": "DMM1",
+            "range": 10.0,
+            "nplc": 10.0
+          }
+        },
+        {
+          "id": "read-dmm",
+          "name": "Read DMM",
+          "kind": "action",
+          "moduleId": "example.dmm",
+          "function": "ReadDMM",
+          "resources": [
+            {
+              "resourceId": "DMM1",
+              "mode": "exclusive"
+            }
+          ],
+          "inputs": {
+            "dmm": "DMM1",
+            "measurementName": "DMM_DCV",
+            "unit": "V",
+            "lowerLimit": 10.0,
+            "upperLimit": 15.0
+          }
+        },
+        {
+          "id": "read-can-frame",
+          "name": "Read CAN Frame",
+          "kind": "action",
+          "moduleId": "example.can",
+          "function": "ReadFrame",
+          "resources": [
+            {
+              "resourceId": "CAN1",
+              "mode": "exclusive"
+            }
+          ],
+          "inputs": {
+            "can": "CAN1",
+            "frameId": "0x123",
+            "data": "01 02 03 04 05 06 07 08",
+            "measurementName": "CAN_FRAME_READ"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "disconnect-dmm",
+          "name": "Disconnect DMM",
+          "kind": "cleanup",
+          "moduleId": "example.dmm",
+          "function": "Disconnect",
+          "inputs": {
+            "dmm": "DMM1"
+          }
+        },
+        {
+          "id": "disconnect-can",
+          "name": "Disconnect CAN",
+          "kind": "cleanup",
+          "moduleId": "example.can",
+          "function": "Disconnect",
+          "inputs": {
+            "can": "CAN1"
+          }
+        }
+      ]
+    }
+  ]
+}

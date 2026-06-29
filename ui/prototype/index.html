@@ -1,0 +1,897 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PicoATE Runner UI Prototype</title>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef1f4;
+      --surface: #ffffff;
+      --surface-alt: #f7f8fa;
+      --surface-strong: #e7ebef;
+      --line: #d6dce2;
+      --line-strong: #b9c2cb;
+      --text: #1c252d;
+      --muted: #62707d;
+      --faint: #8b97a2;
+      --nav: #20272e;
+      --nav-hover: #303941;
+      --accent: #147d76;
+      --accent-dark: #0e625d;
+      --accent-soft: #dcefeb;
+      --blue: #2c6ba7;
+      --blue-soft: #e2edf7;
+      --green: #27844b;
+      --green-soft: #e2f2e8;
+      --amber: #a56600;
+      --amber-soft: #fff0ce;
+      --red: #b43a3a;
+      --red-soft: #f9e3e3;
+      --shadow: 0 1px 2px rgba(20, 34, 45, 0.08);
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+      letter-spacing: 0;
+    }
+
+    button, input, select { font: inherit; }
+
+    button {
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--text);
+      min-height: 30px;
+      cursor: pointer;
+    }
+
+    button:hover:not(:disabled) { background: var(--surface-alt); }
+    button:disabled { color: #9ca5ad; cursor: default; background: #f1f3f5; }
+
+    .icon {
+      width: 16px;
+      height: 16px;
+      stroke-width: 1.8;
+      flex: 0 0 auto;
+    }
+
+    .app {
+      height: 100%;
+      display: grid;
+      grid-template-rows: 48px 48px minmax(0, 1fr) 28px;
+      min-width: 920px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      background: var(--nav);
+      color: #f6f8f9;
+      border-bottom: 1px solid #11171c;
+    }
+
+    .brand {
+      width: 248px;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 15px;
+      border-right: 1px solid #394149;
+      font-size: 16px;
+      font-weight: 650;
+    }
+
+    .brand-mark {
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #4dc0b5;
+      color: #6ad2c8;
+      border-radius: 5px;
+    }
+
+    .workspace-tabs {
+      height: 100%;
+      display: flex;
+      align-items: stretch;
+      margin-left: 8px;
+    }
+
+    .workspace-tab {
+      border: 0;
+      border-radius: 0;
+      min-height: 0;
+      padding: 0 17px;
+      color: #c8d0d6;
+      background: transparent;
+      border-bottom: 3px solid transparent;
+    }
+
+    .workspace-tab:hover { background: var(--nav-hover); color: white; }
+    .workspace-tab.active { color: white; border-bottom-color: #62c8be; background: #252e35; }
+
+    .topbar-spacer { flex: 1; }
+
+    .station-summary {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 16px;
+      border-left: 1px solid #394149;
+      color: #dce2e6;
+    }
+
+    .health-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #50bb76;
+      box-shadow: 0 0 0 2px rgba(80, 187, 118, 0.18);
+    }
+
+    .commandbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      z-index: 2;
+    }
+
+    .field-button {
+      height: 32px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      max-width: 270px;
+      min-width: 170px;
+    }
+
+    .field-button .field-copy { min-width: 0; text-align: left; }
+    .field-button small { display: block; color: var(--muted); font-size: 10px; line-height: 11px; }
+    .field-button strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+
+    .divider { width: 1px; height: 26px; background: var(--line); margin: 0 3px; }
+
+    .stepper {
+      height: 32px;
+      display: flex;
+      align-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .stepper-label { padding: 0 8px; color: var(--muted); }
+    .stepper button { width: 28px; min-height: 30px; border: 0; border-left: 1px solid var(--line); border-radius: 0; }
+    .stepper output { min-width: 25px; text-align: center; font-weight: 650; }
+
+    .command {
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 0 12px;
+      font-weight: 600;
+    }
+
+    .command.primary { background: var(--accent); color: white; border-color: var(--accent); }
+    .command.primary:hover:not(:disabled) { background: var(--accent-dark); }
+    .command.danger { color: var(--red); }
+
+    .commandbar-spacer { flex: 1; }
+
+    .run-clock {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      min-width: 76px;
+      justify-content: flex-end;
+    }
+
+    .workspace {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 56px 240px minmax(480px, 1fr) 356px;
+      grid-template-rows: minmax(0, 1fr) 194px;
+      background: var(--bg);
+    }
+
+    .rail {
+      grid-column: 1;
+      grid-row: 1 / 3;
+      background: #2a3239;
+      border-right: 1px solid #182027;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 8px 0;
+      gap: 5px;
+    }
+
+    .rail-button {
+      width: 38px;
+      height: 38px;
+      min-height: 38px;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 5px;
+      color: #b9c3ca;
+      background: transparent;
+    }
+
+    .rail-button:hover { color: white; background: #3a444c; }
+    .rail-button.active { color: #75d1c8; background: #1f282e; box-shadow: inset 3px 0 0 #5fc5ba; }
+    .rail-spacer { flex: 1; }
+
+    .context-panel {
+      grid-column: 2;
+      grid-row: 1 / 3;
+      min-width: 0;
+      background: var(--surface-alt);
+      border-right: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .panel-heading {
+      height: 38px;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #4d5a65;
+      border-bottom: 1px solid var(--line);
+      background: #f3f5f7;
+    }
+
+    .context-section { padding: 12px; border-bottom: 1px solid var(--line); }
+    .context-section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-weight: 650; }
+    .context-value { font-size: 12px; color: var(--muted); line-height: 18px; overflow-wrap: anywhere; }
+    .context-value strong { color: var(--text); font-weight: 600; }
+
+    .uut-list { padding: 6px; display: grid; gap: 3px; }
+
+    .uut-item {
+      width: 100%;
+      height: 42px;
+      min-height: 42px;
+      border: 1px solid transparent;
+      display: grid;
+      grid-template-columns: 9px 1fr auto;
+      align-items: center;
+      gap: 8px;
+      padding: 0 8px;
+      text-align: left;
+      background: transparent;
+    }
+
+    .uut-item:hover { background: white; border-color: var(--line); }
+    .uut-item.active { background: white; border-color: #9fc8c4; box-shadow: inset 3px 0 0 var(--accent); }
+    .uut-item strong { display: block; font-size: 12px; }
+    .uut-item small { display: block; color: var(--muted); margin-top: 2px; }
+
+    .state-square { width: 8px; height: 8px; border-radius: 2px; background: var(--faint); }
+    .state-square.pass { background: var(--green); }
+    .state-square.run { background: var(--blue); animation: pulse 1.2s infinite; }
+    .state-square.wait { background: var(--amber); }
+    .state-square.fail { background: var(--red); }
+
+    @keyframes pulse { 50% { opacity: 0.35; } }
+
+    .sequence-panel {
+      grid-column: 3;
+      grid-row: 1;
+      min-width: 0;
+      min-height: 0;
+      background: var(--surface);
+      border-right: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sequence-titlebar {
+      height: 38px;
+      flex: 0 0 38px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .sequence-titlebar strong { font-size: 13px; }
+    .sequence-titlebar .muted { color: var(--muted); font-size: 11px; }
+    .sequence-titlebar-spacer { flex: 1; }
+
+    .icon-button {
+      width: 28px;
+      height: 28px;
+      min-height: 28px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      border-color: transparent;
+      background: transparent;
+    }
+
+    .sequence-table {
+      min-height: 0;
+      overflow: auto;
+      flex: 1;
+    }
+
+    .table-header, .step-row {
+      min-width: 650px;
+      display: grid;
+      grid-template-columns: 42px minmax(210px, 1fr) 88px 100px 72px 76px;
+      align-items: center;
+    }
+
+    .table-header {
+      height: 32px;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+      background: #f2f4f6;
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    .table-header > div, .step-row > div { padding: 0 10px; min-width: 0; }
+
+    .step-row {
+      height: 43px;
+      border-bottom: 1px solid #edf0f2;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .step-row:hover { background: #f7faf9; }
+    .step-row.selected { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+    .step-row.running { background: var(--blue-soft); box-shadow: inset 3px 0 0 var(--blue); }
+    .step-index { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+    .step-name { overflow: hidden; }
+    .step-name strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+    .step-name small { display: block; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cell-muted { color: var(--muted); font-size: 12px; }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 650;
+      color: var(--muted);
+    }
+
+    .status.pass { color: var(--green); }
+    .status.running { color: var(--blue); }
+    .status.wait { color: var(--amber); }
+    .status.fail { color: var(--red); }
+
+    .inspector {
+      grid-column: 4;
+      grid-row: 1;
+      min-width: 0;
+      min-height: 0;
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .tabbar {
+      height: 38px;
+      flex: 0 0 38px;
+      display: flex;
+      align-items: end;
+      gap: 2px;
+      padding: 0 8px;
+      border-bottom: 1px solid var(--line);
+      background: #f7f8fa;
+    }
+
+    .tab {
+      height: 34px;
+      min-height: 34px;
+      border: 0;
+      border-radius: 0;
+      padding: 0 11px;
+      background: transparent;
+      color: var(--muted);
+      border-bottom: 2px solid transparent;
+    }
+
+    .tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 650; }
+    .inspector-body { min-height: 0; overflow: auto; padding: 12px; }
+
+    .detail-title { margin: 0 0 4px; font-size: 15px; font-weight: 650; }
+    .detail-subtitle { color: var(--muted); margin-bottom: 14px; }
+
+    .property-grid {
+      display: grid;
+      grid-template-columns: 112px minmax(0, 1fr);
+      border-top: 1px solid var(--line);
+      border-left: 1px solid var(--line);
+      margin-bottom: 16px;
+    }
+
+    .property-grid > div {
+      min-height: 31px;
+      padding: 7px 8px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      overflow-wrap: anywhere;
+    }
+
+    .property-label { background: var(--surface-alt); color: var(--muted); font-size: 11px; }
+    .property-value { font-size: 12px; }
+
+    .section-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 28px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #4b5964;
+      text-transform: uppercase;
+    }
+
+    .measurement-table { border: 1px solid var(--line); }
+    .measurement-row {
+      min-height: 36px;
+      display: grid;
+      grid-template-columns: minmax(100px, 1fr) 84px 70px;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+    }
+    .measurement-row:last-child { border-bottom: 0; }
+    .measurement-row > div { padding: 7px 8px; }
+    .measurement-row strong { display: block; font-size: 12px; }
+    .measurement-row small { color: var(--muted); }
+    .measurement-value { text-align: right; font-variant-numeric: tabular-nums; font-weight: 650; }
+
+    .console {
+      grid-column: 3 / 5;
+      grid-row: 2;
+      min-width: 0;
+      min-height: 0;
+      background: var(--surface);
+      border-top: 1px solid var(--line-strong);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .console .tabbar { height: 34px; flex-basis: 34px; align-items: center; }
+    .console .tab { height: 30px; min-height: 30px; }
+    .console-content { flex: 1; overflow: auto; padding: 7px 12px; font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; line-height: 20px; }
+    .log-line { display: grid; grid-template-columns: 82px 58px 110px 1fr; gap: 8px; }
+    .log-time { color: var(--faint); }
+    .log-info { color: var(--blue); }
+    .log-pass { color: var(--green); }
+    .log-warn { color: var(--amber); }
+    .log-source { color: #76528c; }
+
+    .statusbar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 10px;
+      background: #f8fafb;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .statusbar-item { display: flex; align-items: center; gap: 5px; min-width: 0; }
+    .statusbar-spacer { flex: 1; }
+    .pass-count { color: var(--green); font-weight: 650; }
+    .fail-count { color: var(--red); font-weight: 650; }
+
+    .toast {
+      position: fixed;
+      right: 18px;
+      bottom: 42px;
+      max-width: 360px;
+      padding: 10px 12px;
+      border: 1px solid #9bc8c3;
+      border-radius: 5px;
+      background: #eff9f7;
+      color: #164f4a;
+      box-shadow: 0 8px 24px rgba(23, 41, 54, 0.16);
+      opacity: 0;
+      transform: translateY(6px);
+      pointer-events: none;
+      transition: 160ms ease;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    @media (max-width: 1180px) {
+      .workspace { grid-template-columns: 50px 210px minmax(430px, 1fr) 310px; }
+      .field-button { min-width: 145px; max-width: 210px; }
+      .workspace-tab { padding: 0 10px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"><i data-lucide="activity" class="icon"></i></span>
+        <span>PicoATE</span>
+      </div>
+      <nav class="workspace-tabs" aria-label="工作区">
+        <button class="workspace-tab active">Runner</button>
+        <button class="workspace-tab">Sequence Editor</button>
+        <button class="workspace-tab">Station</button>
+        <button class="workspace-tab">History</button>
+      </nav>
+      <div class="topbar-spacer"></div>
+      <div class="station-summary">
+        <span class="health-dot"></span>
+        <div><strong>EOL-02</strong>&nbsp;&nbsp;<span style="color:#9eabb4">Station online</span></div>
+      </div>
+    </header>
+
+    <section class="commandbar" aria-label="运行命令">
+      <button class="field-button" id="sequenceButton" title="选择 Sequence JSON">
+        <i data-lucide="file-json" class="icon"></i>
+        <span class="field-copy"><small>Sequence</small><strong>dmm_can_adapter_sequence.json</strong></span>
+      </button>
+      <button class="field-button" id="stationButton" title="选择 Station JSON">
+        <i data-lucide="server" class="icon"></i>
+        <span class="field-copy"><small>Station</small><strong>basic_station.json</strong></span>
+      </button>
+      <span class="divider"></span>
+      <div class="stepper" aria-label="UUT 数量">
+        <span class="stepper-label">UUT</span>
+        <button id="uutMinus" title="减少 UUT"><i data-lucide="minus" class="icon"></i></button>
+        <output id="uutCount">2</output>
+        <button id="uutPlus" title="增加 UUT"><i data-lucide="plus" class="icon"></i></button>
+      </div>
+      <span class="divider"></span>
+      <button class="command" id="compileButton"><i data-lucide="refresh-cw" class="icon"></i>Compile</button>
+      <button class="command primary" id="runButton"><i data-lucide="play" class="icon"></i>Run</button>
+      <button class="command danger" id="stopButton" disabled><i data-lucide="square" class="icon"></i>Stop</button>
+      <div class="commandbar-spacer"></div>
+      <div class="run-clock"><i data-lucide="timer" class="icon"></i><span id="clock">00:00.000</span></div>
+    </section>
+
+    <section class="workspace">
+      <nav class="rail" aria-label="主导航">
+        <button class="rail-button active" title="Runner"><i data-lucide="monitor-play" class="icon"></i></button>
+        <button class="rail-button" title="Sequence"><i data-lucide="list-tree" class="icon"></i></button>
+        <button class="rail-button" title="Station"><i data-lucide="cpu" class="icon"></i></button>
+        <button class="rail-button" title="History"><i data-lucide="history" class="icon"></i></button>
+        <div class="rail-spacer"></div>
+        <button class="rail-button" title="Settings"><i data-lucide="settings" class="icon"></i></button>
+      </nav>
+
+      <aside class="context-panel">
+        <div class="panel-heading">Run Context</div>
+        <section class="context-section">
+          <div class="context-section-title"><span>Sequence</span><i data-lucide="check-circle-2" class="icon" style="color:var(--green)"></i></div>
+          <div class="context-value"><strong>DMM / CAN Adapter Validation</strong><br>Version 1.0 · 8 nodes</div>
+        </section>
+        <section class="context-section">
+          <div class="context-section-title"><span>Station</span><span class="status pass"><span class="state-square pass"></span>Ready</span></div>
+          <div class="context-value">DMM1 · Connected<br>CAN1 · Connected</div>
+        </section>
+        <div class="panel-heading">UUTs</div>
+        <div class="uut-list" id="uutList">
+          <button class="uut-item active" data-uut="UUT-01">
+            <span class="state-square pass"></span>
+            <span><strong>UUT-01</strong><small>SN A260628001</small></span>
+            <span class="status pass">Pass</span>
+          </button>
+          <button class="uut-item" data-uut="UUT-02">
+            <span class="state-square wait"></span>
+            <span><strong>UUT-02</strong><small>SN A260628002</small></span>
+            <span class="status wait">Ready</span>
+          </button>
+        </div>
+      </aside>
+
+      <section class="sequence-panel">
+        <div class="sequence-titlebar">
+          <i data-lucide="workflow" class="icon" style="color:var(--accent)"></i>
+          <strong>Execution Flow</strong>
+          <span class="muted" id="selectedUut">UUT-01</span>
+          <div class="sequence-titlebar-spacer"></div>
+          <button class="icon-button" title="过滤步骤"><i data-lucide="filter" class="icon"></i></button>
+          <button class="icon-button" title="展开全部"><i data-lucide="unfold-vertical" class="icon"></i></button>
+        </div>
+        <div class="sequence-table" id="sequenceTable">
+          <div class="table-header">
+            <div>#</div><div>Step</div><div>Type</div><div>State</div><div>Attempt</div><div>Duration</div>
+          </div>
+          <div id="stepRows"></div>
+        </div>
+      </section>
+
+      <aside class="inspector">
+        <div class="tabbar" id="detailTabs">
+          <button class="tab active" data-tab="details">Details</button>
+          <button class="tab" data-tab="attempts">Attempts</button>
+          <button class="tab" data-tab="variables">Variables</button>
+        </div>
+        <div class="inspector-body" id="inspectorBody"></div>
+      </aside>
+
+      <section class="console">
+        <div class="tabbar" id="consoleTabs">
+          <button class="tab active" data-tab="diagnostics">Diagnostics <span style="color:var(--green)">0</span></button>
+          <button class="tab" data-tab="runtime">Runtime Log</button>
+          <button class="tab" data-tab="devices">Devices</button>
+          <button class="tab" data-tab="resources">Resources & Barrier</button>
+        </div>
+        <div class="console-content" id="consoleContent"></div>
+      </section>
+    </section>
+
+    <footer class="statusbar">
+      <span class="statusbar-item"><span class="health-dot"></span><span id="footerState">Ready</span></span>
+      <span class="statusbar-item"><i data-lucide="server" class="icon"></i>EOL-02</span>
+      <span class="statusbar-item"><i data-lucide="workflow" class="icon"></i>dmm-can-adapter</span>
+      <span class="statusbar-spacer"></span>
+      <span class="pass-count">Pass 1</span>
+      <span class="fail-count">Fail 0</span>
+      <span>2 UUT</span>
+    </footer>
+  </main>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const steps = [
+      { id: 'connect-dmm', name: 'Connect DMM', group: 'Setup', type: 'Action', state: 'Passed', attempt: '1 / 1', duration: '86 ms', detail: 'Open DMM1 session through logical device proxy.' },
+      { id: 'connect-can', name: 'Connect CAN', group: 'Setup', type: 'Action', state: 'Passed', attempt: '1 / 1', duration: '62 ms', detail: 'Open CAN1 session and verify host health.' },
+      { id: 'configure-dcv', name: 'Configure DC Voltage', group: 'Main', type: 'Action', state: 'Passed', attempt: '1 / 1', duration: '41 ms', detail: 'Configure DMM1 DC voltage range and integration time.' },
+      { id: 'read-voltage', name: 'Read Battery Voltage', group: 'Main', type: 'Action', state: 'Passed', attempt: '1 / 2', duration: '128 ms', detail: 'Read battery rail and apply engineering limits.', measurement: { name: 'BatteryVoltage', value: '4.9987', unit: 'V', limits: '4.9000 — 5.1000', status: 'Pass' } },
+      { id: 'read-can', name: 'Read CAN Frame 0x18FF50E5', group: 'Main', type: 'Action', state: 'Ready', attempt: '—', duration: '—', detail: 'Read and decode the configured CAN signal.', measurement: { name: 'PackCurrent', value: '—', unit: 'A', limits: '-2.0 — 2.0', status: 'Pending' } },
+      { id: 'batch-sync', name: 'Batch Synchronization', group: 'Main', type: 'Barrier', state: 'Ready', attempt: '—', duration: '—', detail: 'Wait for all active UUT members before cleanup.' },
+      { id: 'disconnect-can', name: 'Disconnect CAN', group: 'Cleanup', type: 'Cleanup', state: 'Ready', attempt: '—', duration: '—', detail: 'Close CAN1 session during cleanup.' },
+      { id: 'disconnect-dmm', name: 'Disconnect DMM', group: 'Cleanup', type: 'Cleanup', state: 'Ready', attempt: '—', duration: '—', detail: 'Close DMM1 session during cleanup.' }
+    ];
+
+    let selectedStep = 3;
+    let running = false;
+    let timer = null;
+    let startedAt = 0;
+    let currentStep = -1;
+    let uutCount = 2;
+
+    const rows = document.getElementById('stepRows');
+    const inspector = document.getElementById('inspectorBody');
+    const consoleContent = document.getElementById('consoleContent');
+    const runButton = document.getElementById('runButton');
+    const stopButton = document.getElementById('stopButton');
+    const compileButton = document.getElementById('compileButton');
+    const footerState = document.getElementById('footerState');
+    const toast = document.getElementById('toast');
+
+    function stateClass(state) {
+      return state === 'Passed' ? 'pass' : state === 'Running' ? 'running' : state === 'Failed' ? 'fail' : 'wait';
+    }
+
+    function renderSteps() {
+      rows.innerHTML = steps.map((step, index) => `
+        <div class="step-row ${index === selectedStep ? 'selected' : ''} ${step.state === 'Running' ? 'running' : ''}" data-index="${index}" tabindex="0">
+          <div class="step-index">${String(index + 1).padStart(2, '0')}</div>
+          <div class="step-name"><strong>${step.name}</strong><small>${step.group} · ${step.id}</small></div>
+          <div class="cell-muted">${step.type}</div>
+          <div><span class="status ${stateClass(step.state)}"><span class="state-square ${stateClass(step.state) === 'running' ? 'run' : stateClass(step.state)}"></span>${step.state}</span></div>
+          <div class="cell-muted">${step.attempt}</div>
+          <div class="cell-muted">${step.duration}</div>
+        </div>`).join('');
+      document.querySelectorAll('.step-row').forEach(row => {
+        row.addEventListener('click', () => selectStep(Number(row.dataset.index)));
+        row.addEventListener('keydown', event => { if (event.key === 'Enter') selectStep(Number(row.dataset.index)); });
+      });
+    }
+
+    function selectStep(index) {
+      selectedStep = index;
+      renderSteps();
+      renderInspector(document.querySelector('#detailTabs .active')?.dataset.tab || 'details');
+    }
+
+    function renderInspector(tab = 'details') {
+      const step = steps[selectedStep];
+      if (tab === 'attempts') {
+        inspector.innerHTML = `
+          <h2 class="detail-title">${step.name}</h2><div class="detail-subtitle">Attempt history</div>
+          <div class="property-grid">
+            <div class="property-label">Attempt</div><div class="property-value">${step.attempt}</div>
+            <div class="property-label">Outcome</div><div class="property-value"><span class="status ${stateClass(step.state)}">${step.state}</span></div>
+            <div class="property-label">Duration</div><div class="property-value">${step.duration}</div>
+            <div class="property-label">Loop iteration</div><div class="property-value">Not in loop</div>
+          </div>`;
+        return;
+      }
+      if (tab === 'variables') {
+        inspector.innerHTML = `
+          <h2 class="detail-title">Runtime Variables</h2><div class="detail-subtitle">UUT-01 · root frame</div>
+          <div class="property-grid">
+            <div class="property-label">uut.id</div><div class="property-value">UUT-01</div>
+            <div class="property-label">attempt.number</div><div class="property-value">1</div>
+            <div class="property-label">station.id</div><div class="property-value">EOL-02</div>
+            <div class="property-label">DMM1.address</div><div class="property-value">USB0::0x0957::INSTR</div>
+          </div>`;
+        return;
+      }
+      const measurement = step.measurement;
+      inspector.innerHTML = `
+        <h2 class="detail-title">${step.name}</h2>
+        <div class="detail-subtitle">${step.detail}</div>
+        <div class="property-grid">
+          <div class="property-label">Step ID</div><div class="property-value">${step.id}</div>
+          <div class="property-label">Group / Type</div><div class="property-value">${step.group} / ${step.type}</div>
+          <div class="property-label">State</div><div class="property-value"><span class="status ${stateClass(step.state)}">${step.state}</span></div>
+          <div class="property-label">Attempt</div><div class="property-value">${step.attempt}</div>
+        </div>
+        <div class="section-label"><span>Measurements</span><span>${measurement ? '1 item' : '0 items'}</span></div>
+        ${measurement ? `<div class="measurement-table"><div class="measurement-row"><div><strong>${measurement.name}</strong><small>${measurement.limits}</small></div><div class="measurement-value">${measurement.value} ${measurement.unit}</div><div><span class="status ${measurement.status === 'Pass' ? 'pass' : 'wait'}">${measurement.status}</span></div></div></div>` : '<div class="context-value">No measurement recorded for this step.</div>'}`;
+    }
+
+    const consoleViews = {
+      diagnostics: `<div class="log-line"><span class="log-time">21:06:14</span><span class="log-pass">PASS</span><span class="log-source">Compiler</span><span>Sequence compiled: 8 nodes, 7 edges, 1 cleanup region</span></div><div class="log-line"><span class="log-time">21:06:14</span><span class="log-info">INFO</span><span class="log-source">Station</span><span>2 logical devices configured</span></div>`,
+      runtime: `<div class="log-line"><span class="log-time">21:06:18</span><span class="log-info">INFO</span><span class="log-source">UUT-01</span><span>read-voltage completed in 128 ms</span></div><div class="log-line"><span class="log-time">21:06:18</span><span class="log-pass">PASS</span><span class="log-source">Measurement</span><span>BatteryVoltage = 4.9987 V [4.9000, 5.1000]</span></div>`,
+      devices: `<div class="log-line"><span class="log-time">DMM1</span><span class="log-pass">HEALTHY</span><span class="log-source">fake.dmm</span><span>Connected · USB0::0x0957::INSTR</span></div><div class="log-line"><span class="log-time">CAN1</span><span class="log-pass">HEALTHY</span><span class="log-source">fake.can</span><span>Connected · channel 0 · 500 kbit/s</span></div>`,
+      resources: `<div class="log-line"><span class="log-time">DMM1</span><span class="log-info">LEASED</span><span class="log-source">UUT-01</span><span>Exclusive · read-voltage</span></div><div class="log-line"><span class="log-time">batch-sync</span><span class="log-warn">WAIT</span><span class="log-source">cohort-1</span><span>1 / 2 UUT members arrived</span></div>`
+    };
+
+    function selectConsole(tab) {
+      document.querySelectorAll('#consoleTabs .tab').forEach(button => button.classList.toggle('active', button.dataset.tab === tab));
+      consoleContent.innerHTML = consoleViews[tab];
+    }
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add('show');
+      clearTimeout(showToast.timeout);
+      showToast.timeout = setTimeout(() => toast.classList.remove('show'), 1800);
+    }
+
+    function updateClock() {
+      if (!running) return;
+      const elapsed = Date.now() - startedAt;
+      const minutes = Math.floor(elapsed / 60000);
+      const seconds = Math.floor(elapsed / 1000) % 60;
+      const millis = elapsed % 1000;
+      document.getElementById('clock').textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+      requestAnimationFrame(updateClock);
+    }
+
+    function compile() {
+      footerState.textContent = 'Compiling';
+      compileButton.disabled = true;
+      setTimeout(() => {
+        footerState.textContent = 'Ready';
+        compileButton.disabled = false;
+        selectConsole('diagnostics');
+        showToast('Compile succeeded · 8 nodes · 0 errors');
+      }, 550);
+    }
+
+    function run() {
+      if (running) return;
+      running = true;
+      currentStep = 0;
+      startedAt = Date.now();
+      runButton.disabled = true;
+      compileButton.disabled = true;
+      stopButton.disabled = false;
+      footerState.textContent = 'Running';
+      steps.forEach(step => { step.state = 'Ready'; step.attempt = '—'; step.duration = '—'; });
+      updateClock();
+      advanceRun();
+    }
+
+    function advanceRun() {
+      if (!running) return;
+      if (currentStep > 0) {
+        const previous = steps[currentStep - 1];
+        previous.state = 'Passed';
+        previous.attempt = '1 / 1';
+        previous.duration = `${48 + currentStep * 13} ms`;
+      }
+      if (currentStep >= steps.length) {
+        finishRun('Completed');
+        return;
+      }
+      steps[currentStep].state = 'Running';
+      steps[currentStep].attempt = '1 / 1';
+      selectedStep = currentStep;
+      renderSteps();
+      renderInspector();
+      currentStep += 1;
+      timer = setTimeout(advanceRun, 620);
+    }
+
+    function stopRun() {
+      if (!running) return;
+      clearTimeout(timer);
+      if (currentStep > 0 && currentStep - 1 < steps.length) {
+        steps[currentStep - 1].state = 'Skipped';
+      }
+      steps.forEach((step, index) => {
+        if (index >= currentStep && step.group !== 'Cleanup') step.state = 'Skipped';
+        if (step.group === 'Cleanup') { step.state = 'Passed'; step.attempt = '1 / 1'; step.duration = '55 ms'; }
+      });
+      finishRun('Stopped · Cleanup completed');
+    }
+
+    function finishRun(message) {
+      running = false;
+      runButton.disabled = false;
+      compileButton.disabled = false;
+      stopButton.disabled = true;
+      footerState.textContent = message;
+      renderSteps();
+      renderInspector();
+      showToast(message);
+    }
+
+    document.getElementById('compileButton').addEventListener('click', compile);
+    document.getElementById('runButton').addEventListener('click', run);
+    document.getElementById('stopButton').addEventListener('click', stopRun);
+    document.getElementById('sequenceButton').addEventListener('click', () => showToast('Sequence selected: dmm_can_adapter_sequence.json'));
+    document.getElementById('stationButton').addEventListener('click', () => showToast('Station selected: basic_station.json'));
+    document.getElementById('uutMinus').addEventListener('click', () => { uutCount = Math.max(1, uutCount - 1); document.getElementById('uutCount').textContent = uutCount; });
+    document.getElementById('uutPlus').addEventListener('click', () => { uutCount = Math.min(16, uutCount + 1); document.getElementById('uutCount').textContent = uutCount; });
+
+    document.querySelectorAll('#detailTabs .tab').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('#detailTabs .tab').forEach(item => item.classList.remove('active'));
+      button.classList.add('active');
+      renderInspector(button.dataset.tab);
+    }));
+
+    document.querySelectorAll('#consoleTabs .tab').forEach(button => button.addEventListener('click', () => selectConsole(button.dataset.tab)));
+    document.querySelectorAll('.uut-item').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('.uut-item').forEach(item => item.classList.remove('active'));
+      button.classList.add('active');
+      document.getElementById('selectedUut').textContent = button.dataset.uut;
+    }));
+
+    document.querySelectorAll('.workspace-tab').forEach((button, index) => button.addEventListener('click', () => {
+      if (index === 0) return;
+      showToast(`${button.textContent} · planned workspace`);
+    }));
+
+    renderSteps();
+    renderInspector();
+    selectConsole('diagnostics');
+    if (window.lucide) lucide.createIcons();
+  </script>
+</body>
+</html>

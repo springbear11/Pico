@@ -1,0 +1,56 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "vs2022-qt6",
+      "displayName": "VS2022 Qt 6.9.1 x64",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "D:/QT/6.9.1/msvc2022_64"
+      }
+    },
+    {
+      "name": "vs2022-qt6-all",
+      "displayName": "VS2022 Qt 6.9.1 x64 - Engine + UI",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "D:/QT/6.9.1/msvc2022_64",
+        "PICOATE_BUILD_UI": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "vs2022-qt6-debug",
+      "configurePreset": "vs2022-qt6",
+      "configuration": "Debug"
+    },
+    {
+      "name": "vs2022-qt6-all-debug",
+      "configurePreset": "vs2022-qt6-all",
+      "configuration": "Debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "vs2022-qt6-debug",
+      "configurePreset": "vs2022-qt6",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "vs2022-qt6-all-debug",
+      "configurePreset": "vs2022-qt6-all",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+add_subdirectory(core)
+add_subdirectory(mockhost)
+add_subdirectory(fakeinstrumenthost)
+add_subdirectory(testdllmodule)
+add_subdirectory(canexamplemodule)
+add_subdirectory(nativehost)
+add_subdirectory(cli)

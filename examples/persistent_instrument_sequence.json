@@ -1,0 +1,96 @@
+{
+  "id": "persistent-instrument-sequence",
+  "name": "Persistent Instrument Sequence",
+  "version": "0.1.0",
+  "moduleBindings": [
+    {
+      "moduleId": "fake.instrument",
+      "transport": "persistent-qprocess",
+      "program": "${PICOATE_FAKE_INSTRUMENT_HOST}",
+      "arguments": [],
+      "timeoutMs": 3000
+    }
+  ],
+  "groups": [
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "open-dmm",
+          "name": "Open DMM",
+          "kind": "action",
+          "moduleId": "fake.instrument",
+          "function": "open",
+          "inputs": {
+            "deviceId": "DMM1",
+            "deviceType": "DMM",
+            "address": "USB0::0x0957::0x0607::MY59001234::INSTR"
+          }
+        },
+        {
+          "id": "read-dmm-1",
+          "name": "Read DMM 1",
+          "kind": "action",
+          "moduleId": "fake.instrument",
+          "function": "read",
+          "resources": [
+            {
+              "resourceId": "DMM1",
+              "mode": "exclusive"
+            }
+          ],
+          "inputs": {
+            "deviceId": "DMM1",
+            "measurementName": "DMM_READ_1",
+            "unit": "V"
+          }
+        },
+        {
+          "id": "read-dmm-2",
+          "name": "Read DMM 2",
+          "kind": "action",
+          "moduleId": "fake.instrument",
+          "function": "read",
+          "resources": [
+            {
+              "resourceId": "DMM1",
+              "mode": "exclusive"
+            }
+          ],
+          "inputs": {
+            "deviceId": "DMM1",
+            "measurementName": "DMM_READ_2",
+            "unit": "V"
+          }
+        },
+        {
+          "id": "status-dmm",
+          "name": "DMM Status",
+          "kind": "action",
+          "moduleId": "fake.instrument",
+          "function": "status",
+          "inputs": {
+            "deviceId": "DMM1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "close-dmm",
+          "name": "Close DMM",
+          "kind": "cleanup",
+          "moduleId": "fake.instrument",
+          "function": "close",
+          "inputs": {
+            "deviceId": "DMM1"
+          }
+        }
+      ]
+    }
+  ]
+}

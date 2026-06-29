@@ -1,0 +1,49 @@
+{
+  "id": "simple-sequence",
+  "name": "Simple Sequence",
+  "version": "0.1.0",
+  "groups": [
+    {
+      "id": "setup",
+      "name": "Setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "open-fixture",
+          "name": "Open Fixture",
+          "kind": "action"
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "name": "Main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "wait-100ms",
+          "name": "Wait 100 ms",
+          "kind": "wait",
+          "ms": 100
+        },
+        {
+          "id": "measure",
+          "name": "Measure",
+          "kind": "action"
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "name": "Cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "power-off",
+          "name": "Power Off",
+          "kind": "cleanup"
+        }
+      ]
+    }
+  ]
+}

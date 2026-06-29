@@ -1,0 +1,101 @@
+{
+  "id": "can-hardware-validation",
+  "name": "CAN Hardware Validation",
+  "version": "0.1.0",
+  "moduleBindings": [
+    {
+      "moduleId": "project.can.hardware",
+      "transport": "persistent-qprocess",
+      "program": "${PROJECT_DIR}/out/build/vs2022-qt6-all/src/nativehost/Debug/PicoATE.NativeHost.exe",
+      "arguments": [
+        "--manifest",
+        "${PROJECT_DIR}/templates/can_hardware_dll/can_hardware_manifest.json",
+        "--project-dir",
+        "${PROJECT_DIR}"
+      ],
+      "timeoutMs": 6000
+    }
+  ],
+  "groups": [
+    {
+      "id": "setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "can-open",
+          "name": "Open CAN Channel",
+          "kind": "action",
+          "moduleId": "project.can.hardware",
+          "function": "open",
+          "inputs": {
+            "deviceIndex": 0,
+            "channelIndex": 0,
+            "bitrate": 500000,
+            "canFd": false,
+            "listenOnly": false
+          },
+          "errorPolicy": {
+            "onFail": "RunCleanup",
+            "onError": "RunCleanup",
+            "onTimeout": "RunCleanup"
+          }
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "can-status",
+          "name": "Read CAN Adapter Status",
+          "kind": "action",
+          "moduleId": "project.can.hardware",
+          "function": "status",
+          "errorPolicy": {
+            "onFail": "RunCleanup",
+            "onError": "RunCleanup",
+            "onTimeout": "RunCleanup"
+          }
+        },
+        {
+          "id": "can-request-response",
+          "name": "CAN Request Response",
+          "kind": "action",
+          "moduleId": "project.can.hardware",
+          "function": "requestResponse",
+          "inputs": {
+            "tx": {
+              "id": "0x123",
+              "data": "01 02 03 04 05 06 07 08",
+              "extended": false,
+              "canFd": false
+            },
+            "rxId": "0x123",
+            "rxMask": "0x7FF",
+            "timeoutMs": 1000
+          },
+          "timeoutMs": 3000,
+          "errorPolicy": {
+            "onFail": "RunCleanup",
+            "onError": "RunCleanup",
+            "onTimeout": "RunCleanup"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "can-close",
+          "name": "Close CAN Channel",
+          "kind": "cleanup",
+          "moduleId": "project.can.hardware",
+          "function": "close"
+        }
+      ]
+    }
+  ]
+}

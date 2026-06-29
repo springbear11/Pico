@@ -1,0 +1,11 @@
+{
+  "dll": "${PROJECT_DIR}/templates/can_hardware_dll/out/build/Debug/PicoATE.CanHardwareTemplate.dll",
+  "symbol": "PicoATE_Execute",
+  "bufferSize": 65536,
+  "dllTimeoutMs": 5000,
+  "metadata": {
+    "name": "PicoATE CAN Hardware Adapter",
+    "kind": "hardware-template",
+    "session": "persistent-nativehost"
+  }
+}
