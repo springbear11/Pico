@@ -178,6 +178,19 @@ StepReport makeStepReport(const ExecutionPlan& plan, const UutExecution& uut, co
     return report;
 }
 
+bool stepReportHasError(const StepReport& step)
+{
+    if (step.wasError) {
+        return true;
+    }
+    for (const auto& child : step.children) {
+        if (stepReportHasError(child)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 ExecutionSession::ExecutionSession(ExecutionPlan plan,
@@ -322,6 +335,12 @@ ExecutionReport ExecutionSession::report() const
     report.completed = sessionStateIsTerminal(m_state) || allUutsComplete();
 
     const auto nodeIds = orderedNodeIds(m_plan);
+    QSet<NodeId> testItemChildNodeIds;
+    for (const auto& region : m_plan.testItemRegions) {
+        for (const auto& childNodeId : region.childNodeIds) {
+            testItemChildNodeIds.insert(childNodeId);
+        }
+    }
     report.uuts.reserve(m_uuts.size());
     for (const auto& uut : m_uuts) {
         UutReport uutReport;
@@ -329,8 +348,18 @@ ExecutionReport ExecutionSession::report() const
         uutReport.steps.reserve(nodeIds.size());
 
         for (const auto& nodeId : nodeIds) {
+            if (testItemChildNodeIds.contains(nodeId)) {
+                continue;
+            }
             auto stepReport = makeStepReport(m_plan, uut, nodeId);
-            uutReport.hasError = uutReport.hasError || stepReport.wasError;
+            const auto testItem = m_plan.testItemRegionForController(nodeId);
+            if (testItem) {
+                stepReport.children.reserve(testItem->childNodeIds.size());
+                for (const auto& childNodeId : testItem->childNodeIds) {
+                    stepReport.children.push_back(makeStepReport(m_plan, uut, childNodeId));
+                }
+            }
+            uutReport.hasError = uutReport.hasError || stepReportHasError(stepReport);
             uutReport.steps.push_back(stepReport);
         }
 

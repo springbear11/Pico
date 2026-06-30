@@ -55,10 +55,23 @@ QString projectRootPath()
 
 const StepReport* findStep(const UutReport& uut, const NodeId& stepId)
 {
-    const auto it = std::find_if(uut.steps.cbegin(), uut.steps.cend(), [&](const StepReport& step) {
-        return step.stepId == stepId;
-    });
-    return it == uut.steps.cend() ? nullptr : &(*it);
+    const auto findRecursive = [&](const StepReport& step, const auto& findRef) -> const StepReport* {
+        if (step.stepId == stepId) {
+            return &step;
+        }
+        for (const auto& child : step.children) {
+            if (const auto* found = findRef(child, findRef)) {
+                return found;
+            }
+        }
+        return nullptr;
+    };
+    for (const auto& step : uut.steps) {
+        if (const auto* found = findRecursive(step, findRecursive)) {
+            return found;
+        }
+    }
+    return nullptr;
 }
 
 QString mockHostPath()
@@ -410,6 +423,10 @@ private slots:
     void sequenceCompilerRunsPersistentInstrumentExampleFile();
     void sequenceCompilerRunsDmmCanAdapterExampleFile();
     void sequenceCompilerRunsForLoopExampleFile();
+    void sequenceCompilerRunsTestItemExampleFile();
+    void testItemAggregatesFailureAfterRunningAllChildren();
+    void testItemAggregatesErrorSeverity();
+    void testItemStopSkipsChildrenAndRunsCleanup();
     void executionSessionJsonFailureRunsCleanup();
     void executionSessionJsonRetryAttemptsAreRecorded();
     void executionSessionReportCapturesRetryAttempts();
@@ -3480,6 +3497,170 @@ void CoreTests::executionSessionReportFlagsErrorsWithoutTreatingSkippedAsError()
     QCOMPARE(cleanup->state, ActivationState::Passed);
     QCOMPARE(cleanup->outcome, NodeOutcome::Passed);
     QVERIFY(!cleanup->wasError);
+}
+
+void CoreTests::sequenceCompilerRunsTestItemExampleFile()
+{
+    QFile file(examplePath("test_item_sequence.json"));
+    QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.errorString()));
+    const auto document = QJsonDocument::fromJson(file.readAll());
+    QVERIFY(document.isObject());
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(document.object());
+    QVERIFY2(compile.ok(),
+             qPrintable(compile.errors.isEmpty() ? QString() : compile.errors.first().message));
+    QCOMPARE(compile.plan.testItemRegions.size(), 1);
+    QCOMPARE(compile.plan.testItemRegions.first().controllerNodeId,
+             QString("power-rail-check"));
+    QCOMPARE(compile.plan.testItemRegions.first().childNodeIds.size(), 2);
+
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-1");
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(!result.hasError);
+
+    const auto report = session.report();
+    QCOMPARE(report.uuts.size(), 1);
+    const auto& uut = report.uuts.first();
+    const auto* parent = findStep(uut, "power-rail-check");
+    QVERIFY(parent != nullptr);
+    QCOMPARE(parent->kind, ExecNodeKind::TestItem);
+    QCOMPARE(parent->outcome, NodeOutcome::Passed);
+    QCOMPARE(parent->children.size(), 2);
+    QCOMPARE(parent->children[0].outcome, NodeOutcome::Passed);
+    QCOMPARE(parent->children[1].outcome, NodeOutcome::Passed);
+    QVERIFY(findStep(uut, "after-power-check") != nullptr);
+}
+
+void CoreTests::testItemAggregatesFailureAfterRunningAllChildren()
+{
+    const auto json = R"json(
+    {
+      "id": "test-item-failure",
+      "name": "Test Item Failure",
+      "groups": [
+        {
+          "id": "main",
+          "kind": "main",
+          "steps": [
+            {
+              "id": "parent-check",
+              "name": "Parent Check",
+              "kind": "testItem",
+              "steps": [
+                {
+                  "id": "child-fail",
+                  "kind": "action",
+                  "parameters": { "outcome": "Failed" }
+                },
+                {
+                  "id": "child-pass",
+                  "kind": "action"
+                }
+              ]
+            },
+            { "id": "after-parent", "kind": "action" }
+          ]
+        },
+        {
+          "id": "cleanup",
+          "kind": "cleanup",
+          "steps": [{ "id": "cleanup-step", "kind": "cleanup" }]
+        }
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compile.ok());
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-1");
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+
+    const auto report = session.report();
+    const auto& uut = report.uuts.first();
+    const auto* parent = findStep(uut, "parent-check");
+    QVERIFY(parent != nullptr);
+    QCOMPARE(parent->outcome, NodeOutcome::Failed);
+    QCOMPARE(parent->state, ActivationState::Failed);
+    QCOMPARE(parent->children.size(), 2);
+    QCOMPARE(parent->children[0].outcome, NodeOutcome::Failed);
+    QCOMPARE(parent->children[1].outcome, NodeOutcome::Passed);
+    QCOMPARE(findStep(uut, "after-parent")->outcome, NodeOutcome::Skipped);
+    QCOMPARE(findStep(uut, "cleanup-step")->outcome, NodeOutcome::Passed);
+}
+
+void CoreTests::testItemStopSkipsChildrenAndRunsCleanup()
+{
+    const auto json = R"json(
+    {
+      "id": "test-item-stop",
+      "name": "Test Item Stop",
+      "groups": [
+        { "id": "main", "kind": "main", "steps": [
+          { "id": "parent", "kind": "testItem", "steps": [
+            { "id": "child-a", "kind": "action" },
+            { "id": "child-b", "kind": "action" }
+          ]}
+        ]},
+        { "id": "cleanup", "kind": "cleanup", "steps": [
+          { "id": "cleanup", "kind": "cleanup" }
+        ]}
+      ]
+    })json";
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compile.ok());
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-1");
+    session.requestStop();
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    const auto report = session.report();
+    const auto& uut = report.uuts.first();
+    QCOMPARE(findStep(uut, "parent")->outcome, NodeOutcome::Skipped);
+    QCOMPARE(findStep(uut, "child-a")->outcome, NodeOutcome::Skipped);
+    QCOMPARE(findStep(uut, "child-b")->outcome, NodeOutcome::Skipped);
+    QCOMPARE(findStep(uut, "cleanup")->outcome, NodeOutcome::Passed);
+}
+
+void CoreTests::testItemAggregatesErrorSeverity()
+{
+    const auto json = R"json(
+    {
+      "id": "test-item-error",
+      "name": "Test Item Error",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [{
+          "id": "parent",
+          "kind": "testItem",
+          "steps": [
+            { "id": "child-error", "kind": "action", "parameters": { "outcome": "Error" } },
+            { "id": "child-pass", "kind": "action" }
+          ]
+        }]
+      }]
+    })json";
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compile.ok());
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-1");
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    const auto report = session.report();
+    const auto* parent = findStep(report.uuts.first(), "parent");
+    QVERIFY(parent != nullptr);
+    QCOMPARE(parent->outcome, NodeOutcome::Error);
+    QCOMPARE(parent->children[0].outcome, NodeOutcome::Error);
+    QCOMPARE(parent->children[1].outcome, NodeOutcome::Passed);
 }
 
 QTEST_MAIN(CoreTests)

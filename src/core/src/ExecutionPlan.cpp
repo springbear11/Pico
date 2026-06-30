@@ -77,6 +77,26 @@ std::optional<LoopRegion> ExecutionPlan::loopRegionForBodyNode(const NodeId& nod
     return std::nullopt;
 }
 
+std::optional<TestItemRegion> ExecutionPlan::testItemRegionForController(const NodeId& nodeId) const
+{
+    for (const auto& region : testItemRegions) {
+        if (region.controllerNodeId == nodeId) {
+            return region;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<TestItemRegion> ExecutionPlan::testItemRegionForChild(const NodeId& nodeId) const
+{
+    for (const auto& region : testItemRegions) {
+        if (region.childNodeIds.contains(nodeId)) {
+            return region;
+        }
+    }
+    return std::nullopt;
+}
+
 bool isTerminalOutcome(NodeOutcome outcome)
 {
     return outcome != NodeOutcome::Unknown;

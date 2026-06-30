@@ -32,7 +32,8 @@ enum class ExecNodeKind {
     Action,
     Barrier,
     Cleanup,
-    Loop
+    Loop,
+    TestItem
 };
 
 enum class EdgeKind {
@@ -168,6 +169,11 @@ struct LoopRegion {
     ForLoopSpec forLoop;
 };
 
+struct TestItemRegion {
+    NodeId controllerNodeId;
+    QVector<NodeId> childNodeIds;
+};
+
 struct ExecutionPlan {
     PlanId id;
     SequenceId sequenceId;
@@ -176,6 +182,7 @@ struct ExecutionPlan {
     QVector<ExecEdge> edges;
     QVector<CleanupRegion> cleanupRegions;
     QVector<LoopRegion> loopRegions;
+    QVector<TestItemRegion> testItemRegions;
     NodeId entryNodeId;
     NodeId exitNodeId;
 
@@ -188,6 +195,8 @@ struct ExecutionPlan {
     std::optional<CleanupRegion> cleanupRegion(const CleanupRegionId& id) const;
     std::optional<LoopRegion> loopRegionForController(const NodeId& nodeId) const;
     std::optional<LoopRegion> loopRegionForBodyNode(const NodeId& nodeId) const;
+    std::optional<TestItemRegion> testItemRegionForController(const NodeId& nodeId) const;
+    std::optional<TestItemRegion> testItemRegionForChild(const NodeId& nodeId) const;
 };
 
 bool isTerminalOutcome(NodeOutcome outcome);

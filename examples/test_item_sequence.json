@@ -1,0 +1,68 @@
+{
+  "id": "test-item-sequence",
+  "name": "Composite Test Item Example",
+  "version": "0.1.0",
+  "groups": [
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "power-rail-check",
+          "name": "Power Rail Check",
+          "kind": "testItem",
+          "steps": [
+            {
+              "id": "measure-5v",
+              "name": "Measure 5V Rail",
+              "kind": "action",
+              "moduleId": "mock.measurement",
+              "function": "measureVoltage",
+              "inputs": {
+                "measurements": {
+                  "name": "VCC_5V",
+                  "value": 5.01,
+                  "unit": "V",
+                  "min": 4.9,
+                  "max": 5.1
+                }
+              }
+            },
+            {
+              "id": "measure-3v3",
+              "name": "Measure 3.3V Rail",
+              "kind": "action",
+              "moduleId": "mock.measurement",
+              "function": "measureVoltage",
+              "inputs": {
+                "measurements": {
+                  "name": "VCC_3V3",
+                  "value": 3.31,
+                  "unit": "V",
+                  "min": 3.2,
+                  "max": 3.4
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "after-power-check",
+          "name": "Continue After Power Check",
+          "kind": "action"
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "power-off",
+          "name": "Power Off",
+          "kind": "cleanup"
+        }
+      ]
+    }
+  ]
+}

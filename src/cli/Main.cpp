@@ -92,6 +92,8 @@ QString nodeKindName(ExecNodeKind kind)
         return "Cleanup";
     case ExecNodeKind::Loop:
         return "Loop";
+    case ExecNodeKind::TestItem:
+        return "TestItem";
     }
     return "Unknown";
 }
@@ -269,9 +271,9 @@ void printPlanSummary(const CompileResult& compile, const QString& sequencePath,
         << compile.plan.cleanupRegions.size() << " cleanup region(s)\n";
 }
 
-void printMeasurement(const MeasurementResult& measurement, QTextStream& out)
+void printMeasurement(const MeasurementResult& measurement, QTextStream& out, int depth = 0)
 {
-    out << "          measurement ";
+    out << QString(10 + depth * 4, ' ') << "measurement ";
     out << (measurement.name.isEmpty() ? QString("<unnamed>") : measurement.name);
     if (measurement.value.isValid()) {
         out << " = " << variantDisplay(measurement.value);
@@ -321,9 +323,10 @@ QString loopIterationText(const LoopIterationContext& loop)
         .arg(loop.value);
 }
 
-void printStepReport(const StepReport& step, QTextStream& out)
+void printStepReport(const StepReport& step, QTextStream& out, int depth = 0)
 {
-    out << "  - " << step.stepId << " [" << nodeKindName(step.kind) << "] "
+    const QString indent(2 + depth * 4, ' ');
+    out << indent << "- " << step.stepId << " [" << nodeKindName(step.kind) << "] "
         << activationStateName(step.state);
     if (step.outcome != NodeOutcome::Unknown) {
         out << " / " << nodeOutcomeName(step.outcome);
@@ -342,7 +345,7 @@ void printStepReport(const StepReport& step, QTextStream& out)
 
     const int totalAttempts = step.attempts.size();
     for (const auto& attempt : step.attempts) {
-        out << "      attempt " << attempt.index << '/' << totalAttempts
+        out << QString(6 + depth * 4, ' ') << "attempt " << attempt.index << '/' << totalAttempts
             << ": " << nodeOutcomeName(attempt.outcome);
         const auto iterationText = loopIterationText(attempt.loopIteration);
         if (!iterationText.isEmpty()) {
@@ -356,8 +359,11 @@ void printStepReport(const StepReport& step, QTextStream& out)
         }
         out << '\n';
         for (const auto& measurement : attempt.measurements) {
-            printMeasurement(measurement, out);
+            printMeasurement(measurement, out, depth);
         }
+    }
+    for (const auto& child : step.children) {
+        printStepReport(child, out, depth + 1);
     }
 }
 

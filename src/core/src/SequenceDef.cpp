@@ -207,6 +207,8 @@ ExecNodeKind toExecNodeKind(StepKind kind)
         return ExecNodeKind::Cleanup;
     case StepKind::Loop:
         return ExecNodeKind::Loop;
+    case StepKind::TestItem:
+        return ExecNodeKind::TestItem;
     case StepKind::Statement:
     case StepKind::SequenceCall:
         return ExecNodeKind::Action;
@@ -246,6 +248,8 @@ QString stepKindName(StepKind kind)
         return "Cleanup";
     case StepKind::Loop:
         return "Loop";
+    case StepKind::TestItem:
+        return "TestItem";
     case StepKind::Statement:
         return "Statement";
     case StepKind::SequenceCall:

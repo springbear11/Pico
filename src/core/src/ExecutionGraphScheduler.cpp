@@ -258,9 +258,19 @@ QVector<NodeId> ExecutionGraphScheduler::findReadyNodes(const UutExecution& uut)
         if (bodyRegion && !m_loops.bodyNodeMayRun(*bodyRegion, uut, node.id)) {
             continue;
         }
+        const auto testItemBody = m_plan.testItemRegionForChild(node.id);
+        if (testItemBody && !testItemChildMayRun(*testItemBody, uut)) {
+            continue;
+        }
         const auto loopRegion = m_plan.loopRegionForController(node.id);
         if (loopRegion &&
             (!m_loops.controllerReady(*loopRegion, uut) || !dependenciesSatisfied(uut, node))) {
+            continue;
+        }
+        const auto testItemRegion = m_plan.testItemRegionForController(node.id);
+        if (testItemRegion &&
+            (!testItemControllerReady(*testItemRegion, uut) ||
+             !dependenciesSatisfied(uut, node))) {
             continue;
         }
         if (dependenciesSatisfied(uut, node)) {
@@ -304,6 +314,11 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
     if (node.kind == ExecNodeKind::Loop) {
         return executeLoopNode(uut, node, frameId);
     }
+    if (node.kind == ExecNodeKind::TestItem) {
+        return executeTestItemNode(uut, node, frameId);
+    }
+
+    const bool isTestItemChild = m_plan.testItemRegionForChild(node.id).has_value();
 
     auto& activation = uut.ensureActivation(node.id, frameId);
     activation.state = ActivationState::Running;
@@ -387,7 +402,7 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
                                 activation.attempts.last(),
                                 decision.reason);
         }
-        if (decision.action == ErrorAction::RunCleanup) {
+        if (decision.action == ErrorAction::RunCleanup && !isTestItemChild) {
             activateCleanup(uut, decision.cleanupRegionId);
         }
     }
@@ -409,14 +424,125 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
     if (result.outcome != NodeOutcome::Passed &&
         result.outcome != NodeOutcome::Skipped &&
         result.outcome != NodeOutcome::Unknown) {
-        handleNodeFailureForBarriers(uut, node, result, frameId);
-        if (finalDecision.action == ErrorAction::StopUut ||
-            finalDecision.action == ErrorAction::RunCleanup ||
-            finalDecision.action == ErrorAction::Abort) {
-            skipPendingNonAlwaysRun(uut, frameId);
+        if (!isTestItemChild) {
+            handleNodeFailureForBarriers(uut, node, result, frameId);
+            if (finalDecision.action == ErrorAction::StopUut ||
+                finalDecision.action == ErrorAction::RunCleanup ||
+                finalDecision.action == ErrorAction::Abort) {
+                skipPendingNonAlwaysRun(uut, frameId);
+            }
         }
     }
 
+    return result;
+}
+
+bool ExecutionGraphScheduler::testItemControllerReady(const TestItemRegion& region,
+                                                       const UutExecution& uut) const
+{
+    const auto activation = uut.activations.constFind(region.controllerNodeId);
+    if (activation == uut.activations.constEnd() ||
+        activation->state != ActivationState::WaitingForDependency) {
+        return true;
+    }
+    for (const auto& childNodeId : region.childNodeIds) {
+        if (!isTerminalActivation(uut.stateOf(childNodeId))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ExecutionGraphScheduler::testItemChildMayRun(const TestItemRegion& region,
+                                                  const UutExecution& uut) const
+{
+    const auto activation = uut.activations.constFind(region.controllerNodeId);
+    return activation != uut.activations.constEnd() &&
+           activation->state == ActivationState::WaitingForDependency;
+}
+
+NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
+                                                        const ExecNode& node,
+                                                        const FrameId& frameId)
+{
+    auto& activation = uut.ensureActivation(node.id, frameId);
+    const auto region = m_plan.testItemRegionForController(node.id);
+    NodeResult result;
+    result.nodeId = node.id;
+    result.startedAt = QDateTime::currentDateTimeUtc();
+
+    if (!region) {
+        result.outcome = NodeOutcome::Error;
+        result.errorCode = "TestItemRegionMissing";
+        result.errorMessage = QString("Test item region missing for node: %1").arg(node.id);
+        result.finishedAt = QDateTime::currentDateTimeUtc();
+    } else if (activation.state != ActivationState::WaitingForDependency) {
+        activation.state = ActivationState::WaitingForDependency;
+        publishNodeEvent(RuntimeEventKind::TestItemStarted,
+                         uut,
+                         node,
+                         activation.state,
+                         NodeOutcome::Unknown,
+                         "test item children started");
+        result.outcome = NodeOutcome::Unknown;
+        result.finishedAt = QDateTime::currentDateTimeUtc();
+        return result;
+    } else {
+        result.outcome = NodeOutcome::Passed;
+        QStringList failedChildren;
+        for (const auto& childNodeId : region->childNodeIds) {
+            const auto childOutcome = uut.outcomeOf(childNodeId);
+            if (childOutcome == NodeOutcome::Passed) {
+                continue;
+            }
+            failedChildren.push_back(
+                QString("%1=%2").arg(childNodeId, nodeOutcomeName(childOutcome)));
+            if (childOutcome == NodeOutcome::Error) {
+                result.outcome = NodeOutcome::Error;
+            } else if (childOutcome == NodeOutcome::Timeout &&
+                       result.outcome != NodeOutcome::Error) {
+                result.outcome = NodeOutcome::Timeout;
+            } else if (childOutcome == NodeOutcome::Cancelled &&
+                       result.outcome != NodeOutcome::Error &&
+                       result.outcome != NodeOutcome::Timeout) {
+                result.outcome = NodeOutcome::Cancelled;
+            } else if (result.outcome == NodeOutcome::Passed) {
+                result.outcome = NodeOutcome::Failed;
+            }
+        }
+        if (!failedChildren.isEmpty()) {
+            result.errorCode = "TestItemChildFailed";
+            result.errorMessage = QString("Test item child result: %1")
+                                      .arg(failedChildren.join(", "));
+        }
+        result.finishedAt = QDateTime::currentDateTimeUtc();
+    }
+
+    appendSyntheticAttempt(activation, result.outcome, result.errorMessage);
+    activation.attempts.last().result = result;
+    activation.attempts.last().loopIteration = loopIterationForAttempt(uut, node);
+    activation.state = outcomeToActivationState(result.outcome);
+    activation.completedAt = result.finishedAt;
+    publishNodeEvent(RuntimeEventKind::TestItemCompleted,
+                     uut,
+                     node,
+                     activation.state,
+                     result.outcome,
+                     result.errorMessage,
+                     activation.attempts.last().loopIteration);
+
+    if (result.outcome != NodeOutcome::Passed) {
+        const auto decision = m_errorPolicy.decide(node, result, activation.attempts.size());
+        if (decision.action == ErrorAction::RunCleanup) {
+            activateCleanup(uut, decision.cleanupRegionId);
+        }
+        handleNodeFailureForBarriers(uut, node, result, frameId);
+        if (decision.action == ErrorAction::StopUut ||
+            decision.action == ErrorAction::RunCleanup ||
+            decision.action == ErrorAction::Abort) {
+            skipPendingNonAlwaysRun(uut, frameId);
+        }
+    }
     return result;
 }
 
@@ -787,6 +913,10 @@ void ExecutionGraphScheduler::publishNodeEvent(RuntimeEventKind kind,
     event.kind = kind;
     event.uutId = uut.uutId;
     event.nodeId = node.id;
+    const auto testItem = m_plan.testItemRegionForChild(node.id);
+    if (testItem) {
+        event.parentNodeId = testItem->controllerNodeId;
+    }
     event.nodeDisplayName = node.displayName;
     event.nodeKind = node.kind;
     event.activationState = state;
@@ -814,6 +944,10 @@ void ExecutionGraphScheduler::publishAttemptEvent(RuntimeEventKind kind,
     event.kind = kind;
     event.uutId = uut.uutId;
     event.nodeId = node.id;
+    const auto testItem = m_plan.testItemRegionForChild(node.id);
+    if (testItem) {
+        event.parentNodeId = testItem->controllerNodeId;
+    }
     event.nodeDisplayName = node.displayName;
     event.nodeKind = node.kind;
     event.attemptId = attempt.id;

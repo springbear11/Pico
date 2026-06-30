@@ -279,6 +279,8 @@ void collectStepWarnings(const QJsonObject& object,
     if (normalized(kind) == "loop" || normalized(kind) == "forloop") {
         knownFields.insert("loop");
         knownFields.insert("steps");
+    } else if (normalized(kind) == "testitem" || normalized(kind) == "composite") {
+        knownFields.insert("steps");
     }
 
     if (!object.contains("barrier") && stepKindLooksLikeBarrier(object)) {
@@ -393,6 +395,9 @@ StepKind parseStepKindString(const QString& text, bool& ok)
     }
     if (value == "loop" || value == "forloop") {
         return StepKind::Loop;
+    }
+    if (value == "testitem" || value == "composite") {
+        return StepKind::TestItem;
     }
     if (value == "statement") {
         return StepKind::Statement;
@@ -679,7 +684,7 @@ StepDef SequenceCompiler::parseStep(const QJsonObject& object,
     const auto kindKey = object.contains("kind") ? QString("kind") : QString("type");
     step.kind = parseStepKindString(readString(object, kindKey, path, errors, "noop"), kindOk);
     if (!kindOk) {
-        addError(errors, childPath(path, kindKey), "Unsupported step kind", "Use noop, wait, action, barrier, cleanup, or loop");
+        addError(errors, childPath(path, kindKey), "Unsupported step kind", "Use noop, wait, action, barrier, cleanup, loop, or testItem");
     }
 
     if (object.contains("parameters")) {
@@ -760,7 +765,7 @@ StepDef SequenceCompiler::parseStep(const QJsonObject& object,
         step.loop = parseLoopPolicy(object.value("loop").toObject(), path + ".loop", errors);
     }
 
-    if (step.kind == StepKind::Loop) {
+    if (step.kind == StepKind::Loop || step.kind == StepKind::TestItem) {
         if (object.contains("steps") && !object.value("steps").isArray()) {
             addTypeError(errors,
                          childPath(path, "steps"),
@@ -778,8 +783,10 @@ StepDef SequenceCompiler::parseStep(const QJsonObject& object,
         } else {
             addError(errors,
                      childPath(path, "steps"),
-                     "Loop step must contain a steps array",
-                     "Add one or more child steps to the loop");
+                     step.kind == StepKind::Loop
+                         ? "Loop step must contain a steps array"
+                         : "Test item must contain a steps array",
+                     "Add one or more child steps");
         }
     }
 

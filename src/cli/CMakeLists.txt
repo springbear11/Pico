@@ -53,6 +53,11 @@ add_test(
 )
 
 add_test(
+    NAME PicoATECliTestItemExample
+    COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/test_item_sequence.json" --uuts 1
+)
+
+add_test(
     NAME PicoATECliExternalEchoExample
     COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/external_echo_sequence.json" --uuts 1
 )

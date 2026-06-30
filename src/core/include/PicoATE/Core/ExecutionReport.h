@@ -33,6 +33,7 @@ struct StepReport {
     StepLoopReport loop;
     QVector<MeasurementResult> measurements;
     QVector<AttemptReport> attempts;
+    QVector<StepReport> children;
 };
 
 struct UutReport {

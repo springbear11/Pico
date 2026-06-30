@@ -54,6 +54,10 @@ QString runtimeEventKindName(RuntimeEventKind kind)
         return "LoopIterationStarted";
     case RuntimeEventKind::LoopCompleted:
         return "LoopCompleted";
+    case RuntimeEventKind::TestItemStarted:
+        return "TestItemStarted";
+    case RuntimeEventKind::TestItemCompleted:
+        return "TestItemCompleted";
     case RuntimeEventKind::BarrierWaiting:
         return "BarrierWaiting";
     case RuntimeEventKind::BarrierReleased:

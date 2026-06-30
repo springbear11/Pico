@@ -128,7 +128,10 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
 
     QHash<QString, int> activeStepIdCounts;
     bool hasEnabledStep = false;
-    const auto collectStep = [&](const StepDef& step, bool insideLoop, const auto& collectRef) -> void {
+    const auto collectStep = [&](const StepDef& step,
+                                 bool insideLoop,
+                                 bool insideTestItem,
+                                 const auto& collectRef) -> void {
         if (!step.enabled) {
             return;
         }
@@ -154,8 +157,32 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
             }
         }
 
+        if (step.kind == StepKind::TestItem) {
+            if (insideTestItem) {
+                result.errors.push_back({"Nested test items are not supported yet",
+                                         QString("Move nested test item %1 to the same level").arg(step.id)});
+            }
+            if (step.steps.isEmpty()) {
+                result.errors.push_back({"Test item children are required",
+                                         QString("Add at least one child step to test item %1").arg(step.id)});
+            }
+            if (step.retry.maxAttempts > 1) {
+                result.errors.push_back({"Test item retry is not supported yet",
+                                         QString("Put retry on child steps of %1 instead").arg(step.id)});
+            }
+            for (const auto& child : step.steps) {
+                if (child.enabled && child.kind == StepKind::Loop) {
+                    result.errors.push_back({"Loop directly inside a test item is not supported yet",
+                                             QString("Move loop %1 outside test item %2").arg(child.id, step.id)});
+                }
+            }
+        }
+
         for (const auto& child : step.steps) {
-            collectRef(child, step.kind == StepKind::Loop || insideLoop, collectRef);
+            collectRef(child,
+                       step.kind == StepKind::Loop || insideLoop,
+                       step.kind == StepKind::TestItem || insideTestItem,
+                       collectRef);
         }
     };
 
@@ -164,7 +191,7 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
             continue;
         }
         for (const auto& step : group.steps) {
-            collectStep(step, false, collectStep);
+            collectStep(step, false, false, collectStep);
         }
     }
 
@@ -219,6 +246,9 @@ PlanBuilder::StepBuildInfo PlanBuilder::buildStep(const StepDef& step,
 {
     if (step.kind == StepKind::Loop) {
         return buildLoopStep(step, cleanupRegionId, groupKind, plan);
+    }
+    if (step.kind == StepKind::TestItem) {
+        return buildTestItemStep(step, cleanupRegionId, groupKind, plan);
     }
 
     StepBuildInfo info;
@@ -275,6 +305,47 @@ PlanBuilder::StepBuildInfo PlanBuilder::buildLoopStep(const StepDef& step,
     return info;
 }
 
+PlanBuilder::StepBuildInfo PlanBuilder::buildTestItemStep(
+    const StepDef& step,
+    const CleanupRegionId& cleanupRegionId,
+    StepGroupKind groupKind,
+    ExecutionPlan& plan) const
+{
+    StepBuildInfo info;
+    auto controller = buildNode(step, cleanupRegionId, groupKind);
+    if (!plan.addNode(controller)) {
+        return info;
+    }
+
+    info.controlNodeId = controller.id;
+    info.allNodeIds.push_back(controller.id);
+
+    QVector<NodeId> childControlNodeIds;
+    QVector<NodeId> childNodeIds;
+    for (const auto& child : step.steps) {
+        if (!child.enabled) {
+            continue;
+        }
+        auto built = buildStep(child, cleanupRegionId, groupKind, plan);
+        if (!built.controlNodeId.isEmpty()) {
+            childControlNodeIds.push_back(built.controlNodeId);
+        }
+        childNodeIds += built.allNodeIds;
+    }
+
+    addSerialEdges(childControlNodeIds,
+                   plan,
+                   QString("test-item:%1").arg(step.id),
+                   EdgeTrigger::Finally);
+
+    TestItemRegion region;
+    region.controllerNodeId = controller.id;
+    region.childNodeIds = childNodeIds;
+    plan.testItemRegions.push_back(region);
+    info.allNodeIds += childNodeIds;
+    return info;
+}
+
 ExecNode PlanBuilder::buildNode(const StepDef& step,
                                 const CleanupRegionId& cleanupRegionId,
                                 StepGroupKind groupKind) const
@@ -323,14 +394,15 @@ ExecNode PlanBuilder::buildNode(const StepDef& step,
 
 void PlanBuilder::addSerialEdges(const QVector<NodeId>& nodeIds,
                                  ExecutionPlan& plan,
-                                 const QString& edgePrefix) const
+                                 const QString& edgePrefix,
+                                 EdgeTrigger trigger) const
 {
     for (int i = 0; i + 1 < nodeIds.size(); ++i) {
         plan.addEdge({QString("%1:%2:%3").arg(edgePrefix, nodeIds[i], nodeIds[i + 1]),
                       nodeIds[i],
                       nodeIds[i + 1],
                       EdgeKind::Control,
-                      EdgeTrigger::OnSuccess,
+                      trigger,
                       {},
                       0});
     }
@@ -420,6 +492,23 @@ bool PlanBuilder::validatePlanReferences(const ExecutionPlan& plan, PlanBuildRes
         for (const auto& bodyNode : region.bodyNodes) {
             if (!plan.node(bodyNode)) {
                 result.errors.push_back({QString("Loop region references missing body node: %1").arg(bodyNode), {}});
+            }
+        }
+    }
+
+    for (const auto& region : plan.testItemRegions) {
+        if (!plan.node(region.controllerNodeId)) {
+            result.errors.push_back({QString("Test item references missing controller node: %1")
+                                         .arg(region.controllerNodeId), {}});
+        }
+        if (region.childNodeIds.isEmpty()) {
+            result.errors.push_back({QString("Test item has no child nodes: %1")
+                                         .arg(region.controllerNodeId), {}});
+        }
+        for (const auto& childNode : region.childNodeIds) {
+            if (!plan.node(childNode)) {
+                result.errors.push_back({QString("Test item references missing child node: %1")
+                                             .arg(childNode), {}});
             }
         }
     }

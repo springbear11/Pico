@@ -20,6 +20,8 @@ enum class RuntimeEventKind {
     RetryScheduled,
     LoopIterationStarted,
     LoopCompleted,
+    TestItemStarted,
+    TestItemCompleted,
     BarrierWaiting,
     BarrierReleased,
     CleanupActivated,
@@ -38,6 +40,7 @@ struct RuntimeEvent {
     DeviceConnectionState deviceState = DeviceConnectionState::Disconnected;
     UutId uutId;
     NodeId nodeId;
+    NodeId parentNodeId;
     QString nodeDisplayName;
     ExecNodeKind nodeKind = ExecNodeKind::Action;
     AttemptId attemptId;

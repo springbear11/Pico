@@ -43,12 +43,17 @@ private:
                                 const CleanupRegionId& cleanupRegionId,
                                 StepGroupKind groupKind,
                                 ExecutionPlan& plan) const;
+    StepBuildInfo buildTestItemStep(const StepDef& step,
+                                    const CleanupRegionId& cleanupRegionId,
+                                    StepGroupKind groupKind,
+                                    ExecutionPlan& plan) const;
     ExecNode buildNode(const StepDef& step,
                        const CleanupRegionId& cleanupRegionId,
                        StepGroupKind groupKind) const;
     void addSerialEdges(const QVector<NodeId>& nodeIds,
                         ExecutionPlan& plan,
-                        const QString& edgePrefix) const;
+                        const QString& edgePrefix,
+                        EdgeTrigger trigger = EdgeTrigger::OnSuccess) const;
     void addGroupBridge(const GroupBuildInfo& from,
                         const GroupBuildInfo& to,
                         ExecutionPlan& plan,

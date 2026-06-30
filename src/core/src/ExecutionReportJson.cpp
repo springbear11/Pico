@@ -85,6 +85,7 @@ QString nodeKindName(ExecNodeKind kind)
     case ExecNodeKind::Barrier: return "Barrier";
     case ExecNodeKind::Cleanup: return "Cleanup";
     case ExecNodeKind::Loop: return "Loop";
+    case ExecNodeKind::TestItem: return "TestItem";
     }
     return "Noop";
 }
@@ -97,6 +98,7 @@ std::optional<ExecNodeKind> nodeKindFromString(const QString& value)
     if (value == "Barrier") return ExecNodeKind::Barrier;
     if (value == "Cleanup") return ExecNodeKind::Cleanup;
     if (value == "Loop") return ExecNodeKind::Loop;
+    if (value == "TestItem") return ExecNodeKind::TestItem;
     return std::nullopt;
 }
 
@@ -272,6 +274,8 @@ QJsonObject stepToJson(const StepReport& step)
 {
     QJsonArray attempts;
     for (const auto& attempt : step.attempts) attempts.push_back(attemptToJson(attempt));
+    QJsonArray children;
+    for (const auto& child : step.children) children.push_back(stepToJson(child));
     return {
         {"stepId", step.stepId},
         {"displayName", step.displayName},
@@ -282,6 +286,7 @@ QJsonObject stepToJson(const StepReport& step)
         {"loop", stepLoopToJson(step.loop)},
         {"measurements", measurementsToJson(step.measurements)},
         {"attempts", attempts},
+        {"children", children},
     };
 }
 
@@ -325,6 +330,25 @@ StepReport stepFromJson(const QJsonObject& object,
             step.attempts.push_back(attemptFromJson(
                 attempts[index].toObject(),
                 QString("%1.attempts[%2]").arg(path).arg(index),
+                errors));
+        }
+    }
+    const auto childrenValue = object.value("children");
+    if (!childrenValue.isUndefined() && !childrenValue.isArray()) {
+        addError(errors, path + ".children", "Expected array");
+    } else {
+        const auto children = childrenValue.toArray();
+        step.children.reserve(children.size());
+        for (int index = 0; index < children.size(); ++index) {
+            if (!children[index].isObject()) {
+                addError(errors,
+                         QString("%1.children[%2]").arg(path).arg(index),
+                         "Expected object");
+                continue;
+            }
+            step.children.push_back(stepFromJson(
+                children[index].toObject(),
+                QString("%1.children[%2]").arg(path).arg(index),
                 errors));
         }
     }
@@ -377,7 +401,7 @@ ExecutionReportJsonResult executionReportFromJson(const QJsonObject& object)
         addError(result.errors, "schema", "Expected picoate.execution-report");
     }
     const int version = object.value("schemaVersion").toInt(-1);
-    if (version != ExecutionReportSchemaVersion) {
+    if (version < 1 || version > ExecutionReportSchemaVersion) {
         addError(result.errors,
                  "schemaVersion",
                  QString("Unsupported execution report schema version: %1").arg(version));

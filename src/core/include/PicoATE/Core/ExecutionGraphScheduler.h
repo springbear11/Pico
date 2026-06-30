@@ -46,6 +46,9 @@ private:
     NodeResult executeNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
     NodeResult executeBarrierNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
     NodeResult executeLoopNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
+    NodeResult executeTestItemNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
+    bool testItemControllerReady(const TestItemRegion& region, const UutExecution& uut) const;
+    bool testItemChildMayRun(const TestItemRegion& region, const UutExecution& uut) const;
     void activateCleanup(UutExecution& uut, const CleanupRegionId& cleanupRegionId);
     void handleNodeFailureForBarriers(UutExecution& uut,
                                       const ExecNode& failedNode,

@@ -15,6 +15,7 @@ enum class StepKind {
     Barrier,
     Cleanup,
     Loop,
+    TestItem,
     Statement,
     SequenceCall
 };

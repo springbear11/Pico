@@ -118,7 +118,7 @@ gaps. Cleanup groups are connected from the last non-empty normal group by a
 | `errorPolicy` | object | no | default stop policy | See error policy object. |
 | `barrier` | object | no | inferred for barrier steps | See barrier object. |
 | `loop` | object | no | default for-loop policy | Required for explicit loop configuration. |
-| `steps` | array | yes for loop steps | none | Child steps that form the loop body. |
+| `steps` | array | yes for loop/testItem steps | none | Child steps for a loop body or composite test item. |
 | `tags` | array of string | no | `[]` | Copied to `ExecNode::tags`. |
 
 Supported step kinds:
@@ -131,6 +131,7 @@ Supported step kinds:
 | `barrier` | `ExecNodeKind::Barrier` |
 | `cleanup` | `ExecNodeKind::Cleanup` |
 | `loop` / `forLoop` | `ExecNodeKind::Loop` scheduler control node |
+| `testItem` / `composite` | `ExecNodeKind::TestItem` aggregate control node |
 | `statement` | currently mapped to `Action` |
 | `sequenceCall` | currently mapped to `Action` |
 
@@ -177,6 +178,45 @@ placeholders preserve type, while embedded placeholders produce strings:
 
 See `docs/variable_resolver.md` for the split between configuration-time and
 runtime variables.
+
+## Test Item
+
+A `testItem` is a scheduler-owned composite result boundary. It does not call a
+business module directly. Its child steps run in order, and the parent result is
+calculated after every child reaches a terminal state:
+
+| Child results | Parent result |
+|---------------|---------------|
+| every child is `Passed` | `Passed` |
+| any child is `Failed` or otherwise not passed | `Failed` |
+| any child is `Timeout` and none is `Error` | `Timeout` |
+| any child is `Error` | `Error` |
+
+Child failures do not immediately stop the UUT. Remaining children are released
+through `Finally` edges, then the parent `errorPolicy` decides whether the UUT
+stops or enters Cleanup. Retry belongs on child steps; parent-level retry is not
+supported in the first implementation.
+
+```json
+{
+  "id": "power-rail-check",
+  "name": "Power Rail Check",
+  "kind": "testItem",
+  "steps": [
+    { "id": "measure-5v", "kind": "action" },
+    { "id": "measure-3v3", "kind": "action" }
+  ]
+}
+```
+
+Current constraints:
+
+- one test-item nesting level; nested `testItem` is rejected;
+- a `loop` cannot be a direct child yet;
+- disabled children are not compiled and do not participate in aggregation;
+- `ExecutionReport` and Runner UI retain the parent-child hierarchy.
+
+Runnable example: `examples/test_item_sequence.json`.
 
 ## Loop Object
 
