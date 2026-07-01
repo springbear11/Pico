@@ -132,6 +132,7 @@ Supported step kinds:
 | `cleanup` | `ExecNodeKind::Cleanup` |
 | `loop` / `forLoop` | `ExecNodeKind::Loop` scheduler control node |
 | `testItem` / `composite` | `ExecNodeKind::TestItem` aggregate control node |
+| `limit` / `numericLimit` | `ExecNodeKind::Limit` 通用比较节点 |
 | `statement` | 独立 `Statement` 节点；当前执行返回 `StatementNotImplemented` |
 | `sequenceCall` | 独立 `SequenceCall` 节点；当前执行返回 `SequenceCallNotImplemented` |
 
@@ -179,6 +180,51 @@ placeholders preserve type, while embedded placeholders produce strings:
 See `docs/变量与结果引用.md` for the split between configuration-time and
 runtime variables.
 
+## Limit 比较节点
+
+`limit` 是引擎内置的纯比较节点，不调用业务 DLL。典型用法是让前面的
+RX/解析 Step 把值写入每个 UUT 独立的结果仓库，再通过 Step 表达式把实际值
+传给 Limit：
+
+```json
+{
+  "id": "02",
+  "key": "limit",
+  "name": "电压判定",
+  "kind": "limit",
+  "inputs": {
+    "actual": "${step:parse.outputs.frame.voltage}"
+  },
+  "parameters": {
+    "comparison": "between",
+    "lower": 4.8,
+    "upper": 5.2,
+    "inclusive": true,
+    "unit": "V",
+    "measurementName": "CAN_VOLTAGE"
+  }
+}
+```
+
+支持的比较方式：
+
+| `comparison` | 必需参数 | 含义 |
+|--------------|----------|------|
+| `between` / `range` | `lower`、`upper` | 区间判断；`inclusive` 默认为 `true` |
+| `>` / `>=` / `<` / `<=` | `expected`，也可分别使用 `lower`/`upper` | 数值单边判断 |
+| `equal` / `==` / `notEqual` / `!=` | `expected`；数值可加 `tolerance` | 数值容差或字符串相等判断 |
+| `contains` / `startsWith` / `endsWith` | `expected` | 字符串判断，区分大小写 |
+| `isTrue` / `isFalse` | 无 | 严格布尔判断，不接受字符串 `"true"` |
+
+比较不通过时，节点结果是 `Failed`，错误码为 `LimitFailed`，可由
+`errorPolicy.onFail` 决定停止还是继续。实际值缺失、类型错误、上下限配置错误
+属于配置或数据问题，节点结果是 `Error`，不会伪装成产品测试失败。
+
+Limit 总会生成一条 `MeasurementResult`，包含实际值、单位、上下限或比较基准、
+判定状态和错误信息；CLI、ExecutionReport 和 UI 使用同一份结构化结果。
+
+完整可运行示例：`examples/scoped_result_sequence.json`。
+
 ## Test Item
 
 A `testItem` is a scheduler-owned composite result boundary. It does not call a
@@ -211,8 +257,9 @@ supported in the first implementation.
 
 Current constraints:
 
-- one test-item nesting level; nested `testItem` is rejected;
-- a `loop` cannot be a direct child yet;
+- `testItem` 支持任意层嵌套，也可以直接包含 `loop`；
+- 嵌套 `loop` 仍未支持；
+- Retry 配置在具体子步骤上，父 TestItem 暂不支持整体 Retry；
 - disabled children are not compiled and do not participate in aggregation;
 - `ExecutionReport` and Runner UI retain the parent-child hierarchy.
 
