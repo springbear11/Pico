@@ -14,7 +14,9 @@ ActivationState UutExecution::stateOf(const NodeId& nodeId) const
 NodeOutcome UutExecution::outcomeOf(const NodeId& nodeId) const
 {
     auto it = activations.constFind(nodeId);
-    if (it == activations.constEnd() || it.value().attempts.isEmpty()) {
+    if (it == activations.constEnd() ||
+        !isTerminalActivation(it.value().state) ||
+        it.value().attempts.isEmpty()) {
         return NodeOutcome::Unknown;
     }
     return it.value().attempts.last().result.outcome;
@@ -74,6 +76,7 @@ ExecutionGraphScheduler::ExecutionGraphScheduler(const ExecutionPlan& plan,
                                                  LoopController& loops,
                                                  ErrorPolicyEngine& errorPolicy,
                                                  NodeRunner& runner,
+                                                 ExecutionResultStore& results,
                                                  RuntimeEventEmitter* events)
     : m_plan(plan)
     , m_resources(resources)
@@ -81,6 +84,7 @@ ExecutionGraphScheduler::ExecutionGraphScheduler(const ExecutionPlan& plan,
     , m_loops(loops)
     , m_errorPolicy(errorPolicy)
     , m_runner(runner)
+    , m_results(results)
     , m_events(events)
 {
 }
@@ -136,6 +140,16 @@ SchedulerStepResult ExecutionGraphScheduler::pumpOnce(UutExecution& uut, const F
     auto result = executeNode(uut, *node, frameId);
     if (result.outcome != NodeOutcome::Unknown) {
         step.nodeResults.push_back(result);
+        if (node->kind == ExecNodeKind::Loop ||
+            node->kind == ExecNodeKind::TestItem ||
+            node->kind == ExecNodeKind::Barrier) {
+            const auto activation = uut.activations.constFind(nodeId);
+            const int attemptIndex = activation == uut.activations.constEnd() ||
+                                             activation->attempts.isEmpty()
+                ? 0
+                : activation->attempts.last().attemptIndex;
+            m_results.commit(uut.uutId, frameId, nodeId, attemptIndex, result);
+        }
     }
 
     const auto currentState = uut.stateOf(nodeId);
@@ -300,7 +314,31 @@ bool ExecutionGraphScheduler::dependenciesSatisfied(const UutExecution& uut,
 
     for (const auto& edge : incoming) {
         const auto sourceOutcome = uut.outcomeOf(edge.from);
-        if (!triggerMatchesOutcome(edge.trigger, sourceOutcome)) {
+        if (triggerMatchesOutcome(edge.trigger, sourceOutcome)) {
+            continue;
+        }
+
+        const bool mayContinueFailure =
+            edge.trigger == EdgeTrigger::OnSuccess &&
+            edge.condition != "step-result" &&
+            (sourceOutcome == NodeOutcome::Failed ||
+             sourceOutcome == NodeOutcome::Error ||
+             sourceOutcome == NodeOutcome::Timeout);
+        if (!mayContinueFailure) {
+            return false;
+        }
+
+        const auto* sourceNode = m_plan.node(edge.from);
+        const auto activation = uut.activations.constFind(edge.from);
+        if (!sourceNode || activation == uut.activations.constEnd() ||
+            activation->attempts.isEmpty()) {
+            return false;
+        }
+        const auto decision = m_errorPolicy.decide(
+            *sourceNode,
+            activation->attempts.last().result,
+            activation->attempts.size());
+        if (decision.action != ErrorAction::Continue) {
             return false;
         }
     }
@@ -318,7 +356,7 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
         return executeTestItemNode(uut, node, frameId);
     }
 
-    const bool isTestItemChild = m_plan.testItemRegionForChild(node.id).has_value();
+    const bool isTestItemChild = m_plan.isInsideTestItem(node.id);
 
     auto& activation = uut.ensureActivation(node.id, frameId);
     activation.state = ActivationState::Running;
@@ -378,14 +416,21 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
         context.uutId = uut.uutId;
         context.frameId = frameId;
         context.attemptId = attempt.id;
+        context.currentNodeId = node.id;
         context.attemptIndex = attempt.attemptIndex;
         context.variables = uut.variables;
+        context.resultStore = &m_results;
 
         publishAttemptEvent(RuntimeEventKind::AttemptStarted, uut, node, attempt);
         result = m_runner.run(node, context);
         attempt.state = AttemptState::Completed;
         attempt.result = result;
         activation.attempts.push_back(attempt);
+        m_results.commit(uut.uutId,
+                         frameId,
+                         node.id,
+                         activation.attempts.last().attemptIndex,
+                         result);
         publishAttemptEvent(RuntimeEventKind::AttemptCompleted,
                             uut,
                             node,
@@ -492,7 +537,8 @@ NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
         QStringList failedChildren;
         for (const auto& childNodeId : region->childNodeIds) {
             const auto childOutcome = uut.outcomeOf(childNodeId);
-            if (childOutcome == NodeOutcome::Passed) {
+            if (childOutcome == NodeOutcome::Passed ||
+                childOutcome == NodeOutcome::Skipped) {
                 continue;
             }
             failedChildren.push_back(
@@ -531,7 +577,7 @@ NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
                      result.errorMessage,
                      activation.attempts.last().loopIteration);
 
-    if (result.outcome != NodeOutcome::Passed) {
+    if (result.outcome != NodeOutcome::Passed && !m_plan.isInsideTestItem(node.id)) {
         const auto decision = m_errorPolicy.decide(node, result, activation.attempts.size());
         if (decision.action == ErrorAction::RunCleanup) {
             activateCleanup(uut, decision.cleanupRegionId);
@@ -583,6 +629,10 @@ NodeResult ExecutionGraphScheduler::executeLoopNode(UutExecution& uut,
     const auto decision = m_loops.advance(*region, uut);
     result.outcome = decision.outcome;
     result.errorMessage = decision.message;
+    if (decision.outcome != NodeOutcome::Unknown &&
+        decision.outcome != NodeOutcome::Passed) {
+        result.errorCode = "LoopChildFailed";
+    }
     result.finishedAt = QDateTime::currentDateTimeUtc();
 
     if (decision.skippedBody) {
@@ -605,9 +655,9 @@ NodeResult ExecutionGraphScheduler::executeLoopNode(UutExecution& uut,
         }
     }
 
-    if (decision.outcome == NodeOutcome::Passed) {
-        appendSyntheticAttempt(activation, NodeOutcome::Passed, decision.message);
-        activation.state = ActivationState::Passed;
+    if (decision.outcome != NodeOutcome::Unknown) {
+        appendSyntheticAttempt(activation, decision.outcome, decision.message);
+        activation.state = outcomeToActivationState(decision.outcome);
         activation.completedAt = result.finishedAt;
         publishNodeEvent(RuntimeEventKind::LoopCompleted,
                          uut,
@@ -615,6 +665,18 @@ NodeResult ExecutionGraphScheduler::executeLoopNode(UutExecution& uut,
                          activation.state,
                          result.outcome,
                          decision.message);
+        if (decision.outcome != NodeOutcome::Passed && !m_plan.isInsideTestItem(node.id)) {
+            const auto errorDecision = m_errorPolicy.decide(node, result, activation.attempts.size());
+            if (errorDecision.action == ErrorAction::RunCleanup) {
+                activateCleanup(uut, errorDecision.cleanupRegionId);
+            }
+            handleNodeFailureForBarriers(uut, node, result, frameId);
+            if (errorDecision.action == ErrorAction::StopUut ||
+                errorDecision.action == ErrorAction::RunCleanup ||
+                errorDecision.action == ErrorAction::Abort) {
+                skipPendingNonAlwaysRun(uut, frameId);
+            }
+        }
         return result;
     }
 
@@ -913,9 +975,10 @@ void ExecutionGraphScheduler::publishNodeEvent(RuntimeEventKind kind,
     event.kind = kind;
     event.uutId = uut.uutId;
     event.nodeId = node.id;
-    const auto testItem = m_plan.testItemRegionForChild(node.id);
-    if (testItem) {
-        event.parentNodeId = testItem->controllerNodeId;
+    event.nodeLocalId = node.localId.isEmpty() ? node.id : node.localId;
+    const auto parent = m_plan.structuralParentOf(node.id);
+    if (parent) {
+        event.parentNodeId = *parent;
     }
     event.nodeDisplayName = node.displayName;
     event.nodeKind = node.kind;
@@ -944,9 +1007,10 @@ void ExecutionGraphScheduler::publishAttemptEvent(RuntimeEventKind kind,
     event.kind = kind;
     event.uutId = uut.uutId;
     event.nodeId = node.id;
-    const auto testItem = m_plan.testItemRegionForChild(node.id);
-    if (testItem) {
-        event.parentNodeId = testItem->controllerNodeId;
+    event.nodeLocalId = node.localId.isEmpty() ? node.id : node.localId;
+    const auto parent = m_plan.structuralParentOf(node.id);
+    if (parent) {
+        event.parentNodeId = *parent;
     }
     event.nodeDisplayName = node.displayName;
     event.nodeKind = node.kind;

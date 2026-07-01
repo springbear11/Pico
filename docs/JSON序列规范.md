@@ -67,11 +67,11 @@ path separator are resolved relative to the sequence file directory.
 
 The same resolver supports recursive replacement and nested container
 replacement for future configuration files such as NativeHost manifests. See
-`docs/variable_resolver.md`.
+`docs/变量与结果引用.md`.
 
 NativeHost DLL module bindings should prefer `--manifest` arguments for DLL
 load settings. The manifest format is documented in
-`docs/nativehost_manifest.md`.
+`docs/NativeHost清单规范.md`.
 
 ## Group Object
 
@@ -132,8 +132,8 @@ Supported step kinds:
 | `cleanup` | `ExecNodeKind::Cleanup` |
 | `loop` / `forLoop` | `ExecNodeKind::Loop` scheduler control node |
 | `testItem` / `composite` | `ExecNodeKind::TestItem` aggregate control node |
-| `statement` | currently mapped to `Action` |
-| `sequenceCall` | currently mapped to `Action` |
+| `statement` | 独立 `Statement` 节点；当前执行返回 `StatementNotImplemented` |
+| `sequenceCall` | 独立 `SequenceCall` 节点；当前执行返回 `SequenceCallNotImplemented` |
 
 Example with checkpoint flags:
 
@@ -176,7 +176,7 @@ placeholders preserve type, while embedded placeholders produce strings:
 }
 ```
 
-See `docs/variable_resolver.md` for the split between configuration-time and
+See `docs/变量与结果引用.md` for the split between configuration-time and
 runtime variables.
 
 ## Test Item
@@ -421,3 +421,34 @@ Potential future strict mode:
 |------|-------------------|
 | unknown field in strict mode | error |
 | unknown field in default mode | warning |
+
+## 作用域 ID、Key 与结果引用
+
+顶层 TestItem 和独立 Step 推荐使用字符串编号：
+
+```json
+{ "id": "001", "name": "CAN请求", "kind": "testItem" }
+```
+
+子步骤可以添加当前父节点内唯一的语义 Key：
+
+```json
+{ "id": "03", "key": "rx", "name": "接收响应", "kind": "action" }
+```
+
+编译后的节点路径为 `001.rx`。不同 TestItem 可以重复使用 `tx`、`rx`、`parse`。
+
+```json
+"frame": "${step:001.rx.outputs.frame}"
+```
+
+当前 TestItem 内可使用相对 Key：
+
+```json
+"actual": "${step:parse.outputs.voltage}"
+```
+
+引用会在编译期检查节点存在性和执行先后关系，并生成数据依赖边。完整规则见
+[变量与结果引用](变量与结果引用.md)，可运行示例见
+`examples/scoped_result_sequence.json`。
+

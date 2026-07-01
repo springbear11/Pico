@@ -6,6 +6,7 @@
 #include "PicoATE/Core/DllBridgeInvoker.h"
 #include "PicoATE/Core/ExecutionGraphScheduler.h"
 #include "PicoATE/Core/ExecutionSession.h"
+#include "PicoATE/Core/ExecutionReportJson.h"
 #include "PicoATE/Core/InstrumentAdapterModules.h"
 #include "PicoATE/Core/LoopController.h"
 #include "PicoATE/Core/ModuleBindingRegistrar.h"
@@ -427,6 +428,22 @@ private slots:
     void testItemAggregatesFailureAfterRunningAllChildren();
     void testItemAggregatesErrorSeverity();
     void testItemStopSkipsChildrenAndRunsCleanup();
+    void nestedTestItemsAggregateDirectChildrenRecursively();
+    void testItemContainingLoopAggregatesIterationFailures();
+    void loopTestItemChildrenKeepSerialOrderAcrossIterations();
+    void continuePolicyAdvancesAfterOrdinaryStepFailure();
+    void continuePolicyAdvancesAfterTestItemFailure();
+    void statementAndSequenceCallKeepDistinctRuntimeKinds();
+    void reportOrdersTestItemChildrenByTopology();
+    void testItemIgnoresSkippedChildrenWhenAggregating();
+    void scopedStepResultsFlowAcrossTestItemsPerUut();
+    void resultStoreTracksRetryAndLoopHistory();
+    void compilerRejectsInvalidStepResultReferencesAndScopedKeys();
+    void compilerDeduplicatesMultipleReferencesToSameStep();
+    void runtimeResultLookupReportsMissingAndNonPassedSources();
+    void limitNodeSupportsNumericStringAndBooleanComparisons();
+    void limitNodeDistinguishesFailuresFromConfigurationErrors();
+    void limitStepFailsReferencedParsedValueOutsideRange();
     void executionSessionJsonFailureRunsCleanup();
     void executionSessionJsonRetryAttemptsAreRecorded();
     void executionSessionReportCapturesRetryAttempts();
@@ -1642,7 +1659,8 @@ void CoreTests::schedulerRetriesAndRunsCleanup()
     LoopController loops;
     ErrorPolicyEngine errorPolicy;
     NodeRunner runner;
-    ExecutionGraphScheduler scheduler(plan, resources, barriers, loops, errorPolicy, runner);
+    ExecutionResultStore results(plan);
+    ExecutionGraphScheduler scheduler(plan, resources, barriers, loops, errorPolicy, runner, results);
 
     UutExecution uut;
     uut.uutId = "uut-1";
@@ -2117,7 +2135,7 @@ void CoreTests::planBuilderRejectsDuplicateStepIds()
     const auto result = builder.build(sequence);
     QVERIFY(!result.ok());
     QVERIFY(std::any_of(result.errors.cbegin(), result.errors.cend(), [](const PlanBuildError& error) {
-        return error.message.contains("Duplicate step id");
+        return error.message.contains("Duplicate sibling step id");
     }));
 }
 
@@ -2223,9 +2241,9 @@ void CoreTests::planBuilderBuildsLoopRegion()
 
     const auto region = result.plan.loopRegionForController("repeat-measurements");
     QVERIFY(region.has_value());
-    QCOMPARE(region->bodyNodes, QVector<NodeId>{"measure-sample"});
-    QCOMPARE(region->entryNodes, QVector<NodeId>{"measure-sample"});
-    QCOMPARE(region->exitNodes, QVector<NodeId>{"measure-sample"});
+    QCOMPARE(region->bodyNodes, QVector<NodeId>{"repeat-measurements.measure-sample"});
+    QCOMPARE(region->entryNodes, QVector<NodeId>{"repeat-measurements.measure-sample"});
+    QCOMPARE(region->exitNodes, QVector<NodeId>{"repeat-measurements.measure-sample"});
     QCOMPARE(region->forLoop.variableName, QString("sampleIndex"));
     QCOMPARE(region->forLoop.from, 0);
     QCOMPARE(region->forLoop.to, 2);
@@ -3178,14 +3196,14 @@ void CoreTests::sequenceCompilerRunsForLoopExampleFile()
 
     const auto& uut = session.uuts().first();
     QCOMPARE(uut.outcomeOf("repeat-measurements"), NodeOutcome::Passed);
-    QCOMPARE(uut.outcomeOf("measure-sample"), NodeOutcome::Passed);
+    QCOMPARE(uut.outcomeOf("repeat-measurements.measure-sample"), NodeOutcome::Passed);
     QCOMPARE(uut.outcomeOf("after-loop"), NodeOutcome::Passed);
     QCOMPARE(uut.variables.value("sampleIndex").toInt(), 2);
     QCOMPARE(uut.variables.value("loop.index").toInt(), 2);
     QCOMPARE(uut.variables.value("loop.value").toInt(), 2);
-    QCOMPARE(uut.activations.value("measure-sample").attempts.size(), 3);
+    QCOMPARE(uut.activations.value("repeat-measurements.measure-sample").attempts.size(), 3);
 
-    const auto& measureAttempts = uut.activations.value("measure-sample").attempts;
+    const auto& measureAttempts = uut.activations.value("repeat-measurements.measure-sample").attempts;
     for (int i = 0; i < measureAttempts.size(); ++i) {
         const auto& loopIteration = measureAttempts[i].loopIteration;
         QVERIFY(loopIteration.active);
@@ -3197,7 +3215,7 @@ void CoreTests::sequenceCompilerRunsForLoopExampleFile()
         QCOMPARE(loopIteration.value, i);
     }
 
-    const auto lastLoopOutputs = uut.activations.value("measure-sample").attempts.last().result.outputs;
+    const auto lastLoopOutputs = uut.activations.value("repeat-measurements.measure-sample").attempts.last().result.outputs;
     QCOMPARE(lastLoopOutputs.value("sampleIndex").toInt(), 2);
     QCOMPARE(lastLoopOutputs.value("sampleLabel").toString(), QString("sample-2"));
     QCOMPARE(lastLoopOutputs.value("uutId").toString(), QString("uut-1"));
@@ -3211,12 +3229,13 @@ void CoreTests::sequenceCompilerRunsForLoopExampleFile()
     const auto report = session.report();
     QCOMPARE(report.uuts.size(), 1);
     const auto& steps = report.uuts.first().steps;
-    QCOMPARE(steps.size(), 5);
+    QCOMPARE(steps.size(), 4);
     QCOMPARE(steps[0].stepId, QString("open-fixture"));
     QCOMPARE(steps[1].stepId, QString("repeat-measurements"));
-    QCOMPARE(steps[2].stepId, QString("measure-sample"));
-    QCOMPARE(steps[3].stepId, QString("after-loop"));
-    QCOMPARE(steps[4].stepId, QString("power-off"));
+    QCOMPARE(steps[1].children.size(), 1);
+    QCOMPARE(steps[1].children[0].stepId, QString("measure-sample"));
+    QCOMPARE(steps[2].stepId, QString("after-loop"));
+    QCOMPARE(steps[3].stepId, QString("power-off"));
 
     const auto* measure = findStep(report.uuts.first(), "measure-sample");
     QVERIFY(measure != nullptr);
@@ -3661,6 +3680,749 @@ void CoreTests::testItemAggregatesErrorSeverity()
     QCOMPARE(parent->outcome, NodeOutcome::Error);
     QCOMPARE(parent->children[0].outcome, NodeOutcome::Error);
     QCOMPARE(parent->children[1].outcome, NodeOutcome::Passed);
+}
+
+void CoreTests::nestedTestItemsAggregateDirectChildrenRecursively()
+{
+    const auto json = R"json({
+      "id": "nested-test-items",
+      "name": "Nested Test Items",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [{
+          "id": "outer",
+          "kind": "testItem",
+          "steps": [
+            { "id": "outer-first", "kind": "action" },
+            {
+              "id": "inner",
+              "kind": "testItem",
+              "steps": [
+                { "id": "inner-pass", "kind": "action" },
+                { "id": "inner-fail", "kind": "action", "parameters": { "outcome": "Failed" } }
+              ]
+            },
+            { "id": "outer-last", "kind": "action" }
+          ]
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compile.ok(), qPrintable(compile.errors.isEmpty() ? QString() : compile.errors.first().message));
+    QCOMPARE(compile.plan.testItemRegions.size(), 2);
+    QVERIFY(compile.plan.structuralParentOf("outer.inner") == std::optional<NodeId>("outer"));
+    QVERIFY(compile.plan.structuralParentOf("outer.inner.inner-fail") == std::optional<NodeId>("outer.inner"));
+
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-1");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+
+    const auto report = session.report();
+    const auto* outer = findStep(report.uuts.first(), "outer");
+    const auto* inner = findStep(report.uuts.first(), "inner");
+    QVERIFY(outer != nullptr);
+    QVERIFY(inner != nullptr);
+    QCOMPARE(outer->outcome, NodeOutcome::Failed);
+    QCOMPARE(outer->children.size(), 3);
+    QCOMPARE(inner->outcome, NodeOutcome::Failed);
+    QCOMPARE(inner->children.size(), 2);
+    QCOMPARE(findStep(report.uuts.first(), "inner-pass")->outcome, NodeOutcome::Passed);
+    QCOMPARE(findStep(report.uuts.first(), "inner-fail")->outcome, NodeOutcome::Failed);
+    QCOMPARE(findStep(report.uuts.first(), "outer-last")->outcome, NodeOutcome::Passed);
+}
+
+void CoreTests::testItemContainingLoopAggregatesIterationFailures()
+{
+    const auto json = R"json({
+      "id": "test-item-loop",
+      "name": "Test Item Loop",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [{
+          "id": "parent",
+          "kind": "testItem",
+          "steps": [
+            {
+              "id": "repeat-check",
+              "kind": "loop",
+              "loop": { "variable": "sample", "from": 0, "to": 2, "step": 1 },
+              "steps": [
+                { "id": "sample-check", "kind": "action", "parameters": { "outcome": "Failed" } }
+              ]
+            },
+            { "id": "after-repeat", "kind": "action" }
+          ]
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compile.ok(), qPrintable(compile.errors.isEmpty() ? QString() : compile.errors.first().message));
+    QCOMPARE(compile.plan.loopRegions.size(), 1);
+    QCOMPARE(compile.plan.loopRegions.first().childNodeIds, QVector<NodeId>{"parent.repeat-check.sample-check"});
+    QVERIFY(compile.plan.isInsideTestItem("parent.repeat-check.sample-check"));
+
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-1");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+    QCOMPARE(session.uuts().first().activations.value("parent.repeat-check.sample-check").attempts.size(), 3);
+
+    const auto report = session.report();
+    const auto& uut = report.uuts.first();
+    const auto* parent = findStep(uut, "parent");
+    const auto* loop = findStep(uut, "repeat-check");
+    QVERIFY(parent != nullptr);
+    QVERIFY(loop != nullptr);
+    QCOMPARE(parent->outcome, NodeOutcome::Failed);
+    QCOMPARE(loop->outcome, NodeOutcome::Failed);
+    QCOMPARE(loop->children.size(), 1);
+    QCOMPARE(loop->children.first().attempts.size(), 3);
+    QCOMPARE(findStep(uut, "after-repeat")->outcome, NodeOutcome::Passed);
+}
+
+void CoreTests::loopTestItemChildrenKeepSerialOrderAcrossIterations()
+{
+    const auto json = R"json({
+      "id": "loop-test-item-order",
+      "name": "Loop Test Item Order",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [{
+          "id": "repeat",
+          "kind": "loop",
+          "loop": { "variable": "index", "from": 0, "to": 3, "step": 1 },
+          "steps": [{
+            "id": "item",
+            "kind": "testItem",
+            "steps": [
+              { "id": "first", "kind": "action" },
+              { "id": "second", "kind": "action" },
+              { "id": "third", "kind": "action" }
+            ]
+          }]
+        }]
+      }]
+    })json";
+
+    class EventSink final : public IRuntimeEventSink {
+    public:
+        void publish(const RuntimeEvent& event) override
+        {
+            if (event.kind == RuntimeEventKind::AttemptCompleted &&
+                (event.nodeLocalId == "first" || event.nodeLocalId == "second" || event.nodeLocalId == "third")) {
+                completedNodes.push_back(event.nodeLocalId);
+            }
+        }
+        QVector<NodeId> completedNodes;
+    } sink;
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compile.ok(), qPrintable(compile.errors.isEmpty() ? QString() : compile.errors.first().message));
+
+    ExecutionSession session(compile.plan, {}, &sink);
+    session.addUut("uut-1");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(!run.hasError);
+
+    const QVector<NodeId> expected = {
+        "first", "second", "third",
+        "first", "second", "third",
+        "first", "second", "third",
+        "first", "second", "third",
+    };
+    QCOMPARE(sink.completedNodes, expected);
+}
+
+void CoreTests::continuePolicyAdvancesAfterOrdinaryStepFailure()
+{
+    const auto json = R"json({
+      "id": "continue-step",
+      "name": "Continue Step",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [
+          {
+            "id": "allowed-failure",
+            "kind": "action",
+            "parameters": { "outcome": "Failed" },
+            "errorPolicy": { "onFail": "Continue" }
+          },
+          { "id": "after-failure", "kind": "action" }
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compile.ok());
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-1");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+    QCOMPARE(session.uuts().first().outcomeOf("allowed-failure"), NodeOutcome::Failed);
+    QCOMPARE(session.uuts().first().outcomeOf("after-failure"), NodeOutcome::Passed);
+}
+
+void CoreTests::continuePolicyAdvancesAfterTestItemFailure()
+{
+    const auto json = R"json({
+      "id": "continue-test-item",
+      "name": "Continue Test Item",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [
+          {
+            "id": "failed-item",
+            "kind": "testItem",
+            "errorPolicy": { "onFail": "Continue" },
+            "steps": [
+              { "id": "failed-child", "kind": "action", "parameters": { "outcome": "Failed" } },
+              { "id": "remaining-child", "kind": "action" }
+            ]
+          },
+          { "id": "after-item", "kind": "action" }
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compile.ok());
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-1");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+    QCOMPARE(session.uuts().first().outcomeOf("failed-item"), NodeOutcome::Failed);
+    QCOMPARE(session.uuts().first().outcomeOf("failed-item.remaining-child"), NodeOutcome::Passed);
+    QCOMPARE(session.uuts().first().outcomeOf("after-item"), NodeOutcome::Passed);
+}
+
+void CoreTests::statementAndSequenceCallKeepDistinctRuntimeKinds()
+{
+    QCOMPARE(toExecNodeKind(StepKind::Statement), ExecNodeKind::Statement);
+    QCOMPARE(toExecNodeKind(StepKind::SequenceCall), ExecNodeKind::SequenceCall);
+
+    NodeRunner runner;
+    NodeExecutionContext context;
+    context.uutId = "uut-1";
+    context.frameId = "root";
+
+    ExecNode statement;
+    statement.id = "statement";
+    statement.kind = ExecNodeKind::Statement;
+    const auto statementResult = runner.run(statement, context);
+    QCOMPARE(statementResult.outcome, NodeOutcome::Error);
+    QCOMPARE(statementResult.errorCode, QString("StatementNotImplemented"));
+
+    ExecNode sequenceCall;
+    sequenceCall.id = "sequence-call";
+    sequenceCall.kind = ExecNodeKind::SequenceCall;
+    const auto sequenceCallResult = runner.run(sequenceCall, context);
+    QCOMPARE(sequenceCallResult.outcome, NodeOutcome::Error);
+    QCOMPARE(sequenceCallResult.errorCode, QString("SequenceCallNotImplemented"));
+
+    ExecutionReport report;
+    UutReport uut;
+    uut.uutId = "uut-1";
+    StepReport statementReport;
+    statementReport.stepId = statement.id;
+    statementReport.kind = statement.kind;
+    StepReport sequenceCallReport;
+    sequenceCallReport.stepId = sequenceCall.id;
+    sequenceCallReport.kind = sequenceCall.kind;
+    uut.steps = {statementReport, sequenceCallReport};
+    report.uuts = {uut};
+
+    const auto parsed = parseExecutionReport(serializeExecutionReport(report));
+    QVERIFY(parsed.ok());
+    QCOMPARE(parsed.report.uuts.first().steps[0].kind, ExecNodeKind::Statement);
+    QCOMPARE(parsed.report.uuts.first().steps[1].kind, ExecNodeKind::SequenceCall);
+}
+
+void CoreTests::reportOrdersTestItemChildrenByTopology()
+{
+    const auto json = R"json({
+      "id": "test-item-report-order",
+      "name": "Test Item Report Order",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [{
+          "id": "item",
+          "kind": "testItem",
+          "steps": [
+            { "id": "first", "kind": "action" },
+            { "id": "second", "kind": "action" },
+            { "id": "third", "kind": "action" }
+          ]
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compile.ok());
+    auto& region = compile.plan.testItemRegions.first();
+    std::reverse(region.childNodeIds.begin(), region.childNodeIds.end());
+    QCOMPARE(region.childNodeIds, QVector<NodeId>({"item.third", "item.second", "item.first"}));
+
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-1");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+
+    const auto report = session.report();
+    const auto* item = findStep(report.uuts.first(), "item");
+    QVERIFY(item != nullptr);
+    QCOMPARE(item->children.size(), 3);
+    QCOMPARE(item->children[0].stepId, QString("first"));
+    QCOMPARE(item->children[1].stepId, QString("second"));
+    QCOMPARE(item->children[2].stepId, QString("third"));
+}
+
+void CoreTests::testItemIgnoresSkippedChildrenWhenAggregating()
+{
+    ExecutionPlan plan;
+    plan.id = "plan:test-item-skipped";
+
+    ExecNode parent;
+    parent.id = "parent";
+    parent.kind = ExecNodeKind::TestItem;
+    QVERIFY(plan.addNode(parent));
+
+    ExecNode passedChild;
+    passedChild.id = "passed-child";
+    passedChild.kind = ExecNodeKind::Action;
+    QVERIFY(plan.addNode(passedChild));
+
+    ExecNode skippedChild;
+    skippedChild.id = "skipped-child";
+    skippedChild.kind = ExecNodeKind::Action;
+    QVERIFY(plan.addNode(skippedChild));
+    plan.testItemRegions.push_back({parent.id, {passedChild.id, skippedChild.id}});
+
+    ExecutionSession session(plan);
+    auto& uut = session.addUut("uut-1");
+    auto& parentActivation = uut.ensureActivation(parent.id, "root");
+    parentActivation.state = ActivationState::WaitingForDependency;
+
+    const auto setTerminal = [&uut](const NodeId& nodeId,
+                                    ActivationState state,
+                                    NodeOutcome outcome) {
+        auto& activation = uut.ensureActivation(nodeId, "root");
+        activation.state = state;
+        NodeAttempt attempt;
+        attempt.activationId = activation.id;
+        attempt.attemptIndex = 0;
+        attempt.state = AttemptState::Completed;
+        attempt.result.nodeId = nodeId;
+        attempt.result.outcome = outcome;
+        activation.attempts.push_back(attempt);
+    };
+    setTerminal(passedChild.id, ActivationState::Passed, NodeOutcome::Passed);
+    setTerminal(skippedChild.id, ActivationState::Skipped, NodeOutcome::Skipped);
+
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(!run.hasError);
+    QCOMPARE(session.uuts().first().outcomeOf(parent.id), NodeOutcome::Passed);
+
+    const auto report = session.report();
+    const auto* parentReport = findStep(report.uuts.first(), parent.id);
+    QVERIFY(parentReport != nullptr);
+    QCOMPARE(parentReport->outcome, NodeOutcome::Passed);
+    QCOMPARE(parentReport->children[1].outcome, NodeOutcome::Skipped);
+}
+
+void CoreTests::scopedStepResultsFlowAcrossTestItemsPerUut()
+{
+    QFile file(examplePath("scoped_result_sequence.json"));
+    QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.errorString()));
+    const auto document = QJsonDocument::fromJson(file.readAll());
+    QVERIFY(document.isObject());
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(document.object());
+    QVERIFY2(compile.ok(), qPrintable(compile.errors.isEmpty() ? QString() : compile.errors.first().message));
+    QVERIFY(compile.plan.node("001.tx") != nullptr);
+    QVERIFY(compile.plan.node("001.rx") != nullptr);
+    QVERIFY(compile.plan.node("002.parse") != nullptr);
+    QVERIFY(compile.plan.node("002.limit") != nullptr);
+    QVERIFY(!compile.plan.node("rx"));
+
+    const auto dataEdgeExists = [&](const NodeId& from, const NodeId& to) {
+        return std::any_of(compile.plan.edges.cbegin(), compile.plan.edges.cend(), [&](const ExecEdge& edge) {
+            return edge.from == from && edge.to == to && edge.condition == "step-result";
+        });
+    };
+    QVERIFY(dataEdgeExists("001.rx", "002.parse"));
+    QVERIFY(dataEdgeExists("002.parse", "002.limit"));
+
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-A");
+    session.addUut("uut-B");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(!run.hasError);
+
+    for (const auto& uutId : {QString("uut-A"), QString("uut-B")}) {
+        const auto parsed = session.results().latest(uutId, "root", "002.parse");
+        const auto limited = session.results().latest(uutId, "root", "002.limit");
+        QVERIFY(parsed.has_value());
+        QVERIFY(limited.has_value());
+        QCOMPARE(parsed->result.outputs.value("frame").toMap().value("owner").toString(), uutId);
+        QCOMPARE(limited->result.outputs.value("actual").toDouble(), 5.01);
+        QCOMPARE(limited->result.outputs.value("passed").toBool(), true);
+        QCOMPARE(limited->result.measurements.size(), 1);
+        QCOMPARE(limited->result.measurements.first().name, QString("CAN_VOLTAGE"));
+        QCOMPARE(limited->result.measurements.first().status, MeasurementStatus::Passed);
+    }
+
+    const auto report = session.report();
+    const auto* rx = findStep(report.uuts.first(), "03");
+    QVERIFY(rx != nullptr);
+    QCOMPARE(rx->nodePath, QString("001.rx"));
+}
+
+void CoreTests::resultStoreTracksRetryAndLoopHistory()
+{
+    const auto json = R"json({
+      "id": "result-history",
+      "name": "Result History",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [
+          {
+            "id": "001",
+            "kind": "action",
+            "retry": { "maxAttempts": 2 },
+            "parameters": {
+              "failUntilAttempt": 0,
+              "outputs": { "token": 42 }
+            }
+          },
+          {
+            "id": "002",
+            "kind": "action",
+            "inputs": { "token": "${step:001.outputs.token}" },
+            "parameters": { "echoInputs": true }
+          },
+          {
+            "id": "003",
+            "kind": "loop",
+            "loop": { "variable": "sample", "from": 0, "to": 2, "step": 1 },
+            "steps": [{
+              "id": "01",
+              "key": "sample",
+              "kind": "action",
+              "parameters": { "outputs": { "value": "${loop.value}" } }
+            }]
+          },
+          {
+            "id": "004",
+            "kind": "action",
+            "inputs": { "latest": "${step:003.sample.outputs.value}" },
+            "parameters": { "echoInputs": true }
+          }
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compile.ok(), qPrintable(compile.errors.isEmpty() ? QString() : compile.errors.first().message));
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-1");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(!run.hasError);
+
+    const auto retryHistory = session.results().history("uut-1", "root", "001");
+    QCOMPARE(retryHistory.size(), 2);
+    QCOMPARE(retryHistory[0].result.outcome, NodeOutcome::Failed);
+    QCOMPARE(retryHistory[1].result.outcome, NodeOutcome::Passed);
+    QCOMPARE(session.results().latest("uut-1", "root", "002")->result.outputs.value("token").toInt(), 42);
+
+    const auto loopHistory = session.results().history("uut-1", "root", "003.sample");
+    QCOMPARE(loopHistory.size(), 3);
+    QCOMPARE(loopHistory[0].result.outputs.value("value").toInt(), 0);
+    QCOMPARE(loopHistory[2].result.outputs.value("value").toInt(), 2);
+    QCOMPARE(session.results().latest("uut-1", "root", "004")->result.outputs.value("latest").toInt(), 2);
+}
+
+void CoreTests::compilerRejectsInvalidStepResultReferencesAndScopedKeys()
+{
+    SequenceCompiler compiler;
+    const auto compileText = [&compiler](const QByteArray& json) {
+        return compiler.compileJson(QJsonDocument::fromJson(json).object());
+    };
+    const auto hasError = [](const CompileResult& result, const QString& text) {
+        return std::any_of(result.errors.cbegin(), result.errors.cend(), [&](const CompileError& error) {
+            return error.message.contains(text, Qt::CaseInsensitive);
+        });
+    };
+
+    const auto missing = compileText(R"json({"id":"missing","name":"missing","groups":[{"id":"main","kind":"main","steps":[{"id":"001","kind":"action","inputs":{"x":"${step:999.outputs.x}"}}]}]})json");
+    QVERIFY(!missing.ok());
+    QVERIFY(hasError(missing, "missing node"));
+
+    const auto forward = compileText(R"json({"id":"forward","name":"forward","groups":[{"id":"main","kind":"main","steps":[{"id":"001","kind":"action","inputs":{"x":"${step:002.outputs.x}"}},{"id":"002","kind":"action"}]}]})json");
+    QVERIFY(!forward.ok());
+    QVERIFY(hasError(forward, "not guaranteed"));
+
+    const auto self = compileText(R"json({"id":"self","name":"self","groups":[{"id":"main","kind":"main","steps":[{"id":"001","kind":"action","inputs":{"x":"${step:001.outputs.x}"}}]}]})json");
+    QVERIFY(!self.ok());
+    QVERIFY(hasError(self, "not guaranteed"));
+
+    const auto duplicateKey = compileText(R"json({"id":"keys","name":"keys","groups":[{"id":"main","kind":"main","steps":[{"id":"001","kind":"testItem","steps":[{"id":"01","key":"rx","kind":"action"},{"id":"02","key":"rx","kind":"action"}]}]}]})json");
+    QVERIFY(!duplicateKey.ok());
+    QVERIFY(hasError(duplicateKey, "Duplicate sibling step key"));
+
+    const auto reservedKey = compileText(R"json({"id":"reserved","name":"reserved","groups":[{"id":"main","kind":"main","steps":[{"id":"001","kind":"testItem","steps":[{"id":"01","key":"outputs","kind":"action"}]}]}]})json");
+    QVERIFY(!reservedKey.ok());
+    QVERIFY(hasError(reservedKey, "reserved"));
+}
+
+void CoreTests::compilerDeduplicatesMultipleReferencesToSameStep()
+{
+    const auto json = R"json({
+      "id": "deduplicate-data-edges",
+      "name": "Deduplicate Data Edges",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [
+          {"id":"001","kind":"action","parameters":{"outputs":{"a":1,"b":2}}},
+          {"id":"002","kind":"action","inputs":{
+            "first":"${step:001.outputs.a}",
+            "second":"${step:001.outputs.b}"
+          }}
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compile.ok());
+
+    const auto dataEdgeCount = std::count_if(
+        compile.plan.edges.cbegin(), compile.plan.edges.cend(), [](const ExecEdge& edge) {
+            return edge.from == "001" && edge.to == "002" &&
+                   edge.condition == "step-result";
+        });
+    QCOMPARE(dataEdgeCount, 1);
+}
+
+void CoreTests::runtimeResultLookupReportsMissingAndNonPassedSources()
+{
+    const auto runCase = [](const QString& sourceParameters, const QString& reference) {
+        const auto json = QString(R"json({
+          "id": "runtime-lookup",
+          "name": "Runtime Lookup",
+          "groups": [{"id":"main","kind":"main","steps":[
+            {"id":"001","kind":"action","errorPolicy":{"onFail":"Continue"},"parameters":%1},
+            {"id":"002","kind":"action","inputs":{"value":"%2"},"parameters":{"echoInputs":true}}
+          ]}]
+        })json").arg(sourceParameters, reference).toUtf8();
+        SequenceCompiler compiler;
+        const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+        ExecutionSession session(compile.plan);
+        session.addUut("uut-1");
+        return std::pair<CompileResult, ExecutionSessionResult>{compile, session.run()};
+    };
+
+    const auto missingField = runCase(R"({"outputs":{"present":1}})",
+                                      R"(${step:001.outputs.absent})");
+    QVERIFY(missingField.first.ok());
+    QVERIFY(missingField.second.completed);
+    QVERIFY(missingField.second.hasError);
+    QVERIFY(std::any_of(missingField.second.nodeResults.cbegin(),
+                        missingField.second.nodeResults.cend(),
+                        [](const NodeResult& result) {
+                            return result.nodeId == "002" &&
+                                   result.errorMessage.contains("StepResultValueNotFound");
+                        }));
+
+    const auto failedSource = runCase(R"({"outcome":"Failed","outputs":{"value":1}})",
+                                      R"(${step:001.outputs.value})");
+    QVERIFY(failedSource.first.ok());
+    QVERIFY(failedSource.second.completed);
+    QVERIFY(failedSource.second.hasError);
+    QVERIFY(std::any_of(failedSource.second.nodeResults.cbegin(),
+                        failedSource.second.nodeResults.cend(),
+                        [](const NodeResult& result) {
+                            return result.nodeId == "002" &&
+                                   result.errorMessage.contains("StepResultNotPassed");
+                        }));
+
+    ExecutionPlan plan;
+    plan.addNode({"001"});
+    ExecutionResultStore store(plan);
+    NodeResult skipped;
+    skipped.nodeId = "001";
+    skipped.outcome = NodeOutcome::Skipped;
+    store.commit("uut-1", "root", "001", 0, skipped);
+    const auto reference = parseStepResultReference("step:001.outputs.value");
+    QVERIFY(reference.has_value());
+    const auto lookup = store.lookup("uut-1", "root", "002", *reference);
+    QVERIFY(!lookup.found);
+    QCOMPARE(lookup.errorCode, QString("StepResultNotPassed"));
+}
+
+void CoreTests::limitNodeSupportsNumericStringAndBooleanComparisons()
+{
+    NodeRunner runner;
+    NodeExecutionContext context;
+    context.uutId = "uut-1";
+    context.frameId = "root";
+
+    const auto runLimit = [&](const QVariantMap& inputs, const QVariantMap& parameters) {
+        ExecNode node;
+        node.id = "limit";
+        node.displayName = "Limit";
+        node.kind = ExecNodeKind::Limit;
+        node.payload = parameters;
+        node.payload.insert("inputs", inputs);
+        return runner.run(node, context);
+    };
+
+    auto result = runLimit({{"actual", 4.8}},
+                           {{"comparison", "between"}, {"lower", 4.8}, {"upper", 5.2}, {"unit", "V"}});
+    QCOMPARE(result.outcome, NodeOutcome::Passed);
+    QCOMPARE(result.measurements.size(), 1);
+    QVERIFY(result.measurements.first().hasLowerLimit);
+    QVERIFY(result.measurements.first().hasUpperLimit);
+    QCOMPARE(result.measurements.first().status, MeasurementStatus::Passed);
+
+    result = runLimit({{"actual", 4.8}},
+                      {{"comparison", "between"}, {"lower", 4.8}, {"upper", 5.2}, {"inclusive", false}});
+    QCOMPARE(result.outcome, NodeOutcome::Failed);
+
+    result = runLimit({{"actual", 5.0}, {"expected", 4.9}}, {{"comparison", ">"}});
+    QCOMPARE(result.outcome, NodeOutcome::Passed);
+    QVERIFY(result.measurements.first().hasLowerLimit);
+    QCOMPARE(result.measurements.first().lowerLimit, 4.9);
+
+    result = runLimit({{"actual", 5.001}},
+                      {{"comparison", "equal"}, {"expected", 5.0}, {"tolerance", 0.01}});
+    QCOMPARE(result.outcome, NodeOutcome::Passed);
+
+    result = runLimit({{"actual", "62 F1 90"}},
+                      {{"comparison", "contains"}, {"expected", "F1"}});
+    QCOMPARE(result.outcome, NodeOutcome::Passed);
+
+    result = runLimit({{"actual", true}}, {{"comparison", "isTrue"}});
+    QCOMPARE(result.outcome, NodeOutcome::Passed);
+}
+
+void CoreTests::limitNodeDistinguishesFailuresFromConfigurationErrors()
+{
+    NodeRunner runner;
+    NodeExecutionContext context;
+    context.uutId = "uut-1";
+    context.frameId = "root";
+
+    const auto runLimit = [&](const QVariantMap& inputs, const QVariantMap& parameters) {
+        ExecNode node;
+        node.id = "limit";
+        node.displayName = "Limit";
+        node.kind = ExecNodeKind::Limit;
+        node.payload = parameters;
+        node.payload.insert("inputs", inputs);
+        return runner.run(node, context);
+    };
+
+    auto result = runLimit({{"actual", 5.3}},
+                           {{"comparison", "between"}, {"lower", 4.8}, {"upper", 5.2}});
+    QCOMPARE(result.outcome, NodeOutcome::Failed);
+    QCOMPARE(result.errorCode, QString("LimitFailed"));
+    QCOMPARE(result.measurements.first().status, MeasurementStatus::Failed);
+
+    result = runLimit({}, {{"comparison", "between"}, {"lower", 4.8}, {"upper", 5.2}});
+    QCOMPARE(result.outcome, NodeOutcome::Error);
+    QCOMPARE(result.errorCode, QString("LimitActualMissing"));
+
+    result = runLimit({{"actual", "not-a-number"}},
+                      {{"comparison", "between"}, {"lower", 4.8}, {"upper", 5.2}});
+    QCOMPARE(result.outcome, NodeOutcome::Error);
+    QCOMPARE(result.errorCode, QString("LimitTypeError"));
+
+    result = runLimit({{"actual", 5.0}},
+                      {{"comparison", "between"}, {"lower", 5.2}, {"upper", 4.8}});
+    QCOMPARE(result.outcome, NodeOutcome::Error);
+    QCOMPARE(result.errorCode, QString("LimitConfigurationError"));
+
+    result = runLimit({{"actual", 5.0}}, {{"comparison", "teleport"}});
+    QCOMPARE(result.outcome, NodeOutcome::Error);
+    QCOMPARE(result.errorCode, QString("UnsupportedLimitComparison"));
+}
+
+void CoreTests::limitStepFailsReferencedParsedValueOutsideRange()
+{
+    const auto json = R"json({
+      "id": "limit-reference-fail",
+      "name": "Limit Reference Fail",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [
+          {
+            "id": "001",
+            "kind": "action",
+            "parameters": { "outputs": { "decoded": { "voltage": 5.3 } } }
+          },
+          {
+            "id": "002",
+            "kind": "limit",
+            "inputs": { "actual": "${step:001.outputs.decoded.voltage}" },
+            "parameters": {
+              "comparison": "between",
+              "lower": 4.8,
+              "upper": 5.2,
+              "unit": "V",
+              "measurementName": "PARSED_VOLTAGE"
+            }
+          }
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compile.ok(), qPrintable(compile.errors.isEmpty() ? QString() : compile.errors.first().message));
+    QCOMPARE(compile.plan.node("002")->kind, ExecNodeKind::Limit);
+
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-1");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+
+    const auto limited = session.results().latest("uut-1", "root", "002");
+    QVERIFY(limited.has_value());
+    QCOMPARE(limited->result.outcome, NodeOutcome::Failed);
+    QCOMPARE(limited->result.errorCode, QString("LimitFailed"));
+    QCOMPARE(limited->result.measurements.first().name, QString("PARSED_VOLTAGE"));
+    QCOMPARE(limited->result.measurements.first().value.toDouble(), 5.3);
+    QCOMPARE(limited->result.measurements.first().lowerLimit, 4.8);
+    QCOMPARE(limited->result.measurements.first().upperLimit, 5.2);
 }
 
 QTEST_MAIN(CoreTests)

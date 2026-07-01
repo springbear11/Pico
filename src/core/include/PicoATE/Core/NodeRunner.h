@@ -7,12 +7,16 @@
 
 namespace PicoATE::Core {
 
+class ExecutionResultStore;
+
 struct NodeExecutionContext {
     UutId uutId;
     FrameId frameId;
     AttemptId attemptId;
+    NodeId currentNodeId;
     int attemptIndex = 0;
     QVariantMap variables;
+    const ExecutionResultStore* resultStore = nullptr;
     IModuleRuntimeServices* runtimeServices = nullptr;
 };
 
@@ -60,6 +64,12 @@ public:
 
 private:
     ModuleRegistry& m_modules;
+};
+
+class LimitNodeHandler final : public INodeHandler {
+public:
+    bool canHandle(const ExecNode& node) const override;
+    NodeResult run(const ExecNode& node, const NodeExecutionContext& context) override;
 };
 
 } // namespace PicoATE::Core

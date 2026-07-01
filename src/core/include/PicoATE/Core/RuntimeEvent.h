@@ -40,6 +40,7 @@ struct RuntimeEvent {
     DeviceConnectionState deviceState = DeviceConnectionState::Disconnected;
     UutId uutId;
     NodeId nodeId;
+    NodeId nodeLocalId;
     NodeId parentNodeId;
     QString nodeDisplayName;
     ExecNodeKind nodeKind = ExecNodeKind::Action;

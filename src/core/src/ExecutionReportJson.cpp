@@ -86,6 +86,9 @@ QString nodeKindName(ExecNodeKind kind)
     case ExecNodeKind::Cleanup: return "Cleanup";
     case ExecNodeKind::Loop: return "Loop";
     case ExecNodeKind::TestItem: return "TestItem";
+    case ExecNodeKind::Limit: return "Limit";
+    case ExecNodeKind::Statement: return "Statement";
+    case ExecNodeKind::SequenceCall: return "SequenceCall";
     }
     return "Noop";
 }
@@ -99,6 +102,9 @@ std::optional<ExecNodeKind> nodeKindFromString(const QString& value)
     if (value == "Cleanup") return ExecNodeKind::Cleanup;
     if (value == "Loop") return ExecNodeKind::Loop;
     if (value == "TestItem") return ExecNodeKind::TestItem;
+    if (value == "Limit") return ExecNodeKind::Limit;
+    if (value == "Statement") return ExecNodeKind::Statement;
+    if (value == "SequenceCall") return ExecNodeKind::SequenceCall;
     return std::nullopt;
 }
 
@@ -278,6 +284,7 @@ QJsonObject stepToJson(const StepReport& step)
     for (const auto& child : step.children) children.push_back(stepToJson(child));
     return {
         {"stepId", step.stepId},
+        {"nodePath", step.nodePath},
         {"displayName", step.displayName},
         {"kind", nodeKindName(step.kind)},
         {"state", activationStateName(step.state)},
@@ -296,6 +303,7 @@ StepReport stepFromJson(const QJsonObject& object,
 {
     StepReport step;
     step.stepId = object.value("stepId").toString();
+    step.nodePath = object.value("nodePath").toString(step.stepId);
     step.displayName = object.value("displayName").toString();
     const auto kindText = object.value("kind").toString("Noop");
     const auto kind = nodeKindFromString(kindText);

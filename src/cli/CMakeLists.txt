@@ -32,6 +32,54 @@ endif()
 
 add_dependencies(PicoATECli PicoATEMockHost PicoATEFakeInstrumentHost PicoATENativeHost PicoATETestDllModule PicoATECanExampleModule)
 
+find_program(PICOATE_WINDEPLOYQT
+    NAMES windeployqt
+    HINTS "${Qt6_DIR}/../../../bin"
+    REQUIRED
+)
+
+set(PICOATE_CLI_PORTABLE_DIR "${CMAKE_BINARY_DIR}/portable/$<CONFIG>/PicoATE.Cli")
+
+set(PICOATE_MSVC_RUNTIME_COPY_COMMAND)
+if(MSVC AND CMAKE_GENERATOR_INSTANCE)
+    file(GLOB PICOATE_MSVC_RUNTIME_DIRS LIST_DIRECTORIES true
+        "${CMAKE_GENERATOR_INSTANCE}/VC/Redist/MSVC/*/x64/Microsoft.VC143.CRT"
+    )
+    list(SORT PICOATE_MSVC_RUNTIME_DIRS COMPARE NATURAL ORDER DESCENDING)
+    if(PICOATE_MSVC_RUNTIME_DIRS)
+        list(GET PICOATE_MSVC_RUNTIME_DIRS 0 PICOATE_MSVC_RUNTIME_DIR)
+        file(GLOB PICOATE_MSVC_RUNTIME_DLLS "${PICOATE_MSVC_RUNTIME_DIR}/*.dll")
+        if(PICOATE_MSVC_RUNTIME_DLLS)
+            list(APPEND PICOATE_MSVC_RUNTIME_COPY_COMMAND
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                        ${PICOATE_MSVC_RUNTIME_DLLS}
+                        "${PICOATE_CLI_PORTABLE_DIR}/"
+            )
+        endif()
+    endif()
+endif()
+
+add_custom_target(PicoATECliPortable
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${PICOATE_CLI_PORTABLE_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:PicoATECli>" "${PICOATE_CLI_PORTABLE_DIR}/"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:PicoATEMockHost>" "${PICOATE_CLI_PORTABLE_DIR}/"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:PicoATEFakeInstrumentHost>" "${PICOATE_CLI_PORTABLE_DIR}/"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:PicoATENativeHost>" "${PICOATE_CLI_PORTABLE_DIR}/"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:PicoATETestDllModule>" "${PICOATE_CLI_PORTABLE_DIR}/"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:PicoATECanExampleModule>" "${PICOATE_CLI_PORTABLE_DIR}/"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/examples" "${PICOATE_CLI_PORTABLE_DIR}/examples"
+    ${PICOATE_MSVC_RUNTIME_COPY_COMMAND}
+    COMMAND "${PICOATE_WINDEPLOYQT}"
+            "--$<IF:$<CONFIG:Debug>,debug,release>"
+            --no-translations
+            --no-opengl-sw
+            --dir "${PICOATE_CLI_PORTABLE_DIR}"
+            "$<TARGET_FILE:PicoATECli>"
+    DEPENDS PicoATECli PicoATEMockHost PicoATEFakeInstrumentHost PicoATENativeHost PicoATETestDllModule PicoATECanExampleModule
+    COMMENT "Creating a self-contained PicoATE CLI folder"
+    VERBATIM
+)
+
 add_test(
     NAME PicoATECliSimpleExample
     COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/simple_sequence.json" --uuts 1
@@ -55,6 +103,11 @@ add_test(
 add_test(
     NAME PicoATECliTestItemExample
     COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/test_item_sequence.json" --uuts 1
+)
+
+add_test(
+    NAME PicoATECliScopedResultExample
+    COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/scoped_result_sequence.json" --uuts 2
 )
 
 add_test(

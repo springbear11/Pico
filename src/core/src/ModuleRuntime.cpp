@@ -248,7 +248,9 @@ ModuleResult MockActionModule::execute(const ModuleFunction&,
 
     result.errorCode = stringFromMaps(context.inputs, context.parameters, "errorCode");
     result.errorMessage = stringFromMaps(context.inputs, context.parameters, "errorMessage");
-    result.outputs = mapFromMaps(context.inputs, context.parameters, "outputs");
+    result.outputs = context.parameters.value("echoInputs").toBool()
+        ? context.inputs
+        : mapFromMaps(context.inputs, context.parameters, "outputs");
     result.measurements = measurementsFromVariant(
         mapFromMaps(context.inputs, context.parameters, "measurements"),
         toMeasurementStatus(result.outcome));

@@ -25,6 +25,7 @@ struct AttemptReport {
 
 struct StepReport {
     NodeId stepId;
+    NodeId nodePath;
     QString displayName;
     ExecNodeKind kind = ExecNodeKind::Noop;
     ActivationState state = ActivationState::Created;

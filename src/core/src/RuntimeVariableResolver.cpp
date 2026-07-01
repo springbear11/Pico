@@ -44,7 +44,39 @@ RuntimeVariableResolver::RuntimeVariableResolver(RuntimeVariableContext context)
 
 bool RuntimeVariableResolver::variableValue(const QString& name, QVariant& value) const
 {
+    QString errorMessage;
+    QString suggestion;
+    return resolvedValue(name, value, errorMessage, suggestion);
+}
+
+bool RuntimeVariableResolver::resolvedValue(const QString& name,
+                                            QVariant& value,
+                                            QString& errorMessage,
+                                            QString& suggestion) const
+{
     const auto normalized = name.trimmed();
+    if (normalized.startsWith("step:")) {
+        if (!m_context.resultStore) {
+            errorMessage = "Runtime step result store is unavailable";
+            suggestion = "Run the node through ExecutionSession";
+            return false;
+        }
+        const auto reference = parseStepResultReference(normalized);
+        if (!reference) {
+            errorMessage = QString("Invalid step result expression: %1").arg(normalized);
+            suggestion = "Use step:<node-path>.outputs.<field>, measurements, or outcome";
+            return false;
+        }
+        const auto lookup = m_context.resultStore->lookup(
+            m_context.uutId, m_context.frameId, m_context.currentNodeId, *reference);
+        if (!lookup.found) {
+            errorMessage = QString("%1: %2").arg(lookup.errorCode, lookup.message);
+            suggestion = "Check the source step path, execution order, outcome, and output field";
+            return false;
+        }
+        value = lookup.value;
+        return true;
+    }
     if (normalized == "uut.id") {
         value = m_context.uutId;
         return true;
@@ -131,8 +163,10 @@ QVariant RuntimeVariableResolver::resolveString(const QString& input,
     QString wholeName;
     if (isWholeVariableExpression(input, wholeName)) {
         QVariant value;
-        if (!variableValue(wholeName, value)) {
-            addError(errors, path, wholeName);
+        QString errorMessage;
+        QString suggestion;
+        if (!resolvedValue(wholeName, value, errorMessage, suggestion)) {
+            addError(errors, path, wholeName, errorMessage, suggestion);
             return input;
         }
         return value;
@@ -148,10 +182,12 @@ QVariant RuntimeVariableResolver::resolveString(const QString& input,
 
         const auto variableName = match.captured(1).trimmed();
         QVariant value;
-        if (variableValue(variableName, value)) {
+        QString errorMessage;
+        QString suggestion;
+        if (resolvedValue(variableName, value, errorMessage, suggestion)) {
             output += stringify(value);
         } else {
-            addError(errors, path, variableName);
+            addError(errors, path, variableName, errorMessage, suggestion);
             output += match.captured(0);
         }
 
@@ -212,12 +248,18 @@ QString RuntimeVariableResolver::stringify(const QVariant& value) const
 
 void RuntimeVariableResolver::addError(QVector<VariableResolutionError>& errors,
                                        const QString& path,
-                                       const QString& variableName) const
+                                       const QString& variableName,
+                                       const QString& message,
+                                       const QString& suggestion) const
 {
     errors.push_back({path,
                       variableName,
-                      QString("Unresolved runtime variable: %1").arg(variableName),
-                      "Provide it through UUT variables or use supported runtime variables such as uut.id, attempt.index, or var.<name>"});
+                      message.isEmpty()
+                          ? QString("Unresolved runtime variable: %1").arg(variableName)
+                          : message,
+                      suggestion.isEmpty()
+                          ? QString("Provide it through UUT variables or use supported runtime variables such as uut.id, attempt.index, var.<name>, or step:<path>.outputs.<field>")
+                          : suggestion});
 }
 
 } // namespace PicoATE::Core

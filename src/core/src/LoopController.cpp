@@ -33,17 +33,25 @@ LoopControllerResult LoopController::advance(const LoopRegion& region, UutExecut
         state.values = iterationValues(region.forLoop);
         state.started = true;
         state.currentIndex = -1;
-    } else if (!bodyComplete(region, uut)) {
-        return {};
+    } else {
+        if (!bodyComplete(region, uut)) {
+            return {};
+        }
+        if (state.currentIndex >= 0) {
+            aggregateBodyResult(region, uut, state);
+        }
     }
 
     ++state.currentIndex;
     if (state.currentIndex >= state.values.size()) {
         state.completed = true;
+        const auto message = state.failedChildren.isEmpty()
+            ? (state.values.isEmpty() ? QString("loop skipped") : QString("loop complete"))
+            : QString("loop child result: %1").arg(state.failedChildren.join(", "));
         return {true,
-                NodeOutcome::Passed,
+                state.aggregateOutcome,
                 state.values.isEmpty(),
-                state.values.isEmpty() ? QString("loop skipped") : QString("loop complete")};
+                message};
     }
 
     uut.variables.insert(region.forLoop.variableName, state.values[state.currentIndex]);
@@ -61,6 +69,34 @@ LoopControllerResult LoopController::advance(const LoopRegion& region, UutExecut
             .arg(region.forLoop.variableName)
             .arg(state.values[state.currentIndex]),
     };
+}
+
+void LoopController::aggregateBodyResult(const LoopRegion& region,
+                                         const UutExecution& uut,
+                                         LoopRuntimeState& state) const
+{
+    for (const auto& childNodeId : region.childNodeIds) {
+        const auto outcome = uut.outcomeOf(childNodeId);
+        if (outcome == NodeOutcome::Passed) {
+            continue;
+        }
+        state.failedChildren.push_back(
+            QString("iteration %1 %2=%3")
+                .arg(state.currentIndex + 1)
+                .arg(childNodeId, nodeOutcomeName(outcome)));
+        if (outcome == NodeOutcome::Error) {
+            state.aggregateOutcome = NodeOutcome::Error;
+        } else if (outcome == NodeOutcome::Timeout &&
+                   state.aggregateOutcome != NodeOutcome::Error) {
+            state.aggregateOutcome = NodeOutcome::Timeout;
+        } else if (outcome == NodeOutcome::Cancelled &&
+                   state.aggregateOutcome != NodeOutcome::Error &&
+                   state.aggregateOutcome != NodeOutcome::Timeout) {
+            state.aggregateOutcome = NodeOutcome::Cancelled;
+        } else if (state.aggregateOutcome == NodeOutcome::Passed) {
+            state.aggregateOutcome = NodeOutcome::Failed;
+        }
+    }
 }
 
 QString LoopController::stateKey(const UutId& uutId, const LoopId& loopId) const

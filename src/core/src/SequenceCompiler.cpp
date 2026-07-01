@@ -253,6 +253,7 @@ void collectStepWarnings(const QJsonObject& object,
 {
     auto knownFields = QSet<QString>{
         "id",
+        "key",
         "name",
         "kind",
         "type",
@@ -398,6 +399,9 @@ StepKind parseStepKindString(const QString& text, bool& ok)
     }
     if (value == "testitem" || value == "composite") {
         return StepKind::TestItem;
+    }
+    if (value == "limit" || value == "numericlimit") {
+        return StepKind::Limit;
     }
     if (value == "statement") {
         return StepKind::Statement;
@@ -673,6 +677,7 @@ StepDef SequenceCompiler::parseStep(const QJsonObject& object,
 {
     StepDef step;
     step.id = readString(object, "id", path, errors);
+    step.key = readString(object, "key", path, errors);
     step.name = readString(object, "name", path, errors, step.id);
     step.enabled = readBool(object, "enabled", path, errors, true);
     step.alwaysRun = readBool(object, "alwaysRun", path, errors, false);
@@ -684,7 +689,7 @@ StepDef SequenceCompiler::parseStep(const QJsonObject& object,
     const auto kindKey = object.contains("kind") ? QString("kind") : QString("type");
     step.kind = parseStepKindString(readString(object, kindKey, path, errors, "noop"), kindOk);
     if (!kindOk) {
-        addError(errors, childPath(path, kindKey), "Unsupported step kind", "Use noop, wait, action, barrier, cleanup, loop, or testItem");
+        addError(errors, childPath(path, kindKey), "Unsupported step kind", "Use noop, wait, action, barrier, cleanup, loop, testItem, limit, statement, or sequenceCall");
     }
 
     if (object.contains("parameters")) {

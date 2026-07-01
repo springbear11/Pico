@@ -2,6 +2,7 @@
 
 #include "PicoATE/Core/BarrierController.h"
 #include "PicoATE/Core/ErrorPolicyEngine.h"
+#include "PicoATE/Core/ExecutionResultStore.h"
 #include "PicoATE/Core/LoopController.h"
 #include "PicoATE/Core/NodeRunner.h"
 #include "PicoATE/Core/ResourceManager.h"
@@ -30,6 +31,7 @@ public:
                             LoopController& loops,
                             ErrorPolicyEngine& errorPolicy,
                             NodeRunner& runner,
+                            ExecutionResultStore& results,
                             RuntimeEventEmitter* events = nullptr);
 
     SchedulerResult run(UutExecution& uut, const FrameId& frameId = "root");
@@ -78,6 +80,7 @@ private:
     LoopController& m_loops;
     ErrorPolicyEngine& m_errorPolicy;
     NodeRunner& m_runner;
+    ExecutionResultStore& m_results;
     RuntimeEventEmitter* m_events = nullptr;
     QSet<UutId> m_cohortUuts;
     QHash<BarrierInstanceId, BarrierReleaseDecision> m_releasedBarriers;

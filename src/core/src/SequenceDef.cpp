@@ -171,19 +171,45 @@ std::optional<StepDef> SequenceDef::stepById(const QString& stepId) const
 
 QVector<QString> SequenceDef::duplicateStepIds() const
 {
-    QHash<QString, int> counts;
-    for (const auto* step : allSteps()) {
-        if (!step->id.isEmpty()) {
-            counts[step->id] += 1;
-        }
-    }
-
     QVector<QString> duplicates;
-    for (auto it = counts.constBegin(); it != counts.constEnd(); ++it) {
-        if (it.value() > 1) {
-            duplicates.push_back(it.key());
+    const auto collectSiblings = [&](const QVector<const StepDef*>& siblings,
+                                     const QString& scope,
+                                     const auto& collectRef) -> void {
+        QHash<QString, int> counts;
+        for (const auto* step : siblings) {
+            if (step && !step->id.isEmpty()) {
+                counts[step->id] += 1;
+            }
+        }
+        for (auto it = counts.constBegin(); it != counts.constEnd(); ++it) {
+            if (it.value() > 1) {
+                duplicates.push_back(scope.isEmpty()
+                                         ? it.key()
+                                         : QString("%1.%2").arg(scope, it.key()));
+            }
+        }
+        for (const auto* step : siblings) {
+            if (!step || step->steps.isEmpty()) {
+                continue;
+            }
+            QVector<const StepDef*> children;
+            children.reserve(step->steps.size());
+            for (const auto& child : step->steps) {
+                children.push_back(&child);
+            }
+            const auto segment = step->key.isEmpty() ? step->id : step->key;
+            const auto childScope = scope.isEmpty() ? segment : QString("%1.%2").arg(scope, segment);
+            collectRef(children, childScope, collectRef);
+        }
+    };
+
+    QVector<const StepDef*> rootSteps;
+    for (const auto& group : groups) {
+        for (const auto& step : group.steps) {
+            rootSteps.push_back(&step);
         }
     }
+    collectSiblings(rootSteps, {}, collectSiblings);
     return duplicates;
 }
 
@@ -209,9 +235,12 @@ ExecNodeKind toExecNodeKind(StepKind kind)
         return ExecNodeKind::Loop;
     case StepKind::TestItem:
         return ExecNodeKind::TestItem;
+    case StepKind::Limit:
+        return ExecNodeKind::Limit;
     case StepKind::Statement:
+        return ExecNodeKind::Statement;
     case StepKind::SequenceCall:
-        return ExecNodeKind::Action;
+        return ExecNodeKind::SequenceCall;
     }
     return ExecNodeKind::Noop;
 }
@@ -250,6 +279,8 @@ QString stepKindName(StepKind kind)
         return "Loop";
     case StepKind::TestItem:
         return "TestItem";
+    case StepKind::Limit:
+        return "Limit";
     case StepKind::Statement:
         return "Statement";
     case StepKind::SequenceCall:

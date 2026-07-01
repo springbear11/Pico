@@ -30,36 +30,39 @@ bool sessionStateIsTerminal(ExecutionState state)
            state == ExecutionState::Aborted;
 }
 
-QVector<NodeId> orderedNodeIds(const ExecutionPlan& plan)
+QVector<NodeId> topologicallyOrderedSubset(const ExecutionPlan& plan,
+                                           const QVector<NodeId>& candidates)
 {
-    QVector<NodeId> ids;
-    ids.reserve(plan.nodes.size());
-    for (auto it = plan.nodes.constBegin(); it != plan.nodes.constEnd(); ++it) {
-        ids.push_back(it.key());
+    QSet<NodeId> candidateSet;
+    QHash<NodeId, int> sourceOrder;
+    for (int index = 0; index < candidates.size(); ++index) {
+        candidateSet.insert(candidates[index]);
+        sourceOrder.insert(candidates[index], index);
     }
-    std::sort(ids.begin(), ids.end());
 
     QHash<NodeId, int> indegree;
-    for (const auto& id : ids) {
+    for (const auto& id : candidates) {
         indegree.insert(id, 0);
     }
     for (const auto& edge : plan.edges) {
-        if (indegree.contains(edge.to)) {
+        if (candidateSet.contains(edge.from) && candidateSet.contains(edge.to)) {
             indegree[edge.to] += 1;
         }
     }
 
     QVector<NodeId> ready;
-    for (const auto& id : ids) {
+    for (const auto& id : candidates) {
         if (indegree.value(id) == 0) {
             ready.push_back(id);
         }
     }
 
     QVector<NodeId> ordered;
-    ordered.reserve(ids.size());
+    ordered.reserve(candidates.size());
     while (!ready.isEmpty()) {
-        std::sort(ready.begin(), ready.end());
+        std::sort(ready.begin(), ready.end(), [&sourceOrder](const NodeId& left, const NodeId& right) {
+            return sourceOrder.value(left) < sourceOrder.value(right);
+        });
         const auto current = ready.takeFirst();
         ordered.push_back(current);
 
@@ -72,7 +75,7 @@ QVector<NodeId> orderedNodeIds(const ExecutionPlan& plan)
         });
 
         for (const auto& edge : outgoing) {
-            if (!indegree.contains(edge.to)) {
+            if (!candidateSet.contains(edge.to)) {
                 continue;
             }
             indegree[edge.to] -= 1;
@@ -82,59 +85,78 @@ QVector<NodeId> orderedNodeIds(const ExecutionPlan& plan)
         }
     }
 
-    for (const auto& id : ids) {
+    for (const auto& id : candidates) {
         if (!ordered.contains(id)) {
             ordered.push_back(id);
         }
     }
+    return ordered;
+}
 
-    QSet<NodeId> loopBodyNodes;
-    for (const auto& region : plan.loopRegions) {
-        for (const auto& bodyNodeId : region.bodyNodes) {
-            loopBodyNodes.insert(bodyNodeId);
+QVector<NodeId> directStructuralChildren(const ExecutionPlan& plan, const NodeId& nodeId)
+{
+    if (const auto testItem = plan.testItemRegionForController(nodeId)) {
+        return topologicallyOrderedSubset(plan, testItem->childNodeIds);
+    }
+    if (const auto loop = plan.loopRegionForController(nodeId)) {
+        return topologicallyOrderedSubset(plan, loop->childNodeIds);
+    }
+    return {};
+}
+
+void appendStructuralOrder(const ExecutionPlan& plan,
+                           const NodeId& nodeId,
+                           QVector<NodeId>& ordered,
+                           QSet<NodeId>& placed)
+{
+    if (placed.contains(nodeId)) {
+        return;
+    }
+    placed.insert(nodeId);
+    ordered.push_back(nodeId);
+    for (const auto& childNodeId : directStructuralChildren(plan, nodeId)) {
+        appendStructuralOrder(plan, childNodeId, ordered, placed);
+    }
+}
+
+QVector<NodeId> orderedNodeIds(const ExecutionPlan& plan)
+{
+    QVector<NodeId> allNodeIds;
+    allNodeIds.reserve(plan.nodes.size());
+    for (auto it = plan.nodes.constBegin(); it != plan.nodes.constEnd(); ++it) {
+        allNodeIds.push_back(it.key());
+    }
+    std::sort(allNodeIds.begin(), allNodeIds.end());
+
+    QVector<NodeId> topLevelNodeIds;
+    for (const auto& nodeId : allNodeIds) {
+        if (!plan.structuralParentOf(nodeId)) {
+            topLevelNodeIds.push_back(nodeId);
         }
     }
 
-    QVector<NodeId> loopAware;
-    QSet<NodeId> placedLoopBodyNodes;
-    loopAware.reserve(ordered.size());
-    for (const auto& id : ordered) {
-        if (placedLoopBodyNodes.contains(id)) {
-            continue;
-        }
-        if (loopBodyNodes.contains(id)) {
-            continue;
-        }
-
-        loopAware.push_back(id);
-        const auto region = plan.loopRegionForController(id);
-        if (!region) {
-            continue;
-        }
-
-        for (const auto& bodyNodeId : region->bodyNodes) {
-            if (!loopAware.contains(bodyNodeId)) {
-                loopAware.push_back(bodyNodeId);
-            }
-            placedLoopBodyNodes.insert(bodyNodeId);
-        }
+    QVector<NodeId> ordered;
+    QSet<NodeId> placed;
+    ordered.reserve(allNodeIds.size());
+    for (const auto& nodeId : topologicallyOrderedSubset(plan, topLevelNodeIds)) {
+        appendStructuralOrder(plan, nodeId, ordered, placed);
     }
 
-    for (const auto& id : ordered) {
-        if (loopBodyNodes.contains(id) && !placedLoopBodyNodes.contains(id)) {
-            loopAware.push_back(id);
-        }
+    for (const auto& nodeId : allNodeIds) {
+        appendStructuralOrder(plan, nodeId, ordered, placed);
     }
-    return loopAware;
+    return ordered;
 }
 
 StepReport makeStepReport(const ExecutionPlan& plan, const UutExecution& uut, const NodeId& nodeId)
 {
     StepReport report;
     report.stepId = nodeId;
+    report.nodePath = nodeId;
 
     const auto* node = plan.node(nodeId);
     if (node) {
+        report.stepId = node->localId.isEmpty() ? nodeId : node->localId;
         report.displayName = node->displayName;
         report.kind = node->kind;
     }
@@ -178,6 +200,24 @@ StepReport makeStepReport(const ExecutionPlan& plan, const UutExecution& uut, co
     return report;
 }
 
+QVector<NodeId> structuralChildren(const ExecutionPlan& plan, const NodeId& nodeId)
+{
+    return directStructuralChildren(plan, nodeId);
+}
+
+StepReport makeStepReportTree(const ExecutionPlan& plan,
+                              const UutExecution& uut,
+                              const NodeId& nodeId)
+{
+    auto report = makeStepReport(plan, uut, nodeId);
+    const auto children = structuralChildren(plan, nodeId);
+    report.children.reserve(children.size());
+    for (const auto& childNodeId : children) {
+        report.children.push_back(makeStepReportTree(plan, uut, childNodeId));
+    }
+    return report;
+}
+
 bool stepReportHasError(const StepReport& step)
 {
     if (step.wasError) {
@@ -197,6 +237,7 @@ ExecutionSession::ExecutionSession(ExecutionPlan plan,
                                    std::shared_ptr<StopToken> stopToken,
                                    IRuntimeEventSink* eventSink)
     : m_plan(std::move(plan))
+    , m_results(m_plan)
     , m_events(m_plan.id, eventSink)
     , m_stopToken(stopToken ? std::move(stopToken) : std::make_shared<StopToken>())
     , m_runtimeServices(m_devices)
@@ -204,7 +245,7 @@ ExecutionSession::ExecutionSession(ExecutionPlan plan,
     m_devices.setRuntimeEventEmitter(&m_events);
     m_runner.setRuntimeServices(&m_runtimeServices);
     m_scheduler = std::make_unique<ExecutionGraphScheduler>(
-        m_plan, m_resources, m_barriers, m_loops, m_errorPolicy, m_runner, &m_events);
+        m_plan, m_resources, m_barriers, m_loops, m_errorPolicy, m_runner, m_results, &m_events);
 }
 
 UutExecution& ExecutionSession::addUut(const UutId& uutId)
@@ -227,6 +268,16 @@ QVector<UutExecution>& ExecutionSession::uuts()
 const QVector<UutExecution>& ExecutionSession::uuts() const
 {
     return m_uuts;
+}
+
+ExecutionResultStore& ExecutionSession::results()
+{
+    return m_results;
+}
+
+const ExecutionResultStore& ExecutionSession::results() const
+{
+    return m_results;
 }
 
 DeviceSessionManager& ExecutionSession::devices()
@@ -335,12 +386,6 @@ ExecutionReport ExecutionSession::report() const
     report.completed = sessionStateIsTerminal(m_state) || allUutsComplete();
 
     const auto nodeIds = orderedNodeIds(m_plan);
-    QSet<NodeId> testItemChildNodeIds;
-    for (const auto& region : m_plan.testItemRegions) {
-        for (const auto& childNodeId : region.childNodeIds) {
-            testItemChildNodeIds.insert(childNodeId);
-        }
-    }
     report.uuts.reserve(m_uuts.size());
     for (const auto& uut : m_uuts) {
         UutReport uutReport;
@@ -348,17 +393,10 @@ ExecutionReport ExecutionSession::report() const
         uutReport.steps.reserve(nodeIds.size());
 
         for (const auto& nodeId : nodeIds) {
-            if (testItemChildNodeIds.contains(nodeId)) {
+            if (m_plan.structuralParentOf(nodeId)) {
                 continue;
             }
-            auto stepReport = makeStepReport(m_plan, uut, nodeId);
-            const auto testItem = m_plan.testItemRegionForController(nodeId);
-            if (testItem) {
-                stepReport.children.reserve(testItem->childNodeIds.size());
-                for (const auto& childNodeId : testItem->childNodeIds) {
-                    stepReport.children.push_back(makeStepReport(m_plan, uut, childNodeId));
-                }
-            }
+            auto stepReport = makeStepReportTree(m_plan, uut, nodeId);
             uutReport.hasError = uutReport.hasError || stepReportHasError(stepReport);
             uutReport.steps.push_back(stepReport);
         }

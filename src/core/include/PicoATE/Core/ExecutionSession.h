@@ -26,6 +26,8 @@ public:
     UutExecution& addUut(const UutId& uutId);
     QVector<UutExecution>& uuts();
     const QVector<UutExecution>& uuts() const;
+    ExecutionResultStore& results();
+    const ExecutionResultStore& results() const;
     DeviceSessionManager& devices();
     const DeviceSessionManager& devices() const;
     bool registerModule(std::shared_ptr<IModule> module);
@@ -47,6 +49,7 @@ private:
     void publishCompletedUuts();
 
     ExecutionPlan m_plan;
+    ExecutionResultStore m_results;
     RuntimeEventEmitter m_events;
     QVector<UutExecution> m_uuts;
     ExecutionState m_state = ExecutionState::Idle;

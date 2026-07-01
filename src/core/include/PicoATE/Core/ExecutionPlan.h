@@ -33,7 +33,10 @@ enum class ExecNodeKind {
     Barrier,
     Cleanup,
     Loop,
-    TestItem
+    TestItem,
+    Limit,
+    Statement,
+    SequenceCall
 };
 
 enum class EdgeKind {
@@ -121,6 +124,8 @@ struct NodeErrorPolicy {
 
 struct ExecNode {
     NodeId id;
+    QString localId;
+    QString key;
     QString displayName;
     ExecNodeKind kind = ExecNodeKind::Noop;
     QVariantMap payload;
@@ -164,6 +169,7 @@ struct LoopRegion {
     LoopId id;
     NodeId controllerNodeId;
     QVector<NodeId> bodyNodes;
+    QVector<NodeId> childNodeIds;
     QVector<NodeId> entryNodes;
     QVector<NodeId> exitNodes;
     ForLoopSpec forLoop;
@@ -197,6 +203,8 @@ struct ExecutionPlan {
     std::optional<LoopRegion> loopRegionForBodyNode(const NodeId& nodeId) const;
     std::optional<TestItemRegion> testItemRegionForController(const NodeId& nodeId) const;
     std::optional<TestItemRegion> testItemRegionForChild(const NodeId& nodeId) const;
+    std::optional<NodeId> structuralParentOf(const NodeId& nodeId) const;
+    bool isInsideTestItem(const NodeId& nodeId) const;
 };
 
 bool isTerminalOutcome(NodeOutcome outcome);

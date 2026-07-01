@@ -8,6 +8,7 @@ add_library(PicoATECore STATIC
     src/ExecutionSession.cpp
     src/ExecutionPlan.cpp
     src/ExecutionReportJson.cpp
+    src/ExecutionResultStore.cpp
     src/InstrumentAdapterModules.cpp
     src/LoopController.cpp
     src/MeasurementTypes.cpp

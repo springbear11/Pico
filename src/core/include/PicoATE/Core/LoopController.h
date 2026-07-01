@@ -23,11 +23,16 @@ private:
         bool completed = false;
         int currentIndex = -1;
         QVector<int> values;
+        NodeOutcome aggregateOutcome = NodeOutcome::Passed;
+        QStringList failedChildren;
     };
 
     QString stateKey(const UutId& uutId, const LoopId& loopId) const;
     QVector<int> iterationValues(const ForLoopSpec& spec) const;
     bool bodyComplete(const LoopRegion& region, const UutExecution& uut) const;
+    void aggregateBodyResult(const LoopRegion& region,
+                             const UutExecution& uut,
+                             LoopRuntimeState& state) const;
     void resetBody(const LoopRegion& region, UutExecution& uut) const;
 
     QHash<QString, LoopRuntimeState> m_states;

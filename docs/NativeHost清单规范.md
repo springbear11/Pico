@@ -46,7 +46,7 @@ PicoATE.NativeHost.exe --dll D:\path\to\VendorDriver.dll
 ## Variable Resolution
 
 Manifest string fields use `VariableResolver`, documented in
-`docs/variable_resolver.md`.
+`docs/变量与结果引用.md`.
 
 Available sources:
 
@@ -108,3 +108,4 @@ The CAN example intentionally validates the integration boundary without
 hardware. Real CAN hardware, vendor SDKs, DBC parsing, or station-specific
 message acquisition should live inside the project DLL or another external
 module behind the same JSON contract.
+

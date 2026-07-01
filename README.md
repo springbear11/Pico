@@ -1,49 +1,31 @@
 # PicoATE
 
-PicoATE is the first implementation slice of the ATE runtime described in
-`architecture_v3_1.md`.
+PicoATE 是面向 ATE 产线测试的 C++20/Qt6 执行框架，目标是让 UI、任务调度和业务测试逻辑保持三层解耦。交付新项目时，测试流程主要通过 JSON 配置，设备通信和协议解析通过业务模块扩展，不修改 UI 与调度内核。
 
-The long-term project goal and architecture guardrails are documented in
-`docs/project_vision.md`.
+## 当前能力
 
-The Qt UI architecture and phased development plan are documented in
-`docs/ui_project_structure.md` and `docs/ui_development_plan.md`.
+- JSON Sequence 编译为不可变 `ExecutionPlan`
+- Setup/Main/Custom/Cleanup、Retry、Stop、Barrier、For Loop、嵌套 TestItem
+- 多 UUT、资源仲裁、设备 Session、NativeHost DLL 隔离
+- 局部 Step ID/Key 与作用域节点路径，例如 `001.rx`
+- 每个 UUT 独立的 `ExecutionResultStore`
+- `${step:001.rx.outputs.frame}` 跨测试项结果引用
+- `${step:rx.outputs.frame}` 当前 TestItem 相对引用
+- RuntimeEvent 实时事件、ExecutionReport、JSON/CSV 报告
+- Qt Widgets Runner 与实时增量模型
+- CLI 逐 Step 实时输出及便携 Release 目录
 
-This repository currently contains the scheduler core and the first external
-module integration slice:
+PicoATE 内置 C/C++ DLL 和 Python 脚本加载能力。其他语言由项目团队自行打包为 `.exe`，框架不提供对应 SDK 或模板。
 
-- immutable `ExecutionPlan`
-- runtime `ExecutionFrame`, `NodeActivation`, and `NodeAttempt`
-- resource arbitration with serializable waiters
-- barrier/cohort controller
-- retry, cleanup, stop, and error decision handling
-- fixed for-loop scheduler support
-- JSON sequence compiler and CLI runner
-- external module contract over stdio JSON
-- Python script example through `QProcessTransport`
-- NativeHost DLL isolation with manifest configuration
-- software-only CAN DLL example through NativeHost
-- station device configuration through `StationRuntime` and CLI `--station`
-- persistent external process transport with a fake instrument host
-- runtime device services for modules that use logical device ids such as `DMM1` and `CAN1`
-- built-in DMM/CAN adapter spike modules backed by the fake instrument host
-- independently generated Engine, UI, and combined VS2022 solutions
-- asynchronous `ExecutionViewModel` and thread-safe `StopToken`
-- Qt Widgets Runner with sequence/station selection, compile, run, stop, diagnostics, and basic results
-- dedicated Diagnostic, UUT/Step, Attempt, Loop, and Measurement item models
-- configurable UUT count for multi-UUT runs
-- QtTest-based unit tests
+## VS2022 与 Qt6
 
-The current UI milestone includes the UI-1 asynchronous execution boundary and
-the UI-2 report models. It does not yet include live scheduler events, real
-instrument drivers, session recovery, or production report rendering.
+Qt 默认路径：
 
-## Build With VS2022 And Qt6
+```text
+D:/QT/6.9.1/msvc2022_64
+```
 
-Open this folder in Visual Studio 2022 as a CMake project and choose the
-`vs2022-qt6` preset.
-
-Command line:
+仅引擎：
 
 ```powershell
 cmake --preset vs2022-qt6
@@ -51,99 +33,44 @@ cmake --build --preset vs2022-qt6-debug
 ctest --preset vs2022-qt6-debug
 ```
 
-The preset expects Qt at:
-
-```text
-D:/QT/6.9.1/msvc2022_64
-```
-
-### Visual Studio Solutions
-
-The Engine solution remains independent and does not contain Qt Widgets UI:
-
-```text
-out/build/vs2022-qt6/PicoATE.sln
-```
-
-Generate and build the independent UI solution from `ui/`:
-
-```powershell
-cd ui
-cmake --preset vs2022-qt6
-cmake --build --preset vs2022-qt6-debug
-```
-
-```text
-ui/out/build/vs2022-qt6/PicoATE.UI.sln
-```
-
-Generate and build Engine + UI together from the repository root:
+引擎与 UI：
 
 ```powershell
 cmake --preset vs2022-qt6-all
 cmake --build --preset vs2022-qt6-all-debug
+ctest --preset vs2022-qt6-all-debug
 ```
+
+对应解决方案：
 
 ```text
+out/build/vs2022-qt6/PicoATE.sln
 out/build/vs2022-qt6-all/PicoATE.All.sln
+ui/out/build/vs2022-qt6/PicoATE.UI.sln
 ```
 
-The dependency direction is always `PicoATEUi -> PicoATECore`. The Core target
-does not link `Qt6::Widgets` and has no dependency on the UI source tree.
+## CLI
 
-## Run A Sequence From The CLI
-
-After building, run the CLI demo from the build output directory:
+开发目录运行：
 
 ```powershell
-.\out\build\vs2022-qt6\src\cli\Debug\PicoATE.Cli.exe run examples\simple_sequence.json
-.\out\build\vs2022-qt6\src\cli\Debug\PicoATE.Cli.exe run examples\basic_sequence.json --uuts 2
-.\out\build\vs2022-qt6\src\cli\Debug\PicoATE.Cli.exe run examples\custom_disabled_sequence.json
-.\out\build\vs2022-qt6\src\cli\Debug\PicoATE.Cli.exe run examples\for_loop_sequence.json
-.\out\build\vs2022-qt6\src\cli\Debug\PicoATE.Cli.exe run examples\external_echo_sequence.json
-.\out\build\vs2022-qt6\src\cli\Debug\PicoATE.Cli.exe run examples\python_echo_sequence.json
-.\out\build\vs2022-qt6\src\cli\Debug\PicoATE.Cli.exe run examples\nativehost_dll_sequence.json
-.\out\build\vs2022-qt6\src\cli\Debug\PicoATE.Cli.exe run examples\can_dll_sequence.json
-.\out\build\vs2022-qt6\src\cli\Debug\PicoATE.Cli.exe run examples\persistent_instrument_sequence.json
-$env:DMM1_ADDRESS="USB0::0x0957::0x0607::MY59001234::INSTR"
-.\out\build\vs2022-qt6\src\cli\Debug\PicoATE.Cli.exe run examples\simple_sequence.json --station examples\stations\basic_station.json
-.\out\build\vs2022-qt6\src\cli\Debug\PicoATE.Cli.exe run examples\dmm_can_adapter_sequence.json --station examples\stations\basic_station.json
+./out/build/vs2022-qt6-all/src/cli/Debug/PicoATE.Cli.exe run examples/scoped_result_sequence.json --uuts 2
 ```
 
-If no sequence path is provided, the CLI defaults to `examples/simple_sequence.json`.
+生成可复制到其他电脑的 Release 目录：
 
-`examples/python_echo_sequence.json` requires a Python interpreter. The CMake
-build injects `PYTHON_EXE` automatically when `find_package(Python3)` succeeds;
-outside the build tree, set a `PYTHON_EXE` environment variable.
+```powershell
+cmake --build --preset vs2022-qt6-cli-portable-release
+```
 
-The supported JSON fields and enum values are documented in
-`docs/sequence_json_schema.md`.
+输出位置：
 
-Action module execution is documented in `docs/module_runtime.md`.
+```text
+out/build/vs2022-qt6-all/portable/Release/PicoATE.Cli/
+```
 
-External process module contracts are documented in `docs/module_contract.md`.
+该目录包含 CLI、Qt6Core、VC143 x64 Runtime、NativeHost、Fake/Mock Host、测试 DLL 和 examples，可整体复制使用。
 
-Runtime placeholder replacement is documented in `docs/variable_resolver.md`.
+## 文档
 
-NativeHost DLL manifests are documented in `docs/nativehost_manifest.md`.
-
-Station device configuration is documented in `docs/station_config.md`.
-
-`examples/can_dll_sequence.json` is a pure software CAN decode example. It does
-not require a CAN analyzer; it validates the project module boundary before
-real hardware or vendor drivers are available.
-
-`examples/dmm_can_adapter_sequence.json` is also hardware-free. It uses
-`examples/stations/basic_station.json`, built-in `example.dmm` / `example.can`
-adapter spike modules, and `PicoATE.FakeInstrumentHost.exe` to validate the
-logical-device path before real DMM/CAN drivers are available.
-
-## Real CAN USB DLL Template
-
-`templates/can_hardware_dll/` contains a standalone VS2022/Qt6 C++ DLL template
-for a real vendor CAN SDK. It provides the PicoATE ABI, JSON routing for
-open/status/write/read/requestResponse/close, persistent NativeHost session,
-software loopback mode, manifest, sequence, and a Chinese integration guide.
-
-Build and validate the software loopback first, then replace only the TODO
-methods in `VendorCanAdapter.cpp` with the analyzer vendor API.
+从 [文档索引](docs/文档索引.md) 开始阅读。当前进度和每日改动统一记录在 [开发日志](docs/开发日志.md) 与 [开发进度与计划](docs/开发进度与计划.md)。

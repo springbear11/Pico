@@ -97,6 +97,35 @@ std::optional<TestItemRegion> ExecutionPlan::testItemRegionForChild(const NodeId
     return std::nullopt;
 }
 
+std::optional<NodeId> ExecutionPlan::structuralParentOf(const NodeId& nodeId) const
+{
+    for (const auto& region : testItemRegions) {
+        if (region.childNodeIds.contains(nodeId)) {
+            return region.controllerNodeId;
+        }
+    }
+    for (const auto& region : loopRegions) {
+        if (region.childNodeIds.contains(nodeId)) {
+            return region.controllerNodeId;
+        }
+    }
+    return std::nullopt;
+}
+
+bool ExecutionPlan::isInsideTestItem(const NodeId& nodeId) const
+{
+    auto current = structuralParentOf(nodeId);
+    QSet<NodeId> visited;
+    while (current && !visited.contains(*current)) {
+        visited.insert(*current);
+        if (testItemRegionForController(*current)) {
+            return true;
+        }
+        current = structuralParentOf(*current);
+    }
+    return false;
+}
+
 bool isTerminalOutcome(NodeOutcome outcome)
 {
     return outcome != NodeOutcome::Unknown;

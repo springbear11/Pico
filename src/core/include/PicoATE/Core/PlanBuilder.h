@@ -38,18 +38,22 @@ private:
     StepBuildInfo buildStep(const StepDef& step,
                             const CleanupRegionId& cleanupRegionId,
                             StepGroupKind groupKind,
-                            ExecutionPlan& plan) const;
+                            ExecutionPlan& plan,
+                            const NodeId& parentPath = {}) const;
     StepBuildInfo buildLoopStep(const StepDef& step,
                                 const CleanupRegionId& cleanupRegionId,
                                 StepGroupKind groupKind,
-                                ExecutionPlan& plan) const;
+                                ExecutionPlan& plan,
+                                const NodeId& parentPath) const;
     StepBuildInfo buildTestItemStep(const StepDef& step,
                                     const CleanupRegionId& cleanupRegionId,
                                     StepGroupKind groupKind,
-                                    ExecutionPlan& plan) const;
+                                    ExecutionPlan& plan,
+                                    const NodeId& parentPath) const;
     ExecNode buildNode(const StepDef& step,
                        const CleanupRegionId& cleanupRegionId,
-                       StepGroupKind groupKind) const;
+                       StepGroupKind groupKind,
+                       const NodeId& nodeId) const;
     void addSerialEdges(const QVector<NodeId>& nodeIds,
                         ExecutionPlan& plan,
                         const QString& edgePrefix,
@@ -63,6 +67,7 @@ private:
     void addCleanupRegion(const QVector<GroupBuildInfo>& cleanupGroups,
                           const CleanupRegionId& cleanupRegionId,
                           ExecutionPlan& plan) const;
+    void addDataReferenceEdges(ExecutionPlan& plan, PlanBuildResult& result) const;
     bool validatePlanReferences(const ExecutionPlan& plan, PlanBuildResult& result) const;
 };
 

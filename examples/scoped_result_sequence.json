@@ -1,0 +1,87 @@
+{
+  "id": "scoped-result-sequence",
+  "name": "Scoped Step Result Example",
+  "version": "0.1.0",
+  "groups": [
+    {
+      "id": "main",
+      "name": "Main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "001",
+          "name": "CAN Request",
+          "kind": "testItem",
+          "steps": [
+            {
+              "id": "01",
+              "key": "tx",
+              "name": "TX",
+              "kind": "action",
+              "parameters": {
+                "outputs": {
+                  "requestId": "22 F1 90"
+                }
+              }
+            },
+            {
+              "id": "02",
+              "key": "delay",
+              "name": "Delay",
+              "kind": "wait",
+              "ms": 1
+            },
+            {
+              "id": "03",
+              "key": "rx",
+              "name": "RX",
+              "kind": "action",
+              "parameters": {
+                "outputs": {
+                  "frame": {
+                    "owner": "${uut.id}",
+                    "canId": 2024,
+                    "payload": "62 F1 90 13 92",
+                    "voltage": 5.01
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "002",
+          "name": "Parse And Limit",
+          "kind": "testItem",
+          "steps": [
+            {
+              "id": "01",
+              "key": "parse",
+              "name": "Parse Response",
+              "kind": "action",
+              "inputs": {
+                "frame": "${step:001.rx.outputs.frame}"
+              },
+              "parameters": {
+                "echoInputs": true
+              }
+            },
+            {
+              "id": "02",
+              "key": "limit",
+              "name": "Voltage Limit Input",
+              "kind": "action",
+              "inputs": {
+                "actual": "${step:parse.outputs.frame.voltage}",
+                "sourceOwner": "${step:parse.outputs.frame.owner}"
+              },
+              "parameters": {
+                "echoInputs": true
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

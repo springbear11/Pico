@@ -16,6 +16,7 @@ enum class StepKind {
     Cleanup,
     Loop,
     TestItem,
+    Limit,
     Statement,
     SequenceCall
 };
@@ -100,6 +101,7 @@ struct StepDef {
     QString id;
     QString name;
     StepKind kind = StepKind::Noop;
+    QString key;
     QVariantMap parameters;
     ModuleId moduleId;
     ModuleFunction functionName;

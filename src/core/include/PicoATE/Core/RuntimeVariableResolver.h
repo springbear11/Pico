@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PicoATE/Core/RuntimeTypes.h"
+#include "PicoATE/Core/ExecutionResultStore.h"
 #include "PicoATE/Core/VariableResolver.h"
 
 #include <QVariant>
@@ -14,8 +15,10 @@ struct RuntimeVariableContext {
     UutId uutId;
     FrameId frameId;
     AttemptId attemptId;
+    NodeId currentNodeId;
     int attemptIndex = 0;
     QVariantMap variables;
+    const ExecutionResultStore* resultStore = nullptr;
 };
 
 class RuntimeVariableResolver {
@@ -39,10 +42,16 @@ private:
                            QVector<VariableResolutionError>& errors,
                            const QString& path) const;
     bool variableFromMapPath(const QString& name, QVariant& value) const;
+    bool resolvedValue(const QString& name,
+                       QVariant& value,
+                       QString& errorMessage,
+                       QString& suggestion) const;
     QString stringify(const QVariant& value) const;
     void addError(QVector<VariableResolutionError>& errors,
                   const QString& path,
-                  const QString& variableName) const;
+                  const QString& variableName,
+                  const QString& message = {},
+                  const QString& suggestion = {}) const;
 
     RuntimeVariableContext m_context;
 };

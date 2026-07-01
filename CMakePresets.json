@@ -33,6 +33,17 @@
       "name": "vs2022-qt6-all-debug",
       "configurePreset": "vs2022-qt6-all",
       "configuration": "Debug"
+    },
+    {
+      "name": "vs2022-qt6-all-release",
+      "configurePreset": "vs2022-qt6-all",
+      "configuration": "Release"
+    },
+    {
+      "name": "vs2022-qt6-cli-portable-release",
+      "configurePreset": "vs2022-qt6-all",
+      "configuration": "Release",
+      "targets": ["PicoATECliPortable"]
     }
   ],
   "testPresets": [
@@ -48,6 +59,14 @@
       "name": "vs2022-qt6-all-debug",
       "configurePreset": "vs2022-qt6-all",
       "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "vs2022-qt6-all-release",
+      "configurePreset": "vs2022-qt6-all",
+      "configuration": "Release",
       "output": {
         "outputOnFailure": true
       }

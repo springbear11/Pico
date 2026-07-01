@@ -94,6 +94,12 @@ QString nodeKindName(ExecNodeKind kind)
         return "Loop";
     case ExecNodeKind::TestItem:
         return "TestItem";
+    case ExecNodeKind::Limit:
+        return "Limit";
+    case ExecNodeKind::Statement:
+        return "Statement";
+    case ExecNodeKind::SequenceCall:
+        return "SequenceCall";
     }
     return "Unknown";
 }
@@ -111,6 +117,10 @@ QString variantDisplay(const QVariant& value)
 
 QString defaultExamplePath()
 {
+    const auto portablePath = QCoreApplication::applicationDirPath() + "/examples/simple_sequence.json";
+    if (QFileInfo::exists(portablePath)) {
+        return portablePath;
+    }
     return QString::fromUtf8(PICOATE_SOURCE_DIR) + "/examples/simple_sequence.json";
 }
 
@@ -143,25 +153,31 @@ bool readJsonObject(const QString& path, QJsonObject& object, QTextStream& err)
 QHash<QString, QString> defaultRuntimeVariables()
 {
     QHash<QString, QString> variables;
+    const QDir applicationDirectory(QCoreApplication::applicationDirPath());
+    const auto preferPortable = [&applicationDirectory](const QString& fileName,
+                                                        const QString& buildPath) {
+        const auto portablePath = applicationDirectory.absoluteFilePath(fileName);
+        return QFileInfo::exists(portablePath) ? portablePath : buildPath;
+    };
 #ifdef PICOATE_MOCK_HOST_PATH
     variables.insert("PICOATE_MOCK_HOST",
-                     QFileInfo(QString::fromUtf8(PICOATE_MOCK_HOST_PATH)).absoluteFilePath());
+                     preferPortable("PicoATE.MockHost.exe", QFileInfo(QString::fromUtf8(PICOATE_MOCK_HOST_PATH)).absoluteFilePath()));
 #endif
 #ifdef PICOATE_FAKE_INSTRUMENT_HOST_PATH
     variables.insert("PICOATE_FAKE_INSTRUMENT_HOST",
-                     QFileInfo(QString::fromUtf8(PICOATE_FAKE_INSTRUMENT_HOST_PATH)).absoluteFilePath());
+                     preferPortable("PicoATE.FakeInstrumentHost.exe", QFileInfo(QString::fromUtf8(PICOATE_FAKE_INSTRUMENT_HOST_PATH)).absoluteFilePath()));
 #endif
 #ifdef PICOATE_NATIVE_HOST_PATH
     variables.insert("PICOATE_NATIVE_HOST",
-                     QFileInfo(QString::fromUtf8(PICOATE_NATIVE_HOST_PATH)).absoluteFilePath());
+                     preferPortable("PicoATE.NativeHost.exe", QFileInfo(QString::fromUtf8(PICOATE_NATIVE_HOST_PATH)).absoluteFilePath()));
 #endif
 #ifdef PICOATE_TEST_DLL_PATH
     variables.insert("PICOATE_TEST_DLL",
-                     QFileInfo(QString::fromUtf8(PICOATE_TEST_DLL_PATH)).absoluteFilePath());
+                     preferPortable("PicoATE.TestDllModule.dll", QFileInfo(QString::fromUtf8(PICOATE_TEST_DLL_PATH)).absoluteFilePath()));
 #endif
 #ifdef PICOATE_CAN_DLL_PATH
     variables.insert("PICOATE_CAN_DLL",
-                     QFileInfo(QString::fromUtf8(PICOATE_CAN_DLL_PATH)).absoluteFilePath());
+                     preferPortable("PicoATE.CanExampleModule.dll", QFileInfo(QString::fromUtf8(PICOATE_CAN_DLL_PATH)).absoluteFilePath()));
 #endif
 #ifdef PICOATE_PYTHON_EXE
     variables.insert("PYTHON_EXE",
@@ -262,13 +278,16 @@ void printStationSummary(const StationRuntime& runtime, QTextStream& out)
 
 void printPlanSummary(const CompileResult& compile, const QString& sequencePath, QTextStream& out)
 {
-    out << "PicoATE CLI\n";
-    out << "Sequence: " << compile.sequence.name << " [" << compile.sequence.id << "]\n";
-    out << "Version : " << compile.sequence.version << '\n';
-    out << "File    : " << QFileInfo(sequencePath).absoluteFilePath() << '\n';
-    out << "Plan    : " << compile.plan.nodes.size() << " node(s), "
+    out << "================================================================================\n";
+    out << " PicoATE Test Runner\n";
+    out << "================================================================================\n";
+    out << " Sequence : " << compile.sequence.name << " [" << compile.sequence.id << "]\n";
+    out << " Version  : " << compile.sequence.version << '\n';
+    out << " File     : " << QFileInfo(sequencePath).absoluteFilePath() << '\n';
+    out << " Plan     : " << compile.plan.nodes.size() << " node(s), "
         << compile.plan.edges.size() << " edge(s), "
         << compile.plan.cleanupRegions.size() << " cleanup region(s)\n";
+    out << "--------------------------------------------------------------------------------\n";
 }
 
 void printMeasurement(const MeasurementResult& measurement, QTextStream& out, int depth = 0)
@@ -323,62 +342,198 @@ QString loopIterationText(const LoopIterationContext& loop)
         .arg(loop.value);
 }
 
-void printStepReport(const StepReport& step, QTextStream& out, int depth = 0)
+QString resultLabel(NodeOutcome outcome)
 {
-    const QString indent(2 + depth * 4, ' ');
-    out << indent << "- " << step.stepId << " [" << nodeKindName(step.kind) << "] "
-        << activationStateName(step.state);
-    if (step.outcome != NodeOutcome::Unknown) {
-        out << " / " << nodeOutcomeName(step.outcome);
+    switch (outcome) {
+    case NodeOutcome::Passed: return "PASS";
+    case NodeOutcome::Failed: return "FAIL";
+    case NodeOutcome::Error: return "ERROR";
+    case NodeOutcome::Timeout: return "TIMEOUT";
+    case NodeOutcome::Cancelled: return "CANCEL";
+    case NodeOutcome::Skipped: return "SKIP";
+    case NodeOutcome::Unknown: return ".....";
     }
-    if (step.wasError) {
-        out << " !";
-    }
-    if (!step.displayName.isEmpty() && step.displayName != step.stepId) {
-        out << " - " << step.displayName;
-    }
-    const auto loopText = loopStepText(step.loop);
-    if (!loopText.isEmpty()) {
-        out << " (" << loopText << ')';
-    }
-    out << '\n';
+    return ".....";
+}
 
-    const int totalAttempts = step.attempts.size();
-    for (const auto& attempt : step.attempts) {
-        out << QString(6 + depth * 4, ' ') << "attempt " << attempt.index << '/' << totalAttempts
-            << ": " << nodeOutcomeName(attempt.outcome);
-        const auto iterationText = loopIterationText(attempt.loopIteration);
-        if (!iterationText.isEmpty()) {
-            out << " [" << iterationText << ']';
+class ConsoleRuntimeEventSink final : public IRuntimeEventSink
+{
+public:
+    ConsoleRuntimeEventSink(const ExecutionPlan& plan, QTextStream& out)
+        : m_plan(plan), m_out(out)
+    {
+    }
+
+    void publish(const RuntimeEvent& event) override
+    {
+        switch (event.kind) {
+        case RuntimeEventKind::SessionStateChanged:
+            if (event.executionState == ExecutionState::Running) {
+                m_out << " RUNNING\n";
+            }
+            break;
+        case RuntimeEventKind::TestItemStarted:
+            m_out << '\n' << QString(depthOf(event.nodeId) * 2, ' ')
+                  << "> TEST ITEM  " << pathOf(event.nodeId) << '\n';
+            break;
+        case RuntimeEventKind::AttemptCompleted:
+            printCompleted(event, "STEP");
+            break;
+        case RuntimeEventKind::TestItemCompleted:
+            printCompleted(event, "ITEM");
+            break;
+        case RuntimeEventKind::LoopIterationStarted:
+            m_out << QString(depthOf(event.nodeId) * 2, ' ')
+                  << "  [LOOP] " << pathOf(event.nodeId) << " | "
+                  << loopIterationText(event.loopIteration) << '\n';
+            break;
+        case RuntimeEventKind::LoopCompleted:
+            printCompleted(event, "LOOP");
+            break;
+        case RuntimeEventKind::RetryScheduled:
+            m_out << QString(depthOf(event.nodeId) * 2, ' ')
+                  << "  [RETRY] " << event.uutId << " | " << pathOf(event.nodeId)
+                  << " | " << event.message << '\n';
+            break;
+        case RuntimeEventKind::BarrierWaiting:
+            m_out << "  [WAIT] " << event.uutId << " | " << pathOf(event.nodeId)
+                  << " | barrier\n";
+            break;
+        case RuntimeEventKind::BarrierReleased:
+            m_out << "  [SYNC] " << event.uutId << " | " << pathOf(event.nodeId)
+                  << " | released\n";
+            break;
+        case RuntimeEventKind::NodeStateChanged:
+            if ((event.outcome == NodeOutcome::Skipped ||
+                 event.outcome == NodeOutcome::Cancelled) &&
+                !m_terminalNodes.contains(event.uutId + ':' + event.nodeId)) {
+                printCompleted(event, "STEP");
+            }
+            break;
+        case RuntimeEventKind::DeviceStateChanged:
+            m_out << "  [DEVICE] " << event.deviceId << " | " << event.message << '\n';
+            break;
+        default:
+            break;
         }
-        if (!attempt.errorCode.isEmpty()) {
-            out << " (" << attempt.errorCode << ')';
+        m_out.flush();
+    }
+
+private:
+    int depthOf(const NodeId& nodeId) const
+    {
+        int depth = 0;
+        auto current = m_plan.structuralParentOf(nodeId);
+        while (current) {
+            ++depth;
+            current = m_plan.structuralParentOf(*current);
         }
-        if (!attempt.errorMessage.isEmpty()) {
-            out << " - " << attempt.errorMessage;
+        return depth;
+    }
+
+    QString pathOf(const NodeId& nodeId) const
+    {
+        QStringList parts;
+        NodeId current = nodeId;
+        while (!current.isEmpty()) {
+            const auto* node = m_plan.node(current);
+            parts.prepend(node && !node->displayName.isEmpty() ? node->displayName : current);
+            const auto parent = m_plan.structuralParentOf(current);
+            current = parent ? *parent : NodeId{};
         }
-        out << '\n';
-        for (const auto& measurement : attempt.measurements) {
-            printMeasurement(measurement, out, depth);
+        return parts.join(" > ");
+    }
+
+    void printCompleted(const RuntimeEvent& event, const QString& category)
+    {
+        m_terminalNodes.insert(event.uutId + ':' + event.nodeId);
+        m_out << QString(depthOf(event.nodeId) * 2, ' ')
+              << "  [" << resultLabel(event.outcome).leftJustified(7, ' ') << "] "
+              << event.uutId << " | " << category << " | " << pathOf(event.nodeId);
+        if (event.attemptIndex > 0) {
+            m_out << " | attempt " << event.attemptIndex;
         }
+        const auto iteration = loopIterationText(event.loopIteration);
+        if (!iteration.isEmpty()) {
+            m_out << " | " << iteration;
+        }
+        if (!event.errorCode.isEmpty()) {
+            m_out << " | " << event.errorCode;
+        }
+        if (!event.message.isEmpty()) {
+            m_out << " | " << event.message;
+        }
+        m_out << '\n';
+        for (const auto& measurement : event.measurements) {
+            printMeasurement(measurement, m_out, depthOf(event.nodeId));
+        }
+    }
+
+    const ExecutionPlan& m_plan;
+    QTextStream& m_out;
+    QSet<QString> m_terminalNodes;
+};
+
+struct ReportCounts {
+    int passed = 0;
+    int failed = 0;
+    int skipped = 0;
+    int total = 0;
+    QStringList failures;
+};
+
+void collectReportCounts(const StepReport& step,
+                         const QString& parentPath,
+                         ReportCounts& counts)
+{
+    const auto name = step.displayName.isEmpty() ? step.stepId : step.displayName;
+    const auto path = parentPath.isEmpty() ? name : parentPath + " > " + name;
+    ++counts.total;
+    if (step.outcome == NodeOutcome::Passed) {
+        ++counts.passed;
+    } else if (step.outcome == NodeOutcome::Skipped || step.outcome == NodeOutcome::Cancelled) {
+        ++counts.skipped;
+    } else if (step.wasError) {
+        ++counts.failed;
+        QString detail = path + " [" + nodeOutcomeName(step.outcome) + ']';
+        if (!step.attempts.isEmpty()) {
+            const auto& last = step.attempts.last();
+            if (!last.errorCode.isEmpty()) {
+                detail += " " + last.errorCode;
+            }
+            if (!last.errorMessage.isEmpty()) {
+                detail += " - " + last.errorMessage;
+            }
+        }
+        counts.failures.push_back(detail);
     }
     for (const auto& child : step.children) {
-        printStepReport(child, out, depth + 1);
+        collectReportCounts(child, path, counts);
     }
 }
 
-void printExecutionReport(const ExecutionReport& report, QTextStream& out)
+void printExecutionSummary(const ExecutionReport& report, QTextStream& out)
 {
-    out << "Session : " << executionStateName(report.state)
-        << " (completed=" << (report.completed ? "true" : "false")
-        << ", hasError=" << (report.hasError ? "true" : "false") << ")\n";
+    out << "\n================================================================================\n";
+    out << " FINAL RESULT: " << (report.hasError ? "FAILED" : "PASSED")
+        << " | " << executionStateName(report.state) << '\n';
+    out << "================================================================================\n";
 
     for (const auto& uut : report.uuts) {
-        out << "\nUUT " << uut.uutId << '\n';
+        ReportCounts counts;
         for (const auto& step : uut.steps) {
-            printStepReport(step, out);
+            collectReportCounts(step, {}, counts);
+        }
+        out << ' ' << uut.uutId << "  " << (uut.hasError ? "FAILED" : "PASSED")
+            << " | total " << counts.total
+            << " | pass " << counts.passed
+            << " | fail " << counts.failed
+            << " | skip " << counts.skipped << '\n';
+        for (const auto& failure : counts.failures) {
+            out << "   ! " << failure << '\n';
         }
     }
+    out << "================================================================================\n";
 }
 
 int runCommand(const QCommandLineParser& parser, const QStringList& positional, QTextStream& out, QTextStream& err)
@@ -425,7 +580,8 @@ int runCommand(const QCommandLineParser& parser, const QStringList& positional, 
         printStationSummary(stationRuntime, out);
     }
 
-    ExecutionSession session(compile.plan);
+    ConsoleRuntimeEventSink consoleEvents(compile.plan, out);
+    ExecutionSession session(compile.plan, {}, &consoleEvents);
     if (stationRuntime.hasStationConfig()) {
         registerFakeInstrumentDeviceFactories(session.devices());
         const auto configureErrors = configureDeviceSessions(stationRuntime.stationConfig(), session.devices());
@@ -453,7 +609,7 @@ int runCommand(const QCommandLineParser& parser, const QStringList& positional, 
 
     session.run();
     const auto report = session.report();
-    printExecutionReport(report, out);
+    printExecutionSummary(report, out);
 
     if (!report.completed) {
         return 4;
