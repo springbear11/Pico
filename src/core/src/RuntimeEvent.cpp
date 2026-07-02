@@ -66,6 +66,8 @@ QString runtimeEventKindName(RuntimeEventKind kind)
         return "CleanupActivated";
     case RuntimeEventKind::DeviceStateChanged:
         return "DeviceStateChanged";
+    case RuntimeEventKind::ModuleLog:
+        return "ModuleLog";
     }
     return "Unknown";
 }

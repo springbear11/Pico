@@ -18,6 +18,7 @@ struct NodeExecutionContext {
     QVariantMap variables;
     const ExecutionResultStore* resultStore = nullptr;
     IModuleRuntimeServices* runtimeServices = nullptr;
+    IModuleLogSink* logSink = nullptr;
 };
 
 class INodeHandler {

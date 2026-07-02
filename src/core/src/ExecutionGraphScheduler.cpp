@@ -2,6 +2,74 @@
 
 namespace PicoATE::Core {
 
+namespace {
+
+class AttemptModuleLogSink final : public IModuleLogSink {
+public:
+    AttemptModuleLogSink(RuntimeEventEmitter* events,
+                         const UutExecution& uut,
+                         const ExecNode& node,
+                         const std::optional<NodeId>& parentNodeId,
+                         const NodeAttempt& attempt,
+                         const FrameId& frameId)
+        : m_events(events)
+        , m_uutId(uut.uutId)
+        , m_nodeId(node.id)
+        , m_nodeLocalId(node.localId.isEmpty() ? node.id : node.localId)
+        , m_parentNodeId(parentNodeId.value_or(NodeId{}))
+        , m_nodeDisplayName(node.displayName)
+        , m_nodeKind(node.kind)
+        , m_attemptId(attempt.id)
+        , m_attemptIndex(attempt.attemptIndex + 1)
+        , m_frameId(frameId)
+    {
+    }
+
+    void publishModuleLog(const ModuleLogRecord& record) override
+    {
+        if (!m_events || record.message.isEmpty()) {
+            return;
+        }
+
+        RuntimeEvent event;
+        event.kind = RuntimeEventKind::ModuleLog;
+        event.uutId = m_uutId;
+        event.nodeId = m_nodeId;
+        event.nodeLocalId = m_nodeLocalId;
+        event.parentNodeId = m_parentNodeId;
+        event.nodeDisplayName = m_nodeDisplayName;
+        event.nodeKind = m_nodeKind;
+        event.attemptId = m_attemptId;
+        event.attemptIndex = m_attemptIndex;
+        event.frameId = m_frameId;
+        event.message = record.message;
+        if (record.sourceSequence > 0) {
+            event.details.insert("sourceSequence", record.sourceSequence);
+        }
+        if (record.droppedBefore > 0) {
+            event.details.insert("droppedBefore", record.droppedBefore);
+        }
+        if (record.timestampUtc.isValid()) {
+            event.details.insert("sourceTimestampUtc", record.timestampUtc);
+        }
+        m_events->publish(event);
+    }
+
+private:
+    RuntimeEventEmitter* m_events = nullptr;
+    UutId m_uutId;
+    NodeId m_nodeId;
+    NodeId m_nodeLocalId;
+    NodeId m_parentNodeId;
+    QString m_nodeDisplayName;
+    ExecNodeKind m_nodeKind = ExecNodeKind::Action;
+    AttemptId m_attemptId;
+    int m_attemptIndex = 0;
+    FrameId m_frameId;
+};
+
+} // namespace
+
 ActivationState UutExecution::stateOf(const NodeId& nodeId) const
 {
     auto it = activations.constFind(nodeId);
@@ -313,6 +381,10 @@ bool ExecutionGraphScheduler::dependenciesSatisfied(const UutExecution& uut,
     }
 
     for (const auto& edge : incoming) {
+        if (!isTerminalActivation(uut.stateOf(edge.from))) {
+            return false;
+        }
+
         const auto sourceOutcome = uut.outcomeOf(edge.from);
         if (triggerMatchesOutcome(edge.trigger, sourceOutcome)) {
             continue;
@@ -420,6 +492,9 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
         context.attemptIndex = attempt.attemptIndex;
         context.variables = uut.variables;
         context.resultStore = &m_results;
+        AttemptModuleLogSink moduleLogSink(
+            m_events, uut, node, m_plan.structuralParentOf(node.id), attempt, frameId);
+        context.logSink = m_events ? &moduleLogSink : nullptr;
 
         publishAttemptEvent(RuntimeEventKind::AttemptStarted, uut, node, attempt);
         result = m_runner.run(node, context);
@@ -469,7 +544,13 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
     if (result.outcome != NodeOutcome::Passed &&
         result.outcome != NodeOutcome::Skipped &&
         result.outcome != NodeOutcome::Unknown) {
-        if (!isTestItemChild) {
+        if (isTestItemChild) {
+            handleTestItemChildFailure(uut,
+                                       node,
+                                       result,
+                                       finalDecision.action,
+                                       frameId);
+        } else {
             handleNodeFailureForBarriers(uut, node, result, frameId);
             if (finalDecision.action == ErrorAction::StopUut ||
                 finalDecision.action == ErrorAction::RunCleanup ||
@@ -504,6 +585,83 @@ bool ExecutionGraphScheduler::testItemChildMayRun(const TestItemRegion& region,
     const auto activation = uut.activations.constFind(region.controllerNodeId);
     return activation != uut.activations.constEnd() &&
            activation->state == ActivationState::WaitingForDependency;
+}
+
+void ExecutionGraphScheduler::handleTestItemChildFailure(UutExecution& uut,
+                                                         const ExecNode& childNode,
+                                                         const NodeResult& result,
+                                                         ErrorAction action,
+                                                         const FrameId& frameId)
+{
+    if (result.outcome == NodeOutcome::Passed ||
+        result.outcome == NodeOutcome::Skipped ||
+        result.outcome == NodeOutcome::Unknown ||
+        action == ErrorAction::Continue) {
+        return;
+    }
+
+    const auto region = m_plan.testItemRegionForChild(childNode.id);
+    if (!region) {
+        return;
+    }
+
+    const auto failedIndex = region->childNodeIds.indexOf(childNode.id);
+    if (failedIndex < 0) {
+        return;
+    }
+
+    const auto reason = QString("skipped after TestItem child %1 returned %2")
+                            .arg(childNode.id, nodeOutcomeName(result.outcome));
+    for (int index = failedIndex + 1; index < region->childNodeIds.size(); ++index) {
+        skipNodeSubtree(uut, region->childNodeIds[index], frameId, reason);
+    }
+}
+
+void ExecutionGraphScheduler::skipNodeSubtree(UutExecution& uut,
+                                              const NodeId& rootNodeId,
+                                              const FrameId& frameId,
+                                              const QString& reason)
+{
+    const auto completedAt = QDateTime::currentDateTimeUtc();
+    for (auto it = m_plan.nodes.constBegin(); it != m_plan.nodes.constEnd(); ++it) {
+        const auto& skippedNode = it.value();
+        if (!isNodeOrDescendantOf(skippedNode.id, rootNodeId)) {
+            continue;
+        }
+
+        auto& skippedActivation = uut.ensureActivation(skippedNode.id, frameId);
+        if (isTerminalActivation(skippedActivation.state)) {
+            continue;
+        }
+
+        appendSyntheticAttempt(skippedActivation, NodeOutcome::Skipped, reason);
+        skippedActivation.attempts.last().loopIteration =
+            loopIterationForAttempt(uut, skippedNode);
+        skippedActivation.state = ActivationState::Skipped;
+        skippedActivation.completedAt = completedAt;
+        publishNodeEvent(RuntimeEventKind::NodeStateChanged,
+                         uut,
+                         skippedNode,
+                         skippedActivation.state,
+                         NodeOutcome::Skipped,
+                         reason,
+                         skippedActivation.attempts.last().loopIteration);
+    }
+}
+
+bool ExecutionGraphScheduler::isNodeOrDescendantOf(const NodeId& nodeId,
+                                                   const NodeId& rootNodeId) const
+{
+    std::optional<NodeId> current = nodeId;
+    QSet<NodeId> visited;
+    while (current && !visited.contains(*current)) {
+        if (*current == rootNodeId) {
+            return true;
+        }
+        visited.insert(*current);
+        current = m_plan.structuralParentOf(*current);
+    }
+    return false;
 }
 
 NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
@@ -577,16 +735,20 @@ NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
                      result.errorMessage,
                      activation.attempts.last().loopIteration);
 
-    if (result.outcome != NodeOutcome::Passed && !m_plan.isInsideTestItem(node.id)) {
+    if (result.outcome != NodeOutcome::Passed) {
         const auto decision = m_errorPolicy.decide(node, result, activation.attempts.size());
-        if (decision.action == ErrorAction::RunCleanup) {
-            activateCleanup(uut, decision.cleanupRegionId);
-        }
-        handleNodeFailureForBarriers(uut, node, result, frameId);
-        if (decision.action == ErrorAction::StopUut ||
-            decision.action == ErrorAction::RunCleanup ||
-            decision.action == ErrorAction::Abort) {
-            skipPendingNonAlwaysRun(uut, frameId);
+        if (m_plan.isInsideTestItem(node.id)) {
+            handleTestItemChildFailure(uut, node, result, decision.action, frameId);
+        } else {
+            if (decision.action == ErrorAction::RunCleanup) {
+                activateCleanup(uut, decision.cleanupRegionId);
+            }
+            handleNodeFailureForBarriers(uut, node, result, frameId);
+            if (decision.action == ErrorAction::StopUut ||
+                decision.action == ErrorAction::RunCleanup ||
+                decision.action == ErrorAction::Abort) {
+                skipPendingNonAlwaysRun(uut, frameId);
+            }
         }
     }
     return result;
@@ -665,16 +827,24 @@ NodeResult ExecutionGraphScheduler::executeLoopNode(UutExecution& uut,
                          activation.state,
                          result.outcome,
                          decision.message);
-        if (decision.outcome != NodeOutcome::Passed && !m_plan.isInsideTestItem(node.id)) {
+        if (decision.outcome != NodeOutcome::Passed) {
             const auto errorDecision = m_errorPolicy.decide(node, result, activation.attempts.size());
-            if (errorDecision.action == ErrorAction::RunCleanup) {
-                activateCleanup(uut, errorDecision.cleanupRegionId);
-            }
-            handleNodeFailureForBarriers(uut, node, result, frameId);
-            if (errorDecision.action == ErrorAction::StopUut ||
-                errorDecision.action == ErrorAction::RunCleanup ||
-                errorDecision.action == ErrorAction::Abort) {
-                skipPendingNonAlwaysRun(uut, frameId);
+            if (m_plan.isInsideTestItem(node.id)) {
+                handleTestItemChildFailure(uut,
+                                           node,
+                                           result,
+                                           errorDecision.action,
+                                           frameId);
+            } else {
+                if (errorDecision.action == ErrorAction::RunCleanup) {
+                    activateCleanup(uut, errorDecision.cleanupRegionId);
+                }
+                handleNodeFailureForBarriers(uut, node, result, frameId);
+                if (errorDecision.action == ErrorAction::StopUut ||
+                    errorDecision.action == ErrorAction::RunCleanup ||
+                    errorDecision.action == ErrorAction::Abort) {
+                    skipPendingNonAlwaysRun(uut, frameId);
+                }
             }
         }
         return result;

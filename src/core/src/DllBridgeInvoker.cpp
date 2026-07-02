@@ -1,6 +1,7 @@
 #include "PicoATE/Core/DllBridgeInvoker.h"
 
 #include "PicoATE/Core/ModuleTransportJson.h"
+#include "PicoATE/Core/PluginLog.h"
 
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -10,6 +11,7 @@
 #include <QObject>
 #include <QThread>
 #include <QWaitCondition>
+#include <atomic>
 #include <memory>
 #include <utility>
 
@@ -27,7 +29,28 @@ struct BridgeCallState {
     bool finished = false;
     ModuleTransportStatus status = ModuleTransportStatus::TransportError;
     ModuleTransportResponse response;
+    IModuleLogSink* logSink = nullptr;
+    std::atomic_bool acceptLogs{true};
 };
+
+void PICOATE_PLUGIN_CALL bridgeLogSink(void* userData, const char* messageUtf8) noexcept
+{
+    auto* state = static_cast<BridgeCallState*>(userData);
+    if (!state || !messageUtf8 || !state->acceptLogs.load(std::memory_order_acquire)) {
+        return;
+    }
+    auto* sink = state->logSink;
+    if (!sink) {
+        return;
+    }
+
+    ModuleLogRecord record;
+    record.timestampUtc = QDateTime::currentDateTimeUtc();
+    record.message = QString::fromUtf8(messageUtf8);
+    if (!record.message.isEmpty()) {
+        sink->publishModuleLog(record);
+    }
+}
 
 void setError(ModuleTransportResponse& response,
               QString code,
@@ -42,7 +65,8 @@ ModuleTransportStatus invokeDllFunction(const QString& libraryPath,
                                         const QString& symbolName,
                                         int responseBufferSize,
                                         const ModuleTransportRequest& request,
-                                        ModuleTransportResponse& response)
+                                        ModuleTransportResponse& response,
+                                        BridgeCallState* callState)
 {
     QLibrary library(libraryPath);
     // NativeHost may serve multiple steps through PersistentQProcessTransport.
@@ -62,6 +86,12 @@ ModuleTransportStatus invokeDllFunction(const QString& libraryPath,
         return ModuleTransportStatus::TransportError;
     }
 
+    const auto setLogSink = reinterpret_cast<PicoATESetLogSink>(
+        library.resolve("PicoATE_SetLogSink"));
+    if (setLogSink) {
+        setLogSink(callState && callState->logSink ? &bridgeLogSink : nullptr, callState);
+    }
+
     const auto requestBytes = QJsonDocument(moduleTransportRequestToJson(request))
                                   .toJson(QJsonDocument::Compact);
     QByteArray responseBuffer(responseBufferSize > 0 ? responseBufferSize : 65536, '\0');
@@ -69,6 +99,12 @@ ModuleTransportStatus invokeDllFunction(const QString& libraryPath,
     const int statusCode = function(requestBytes.constData(),
                                     responseBuffer.data(),
                                     responseBuffer.size());
+    if (setLogSink) {
+        setLogSink(nullptr, nullptr);
+    }
+    if (callState) {
+        callState->acceptLogs.store(false, std::memory_order_release);
+    }
     if (statusCode != 0) {
         setError(response,
                  "DllExecuteFailed",
@@ -114,6 +150,7 @@ ModuleTransportStatus DllBridgeInvoker::call(const ModuleTransportRequest& reque
 {
     const int effectiveTimeoutMs = timeoutMs > 0 ? timeoutMs : 30000;
     auto state = std::make_shared<BridgeCallState>();
+    state->logSink = request.context.logSink;
 
     auto* thread = QThread::create([state,
                                     libraryPath = m_libraryPath,
@@ -125,7 +162,8 @@ ModuleTransportStatus DllBridgeInvoker::call(const ModuleTransportRequest& reque
                                               symbolName,
                                               responseBufferSize,
                                               request,
-                                              localResponse);
+                                              localResponse,
+                                              state.get());
 
         QMutexLocker locker(&state->mutex);
         state->status = status;
@@ -147,6 +185,7 @@ ModuleTransportStatus DllBridgeInvoker::call(const ModuleTransportRequest& reque
             status = state->status;
             response = state->response;
         } else {
+            state->acceptLogs.store(false, std::memory_order_release);
             response.outcome = ModuleOutcome::Timeout;
             response.errorCode = "DllExecuteTimeout";
             response.errorMessage =

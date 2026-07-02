@@ -413,6 +413,14 @@ public:
         case RuntimeEventKind::DeviceStateChanged:
             m_out << "  [DEVICE] " << event.deviceId << " | " << event.message << '\n';
             break;
+        case RuntimeEventKind::ModuleLog:
+            m_out << QString(depthOf(event.nodeId) * 2, ' ')
+                  << "  [LOG] " << event.uutId << " | " << pathOf(event.nodeId);
+            if (event.attemptIndex > 0) {
+                m_out << " | attempt " << event.attemptIndex;
+            }
+            m_out << " | " << event.message << '\n';
+            break;
         default:
             break;
         }

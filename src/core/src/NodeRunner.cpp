@@ -255,7 +255,8 @@ NodeResult LimitNodeHandler::run(const ExecNode& node, const NodeExecutionContex
 
     QVariant toleranceValue;
     double tolerance = 0.0;
-    if (limitValue(node, "tolerance", toleranceValue)) {
+    const bool hasTolerance = limitValue(node, "tolerance", toleranceValue);
+    if (hasTolerance) {
         if (!finiteNumber(toleranceValue, tolerance) || tolerance < 0.0) {
             return limitErrorResult(node,
                                     actual,
@@ -270,22 +271,51 @@ NodeResult LimitNodeHandler::run(const ExecNode& node, const NodeExecutionContex
     double upper = 0.0;
     double expected = 0.0;
     bool numericMeasurement = false;
+    bool derivedRange = false;
     const bool inclusive = node.payload.value("inclusive", true).toBool();
 
     if (comparison == "between" || comparison == "range") {
-        if (!hasLower || !hasUpper) {
+        if (hasLower != hasUpper) {
             return limitErrorResult(node,
                                     actual,
                                     "LimitConfigurationError",
-                                    "Between comparison requires lower and upper limits");
+                                    "Between comparison requires both lower and upper when either is set");
         }
-        if (!finiteNumber(actual, actualNumber) ||
-            !finiteNumber(lowerValue, lower) ||
-            !finiteNumber(upperValue, upper)) {
+        if (!hasLower && (!hasExpected || !hasTolerance)) {
+            return limitErrorResult(node,
+                                    actual,
+                                    "LimitConfigurationError",
+                                    "Between comparison requires lower/upper or expected/tolerance");
+        }
+        if (!finiteNumber(actual, actualNumber)) {
             return limitErrorResult(node,
                                     actual,
                                     "LimitTypeError",
-                                    "Actual, lower, and upper must be finite numbers");
+                                    "Between comparison requires a finite numeric actual value");
+        }
+        if (hasLower) {
+            if (!finiteNumber(lowerValue, lower) || !finiteNumber(upperValue, upper)) {
+                return limitErrorResult(node,
+                                        actual,
+                                        "LimitTypeError",
+                                        "Lower and upper must be finite numbers");
+            }
+        } else {
+            if (!finiteNumber(expectedValue, expected)) {
+                return limitErrorResult(node,
+                                        actual,
+                                        "LimitTypeError",
+                                        "Expected must be a finite number when deriving limits");
+            }
+            lower = expected - tolerance;
+            upper = expected + tolerance;
+            if (!std::isfinite(lower) || !std::isfinite(upper)) {
+                return limitErrorResult(node,
+                                        actual,
+                                        "LimitConfigurationError",
+                                        "Derived lower and upper limits must be finite numbers");
+            }
+            derivedRange = true;
         }
         if (lower > upper) {
             return limitErrorResult(node,
@@ -387,6 +417,11 @@ NodeResult LimitNodeHandler::run(const ExecNode& node, const NodeExecutionContex
         measurement.lowerLimit = lower;
         measurement.hasUpperLimit = true;
         measurement.upperLimit = upper;
+        if (derivedRange) {
+            measurement.attributes.insert("expected", expected);
+            measurement.attributes.insert("tolerance", tolerance);
+            measurement.attributes.insert("limitsDerived", true);
+        }
     } else if (numericMeasurement &&
                (comparison == ">" || comparison == "gt" || comparison == "greaterthan" ||
                 comparison == ">=" || comparison == "ge" || comparison == "gte" ||
@@ -450,6 +485,7 @@ NodeResult ActionNodeHandler::run(const ExecNode& node, const NodeExecutionConte
     moduleContext.parameters = node.payload;
     moduleContext.inputs = node.payload.value("inputs").toMap();
     moduleContext.runtimeServices = context.runtimeServices;
+    moduleContext.logSink = context.logSink;
 
     const auto functionName = node.payload.value("function").toString();
     const auto moduleResult = module->execute(functionName, moduleContext);

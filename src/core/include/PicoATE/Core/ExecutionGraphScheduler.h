@@ -51,6 +51,16 @@ private:
     NodeResult executeTestItemNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
     bool testItemControllerReady(const TestItemRegion& region, const UutExecution& uut) const;
     bool testItemChildMayRun(const TestItemRegion& region, const UutExecution& uut) const;
+    void handleTestItemChildFailure(UutExecution& uut,
+                                    const ExecNode& childNode,
+                                    const NodeResult& result,
+                                    ErrorAction action,
+                                    const FrameId& frameId);
+    void skipNodeSubtree(UutExecution& uut,
+                         const NodeId& rootNodeId,
+                         const FrameId& frameId,
+                         const QString& reason);
+    bool isNodeOrDescendantOf(const NodeId& nodeId, const NodeId& rootNodeId) const;
     void activateCleanup(UutExecution& uut, const CleanupRegionId& cleanupRegionId);
     void handleNodeFailureForBarriers(UutExecution& uut,
                                       const ExecNode& failedNode,

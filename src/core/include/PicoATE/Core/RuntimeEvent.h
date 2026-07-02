@@ -25,7 +25,8 @@ enum class RuntimeEventKind {
     BarrierWaiting,
     BarrierReleased,
     CleanupActivated,
-    DeviceStateChanged
+    DeviceStateChanged,
+    ModuleLog
 };
 
 struct RuntimeEvent {

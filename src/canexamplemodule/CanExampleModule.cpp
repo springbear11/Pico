@@ -1,3 +1,5 @@
+#include "PicoATE/Core/PluginLog.h"
+
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -150,6 +152,8 @@ QString byteString(const QVector<quint8>& bytes)
 
 } // namespace
 
+PICOATE_DEFINE_LOG_SINK()
+
 extern "C" __declspec(dllexport)
 int PicoATE_Execute(const char* requestJsonUtf8,
                     char* responseJsonUtf8,
@@ -172,6 +176,7 @@ int PicoATE_Execute(const char* requestJsonUtf8,
     const auto request = document.object();
     const auto context = request.value("context").toObject();
     const auto inputs = context.value("inputs").toObject();
+    PicoATE_Log("CAN_PARSE raw frame: {}", inputs.value("rawBytes").toVariant().toString().toStdString());
 
     QVector<quint8> bytes;
     QString parseErrorText;
@@ -200,6 +205,12 @@ int PicoATE_Execute(const char* requestJsonUtf8,
     const double offset = signal.value("offset").toDouble(0.0);
     const double physicalValue = static_cast<double>(rawSigned) * scale + offset;
     const auto unit = signal.value("unit").toString();
+    PicoATE_Log("CAN_PARSE field={} startByte={} byteLength={} raw={}",
+                signalName.toStdString(),
+                startByte,
+                byteLength,
+                rawSigned);
+    PicoATE_Log("CAN_PARSE result={} {}", physicalValue, unit.toStdString());
 
     double minValue = 0.0;
     double maxValue = 0.0;

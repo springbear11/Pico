@@ -56,24 +56,56 @@ ModuleTransportStatus PersistentQProcessTransport::call(const ModuleTransportReq
         return ModuleTransportStatus::TransportError;
     }
 
-    QString line;
-    const auto status = readResponseLine(line, timeout, response);
-    if (status != ModuleTransportStatus::Ok) {
-        return status;
-    }
+    QElapsedTimer timer;
+    timer.start();
+    while (remainingMs(timer, timeout) > 0) {
+        QString line;
+        const auto status = readResponseLine(line, remainingMs(timer, timeout), response);
+        if (status != ModuleTransportStatus::Ok) {
+            return status;
+        }
 
-    QJsonParseError parseError;
-    const auto document = QJsonDocument::fromJson(line.toUtf8(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        QJsonParseError parseError;
+        const auto document = QJsonDocument::fromJson(line.toUtf8(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+            setTransportError(response,
+                              "InvalidPersistentJsonResponse",
+                              parseError.errorString());
+            killProcess();
+            return ModuleTransportStatus::TransportError;
+        }
+
+        const auto message = moduleProtocolMessageFromJson(document.object());
+        if (!message.traceId.isEmpty() && message.traceId != request.traceId) {
+            setTransportError(response,
+                              "PersistentTraceIdMismatch",
+                              QString("Expected %1, got %2").arg(request.traceId, message.traceId));
+            killProcess();
+            return ModuleTransportStatus::TransportError;
+        }
+        if (message.kind == ModuleProtocolMessageKind::Log) {
+            if (request.context.logSink) {
+                request.context.logSink->publishModuleLog(message.log);
+            }
+            continue;
+        }
+        if (message.kind == ModuleProtocolMessageKind::Response) {
+            response = message.response;
+            return ModuleTransportStatus::Ok;
+        }
+
         setTransportError(response,
-                          "InvalidPersistentJsonResponse",
-                          parseError.errorString());
+                          "InvalidPersistentModuleProtocol",
+                          message.errorMessage);
         killProcess();
         return ModuleTransportStatus::TransportError;
     }
 
-    response = moduleTransportResponseFromJson(document.object());
-    return ModuleTransportStatus::Ok;
+    response.outcome = ModuleOutcome::Timeout;
+    response.errorCode = "PersistentProcessTimeout";
+    response.errorMessage = "Persistent module host timed out";
+    killProcess();
+    return ModuleTransportStatus::Timeout;
 }
 
 bool PersistentQProcessTransport::isRunning() const

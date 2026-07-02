@@ -197,8 +197,8 @@ RX/解析 Step 把值写入每个 UUT 独立的结果仓库，再通过 Step 表
   },
   "parameters": {
     "comparison": "between",
-    "lower": 4.8,
-    "upper": 5.2,
+    "expected": 5.0,
+    "tolerance": 0.2,
     "inclusive": true,
     "unit": "V",
     "measurementName": "CAN_VOLTAGE"
@@ -210,7 +210,7 @@ RX/解析 Step 把值写入每个 UUT 独立的结果仓库，再通过 Step 表
 
 | `comparison` | 必需参数 | 含义 |
 |--------------|----------|------|
-| `between` / `range` | `lower`、`upper` | 区间判断；`inclusive` 默认为 `true` |
+| `between` / `range` | `lower`+`upper`，或 `expected`+`tolerance` | 区间判断；后一种写法自动计算 `[expected-tolerance, expected+tolerance]`，`inclusive` 默认为 `true` |
 | `>` / `>=` / `<` / `<=` | `expected`，也可分别使用 `lower`/`upper` | 数值单边判断 |
 | `equal` / `==` / `notEqual` / `!=` | `expected`；数值可加 `tolerance` | 数值容差或字符串相等判断 |
 | `contains` / `startsWith` / `endsWith` | `expected` | 字符串判断，区分大小写 |
@@ -222,6 +222,9 @@ RX/解析 Step 把值写入每个 UUT 独立的结果仓库，再通过 Step 表
 
 Limit 总会生成一条 `MeasurementResult`，包含实际值、单位、上下限或比较基准、
 判定状态和错误信息；CLI、ExecutionReport 和 UI 使用同一份结构化结果。
+
+同时提供 `lower/upper` 和 `expected/tolerance` 时，以显式上下限为准；只提供
+`lower` 或只提供 `upper` 会返回配置错误，避免引擎猜测用户意图。
 
 完整可运行示例：`examples/scoped_result_sequence.json`。
 
@@ -238,10 +241,13 @@ calculated after every child reaches a terminal state:
 | any child is `Timeout` and none is `Error` | `Timeout` |
 | any child is `Error` | `Error` |
 
-Child failures do not immediately stop the UUT. Remaining children are released
-through `Finally` edges, then the parent `errorPolicy` decides whether the UUT
-stops or enters Cleanup. Retry belongs on child steps; parent-level retry is not
-supported in the first implementation.
+TestItem 默认采用局部 fail-fast：子 Step 在 Retry 结束后仍为 `Failed/Error/Timeout`
+时，后续兄弟步骤及其嵌套子树会被标记为 `Skipped`。父 TestItem 汇总失败后，
+再由父项的 `errorPolicy` 决定整个 UUT 停止、进入 Cleanup 或继续下一个测试项。
+
+如果某个子 Step 明确配置对应的 `onFail/onError/onTimeout: Continue`，则只对该
+失败点关闭 fail-fast，继续执行同一 TestItem 的后续步骤。Retry 属于具体子步骤；
+父 TestItem 暂不支持整体 Retry。
 
 ```json
 {

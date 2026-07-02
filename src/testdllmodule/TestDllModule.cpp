@@ -1,3 +1,6 @@
+#include "PicoATE/Core/PluginLog.h"
+
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -37,6 +40,8 @@ int writeJsonResponse(const QJsonObject& response,
 
 } // namespace
 
+PICOATE_DEFINE_LOG_SINK()
+
 extern "C" __declspec(dllexport)
 int PicoATE_Execute(const char* requestJsonUtf8,
                     char* responseJsonUtf8,
@@ -59,6 +64,14 @@ int PicoATE_Execute(const char* requestJsonUtf8,
     const auto request = document.object();
     const auto context = request.value("context").toObject();
     const auto inputs = context.value("inputs").toObject();
+
+    for (const auto& value : inputs.value("logMessages").toArray()) {
+        PicoATE_Log(value.toString().toStdString());
+    }
+    const int logCount = qMax(0, inputs.value("logCount").toInt(0));
+    for (int index = 0; index < logCount; ++index) {
+        PicoATE_Log("burst log {}", index);
+    }
 
     const auto sleepMs = inputs.value("dllSleepMs").toInt(0);
     if (sleepMs > 0) {

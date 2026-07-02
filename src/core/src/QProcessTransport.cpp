@@ -20,16 +20,12 @@ int remainingMs(const QElapsedTimer& timer, int timeoutMs)
     return remaining > 0 ? remaining : 0;
 }
 
-QString firstNonEmptyLine(const QByteArray& data)
+void appendBounded(QByteArray& target, const QByteArray& data, int maximumBytes = 16384)
 {
-    const auto lines = QString::fromUtf8(data).split('\n');
-    for (auto line : lines) {
-        line = line.trimmed();
-        if (!line.isEmpty()) {
-            return line;
-        }
+    target += data;
+    if (target.size() > maximumBytes) {
+        target = target.right(maximumBytes);
     }
-    return {};
 }
 
 void setTransportError(ModuleTransportResponse& response,
@@ -39,6 +35,77 @@ void setTransportError(ModuleTransportResponse& response,
     response.outcome = ModuleOutcome::Error;
     response.errorCode = std::move(errorCode);
     response.errorMessage = std::move(errorMessage);
+}
+
+bool processProtocolLine(const QByteArray& rawLine,
+                         const ModuleTransportRequest& request,
+                         ModuleTransportResponse& response,
+                         bool& responseReceived,
+                         QString& protocolError)
+{
+    const auto line = rawLine.trimmed();
+    if (line.isEmpty()) {
+        return true;
+    }
+
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(line, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        protocolError = QString("Invalid JSON protocol line: %1").arg(parseError.errorString());
+        return false;
+    }
+
+    const auto message = moduleProtocolMessageFromJson(document.object());
+    if (!message.traceId.isEmpty() && message.traceId != request.traceId) {
+        protocolError = QString("Module protocol traceId mismatch: %1").arg(message.traceId);
+        return false;
+    }
+    if (message.kind == ModuleProtocolMessageKind::Log) {
+        if (request.context.logSink) {
+            request.context.logSink->publishModuleLog(message.log);
+        }
+        return true;
+    }
+    if (message.kind == ModuleProtocolMessageKind::Response) {
+        if (responseReceived) {
+            protocolError = "Module host returned more than one response";
+            return false;
+        }
+        response = message.response;
+        responseReceived = true;
+        return true;
+    }
+
+    protocolError = message.errorMessage.isEmpty()
+        ? QString("Invalid module protocol message")
+        : message.errorMessage;
+    return false;
+}
+
+bool processCompleteLines(QByteArray& buffer,
+                          const ModuleTransportRequest& request,
+                          ModuleTransportResponse& response,
+                          bool& responseReceived,
+                          QString& protocolError,
+                          bool includeFinalPartialLine = false)
+{
+    while (true) {
+        const auto newline = buffer.indexOf('\n');
+        if (newline < 0) {
+            break;
+        }
+        const auto line = buffer.left(newline);
+        buffer.remove(0, newline + 1);
+        if (!processProtocolLine(line, request, response, responseReceived, protocolError)) {
+            return false;
+        }
+    }
+    if (includeFinalPartialLine && !buffer.trimmed().isEmpty()) {
+        const auto line = buffer;
+        buffer.clear();
+        return processProtocolLine(line, request, response, responseReceived, protocolError);
+    }
+    return true;
 }
 
 } // namespace
@@ -83,24 +150,57 @@ ModuleTransportStatus QProcessTransport::call(const ModuleTransportRequest& requ
     }
 
     process.closeWriteChannel();
-    if (!process.waitForFinished(remainingMs(timer, effectiveTimeoutMs))) {
-        process.kill();
-        process.waitForFinished(1000);
-        response.outcome = ModuleOutcome::Timeout;
-        response.errorCode = "ProcessTimeout";
-        response.errorMessage = "Module host process timed out";
-        return ModuleTransportStatus::Timeout;
+    QByteArray stdoutBuffer;
+    QByteArray stderrTail;
+    bool responseReceived = false;
+    QString protocolError;
+    while (process.state() != QProcess::NotRunning) {
+        stdoutBuffer += process.readAllStandardOutput();
+        appendBounded(stderrTail, process.readAllStandardError());
+        if (!processCompleteLines(stdoutBuffer,
+                                  request,
+                                  response,
+                                  responseReceived,
+                                  protocolError)) {
+            process.kill();
+            process.waitForFinished(1000);
+            setTransportError(response, "InvalidModuleProtocol", protocolError);
+            return ModuleTransportStatus::TransportError;
+        }
+
+        const auto remaining = remainingMs(timer, effectiveTimeoutMs);
+        if (remaining <= 0) {
+            process.kill();
+            process.waitForFinished(1000);
+            response.outcome = ModuleOutcome::Timeout;
+            response.errorCode = "ProcessTimeout";
+            response.errorMessage = "Module host process timed out";
+            return ModuleTransportStatus::Timeout;
+        }
+        process.waitForReadyRead(qMin(remaining, 50));
+    }
+
+    stdoutBuffer += process.readAllStandardOutput();
+    appendBounded(stderrTail, process.readAllStandardError());
+    if (!processCompleteLines(stdoutBuffer,
+                              request,
+                              response,
+                              responseReceived,
+                              protocolError,
+                              true)) {
+        setTransportError(response, "InvalidModuleProtocol", protocolError);
+        return ModuleTransportStatus::TransportError;
     }
 
     if (process.exitStatus() == QProcess::CrashExit) {
         setTransportError(response,
                           "ProcessCrashed",
-                          QString::fromUtf8(process.readAllStandardError()).trimmed());
+                          QString::fromUtf8(stderrTail).trimmed());
         return ModuleTransportStatus::TransportError;
     }
 
     if (process.exitCode() != 0) {
-        auto message = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        auto message = QString::fromUtf8(stderrTail).trimmed();
         if (message.isEmpty()) {
             message = QString("Module host exited with code %1").arg(process.exitCode());
         }
@@ -108,24 +208,12 @@ ModuleTransportStatus QProcessTransport::call(const ModuleTransportRequest& requ
         return ModuleTransportStatus::TransportError;
     }
 
-    const auto line = firstNonEmptyLine(process.readAllStandardOutput());
-    if (line.isEmpty()) {
+    if (!responseReceived) {
         setTransportError(response,
                           "EmptyResponse",
                           "Module host did not write a JSON response");
         return ModuleTransportStatus::TransportError;
     }
-
-    QJsonParseError parseError;
-    const auto document = QJsonDocument::fromJson(line.toUtf8(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-        setTransportError(response,
-                          "InvalidJsonResponse",
-                          parseError.errorString());
-        return ModuleTransportStatus::TransportError;
-    }
-
-    response = moduleTransportResponseFromJson(document.object());
     return ModuleTransportStatus::Ok;
 }
 

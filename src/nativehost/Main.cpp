@@ -1,6 +1,7 @@
 #include "PicoATE/Core/DllBridgeInvoker.h"
 #include "PicoATE/Core/ModuleTransportJson.h"
 #include "PicoATE/Core/NativeHostManifest.h"
+#include "NativeHostOutputPump.h"
 
 #include <QCommandLineOption>
 #include <QCommandLineParser>
@@ -21,6 +22,8 @@ struct NativeHostRuntimeConfig {
     QString symbol = "PicoATE_Execute";
     int bufferSize = 65536;
     int dllTimeoutMs = 30000;
+    int logQueueCapacity = 1024;
+    int logMessageCharacters = 4096;
 };
 
 ModuleTransportResponse errorResponse(const QString& code, const QString& message)
@@ -164,6 +167,14 @@ int main(int argc, char* argv[])
                                         "Optional in-host DLL call timeout. Parent process timeout still applies.",
                                         "ms",
                                         "30000"));
+    parser.addOption(QCommandLineOption("log-queue-capacity",
+                                        "Maximum queued live log messages before dropping.",
+                                        "count",
+                                        "1024"));
+    parser.addOption(QCommandLineOption("log-message-characters",
+                                        "Maximum characters retained per live log message.",
+                                        "count",
+                                        "4096"));
     parser.process(app);
 
     QTextStream err(stderr);
@@ -174,6 +185,11 @@ int main(int argc, char* argv[])
     if (!loaded) {
         return 2;
     }
+    if (!parsePositiveInt(parser.value("log-queue-capacity"), config.logQueueCapacity) ||
+        !parsePositiveInt(parser.value("log-message-characters"), config.logMessageCharacters)) {
+        err << "log queue capacity and message characters must be positive integers.\n";
+        return 2;
+    }
 
     if (!QFileInfo::exists(config.dllPath)) {
         err << "DLL does not exist: " << config.dllPath << '\n';
@@ -181,6 +197,7 @@ int main(int argc, char* argv[])
     }
 
     DllBridgeInvoker invoker(config.dllPath, config.symbol, config.bufferSize);
+    NativeHostOutputPump outputPump(config.logQueueCapacity, config.logMessageCharacters);
 
     QTextStream in(stdin);
     while (!in.atEnd()) {
@@ -197,9 +214,11 @@ int main(int argc, char* argv[])
         }
 
         ModuleTransportResponse response;
-        const auto request = moduleTransportRequestFromJson(document.object());
+        auto request = moduleTransportRequestFromJson(document.object());
+        request.context.logSink = &outputPump;
+        outputPump.beginRequest(request.traceId);
         invoker.call(request, response, config.dllTimeoutMs);
-        writeResponse(response);
+        outputPump.writeResponse(response);
     }
 
     return 0;

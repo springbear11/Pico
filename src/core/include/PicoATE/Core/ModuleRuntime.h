@@ -12,6 +12,19 @@ using ModuleFunction = QString;
 
 class IModuleRuntimeServices;
 
+struct ModuleLogRecord {
+    quint64 sourceSequence = 0;
+    QDateTime timestampUtc;
+    QString message;
+    quint64 droppedBefore = 0;
+};
+
+class IModuleLogSink {
+public:
+    virtual ~IModuleLogSink() = default;
+    virtual void publishModuleLog(const ModuleLogRecord& record) = 0;
+};
+
 enum class ModuleOutcome {
     Passed,
     Failed,
@@ -28,6 +41,7 @@ struct ModuleExecutionContext {
     QVariantMap parameters;
     QVariantMap variables;
     IModuleRuntimeServices* runtimeServices = nullptr;
+    IModuleLogSink* logSink = nullptr;
 };
 
 struct ModuleResult {

@@ -1,5 +1,7 @@
 add_executable(PicoATENativeHost
     Main.cpp
+    NativeHostOutputPump.cpp
+    NativeHostOutputPump.h
 )
 
 set_target_properties(PicoATENativeHost

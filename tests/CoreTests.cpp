@@ -15,6 +15,7 @@
 #include "PicoATE/Core/NativeHostManifest.h"
 #include "PicoATE/Core/PlanBuilder.h"
 #include "PicoATE/Core/PlanCache.h"
+#include "PicoATE/Core/PluginLog.h"
 #include "PicoATE/Core/PersistentQProcessTransport.h"
 #include "PicoATE/Core/QProcessTransport.h"
 #include "PicoATE/Core/ResourceManager.h"
@@ -200,6 +201,52 @@ public:
     }
 };
 
+class CollectingModuleLogSink final : public IModuleLogSink {
+public:
+    void publishModuleLog(const ModuleLogRecord& record) override
+    {
+        QMutexLocker lock(&mutex);
+        logs.push_back(record);
+    }
+
+    QVector<ModuleLogRecord> records() const
+    {
+        QMutexLocker lock(&mutex);
+        return logs;
+    }
+
+private:
+    mutable QMutex mutex;
+    QVector<ModuleLogRecord> logs;
+};
+
+class CollectingRuntimeEventSink final : public IRuntimeEventSink {
+public:
+    void publish(const RuntimeEvent& event) override
+    {
+        QMutexLocker lock(&mutex);
+        events.push_back(event);
+    }
+
+    QVector<RuntimeEvent> records() const
+    {
+        QMutexLocker lock(&mutex);
+        return events;
+    }
+
+private:
+    mutable QMutex mutex;
+    QVector<RuntimeEvent> events;
+};
+
+void PICOATE_PLUGIN_CALL collectPluginLog(void* userData, const char* messageUtf8)
+{
+    auto* messages = static_cast<QStringList*>(userData);
+    if (messages && messageUtf8) {
+        messages->push_back(QString::fromUtf8(messageUtf8));
+    }
+}
+
 class FakeDeviceSession final : public IDeviceSession {
 public:
     explicit FakeDeviceSession(DeviceSessionConfig config)
@@ -366,6 +413,7 @@ private slots:
     void nodeRunnerRunsRegisteredModuleAndMapsModuleResult();
     void nodeRunnerReportsMissingModule();
     void moduleTransportJsonSerializesRequestAndResponse();
+    void pluginLogHandlesEmptyCallbackAndMixedValues();
     void variableResolverResolvesBuiltInsExplicitVariablesAndEnvironment();
     void variableResolverRecursivelyResolvesVariantContainers();
     void runtimeVariableResolverPreservesTypesAndInterpolatesStrings();
@@ -382,11 +430,15 @@ private slots:
     void moduleRuntimeServicesInvokesTransportDeviceSession();
     void executionSessionRunsActionThroughQProcessTransport();
     void dllBridgeInvokerCallsTestDll();
+    void dllBridgeInvokerStreamsPluginLogs();
     void dllBridgeInvokerReportsDllErrorCode();
     void dllBridgeInvokerReportsTimeout();
     void nativeHostManifestResolvesVariables();
     void nativeHostManifestReportsUnresolvedVariables();
     void qProcessTransportCallsNativeHostDll();
+    void qProcessTransportStreamsOrderedNativeHostLogs();
+    void qProcessTransportDropsHighFrequencyLogsWithoutBlocking();
+    void executionSessionPublishesPluginLogsWithAttemptContext();
     void qProcessTransportCallsNativeHostDllManifest();
     void qProcessTransportKillsNativeHostOnDllTimeout();
     void qProcessTransportCallsSimulatedCanDllManifest();
@@ -425,7 +477,8 @@ private slots:
     void sequenceCompilerRunsDmmCanAdapterExampleFile();
     void sequenceCompilerRunsForLoopExampleFile();
     void sequenceCompilerRunsTestItemExampleFile();
-    void testItemAggregatesFailureAfterRunningAllChildren();
+    void testItemStopsRemainingChildrenAfterFailure();
+    void testItemChildContinueRunsRemainingChildren();
     void testItemAggregatesErrorSeverity();
     void testItemStopSkipsChildrenAndRunsCleanup();
     void nestedTestItemsAggregateDirectChildrenRecursively();
@@ -848,6 +901,26 @@ void CoreTests::moduleTransportJsonSerializesRequestAndResponse()
     QCOMPARE(parsed.measurements.first().status, MeasurementStatus::Failed);
     QCOMPARE(parsed.errorCode, QString("LimitFail"));
     QCOMPARE(parsed.errorMessage, QString("Voltage is out of range"));
+}
+
+void CoreTests::pluginLogHandlesEmptyCallbackAndMixedValues()
+{
+    PicoATE::Plugin::setLogSink(nullptr, nullptr);
+    PicoATE_Log("callback is optional");
+    PicoATE_Log("ignored value={}", 42);
+
+    QStringList messages;
+    PicoATE::Plugin::setLogSink(&collectPluginLog, &messages);
+    PicoATE_Log("CAN connected");
+    PicoATE_Log("send={} count={} voltage={:.2f}",
+                std::string("01 02 03"),
+                3,
+                5.0123);
+    PicoATE::Plugin::setLogSink(nullptr, nullptr);
+
+    QCOMPARE(messages.size(), 2);
+    QCOMPARE(messages[0], QString("CAN connected"));
+    QCOMPARE(messages[1], QString("send=01 02 03 count=3 voltage=5.01"));
 }
 
 void CoreTests::variableResolverResolvesBuiltInsExplicitVariablesAndEnvironment()
@@ -1387,6 +1460,37 @@ void CoreTests::dllBridgeInvokerCallsTestDll()
     QCOMPARE(response.measurements.first().unit, QString("count"));
 }
 
+void CoreTests::dllBridgeInvokerStreamsPluginLogs()
+{
+    const auto dllPath = testDllPath();
+    QVERIFY2(QFileInfo::exists(dllPath), qPrintable(dllPath));
+
+    DllBridgeInvoker invoker(dllPath);
+    CollectingModuleLogSink sink;
+
+    ModuleTransportRequest request;
+    request.traceId = "trace-dll-log";
+    request.moduleId = "dll.echo";
+    request.functionName = "echo";
+    request.context.logSink = &sink;
+    request.context.inputs.insert("logMessages",
+                                  QVariantList{"send: 01 02 03 04",
+                                               "sleep: 2000 ms",
+                                               "recv: 01 02 03",
+                                               "parse: voltage=5.01 V"});
+
+    ModuleTransportResponse response;
+    const auto status = invoker.call(request, response, 3000);
+
+    QCOMPARE(status, ModuleTransportStatus::Ok);
+    const auto logs = sink.records();
+    QCOMPARE(logs.size(), 4);
+    QCOMPARE(logs[0].message, QString("send: 01 02 03 04"));
+    QCOMPARE(logs[1].message, QString("sleep: 2000 ms"));
+    QCOMPARE(logs[2].message, QString("recv: 01 02 03"));
+    QCOMPARE(logs[3].message, QString("parse: voltage=5.01 V"));
+}
+
 void CoreTests::dllBridgeInvokerReportsDllErrorCode()
 {
     const auto dllPath = testDllPath();
@@ -1494,6 +1598,123 @@ void CoreTests::qProcessTransportCallsNativeHostDll()
     QCOMPARE(response.outcome, ModuleOutcome::Passed);
     QCOMPARE(response.outputs.value("value").toString(), QString("from-nativehost"));
     QCOMPARE(response.outputs.value("numeric").toInt(), 42);
+}
+
+void CoreTests::qProcessTransportStreamsOrderedNativeHostLogs()
+{
+    const auto host = nativeHostPath();
+    const auto dllPath = testDllPath();
+    QVERIFY2(QFileInfo::exists(host), qPrintable(host));
+    QVERIFY2(QFileInfo::exists(dllPath), qPrintable(dllPath));
+
+    QProcessTransport transport(host, {"--dll", dllPath});
+    CollectingModuleLogSink sink;
+
+    ModuleTransportRequest request;
+    request.traceId = "trace-nativehost-log";
+    request.moduleId = "native.dll.echo";
+    request.functionName = "echo";
+    request.context.logSink = &sink;
+    request.context.inputs.insert("logMessages",
+                                  QVariantList{"send: 01 02 03 04",
+                                               "sleep: 2000 ms",
+                                               "recv: 01 02 03",
+                                               "parse: voltage=5.01 V"});
+
+    ModuleTransportResponse response;
+    const auto status = transport.call(request, response, 3000);
+
+    QCOMPARE(status, ModuleTransportStatus::Ok);
+    QCOMPARE(response.outcome, ModuleOutcome::Passed);
+    const auto logs = sink.records();
+    QCOMPARE(logs.size(), 4);
+    for (int index = 0; index < logs.size(); ++index) {
+        QCOMPARE(logs[index].sourceSequence, static_cast<quint64>(index + 1));
+    }
+    QCOMPARE(logs[0].message, QString("send: 01 02 03 04"));
+    QCOMPARE(logs[3].message, QString("parse: voltage=5.01 V"));
+}
+
+void CoreTests::qProcessTransportDropsHighFrequencyLogsWithoutBlocking()
+{
+    const auto host = nativeHostPath();
+    const auto dllPath = testDllPath();
+    QVERIFY2(QFileInfo::exists(host), qPrintable(host));
+    QVERIFY2(QFileInfo::exists(dllPath), qPrintable(dllPath));
+
+    QProcessTransport transport(host,
+                                {"--dll", dllPath, "--log-queue-capacity", "1"});
+    CollectingModuleLogSink sink;
+
+    ModuleTransportRequest request;
+    request.traceId = "trace-nativehost-log-burst";
+    request.moduleId = "native.dll.echo";
+    request.functionName = "echo";
+    request.context.logSink = &sink;
+    request.context.inputs.insert("logCount", 5000);
+
+    ModuleTransportResponse response;
+    const auto status = transport.call(request, response, 10000);
+
+    QCOMPARE(status, ModuleTransportStatus::Ok);
+    QCOMPARE(response.outcome, ModuleOutcome::Passed);
+    const auto logs = sink.records();
+    QVERIFY(!logs.isEmpty());
+    QVERIFY(logs.size() < 5001);
+    QVERIFY(std::any_of(logs.cbegin(), logs.cend(), [](const ModuleLogRecord& record) {
+        return record.droppedBefore > 0 && record.message.contains("dropped");
+    }));
+    for (int index = 1; index < logs.size(); ++index) {
+        QVERIFY(logs[index].sourceSequence > logs[index - 1].sourceSequence);
+    }
+}
+
+void CoreTests::executionSessionPublishesPluginLogsWithAttemptContext()
+{
+    const auto host = nativeHostPath();
+    const auto dllPath = testDllPath();
+    QVERIFY2(QFileInfo::exists(host), qPrintable(host));
+    QVERIFY2(QFileInfo::exists(dllPath), qPrintable(dllPath));
+
+    ExecutionPlan plan;
+    plan.id = "plugin-log-plan";
+    ExecNode action;
+    action.id = "001";
+    action.localId = "001";
+    action.displayName = "CAN Request";
+    action.kind = ExecNodeKind::Action;
+    action.payload.insert("moduleId", "native.dll.echo");
+    action.payload.insert("function", "echo");
+    action.payload.insert("inputs", QVariantMap{{"logMessages",
+                                                  QVariantList{"send: 01 02 03 04",
+                                                               "recv: 01 02 03"}}});
+    QVERIFY(plan.addNode(action));
+
+    CollectingRuntimeEventSink eventSink;
+    ExecutionSession session(plan, {}, &eventSink);
+    session.addUut("uut-1");
+    auto transport = std::make_shared<QProcessTransport>(host, QStringList{"--dll", dllPath});
+    QVERIFY(session.registerModule(
+        std::make_shared<TransportModuleAdapter>("native.dll.echo", transport, 3000)));
+
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(!run.hasError);
+
+    QVector<RuntimeEvent> logs;
+    for (const auto& event : eventSink.records()) {
+        if (event.kind == RuntimeEventKind::ModuleLog) {
+            logs.push_back(event);
+        }
+    }
+    QCOMPARE(logs.size(), 2);
+    QCOMPARE(logs[0].uutId, QString("uut-1"));
+    QCOMPARE(logs[0].nodeId, QString("001"));
+    QCOMPARE(logs[0].nodeDisplayName, QString("CAN Request"));
+    QVERIFY(!logs[0].attemptId.isEmpty());
+    QCOMPARE(logs[0].attemptIndex, 1);
+    QCOMPARE(logs[0].message, QString("send: 01 02 03 04"));
+    QVERIFY(logs[0].sequenceNumber < logs[1].sequenceNumber);
 }
 
 void CoreTests::qProcessTransportCallsNativeHostDllManifest()
@@ -3553,7 +3774,7 @@ void CoreTests::sequenceCompilerRunsTestItemExampleFile()
     QVERIFY(findStep(uut, "after-power-check") != nullptr);
 }
 
-void CoreTests::testItemAggregatesFailureAfterRunningAllChildren()
+void CoreTests::testItemStopsRemainingChildrenAfterFailure()
 {
     const auto json = R"json(
     {
@@ -3608,9 +3829,46 @@ void CoreTests::testItemAggregatesFailureAfterRunningAllChildren()
     QCOMPARE(parent->state, ActivationState::Failed);
     QCOMPARE(parent->children.size(), 2);
     QCOMPARE(parent->children[0].outcome, NodeOutcome::Failed);
-    QCOMPARE(parent->children[1].outcome, NodeOutcome::Passed);
+    QCOMPARE(parent->children[1].outcome, NodeOutcome::Skipped);
     QCOMPARE(findStep(uut, "after-parent")->outcome, NodeOutcome::Skipped);
     QCOMPARE(findStep(uut, "cleanup-step")->outcome, NodeOutcome::Passed);
+}
+
+void CoreTests::testItemChildContinueRunsRemainingChildren()
+{
+    const auto json = R"json({
+      "id": "test-item-child-continue",
+      "name": "Test Item Child Continue",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [{
+          "id": "parent",
+          "kind": "testItem",
+          "steps": [
+            {
+              "id": "allowed-failure",
+              "kind": "action",
+              "parameters": { "outcome": "Failed" },
+              "errorPolicy": { "onFail": "Continue" }
+            },
+            { "id": "still-runs", "kind": "action" }
+          ]
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compile.ok());
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-1");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+    QCOMPARE(session.uuts().first().outcomeOf("parent.allowed-failure"), NodeOutcome::Failed);
+    QCOMPARE(session.uuts().first().outcomeOf("parent.still-runs"), NodeOutcome::Passed);
+    QCOMPARE(session.uuts().first().outcomeOf("parent"), NodeOutcome::Failed);
 }
 
 void CoreTests::testItemStopSkipsChildrenAndRunsCleanup()
@@ -3679,7 +3937,7 @@ void CoreTests::testItemAggregatesErrorSeverity()
     QVERIFY(parent != nullptr);
     QCOMPARE(parent->outcome, NodeOutcome::Error);
     QCOMPARE(parent->children[0].outcome, NodeOutcome::Error);
-    QCOMPARE(parent->children[1].outcome, NodeOutcome::Passed);
+    QCOMPARE(parent->children[1].outcome, NodeOutcome::Skipped);
 }
 
 void CoreTests::nestedTestItemsAggregateDirectChildrenRecursively()
@@ -3733,7 +3991,7 @@ void CoreTests::nestedTestItemsAggregateDirectChildrenRecursively()
     QCOMPARE(inner->children.size(), 2);
     QCOMPARE(findStep(report.uuts.first(), "inner-pass")->outcome, NodeOutcome::Passed);
     QCOMPARE(findStep(report.uuts.first(), "inner-fail")->outcome, NodeOutcome::Failed);
-    QCOMPARE(findStep(report.uuts.first(), "outer-last")->outcome, NodeOutcome::Passed);
+    QCOMPARE(findStep(report.uuts.first(), "outer-last")->outcome, NodeOutcome::Skipped);
 }
 
 void CoreTests::testItemContainingLoopAggregatesIterationFailures()
@@ -3786,7 +4044,7 @@ void CoreTests::testItemContainingLoopAggregatesIterationFailures()
     QCOMPARE(loop->outcome, NodeOutcome::Failed);
     QCOMPARE(loop->children.size(), 1);
     QCOMPARE(loop->children.first().attempts.size(), 3);
-    QCOMPARE(findStep(uut, "after-repeat")->outcome, NodeOutcome::Passed);
+    QCOMPARE(findStep(uut, "after-repeat")->outcome, NodeOutcome::Skipped);
 }
 
 void CoreTests::loopTestItemChildrenKeepSerialOrderAcrossIterations()
@@ -3909,7 +4167,7 @@ void CoreTests::continuePolicyAdvancesAfterTestItemFailure()
     QVERIFY(run.completed);
     QVERIFY(run.hasError);
     QCOMPARE(session.uuts().first().outcomeOf("failed-item"), NodeOutcome::Failed);
-    QCOMPARE(session.uuts().first().outcomeOf("failed-item.remaining-child"), NodeOutcome::Passed);
+    QCOMPARE(session.uuts().first().outcomeOf("failed-item.remaining-child"), NodeOutcome::Skipped);
     QCOMPARE(session.uuts().first().outcomeOf("after-item"), NodeOutcome::Passed);
 }
 
@@ -4311,6 +4569,17 @@ void CoreTests::limitNodeSupportsNumericStringAndBooleanComparisons()
     QVERIFY(result.measurements.first().hasUpperLimit);
     QCOMPARE(result.measurements.first().status, MeasurementStatus::Passed);
 
+    result = runLimit({{"actual", 5.2}},
+                      {{"comparison", "between"}, {"expected", 5.0}, {"tolerance", 0.2}});
+    QCOMPARE(result.outcome, NodeOutcome::Passed);
+    QCOMPARE(result.measurements.first().lowerLimit, 4.8);
+    QCOMPARE(result.measurements.first().upperLimit, 5.2);
+    QCOMPARE(result.measurements.first().attributes.value("limitsDerived").toBool(), true);
+
+    result = runLimit({{"actual", 5.21}},
+                      {{"comparison", "between"}, {"expected", 5.0}, {"tolerance", 0.2}});
+    QCOMPARE(result.outcome, NodeOutcome::Failed);
+
     result = runLimit({{"actual", 4.8}},
                       {{"comparison", "between"}, {"lower", 4.8}, {"upper", 5.2}, {"inclusive", false}});
     QCOMPARE(result.outcome, NodeOutcome::Failed);
@@ -4394,8 +4663,8 @@ void CoreTests::limitStepFailsReferencedParsedValueOutsideRange()
             "inputs": { "actual": "${step:001.outputs.decoded.voltage}" },
             "parameters": {
               "comparison": "between",
-              "lower": 4.8,
-              "upper": 5.2,
+              "expected": 5.0,
+              "tolerance": 0.2,
               "unit": "V",
               "measurementName": "PARSED_VOLTAGE"
             }
