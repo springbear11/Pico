@@ -1,5 +1,7 @@
 add_executable(PicoATENativeHost
     Main.cpp
+    NativeHostDiagnosticCapture.cpp
+    NativeHostDiagnosticCapture.h
     NativeHostOutputPump.cpp
     NativeHostOutputPump.h
 )

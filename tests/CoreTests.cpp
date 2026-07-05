@@ -32,10 +32,14 @@
 #include <thread>
 #include <utility>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QProcess>
+#include <QTemporaryDir>
 
 using namespace PicoATE::Core;
 
@@ -435,8 +439,14 @@ private slots:
     void dllBridgeInvokerReportsTimeout();
     void nativeHostManifestResolvesVariables();
     void nativeHostManifestReportsUnresolvedVariables();
+    void nativeHostManifestRejectsInvalidDiagnostics();
     void qProcessTransportCallsNativeHostDll();
     void qProcessTransportStreamsOrderedNativeHostLogs();
+    void qProcessTransportCapturesVendorStdoutAndStderr();
+    void qProcessTransportBoundsRawVendorOutput();
+    void nativeHostBatchesProtocolLogFrames();
+    void qProcessTransportDiscardsVendorStdoutWhenConfigured();
+    void persistentNativeHostHandlesManyShortCalls();
     void qProcessTransportDropsHighFrequencyLogsWithoutBlocking();
     void executionSessionPublishesPluginLogsWithAttemptContext();
     void qProcessTransportCallsNativeHostDllManifest();
@@ -887,6 +897,7 @@ void CoreTests::moduleTransportJsonSerializesRequestAndResponse()
     response.measurements.push_back(makeMeasurement("VOUT", 4.999, "V", MeasurementStatus::Failed));
     response.errorCode = "LimitFail";
     response.errorMessage = "Voltage is out of range";
+    response.diagnostics.insert("fixture", QVariantMap{{"elapsedMs", 12}});
 
     const auto responseJson = moduleTransportResponseToJson(response);
     QCOMPARE(responseJson.value("outcome").toString(), QString("Failed"));
@@ -901,6 +912,27 @@ void CoreTests::moduleTransportJsonSerializesRequestAndResponse()
     QCOMPARE(parsed.measurements.first().status, MeasurementStatus::Failed);
     QCOMPARE(parsed.errorCode, QString("LimitFail"));
     QCOMPARE(parsed.errorMessage, QString("Voltage is out of range"));
+    QCOMPARE(parsed.diagnostics.value("fixture").toMap().value("elapsedMs").toInt(), 12);
+
+    ModuleLogRecord firstLog;
+    firstLog.sourceSequence = 1;
+    firstLog.timestampUtc = QDateTime::currentDateTimeUtc();
+    firstLog.message = "first";
+    auto secondLog = firstLog;
+    secondLog.sourceSequence = 2;
+    secondLog.message = "second";
+    const auto batch = moduleProtocolMessageFromJson(
+        moduleLogBatchMessageToJson("trace-1", {firstLog, secondLog}));
+    QCOMPARE(batch.kind, ModuleProtocolMessageKind::LogBatch);
+    QCOMPARE(batch.logs.size(), 2);
+    QCOMPARE(batch.logs[1].message, QString("second"));
+
+    QJsonObject emptyBatchJson;
+    emptyBatchJson.insert("type", "moduleLogBatch");
+    emptyBatchJson.insert("logs", QJsonArray{});
+    const auto emptyBatch = moduleProtocolMessageFromJson(emptyBatchJson);
+    QCOMPARE(emptyBatch.kind, ModuleProtocolMessageKind::Invalid);
+    QVERIFY(emptyBatch.errorMessage.contains("at least one"));
 }
 
 void CoreTests::pluginLogHandlesEmptyCallbackAndMixedValues()
@@ -1554,6 +1586,10 @@ void CoreTests::nativeHostManifestResolvesVariables()
     QCOMPARE(result.manifest.symbol, QString("PicoATE_Execute"));
     QCOMPARE(result.manifest.bufferSize, 65536);
     QCOMPARE(result.manifest.dllTimeoutMs, 30000);
+    QCOMPARE(result.manifest.diagnostics.vendorStdioMode, NativeHostVendorStdioMode::Strict);
+    QCOMPARE(result.manifest.diagnostics.maximumBatchRecords, 64);
+    QCOMPARE(result.manifest.diagnostics.maximumBatchBytes, 16384);
+    QCOMPARE(result.manifest.diagnostics.batchFlushMs, 20);
     QCOMPARE(result.manifest.metadata.value("source").toString(),
              QFileInfo(manifestPath).absoluteDir().absolutePath());
 }
@@ -1574,6 +1610,40 @@ void CoreTests::nativeHostManifestReportsUnresolvedVariables()
     }));
 }
 
+
+void CoreTests::nativeHostManifestRejectsInvalidDiagnostics()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath("invalid_manifest.json");
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"({
+        "dll": "dummy.dll",
+        "diagnostics": {
+            "vendorStdio": "guess",
+            "maximumBatchRecords": 0,
+            "batchFlushMs": "fast"
+        }
+    })");
+    file.close();
+
+    VariableResolverOptions options;
+    options.sequenceFilePath = path;
+    options.useEnvironment = false;
+    const auto result = loadNativeHostManifest(path, options);
+    QVERIFY(!result.ok());
+
+    const auto hasPath = [&](const QString& pathValue) {
+        return std::any_of(result.errors.cbegin(), result.errors.cend(),
+                           [&](const NativeHostManifestError& error) {
+                               return error.path == pathValue;
+                           });
+    };
+    QVERIFY(hasPath("diagnostics.vendorStdio"));
+    QVERIFY(hasPath("diagnostics.maximumBatchRecords"));
+    QVERIFY(hasPath("diagnostics.batchFlushMs"));
+}
 void CoreTests::qProcessTransportCallsNativeHostDll()
 {
     const auto host = nativeHostPath();
@@ -1635,6 +1705,207 @@ void CoreTests::qProcessTransportStreamsOrderedNativeHostLogs()
     QCOMPARE(logs[3].message, QString("parse: voltage=5.01 V"));
 }
 
+void CoreTests::qProcessTransportCapturesVendorStdoutAndStderr()
+{
+    const auto host = nativeHostPath();
+    const auto dllPath = testDllPath();
+    QVERIFY2(QFileInfo::exists(host), qPrintable(host));
+    QVERIFY2(QFileInfo::exists(dllPath), qPrintable(dllPath));
+
+    QProcessTransport transport(host, {"--dll", dllPath});
+    CollectingModuleLogSink sink;
+
+    ModuleTransportRequest request;
+    request.traceId = "trace-vendor-stdio";
+    request.moduleId = "native.dll.echo";
+    request.functionName = "echo";
+    request.context.logSink = &sink;
+    request.context.inputs.insert("stdoutMessages", QVariantList{"stdout-one"});
+    request.context.inputs.insert("stderrMessages", QVariantList{"stderr-two"});
+    request.context.inputs.insert("numeric", 42);
+
+    ModuleTransportResponse response;
+    const auto status = transport.call(request, response, 3000);
+
+    QCOMPARE(status, ModuleTransportStatus::Ok);
+    QCOMPARE(response.outcome, ModuleOutcome::Passed);
+    QCOMPARE(response.outputs.value("numeric").toInt(), 42);
+    const auto logs = sink.records();
+    QCOMPARE(logs.size(), 2);
+    QCOMPARE(logs[0].message, QString("[vendor] stdout-one"));
+    QCOMPARE(logs[1].message, QString("[vendor] stderr-two"));
+    QCOMPARE(logs[0].sourceSequence, quint64(1));
+    QCOMPARE(logs[1].sourceSequence, quint64(2));
+}
+
+void CoreTests::qProcessTransportBoundsRawVendorOutput()
+{
+    const auto host = nativeHostPath();
+    const auto dllPath = testDllPath();
+    QVERIFY2(QFileInfo::exists(host), qPrintable(host));
+    QVERIFY2(QFileInfo::exists(dllPath), qPrintable(dllPath));
+
+    QProcessTransport transport(host,
+                                {"--dll", dllPath,
+                                 "--log-queue-capacity", "1",
+                                 "--log-message-characters", "128"});
+    CollectingModuleLogSink sink;
+
+    ModuleTransportRequest request;
+    request.traceId = "trace-vendor-stdio-burst";
+    request.moduleId = "native.dll.echo";
+    request.functionName = "echo";
+    request.context.logSink = &sink;
+    request.context.inputs.insert("rawStdoutCount", 10000);
+    request.context.inputs.insert("rawNoNewlineCharacters", 100000);
+
+    ModuleTransportResponse response;
+    const auto status = transport.call(request, response, 10000);
+
+    QCOMPARE(status, ModuleTransportStatus::Ok);
+    QCOMPARE(response.outcome, ModuleOutcome::Passed);
+    const auto logs = sink.records();
+    QVERIFY(!logs.isEmpty());
+    QVERIFY(logs.size() < 10000);
+    QVERIFY(std::any_of(logs.cbegin(), logs.cend(), [](const ModuleLogRecord& record) {
+        return record.droppedBefore > 0 && record.message.contains("dropped");
+    }));
+    QVERIFY(std::all_of(logs.cbegin(), logs.cend(), [](const ModuleLogRecord& record) {
+        return record.message.size() <= 160;
+    }));
+}
+
+void CoreTests::nativeHostBatchesProtocolLogFrames()
+{
+    const auto host = nativeHostPath();
+    const auto dllPath = testDllPath();
+    QVERIFY2(QFileInfo::exists(host), qPrintable(host));
+    QVERIFY2(QFileInfo::exists(dllPath), qPrintable(dllPath));
+
+    ModuleTransportRequest request;
+    request.traceId = "trace-batched-wire-logs";
+    request.moduleId = "native.dll.echo";
+    request.functionName = "echo";
+    request.context.inputs.insert("logCount", 1000);
+
+    QProcess process;
+    process.setProgram(host);
+    process.setArguments({"--dll", dllPath,
+                          "--vendor-stdio", "discard",
+                          "--log-batch-records", "64",
+                          "--log-batch-bytes", "1048576",
+                          "--log-flush-ms", "1000"});
+    process.setProcessChannelMode(QProcess::SeparateChannels);
+    process.start();
+    QVERIFY2(process.waitForStarted(3000), qPrintable(process.errorString()));
+    process.write(QJsonDocument(moduleTransportRequestToJson(request))
+                      .toJson(QJsonDocument::Compact) + '\n');
+    QVERIFY(process.waitForBytesWritten(3000));
+    process.closeWriteChannel();
+    QVERIFY2(process.waitForFinished(10000), qPrintable(process.errorString()));
+    QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(process.exitCode(), 0);
+
+    const auto lines = process.readAllStandardOutput().split('\n');
+    int protocolLines = 0;
+    int batchLines = 0;
+    int responseLines = 0;
+    int deliveredLogs = 0;
+    for (const auto& rawLine : lines) {
+        if (rawLine.trimmed().isEmpty()) {
+            continue;
+        }
+        ++protocolLines;
+        QJsonParseError error;
+        const auto document = QJsonDocument::fromJson(rawLine, &error);
+        QCOMPARE(error.error, QJsonParseError::NoError);
+        QVERIFY(document.isObject());
+        const auto message = moduleProtocolMessageFromJson(document.object());
+        if (message.kind == ModuleProtocolMessageKind::LogBatch) {
+            ++batchLines;
+            deliveredLogs += message.logs.size();
+        } else if (message.kind == ModuleProtocolMessageKind::Response) {
+            ++responseLines;
+        } else {
+            QFAIL("NativeHost emitted an unexpected protocol frame");
+        }
+    }
+
+    QCOMPARE(deliveredLogs, 1000);
+    QCOMPARE(batchLines, 16);
+    QCOMPARE(responseLines, 1);
+    QCOMPARE(protocolLines, 17);
+}
+
+void CoreTests::qProcessTransportDiscardsVendorStdoutWhenConfigured()
+{
+    const auto host = nativeHostPath();
+    const auto dllPath = testDllPath();
+    QVERIFY2(QFileInfo::exists(host), qPrintable(host));
+    QVERIFY2(QFileInfo::exists(dllPath), qPrintable(dllPath));
+
+    QProcessTransport transport(host, {"--dll", dllPath,
+                                       "--vendor-stdio", "discard"});
+    CollectingModuleLogSink sink;
+
+    ModuleTransportRequest request;
+    request.traceId = "trace-discard-vendor-stdio";
+    request.moduleId = "native.dll.echo";
+    request.functionName = "echo";
+    request.context.logSink = &sink;
+    request.context.inputs.insert("logMessages", QVariantList{"callback-visible"});
+    request.context.inputs.insert("stdoutMessages", QVariantList{"vendor-hidden"});
+    request.context.inputs.insert("stderrMessages", QVariantList{"vendor-error-hidden"});
+
+    ModuleTransportResponse response;
+    const auto status = transport.call(request, response, 3000);
+
+    QCOMPARE(status, ModuleTransportStatus::Ok);
+    QCOMPARE(response.outcome, ModuleOutcome::Passed);
+    const auto logs = sink.records();
+    QCOMPARE(logs.size(), 1);
+    QCOMPARE(logs.first().message, QString("callback-visible"));
+
+    const auto hostTiming = response.diagnostics.value("nativeHost").toMap();
+    QCOMPARE(hostTiming.value("vendorStdioMode").toString(), QString("discard"));
+    QCOMPARE(hostTiming.value("vendorFlushMs").toLongLong(), 0);
+    QVERIFY(response.diagnostics.value("qprocess").toMap().value("totalMs").toLongLong() >= 0);
+}
+
+void CoreTests::persistentNativeHostHandlesManyShortCalls()
+{
+    const auto host = nativeHostPath();
+    const auto dllPath = testDllPath();
+    QVERIFY2(QFileInfo::exists(host), qPrintable(host));
+    QVERIFY2(QFileInfo::exists(dllPath), qPrintable(dllPath));
+
+    PersistentQProcessTransport transport(host, {"--dll", dllPath,
+                                                  "--vendor-stdio", "discard"});
+    QElapsedTimer timer;
+    timer.start();
+
+    constexpr int CallCount = 200;
+    for (int index = 0; index < CallCount; ++index) {
+        ModuleTransportRequest request;
+        request.traceId = QString("trace-short-%1").arg(index);
+        request.moduleId = "native.dll.echo";
+        request.functionName = "echo";
+        request.context.inputs.insert("numeric", index);
+
+        ModuleTransportResponse response;
+        const auto status = transport.call(request, response, 3000);
+        QCOMPARE(status, ModuleTransportStatus::Ok);
+        QCOMPARE(response.outcome, ModuleOutcome::Passed);
+        QCOMPARE(response.outputs.value("numeric").toInt(), index);
+        const auto timing = response.diagnostics.value("persistentQprocess").toMap();
+        QCOMPARE(timing.value("reusedProcess").toBool(), index > 0);
+        QVERIFY(timing.value("totalMs").toLongLong() >= 0);
+    }
+
+    transport.shutdown();
+    QVERIFY2(timer.elapsed() < 10000,
+             qPrintable(QString("200 short calls took %1 ms").arg(timer.elapsed())));
+}
 void CoreTests::qProcessTransportDropsHighFrequencyLogsWithoutBlocking()
 {
     const auto host = nativeHostPath();
@@ -3322,7 +3593,9 @@ void CoreTests::sequenceCompilerRunsDmmCanAdapterExampleFile()
     const auto result = compiler.compileJson(document.object());
     QVERIFY(result.ok());
     QCOMPARE(result.sequence.id, QString("dmm-can-adapter-sequence"));
-    QCOMPARE(result.sequence.moduleBindings.size(), 0);
+    QCOMPARE(result.sequence.moduleBindings.size(), 2);
+    QCOMPARE(result.sequence.moduleBindings[0].moduleId, QString("fake.dmm"));
+    QCOMPARE(result.sequence.moduleBindings[1].moduleId, QString("fake.can"));
 
     ExecutionSession session(result.plan);
     session.addUut("uut-1");

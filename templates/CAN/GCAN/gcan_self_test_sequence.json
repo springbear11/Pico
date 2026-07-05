@@ -1,0 +1,122 @@
+{
+  "id": "gcan-plugin-self-test",
+  "name": "GCAN Plugin Hardware Closed Loop",
+  "version": "0.2.0",
+  "moduleBindings": [
+    {
+      "moduleId": "plugin.can.gcan",
+      "transport": "persistent-qprocess",
+      "program": "${PROJECT_DIR}/out/build/vs2022-qt6-all/src/nativehost/Debug/PicoATE.NativeHost.exe",
+      "arguments": [
+        "--manifest",
+        "${PROJECT_DIR}/templates/CAN/GCAN/gcan_hardware_manifest.json",
+        "--project-dir",
+        "${PROJECT_DIR}"
+      ],
+      "timeoutMs": 6000
+    }
+  ],
+  "groups": [
+    {
+      "id": "setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "can-open",
+          "name": "Open GCAN Plugin",
+          "kind": "action",
+          "moduleId": "plugin.can.gcan",
+          "function": "open",
+          "inputs": {
+            "deviceType": 0,
+            "deviceIndex": 0,
+            "channelIndex": 0,
+            "bitrate": 500000,
+            "canFd": false,
+            "selfTest": true
+          },
+          "errorPolicy": {
+            "onFail": "RunCleanup",
+            "onError": "RunCleanup",
+            "onTimeout": "RunCleanup"
+          }
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "001",
+          "name": "GCAN Send Delay Receive",
+          "kind": "testItem",
+          "steps": [
+            {
+              "id": "01",
+              "key": "tx",
+              "name": "Transmit Frame",
+              "kind": "action",
+              "moduleId": "plugin.can.gcan",
+              "function": "write",
+              "inputs": {
+                "id": "0x123",
+                "data": "01 02 03 04 05 06 07 08"
+              }
+            },
+            {
+              "id": "02",
+              "key": "delay",
+              "name": "Wait For Receive",
+              "kind": "wait",
+              "ms": 50
+            },
+            {
+              "id": "03",
+              "key": "rx",
+              "name": "Receive Echo Frame",
+              "kind": "action",
+              "moduleId": "plugin.can.gcan",
+              "function": "read",
+              "inputs": {
+                "filterId": "0x123",
+                "filterMask": "0x7FF",
+                "timeoutMs": 1500
+              },
+              "timeoutMs": 2500
+            },
+            {
+              "id": "04",
+              "key": "dlc-limit",
+              "name": "Validate Echo DLC",
+              "kind": "limit",
+              "inputs": {
+                "actual": "${step:rx.outputs.dlc}"
+              },
+              "parameters": {
+                "comparison": "between",
+                "expected": 8,
+                "tolerance": 0,
+                "unit": "byte",
+                "measurementName": "GCAN_ECHO_DLC"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "can-close",
+          "name": "Close GCAN Plugin",
+          "kind": "cleanup",
+          "moduleId": "plugin.can.gcan",
+          "function": "close"
+        }
+      ]
+    }
+  ]
+}

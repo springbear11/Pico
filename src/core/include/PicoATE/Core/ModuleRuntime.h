@@ -102,6 +102,7 @@ struct ModuleTransportResponse {
     QVector<MeasurementResult> measurements;
     QString errorCode;
     QString errorMessage;
+    QVariantMap diagnostics;
 };
 
 enum class ModuleTransportStatus {

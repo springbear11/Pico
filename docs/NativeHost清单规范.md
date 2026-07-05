@@ -43,6 +43,36 @@ PicoATE.NativeHost.exe --dll D:\path\to\VendorDriver.dll
 | `dllTimeoutMs` | number | no | `30000` | In-host DLL call timeout. Parent `QProcessTransport` timeout still applies. |
 | `metadata` | object | no | `{}` | Optional diagnostic/project metadata. |
 
+## 诊断与日志批次配置
+
+manifest 可选增加 `diagnostics`：
+
+```json
+"diagnostics": {
+  "vendorStdio": "strict",
+  "maximumBufferedLogs": 1024,
+  "maximumMessageCharacters": 4096,
+  "maximumBatchRecords": 64,
+  "maximumBatchBytes": 16384,
+  "batchFlushMs": 20
+}
+```
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `vendorStdio` | `strict` | `strict` 捕获并转发厂家 stdout/stderr，Response 前等待 flush；`discard` 只排空并丢弃，不做每 Step flush。 |
+| `maximumBufferedLogs` | `1024` | Host 内最多缓存的日志记录数，超出后丢弃并生成摘要。 |
+| `maximumMessageCharacters` | `4096` | 单条日志保留的最大字符数。 |
+| `maximumBatchRecords` | `64` | 一个 `moduleLogBatch` 最多包含的日志条数。 |
+| `maximumBatchBytes` | `16384` | 一个日志批次的近似字节上限。 |
+| `batchFlushMs` | `20` | 低频日志等待成批的最长时间，Response 会立即冲刷剩余日志。 |
+
+自有插件已经使用 `PicoATE_Log` 时可选择 `discard`，减少每个短 Step 的标准流顺序屏障。
+不受控厂家 DLL 或仍需查看其 `printf/fprintf` 输出时使用默认 `strict`。
+
+旧版单条 `moduleLog` 仍可解析；新版 Host 使用 `moduleLogBatch` 降低 JSON 序列化和
+管道唤醒次数。1000 条测试日志在默认 64 条批次下产生 16 个日志帧和 1 个 Response。
+
 ## Variable Resolution
 
 Manifest string fields use `VariableResolver`, documented in

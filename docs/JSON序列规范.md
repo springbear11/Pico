@@ -23,6 +23,11 @@ present with the wrong JSON type, compilation fails with a path-specific error.
 implementations. These bindings are not compiled into `ExecutionPlan`; they are
 used by runtime setup to register modules on `ExecutionSession`.
 
+每个启用的 binding 还会提供同名 DeviceSession Factory。例如 Station 设备配置
+`driverId: "plugin.can.gcan"` 时，会复用 Sequence 中
+`moduleId: "plugin.can.gcan"` 所声明的 Transport 来执行
+`open/health/close` 和连接测试。
+
 ```json
 {
   "moduleBindings": [

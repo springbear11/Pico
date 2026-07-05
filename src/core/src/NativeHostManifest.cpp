@@ -42,10 +42,16 @@ QString jsonTypeName(const QJsonValue& value)
     return "undefined";
 }
 
+QString fieldPath(const QString& prefix, const QString& key)
+{
+    return prefix.isEmpty() ? key : prefix + '.' + key;
+}
+
 QString readString(const QJsonObject& object,
                    const QString& key,
                    NativeHostManifestResult& result,
-                   const QString& fallback = {})
+                   const QString& fallback = {},
+                   const QString& prefix = {})
 {
     if (!object.contains(key)) {
         return fallback;
@@ -54,7 +60,7 @@ QString readString(const QJsonObject& object,
     const auto value = object.value(key);
     if (!value.isString()) {
         addError(result,
-                 key,
+                 fieldPath(prefix, key),
                  QString("Expected string, got %1").arg(jsonTypeName(value)),
                  "Fix the manifest field type");
         return fallback;
@@ -65,7 +71,8 @@ QString readString(const QJsonObject& object,
 int readPositiveInt(const QJsonObject& object,
                     const QString& key,
                     NativeHostManifestResult& result,
-                    int fallback)
+                    int fallback,
+                    const QString& prefix = {})
 {
     if (!object.contains(key)) {
         return fallback;
@@ -74,7 +81,7 @@ int readPositiveInt(const QJsonObject& object,
     const auto value = object.value(key);
     if (!value.isDouble()) {
         addError(result,
-                 key,
+                 fieldPath(prefix, key),
                  QString("Expected number, got %1").arg(jsonTypeName(value)),
                  "Fix the manifest field type");
         return fallback;
@@ -83,12 +90,64 @@ int readPositiveInt(const QJsonObject& object,
     const auto parsed = value.toInt();
     if (parsed <= 0) {
         addError(result,
-                 key,
+                 fieldPath(prefix, key),
                  "Expected a positive integer",
                  "Use a value greater than zero");
         return fallback;
     }
     return parsed;
+}
+
+NativeHostVendorStdioMode readVendorStdioMode(const QJsonObject& object,
+                                              NativeHostManifestResult& result,
+                                              NativeHostVendorStdioMode fallback)
+{
+    const auto value = readString(object,
+                                  "vendorStdio",
+                                  result,
+                                  nativeHostVendorStdioModeToString(fallback),
+                                  "diagnostics").trimmed().toLower();
+    if (value == "strict") {
+        return NativeHostVendorStdioMode::Strict;
+    }
+    if (value == "discard") {
+        return NativeHostVendorStdioMode::Discard;
+    }
+
+    addError(result,
+             "diagnostics.vendorStdio",
+             QString("Unsupported vendor stdio mode: %1").arg(value),
+             "Use strict or discard");
+    return fallback;
+}
+
+void parseDiagnostics(const QJsonObject& root, NativeHostManifestResult& result)
+{
+    if (!root.contains("diagnostics")) {
+        return;
+    }
+    if (!root.value("diagnostics").isObject()) {
+        addError(result,
+                 "diagnostics",
+                 QString("Expected object, got %1").arg(jsonTypeName(root.value("diagnostics"))),
+                 "Use a diagnostics object");
+        return;
+    }
+
+    const auto object = root.value("diagnostics").toObject();
+    auto& diagnostics = result.manifest.diagnostics;
+    diagnostics.vendorStdioMode = readVendorStdioMode(
+        object, result, diagnostics.vendorStdioMode);
+    diagnostics.maximumBufferedLogs = readPositiveInt(
+        object, "maximumBufferedLogs", result, diagnostics.maximumBufferedLogs, "diagnostics");
+    diagnostics.maximumMessageCharacters = readPositiveInt(
+        object, "maximumMessageCharacters", result, diagnostics.maximumMessageCharacters, "diagnostics");
+    diagnostics.maximumBatchRecords = readPositiveInt(
+        object, "maximumBatchRecords", result, diagnostics.maximumBatchRecords, "diagnostics");
+    diagnostics.maximumBatchBytes = readPositiveInt(
+        object, "maximumBatchBytes", result, diagnostics.maximumBatchBytes, "diagnostics");
+    diagnostics.batchFlushMs = readPositiveInt(
+        object, "batchFlushMs", result, diagnostics.batchFlushMs, "diagnostics");
 }
 
 QString resolveDllPath(QString path, const VariableResolver& resolver)
@@ -111,6 +170,17 @@ void appendResolutionErrors(NativeHostManifestResult& result,
 }
 
 } // namespace
+
+QString nativeHostVendorStdioModeToString(NativeHostVendorStdioMode mode)
+{
+    switch (mode) {
+    case NativeHostVendorStdioMode::Strict:
+        return "strict";
+    case NativeHostVendorStdioMode::Discard:
+        return "discard";
+    }
+    return "strict";
+}
 
 NativeHostManifestResult loadNativeHostManifest(const QString& manifestPath,
                                                 VariableResolverOptions resolverOptions)
@@ -156,8 +226,11 @@ NativeHostManifestResult loadNativeHostManifest(const QString& manifestPath,
     }
 
     result.manifest.symbol = readString(object, "symbol", result, result.manifest.symbol);
-    result.manifest.bufferSize = readPositiveInt(object, "bufferSize", result, result.manifest.bufferSize);
-    result.manifest.dllTimeoutMs = readPositiveInt(object, "dllTimeoutMs", result, result.manifest.dllTimeoutMs);
+    result.manifest.bufferSize = readPositiveInt(
+        object, "bufferSize", result, result.manifest.bufferSize);
+    result.manifest.dllTimeoutMs = readPositiveInt(
+        object, "dllTimeoutMs", result, result.manifest.dllTimeoutMs);
+    parseDiagnostics(object, result);
 
     if (object.contains("metadata")) {
         const auto metadata = object.value("metadata");
@@ -174,8 +247,10 @@ NativeHostManifestResult loadNativeHostManifest(const QString& manifestPath,
     VariableResolver resolver(std::move(resolverOptions));
     QVector<VariableResolutionError> resolutionErrors;
     dllPath = resolver.resolveString(dllPath, resolutionErrors, dllKey);
-    result.manifest.symbol = resolver.resolveString(result.manifest.symbol, resolutionErrors, "symbol");
-    result.manifest.metadata = resolver.resolveMap(result.manifest.metadata, resolutionErrors, "metadata");
+    result.manifest.symbol = resolver.resolveString(
+        result.manifest.symbol, resolutionErrors, "symbol");
+    result.manifest.metadata = resolver.resolveMap(
+        result.manifest.metadata, resolutionErrors, "metadata");
     appendResolutionErrors(result, resolutionErrors);
 
     result.manifest.dllPath = resolveDllPath(dllPath, resolver);

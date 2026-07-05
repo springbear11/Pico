@@ -7,7 +7,9 @@
 #include <QThread>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace {
 
@@ -72,6 +74,27 @@ int PicoATE_Execute(const char* requestJsonUtf8,
     for (int index = 0; index < logCount; ++index) {
         PicoATE_Log("burst log {}", index);
     }
+
+    for (const auto& value : inputs.value("stdoutMessages").toArray()) {
+        const auto bytes = value.toString().toUtf8();
+        std::fprintf(stdout, "%s\n", bytes.constData());
+    }
+    for (const auto& value : inputs.value("stderrMessages").toArray()) {
+        const auto bytes = value.toString().toUtf8();
+        std::fprintf(stderr, "%s\n", bytes.constData());
+    }
+    const int rawStdoutCount = qMax(0, inputs.value("rawStdoutCount").toInt(0));
+    for (int index = 0; index < rawStdoutCount; ++index) {
+        std::fprintf(stdout, "vendor stdout burst %d\n", index);
+    }
+    const int rawNoNewlineCharacters = qMax(
+        0, inputs.value("rawNoNewlineCharacters").toInt(0));
+    if (rawNoNewlineCharacters > 0) {
+        const std::string raw(static_cast<std::size_t>(rawNoNewlineCharacters), 'X');
+        std::fwrite(raw.data(), 1, raw.size(), stdout);
+    }
+    std::fflush(stdout);
+    std::fflush(stderr);
 
     const auto sleepMs = inputs.value("dllSleepMs").toInt(0);
     if (sleepMs > 0) {

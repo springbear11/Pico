@@ -23,6 +23,17 @@ int remainingMs(const QElapsedTimer& timer, int timeoutMs)
     return remaining > 0 ? remaining : 0;
 }
 
+void publishLogs(const ModuleTransportRequest& request,
+                 const QVector<ModuleLogRecord>& logs)
+{
+    if (!request.context.logSink) {
+        return;
+    }
+    for (const auto& log : logs) {
+        request.context.logSink->publishModuleLog(log);
+    }
+}
+
 } // namespace
 
 PersistentQProcessTransport::PersistentQProcessTransport(QString program, QStringList arguments)
@@ -41,28 +52,61 @@ ModuleTransportStatus PersistentQProcessTransport::call(const ModuleTransportReq
                                                         int timeoutMs)
 {
     const auto timeout = effectiveTimeout(timeoutMs);
+    const bool reusedProcess = isRunning();
+    QElapsedTimer timer;
+    timer.start();
+    qint64 processReadyAt = -1;
+    qint64 requestWrittenAt = -1;
+
+    const auto finish = [&](ModuleTransportStatus status) {
+        const auto totalMs = timer.elapsed();
+        QVariantMap timing;
+        timing.insert("reusedProcess", reusedProcess);
+        timing.insert("processStartMs", reusedProcess ? 0 : processReadyAt);
+        timing.insert("requestWriteMs",
+                      processReadyAt >= 0 && requestWrittenAt >= 0
+                          ? requestWrittenAt - processReadyAt
+                          : -1);
+        timing.insert("responseWaitMs",
+                      requestWrittenAt >= 0 ? totalMs - requestWrittenAt : -1);
+        timing.insert("totalMs", totalMs);
+        response.diagnostics.insert("persistentQprocess", timing);
+        if (totalMs >= 10000 && request.context.logSink) {
+            const auto host = response.diagnostics.value("nativeHost").toMap();
+            ModuleLogRecord record;
+            record.timestampUtc = QDateTime::currentDateTimeUtc();
+            record.message = QString("[transport] slow call kind=persistent-qprocess total=%1 ms hostInvoke=%2 ms vendorFlush=%3 ms")
+                                 .arg(totalMs)
+                                 .arg(host.value("dllInvokeMs").toLongLong())
+                                 .arg(host.value("vendorFlushMs").toLongLong());
+            request.context.logSink->publishModuleLog(record);
+        }
+        return status;
+    };
+
     if (!ensureStarted(timeout, response)) {
-        return ModuleTransportStatus::TransportError;
+        processReadyAt = timer.elapsed();
+        return finish(ModuleTransportStatus::TransportError);
     }
+    processReadyAt = timer.elapsed();
 
     const auto requestBytes = QJsonDocument(moduleTransportRequestToJson(request))
                                   .toJson(QJsonDocument::Compact) + '\n';
     m_process->write(requestBytes);
-    if (!m_process->waitForBytesWritten(timeout)) {
+    if (!m_process->waitForBytesWritten(remainingMs(timer, timeout))) {
         setTransportError(response,
                           "PersistentProcessWriteFailed",
                           m_process->errorString());
         killProcess();
-        return ModuleTransportStatus::TransportError;
+        return finish(ModuleTransportStatus::TransportError);
     }
+    requestWrittenAt = timer.elapsed();
 
-    QElapsedTimer timer;
-    timer.start();
     while (remainingMs(timer, timeout) > 0) {
         QString line;
         const auto status = readResponseLine(line, remainingMs(timer, timeout), response);
         if (status != ModuleTransportStatus::Ok) {
-            return status;
+            return finish(status);
         }
 
         QJsonParseError parseError;
@@ -72,7 +116,7 @@ ModuleTransportStatus PersistentQProcessTransport::call(const ModuleTransportReq
                               "InvalidPersistentJsonResponse",
                               parseError.errorString());
             killProcess();
-            return ModuleTransportStatus::TransportError;
+            return finish(ModuleTransportStatus::TransportError);
         }
 
         const auto message = moduleProtocolMessageFromJson(document.object());
@@ -81,31 +125,33 @@ ModuleTransportStatus PersistentQProcessTransport::call(const ModuleTransportReq
                               "PersistentTraceIdMismatch",
                               QString("Expected %1, got %2").arg(request.traceId, message.traceId));
             killProcess();
-            return ModuleTransportStatus::TransportError;
+            return finish(ModuleTransportStatus::TransportError);
         }
         if (message.kind == ModuleProtocolMessageKind::Log) {
-            if (request.context.logSink) {
-                request.context.logSink->publishModuleLog(message.log);
-            }
+            publishLogs(request, {message.log});
+            continue;
+        }
+        if (message.kind == ModuleProtocolMessageKind::LogBatch) {
+            publishLogs(request, message.logs);
             continue;
         }
         if (message.kind == ModuleProtocolMessageKind::Response) {
             response = message.response;
-            return ModuleTransportStatus::Ok;
+            return finish(ModuleTransportStatus::Ok);
         }
 
         setTransportError(response,
                           "InvalidPersistentModuleProtocol",
                           message.errorMessage);
         killProcess();
-        return ModuleTransportStatus::TransportError;
+        return finish(ModuleTransportStatus::TransportError);
     }
 
     response.outcome = ModuleOutcome::Timeout;
     response.errorCode = "PersistentProcessTimeout";
     response.errorMessage = "Persistent module host timed out";
     killProcess();
-    return ModuleTransportStatus::Timeout;
+    return finish(ModuleTransportStatus::Timeout);
 }
 
 bool PersistentQProcessTransport::isRunning() const
@@ -236,8 +282,8 @@ void PersistentQProcessTransport::killProcess()
 }
 
 void PersistentQProcessTransport::setTransportError(ModuleTransportResponse& response,
-                                                   QString errorCode,
-                                                   QString errorMessage) const
+                                                    QString errorCode,
+                                                    QString errorMessage) const
 {
     response.outcome = ModuleOutcome::Error;
     response.errorCode = std::move(errorCode);

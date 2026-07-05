@@ -2,6 +2,20 @@
   "id": "dmm-can-adapter-sequence",
   "name": "DMM CAN Adapter Sequence",
   "version": "0.1.0",
+  "moduleBindings": [
+    {
+      "moduleId": "fake.dmm",
+      "transport": "persistent-qprocess",
+      "program": "${PROJECT_DIR}/out/build/vs2022-qt6-all/src/fakeinstrumenthost/Debug/PicoATE.FakeInstrumentHost.exe",
+      "timeoutMs": 3000
+    },
+    {
+      "moduleId": "fake.can",
+      "transport": "persistent-qprocess",
+      "program": "${PROJECT_DIR}/out/build/vs2022-qt6-all/src/fakeinstrumenthost/Debug/PicoATE.FakeInstrumentHost.exe",
+      "timeoutMs": 3000
+    }
+  ],
   "groups": [
     {
       "id": "setup",

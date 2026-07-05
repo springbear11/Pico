@@ -32,6 +32,11 @@
           "inputs": {
             "value": "from-nativehost-dll",
             "numeric": 42,
+            "logMessages": [
+              "SEND 01 02 03 04",
+              "RECV 01 02 03 05",
+              "PARSE numeric=42"
+            ],
             "measurements": {
               "name": "NATIVE_DLL_ECHO",
               "value": 42,

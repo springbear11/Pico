@@ -1,6 +1,9 @@
 #include "PicoATE/Core/ModuleTransportJson.h"
 
+#include <QJsonArray>
 #include <QJsonValue>
+
+#include <utility>
 
 namespace PicoATE::Core {
 
@@ -43,6 +46,40 @@ QJsonObject mapToJsonObject(const QVariantMap& map)
 QVariantMap mapFromJsonObject(const QJsonObject& object)
 {
     return object.toVariantMap();
+}
+
+QJsonObject logRecordToJson(const ModuleLogRecord& record)
+{
+    QJsonObject log;
+    log.insert("sourceSequence", static_cast<double>(record.sourceSequence));
+    log.insert("timestampUtc", record.timestampUtc.toString(Qt::ISODateWithMs));
+    log.insert("message", record.message);
+    log.insert("droppedBefore", static_cast<double>(record.droppedBefore));
+    return log;
+}
+
+bool logRecordFromJson(const QJsonValue& value,
+                       ModuleLogRecord& record,
+                       QString& errorMessage)
+{
+    if (!value.isObject()) {
+        errorMessage = "Module log entry must be an object";
+        return false;
+    }
+
+    const auto log = value.toObject();
+    record.sourceSequence = static_cast<quint64>(
+        log.value("sourceSequence").toDouble());
+    record.timestampUtc = QDateTime::fromString(
+        log.value("timestampUtc").toString(), Qt::ISODateWithMs);
+    record.message = log.value("message").toString();
+    record.droppedBefore = static_cast<quint64>(
+        log.value("droppedBefore").toDouble());
+    if (record.message.isEmpty()) {
+        errorMessage = "Module log message is empty";
+        return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -92,6 +129,9 @@ QJsonObject moduleTransportResponseToJson(const ModuleTransportResponse& respons
     json.insert("measurements", QJsonValue::fromVariant(measurementsToVariant(response.measurements)));
     json.insert("errorCode", response.errorCode);
     json.insert("errorMessage", response.errorMessage);
+    if (!response.diagnostics.isEmpty()) {
+        json.insert("diagnostics", mapToJsonObject(response.diagnostics));
+    }
     return json;
 }
 
@@ -105,21 +145,31 @@ ModuleTransportResponse moduleTransportResponseFromJson(const QJsonObject& json)
         toMeasurementStatus(response.outcome));
     response.errorCode = json.value("errorCode").toString();
     response.errorMessage = json.value("errorMessage").toString();
+    response.diagnostics = mapFromJsonObject(json.value("diagnostics").toObject());
     return response;
 }
 
 QJsonObject moduleLogMessageToJson(const QString& traceId, const ModuleLogRecord& record)
 {
-    QJsonObject log;
-    log.insert("sourceSequence", static_cast<double>(record.sourceSequence));
-    log.insert("timestampUtc", record.timestampUtc.toString(Qt::ISODateWithMs));
-    log.insert("message", record.message);
-    log.insert("droppedBefore", static_cast<double>(record.droppedBefore));
-
     QJsonObject json;
     json.insert("type", "moduleLog");
     json.insert("traceId", traceId);
-    json.insert("log", log);
+    json.insert("log", logRecordToJson(record));
+    return json;
+}
+
+QJsonObject moduleLogBatchMessageToJson(const QString& traceId,
+                                        const QVector<ModuleLogRecord>& records)
+{
+    QJsonArray logs;
+    for (const auto& record : records) {
+        logs.push_back(logRecordToJson(record));
+    }
+
+    QJsonObject json;
+    json.insert("type", "moduleLogBatch");
+    json.insert("traceId", traceId);
+    json.insert("logs", logs);
     return json;
 }
 
@@ -145,19 +195,28 @@ ModuleProtocolMessage moduleProtocolMessageFromJson(const QJsonObject& json)
 
     message.traceId = json.value("traceId").toString();
     if (type == "moduleLog") {
-        const auto log = json.value("log").toObject();
         message.kind = ModuleProtocolMessageKind::Log;
-        message.log.sourceSequence = static_cast<quint64>(
-            log.value("sourceSequence").toDouble());
-        message.log.timestampUtc = QDateTime::fromString(
-            log.value("timestampUtc").toString(), Qt::ISODateWithMs);
-        message.log.message = log.value("message").toString();
-        message.log.droppedBefore = static_cast<quint64>(
-            log.value("droppedBefore").toDouble());
-        if (message.log.message.isEmpty()) {
+        if (!logRecordFromJson(json.value("log"), message.log, message.errorMessage)) {
             message.kind = ModuleProtocolMessageKind::Invalid;
-            message.errorMessage = "Module log message is empty";
         }
+        return message;
+    }
+    if (type == "moduleLogBatch") {
+        const auto values = json.value("logs");
+        if (!values.isArray() || values.toArray().isEmpty()) {
+            message.errorMessage = "Module log batch must contain at least one log entry";
+            return message;
+        }
+
+        for (const auto& value : values.toArray()) {
+            ModuleLogRecord record;
+            if (!logRecordFromJson(value, record, message.errorMessage)) {
+                message.logs.clear();
+                return message;
+            }
+            message.logs.push_back(std::move(record));
+        }
+        message.kind = ModuleProtocolMessageKind::LogBatch;
         return message;
     }
     if (type == "moduleResponse") {

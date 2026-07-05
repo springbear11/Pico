@@ -2,6 +2,7 @@
 
 #include "PicoATE/Core/PersistentQProcessTransport.h"
 #include "PicoATE/Core/QProcessTransport.h"
+#include "PicoATE/Core/DeviceTransportSession.h"
 #include "PicoATE/Core/VariableResolver.h"
 
 #include <QDir>
@@ -124,6 +125,10 @@ ModuleBindingRegistrationResult registerConfiguredModules(
                      "Check for duplicate moduleId values");
             continue;
         }
+
+        session.devices().registerFactory(
+            std::make_shared<TransportDeviceSessionFactory>(
+                binding.moduleId, transport, binding.timeoutMs));
 
         result.registeredModuleIds.push_back(binding.moduleId);
     }

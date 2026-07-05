@@ -13,6 +13,7 @@ PicoATE 是面向 ATE 产线测试的 C++20/Qt6 执行框架，目标是让 UI�
 - `${step:rx.outputs.frame}` 当前 TestItem 相对引用
 - 内置 Limit 节点支持数值区间/单边阈值、容差、字符串和布尔比较
 - RuntimeEvent 实时事件、ExecutionReport、JSON/CSV 报告
+- C++ DLL 内 `PicoATE_Log` 实时送达 CLI/UI，具备高频日志限流和关键事件保护
 - Qt Widgets Runner 与实时增量模型
 - CLI 逐 Step 实时输出及便携 Release 目录
 

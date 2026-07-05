@@ -1,12 +1,12 @@
 {
-  "dll": "${PICOATE_TEST_DLL}",
+  "dll": "${PROJECT_DIR}/templates/bin/Debug/PicoATE.CAN.GCAN.dll",
   "symbol": "PicoATE_Execute",
   "bufferSize": 65536,
-  "dllTimeoutMs": 30000,
+  "dllTimeoutMs": 5000,
   "metadata": {
-    "name": "PicoATE Test DLL",
-    "kind": "test-fixture",
-    "source": "${SEQUENCE_DIR}"
+    "name": "PicoATE CAN GCAN Plugin",
+    "vendor": "Shenyang Guangcheng Technology",
+    "workspace": "PicoATE.Plugins.sln"
   },
   "diagnostics": {
     "vendorStdio": "strict",
