@@ -11,3 +11,6 @@
 - 厂商运行库位于 `dependencies/CAN/GCAN/x64`。
 
 真实设备验证见 `gcan_self_test_sequence.json`。
+
+TEST 模式使用同目录 `StationSystem.json`。连接 GCAN 分析仪后，从登录页选择该 Sequence，扫码即可执行
+Open -> Transmit -> Wait -> Receive -> DLC Limit -> Close 闭环。

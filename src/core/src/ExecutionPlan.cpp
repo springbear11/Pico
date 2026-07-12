@@ -177,4 +177,17 @@ QString nodeOutcomeName(NodeOutcome outcome)
     return "Unknown";
 }
 
+QString executionPhaseName(ExecutionPhase phase)
+{
+    switch (phase) {
+    case ExecutionPhase::Setup:
+        return "Setup";
+    case ExecutionPhase::Main:
+        return "Main";
+    case ExecutionPhase::Cleanup:
+        return "Cleanup";
+    }
+    return "Main";
+}
+
 } // namespace PicoATE::Core

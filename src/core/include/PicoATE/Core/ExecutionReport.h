@@ -17,6 +17,7 @@ struct StepLoopReport {
 struct AttemptReport {
     int index = 0;
     NodeOutcome outcome = NodeOutcome::Unknown;
+    qint64 durationMs = -1;
     QString errorCode;
     QString errorMessage;
     LoopIterationContext loopIteration;
@@ -30,11 +31,13 @@ struct StepReport {
     ExecNodeKind kind = ExecNodeKind::Noop;
     ActivationState state = ActivationState::Created;
     NodeOutcome outcome = NodeOutcome::Unknown;
+    qint64 durationMs = -1;
     bool wasError = false;
     StepLoopReport loop;
     QVector<MeasurementResult> measurements;
     QVector<AttemptReport> attempts;
     QVector<StepReport> children;
+    ExecutionPhase phase = ExecutionPhase::Main;
 };
 
 struct UutReport {

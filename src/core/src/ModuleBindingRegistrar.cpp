@@ -136,4 +136,87 @@ ModuleBindingRegistrationResult registerConfiguredModules(
     return result;
 }
 
+ModuleBindingRegistrationResult registerStationPluginModules(
+    ExecutionSession& session,
+    const StationConfig& station,
+    const StationPluginRegistrationOptions& options)
+{
+    ModuleBindingRegistrationResult result;
+    if (!session.registerModule(std::make_shared<LogicalDeviceModule>())) {
+        addError(result,
+                 QStringLiteral("device"),
+                 QStringLiteral("Failed to register logical device module"),
+                 QStringLiteral("Do not reuse moduleId 'device' for another module"));
+        return result;
+    }
+    result.registeredModuleIds.push_back(QStringLiteral("device"));
+
+    VariableResolverOptions resolverOptions;
+    resolverOptions.sequenceFilePath = options.stationFilePath;
+    resolverOptions.projectDir = options.projectDir;
+    resolverOptions.variables = options.variables;
+    const VariableResolver resolver(resolverOptions);
+
+    QHash<DeviceDriverId, QString> registeredPluginPaths;
+    for (int index = 0; index < station.devices.size(); ++index) {
+        const auto& device = station.devices[index];
+        if (device.pluginPath.trimmed().isEmpty()) {
+            continue;
+        }
+
+        QVector<VariableResolutionError> resolutionErrors;
+        const auto path = QStringLiteral("devices[%1].pluginPath").arg(index);
+        const auto pluginPath = resolveProgramPath(
+            resolver.resolveString(device.pluginPath, resolutionErrors, path),
+            resolver);
+        if (!resolutionErrors.isEmpty()) {
+            addResolutionErrors(result, device.driverId, resolutionErrors);
+            continue;
+        }
+        if (!QFileInfo::exists(pluginPath)) {
+            addError(result,
+                     device.driverId,
+                     QStringLiteral("Plugin DLL does not exist: %1").arg(pluginPath),
+                     QStringLiteral("Rescan plugins or update the Station plugin binding"));
+            continue;
+        }
+        if (options.nativeHostProgram.trimmed().isEmpty() ||
+            !QFileInfo::exists(options.nativeHostProgram)) {
+            addError(result,
+                     device.driverId,
+                     QStringLiteral("PicoATE.NativeHost.exe was not found"),
+                     QStringLiteral("Deploy NativeHost beside the application"));
+            continue;
+        }
+
+        const auto existing = registeredPluginPaths.constFind(device.driverId);
+        if (existing != registeredPluginPaths.constEnd()) {
+            if (QFileInfo(existing.value()).absoluteFilePath() !=
+                QFileInfo(pluginPath).absoluteFilePath()) {
+                addError(result,
+                         device.driverId,
+                         QStringLiteral("Driver id is bound to multiple plugin DLLs"),
+                         QStringLiteral("Use one concrete plugin per driverId"));
+            }
+            continue;
+        }
+
+        auto transport = std::make_shared<PersistentQProcessTransport>(
+            QFileInfo(options.nativeHostProgram).absoluteFilePath(),
+            QStringList{QStringLiteral("--dll"), pluginPath,
+                        QStringLiteral("--vendor-stdio"), QStringLiteral("discard")});
+        if (!session.devices().registerFactory(
+                std::make_shared<TransportDeviceSessionFactory>(
+                    device.driverId, transport, device.timeoutMs))) {
+            addError(result,
+                     device.driverId,
+                     QStringLiteral("Failed to register Station plugin driver"));
+            continue;
+        }
+        registeredPluginPaths.insert(device.driverId, pluginPath);
+        result.registeredModuleIds.push_back(device.driverId);
+    }
+    return result;
+}
+
 } // namespace PicoATE::Core

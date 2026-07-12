@@ -166,6 +166,18 @@ private:
     ModuleId m_id;
 };
 
+class LogicalDeviceModule final : public IModule {
+public:
+    explicit LogicalDeviceModule(ModuleId id = "device");
+
+    ModuleId moduleId() const override;
+    ModuleResult execute(const ModuleFunction& functionName,
+                         const ModuleExecutionContext& context) override;
+
+private:
+    ModuleId m_id;
+};
+
 NodeOutcome toNodeOutcome(ModuleOutcome outcome);
 MeasurementStatus toMeasurementStatus(ModuleOutcome outcome);
 

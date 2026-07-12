@@ -247,6 +247,7 @@ void DeviceSessionManager::publishState(const DeviceId& deviceId,
     if (config) {
         event.details.insert("deviceType", config->deviceType);
         event.details.insert("driverId", config->driverId);
+        event.details.insert("pluginPath", config->pluginPath);
         event.details.insert("address", config->address);
         event.details.insert("lifetime", deviceSessionLifetimeName(config->lifetime));
     }

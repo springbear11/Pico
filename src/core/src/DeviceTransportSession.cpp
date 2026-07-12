@@ -98,6 +98,7 @@ QVariantMap TransportDeviceSession::metadata() const
     auto metadata = m_config.options;
     metadata.insert("address", m_config.address);
     metadata.insert("driverId", m_config.driverId);
+    metadata.insert("pluginPath", m_config.pluginPath);
     metadata.insert("lifetime", deviceSessionLifetimeName(m_config.lifetime));
     return metadata;
 }
@@ -105,9 +106,14 @@ QVariantMap TransportDeviceSession::metadata() const
 bool TransportDeviceSession::isHealthy(QString& errorMessage) const
 {
     ModuleExecutionContext context;
-    const auto result = callHost("health", {}, context);
+    auto result = callHost("health", {}, context);
+    if (result.outcome == ModuleOutcome::Error &&
+        result.errorCode == QStringLiteral("UnknownFunction")) {
+        result = callHost("status", {}, context);
+    }
     if (result.outcome == ModuleOutcome::Passed &&
-        result.outputs.value("healthy", true).toBool()) {
+        result.outputs.value("healthy",
+                             result.outputs.value("connected", true)).toBool()) {
         errorMessage.clear();
         return true;
     }

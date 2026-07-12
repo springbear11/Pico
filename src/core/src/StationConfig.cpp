@@ -91,6 +91,26 @@ bool readBool(const QJsonObject& object,
     return value.toBool();
 }
 
+int readInt(const QJsonObject& object,
+            const QString& key,
+            StationConfigResult& result,
+            const QString& path,
+            int fallback)
+{
+    if (!object.contains(key)) {
+        return fallback;
+    }
+    const auto value = object.value(key);
+    if (!value.isDouble()) {
+        addError(result,
+                 path,
+                 QString("Expected number, got %1").arg(typeName(value)),
+                 "Fix the station config field type");
+        return fallback;
+    }
+    return value.toInt(fallback);
+}
+
 QVariantMap readObjectMap(const QJsonObject& object,
                           const QString& key,
                           StationConfigResult& result,
@@ -167,9 +187,20 @@ DeviceSessionConfig parseDevice(const QJsonObject& object,
         config.driverId = readString(object, "driver", result, QString("%1.driver").arg(path));
     }
 
+    config.pluginPath = readString(
+        object, "pluginPath", result, QString("%1.pluginPath").arg(path));
+
     config.address = readString(object, "address", result, QString("%1.address").arg(path));
     if (config.address.isEmpty() && object.contains("visaAddress")) {
         config.address = readString(object, "visaAddress", result, QString("%1.visaAddress").arg(path));
+    }
+    config.timeoutMs = readInt(
+        object, "timeoutMs", result, QString("%1.timeoutMs").arg(path), 30000);
+    if (config.timeoutMs <= 0) {
+        addError(result,
+                 QString("%1.timeoutMs").arg(path),
+                 "timeoutMs must be greater than zero",
+                 "Use a positive timeout in milliseconds");
     }
 
     const auto lifetimeText = readString(object,
@@ -191,6 +222,8 @@ DeviceSessionConfig parseDevice(const QJsonObject& object,
     config.deviceId = resolveStringField(config.deviceId, resolver, result, QString("%1.deviceId").arg(path));
     config.deviceType = resolveStringField(config.deviceType, resolver, result, QString("%1.deviceType").arg(path));
     config.driverId = resolveStringField(config.driverId, resolver, result, QString("%1.driverId").arg(path));
+    config.pluginPath = resolveStringField(
+        config.pluginPath, resolver, result, QString("%1.pluginPath").arg(path));
     config.address = resolveStringField(config.address, resolver, result, QString("%1.address").arg(path));
     config.options = resolveMapField(config.options, resolver, result, QString("%1.options").arg(path));
 

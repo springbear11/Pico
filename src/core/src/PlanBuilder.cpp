@@ -475,6 +475,7 @@ ExecNode PlanBuilder::buildNode(const StepDef& step,
     node.key = step.key;
     node.displayName = step.name.isEmpty() ? step.id : step.name;
     node.kind = toExecNodeKind(step.kind);
+    node.phase = toExecutionPhase(groupKind);
     node.payload = step.parameters;
     if (!step.moduleId.isEmpty()) {
         node.payload.insert("moduleId", step.moduleId);

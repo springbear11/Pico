@@ -26,6 +26,11 @@ CMakeFiles/
 cmake_install.cmake
 CTestTestfile.cmake
 
+# Runtime reports and local verification output
+/*.csv
+/test_output.txt
+reports/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -158,6 +158,7 @@ struct SequenceDef {
 };
 
 ExecNodeKind toExecNodeKind(StepKind kind);
+ExecutionPhase toExecutionPhase(StepGroupKind kind);
 ErrorAction toErrorAction(OnFailureAction action);
 QString stepKindName(StepKind kind);
 QString stepGroupKindName(StepGroupKind kind);

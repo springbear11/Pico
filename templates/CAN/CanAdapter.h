@@ -75,4 +75,7 @@ public:
 // Each CAN/<Vendor> implementation provides this one factory function.
 std::unique_ptr<ICanAdapter> createCanAdapter();
 
+// Each concrete vendor plugin describes only its own functions and parameters.
+Plugin::Json pluginDescription();
+
 } // namespace PicoATE::Plugins::Can

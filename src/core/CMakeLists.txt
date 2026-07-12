@@ -4,6 +4,8 @@ add_library(PicoATECore STATIC
     src/DeviceSessionManager.cpp
     src/DeviceTransportSession.cpp
     src/ErrorPolicyEngine.cpp
+    src/ExecutionControl.cpp
+    src/ExecutionDebug.cpp
     src/ExecutionGraphScheduler.cpp
     src/ExecutionSession.cpp
     src/ExecutionPlan.cpp

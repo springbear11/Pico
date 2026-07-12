@@ -45,6 +45,36 @@ int writeJsonResponse(const QJsonObject& response,
 PICOATE_DEFINE_LOG_SINK()
 
 extern "C" __declspec(dllexport)
+int PicoATE_Describe(char* descriptionJsonUtf8, int descriptionBufferSize)
+{
+    const QJsonObject description{
+        {"name", "PicoATE Test DLL"},
+        {"category", "Test"},
+        {"functions", QJsonArray{
+            QJsonObject{
+                {"id", "echo"},
+                {"name", "Echo"},
+                {"inputs", QJsonArray{
+                    QJsonObject{{"key", "value"}, {"name", "Value"},
+                                {"type", "string"}, {"required", true}}
+                }},
+                {"outputs", QJsonArray{
+                    QJsonObject{{"key", "value"}, {"name", "Value"},
+                                {"type", "string"}}
+                }}
+            }
+        }}
+    };
+    return writeJsonResponse(description, descriptionJsonUtf8, descriptionBufferSize);
+}
+
+extern "C" __declspec(dllexport)
+int PicoATE_GetAbiVersion()
+{
+    return 1;
+}
+
+extern "C" __declspec(dllexport)
 int PicoATE_Execute(const char* requestJsonUtf8,
                     char* responseJsonUtf8,
                     int responseBufferSize)

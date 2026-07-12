@@ -245,6 +245,20 @@ ExecNodeKind toExecNodeKind(StepKind kind)
     return ExecNodeKind::Noop;
 }
 
+ExecutionPhase toExecutionPhase(StepGroupKind kind)
+{
+    switch (kind) {
+    case StepGroupKind::Setup:
+        return ExecutionPhase::Setup;
+    case StepGroupKind::Cleanup:
+        return ExecutionPhase::Cleanup;
+    case StepGroupKind::Main:
+    case StepGroupKind::Custom:
+        return ExecutionPhase::Main;
+    }
+    return ExecutionPhase::Main;
+}
+
 ErrorAction toErrorAction(OnFailureAction action)
 {
     switch (action) {

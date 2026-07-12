@@ -1,0 +1,97 @@
+{
+  "id": "gcan-logical-device-test",
+  "name": "GCAN Logical Device Hardware Loop",
+  "version": "0.1.0",
+  "groups": [
+    {
+      "id": "setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "can-open",
+          "name": "Open CAN1",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "open",
+          "inputs": { "deviceId": "CAN1" }
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "001",
+          "name": "CAN1 Send Delay Receive",
+          "kind": "testItem",
+          "steps": [
+            {
+              "id": "01",
+              "key": "tx",
+              "name": "Transmit Frame",
+              "kind": "action",
+              "moduleId": "device",
+              "function": "write",
+              "inputs": {
+                "deviceId": "CAN1",
+                "id": "0x123",
+                "data": "01 02 03 04 05 06 07 08"
+              }
+            },
+            {
+              "id": "02",
+              "key": "delay",
+              "name": "Wait For Receive",
+              "kind": "wait",
+              "ms": 50
+            },
+            {
+              "id": "03",
+              "key": "rx",
+              "name": "Receive Echo Frame",
+              "kind": "action",
+              "moduleId": "device",
+              "function": "read",
+              "inputs": {
+                "deviceId": "CAN1",
+                "filterId": "0x123",
+                "filterMask": "0x7FF",
+                "timeoutMs": 1500
+              },
+              "timeoutMs": 2500
+            },
+            {
+              "id": "04",
+              "key": "dlc-limit",
+              "name": "Validate Echo DLC",
+              "kind": "limit",
+              "inputs": { "actual": "${step:rx.outputs.dlc}" },
+              "parameters": {
+                "comparison": "between",
+                "expected": 8,
+                "tolerance": 0,
+                "unit": "byte",
+                "measurementName": "GCAN_ECHO_DLC"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "can-close",
+          "name": "Close CAN1",
+          "kind": "cleanup",
+          "moduleId": "device",
+          "function": "close",
+          "inputs": { "deviceId": "CAN1" }
+        }
+      ]
+    }
+  ]
+}

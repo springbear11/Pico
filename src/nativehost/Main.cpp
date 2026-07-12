@@ -12,6 +12,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QLibrary>
 #include <QRegularExpression>
 #include <QTextStream>
 
@@ -26,6 +27,57 @@ struct NativeHostRuntimeConfig {
     int dllTimeoutMs = 30000;
     NativeHostDiagnosticsConfig diagnostics;
 };
+
+using PicoATEDescribeFn = int (*)(char* descriptionJsonUtf8,
+                                  int descriptionBufferSize);
+using PicoATEGetAbiVersionFn = int (*)();
+
+int describePlugin(const NativeHostRuntimeConfig& config, QTextStream& err)
+{
+    QLibrary library(config.dllPath);
+    library.setLoadHints(QLibrary::PreventUnloadHint);
+    if (!library.load()) {
+        err << "Failed to load plugin DLL: " << library.errorString() << '\n';
+        return 3;
+    }
+
+    const auto describe = reinterpret_cast<PicoATEDescribeFn>(
+        library.resolve("PicoATE_Describe"));
+    if (!describe) {
+        err << "Plugin does not export PicoATE_Describe.\n";
+        return 4;
+    }
+    const auto getAbiVersion = reinterpret_cast<PicoATEGetAbiVersionFn>(
+        library.resolve("PicoATE_GetAbiVersion"));
+    if (!getAbiVersion) {
+        err << "Plugin does not export PicoATE_GetAbiVersion.\n";
+        return 4;
+    }
+
+    QByteArray buffer(config.bufferSize > 0 ? config.bufferSize : 65536, '\0');
+    const int status = describe(buffer.data(), buffer.size());
+    if (status != 0) {
+        err << "PicoATE_Describe returned status code " << status << ".\n";
+        return 5;
+    }
+
+    QJsonParseError parseError;
+    const auto description = QJsonDocument::fromJson(
+        QByteArray(buffer.constData()), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !description.isObject()) {
+        err << "PicoATE_Describe returned invalid JSON: "
+            << parseError.errorString() << '\n';
+        return 6;
+    }
+
+    QJsonObject result;
+    result.insert("abiVersion", getAbiVersion());
+    result.insert("description", description.object());
+    QTextStream out(stdout);
+    out << QJsonDocument(result).toJson(QJsonDocument::Compact) << '\n';
+    out.flush();
+    return 0;
+}
 
 ModuleTransportResponse errorResponse(const QString& code, const QString& message)
 {
@@ -204,6 +256,8 @@ int main(int argc, char* argv[])
     parser.addOption(manifestOption);
     parser.addOption(projectDirOption);
     parser.addOption(variableOption);
+    parser.addOption(QCommandLineOption("describe",
+                                        "Describe the plugin once and exit."));
     parser.addOption(QCommandLineOption("dll", "DLL path to load when --manifest is not used.", "path"));
     parser.addOption(QCommandLineOption("symbol", "Exported function symbol. Default: PicoATE_Execute.", "name"));
     parser.addOption(QCommandLineOption("buffer-size", "Response buffer size. Default: 65536.", "bytes"));
@@ -242,6 +296,10 @@ int main(int argc, char* argv[])
     if (!QFileInfo::exists(config.dllPath)) {
         err << "DLL does not exist: " << config.dllPath << '\n';
         return 2;
+    }
+
+    if (parser.isSet("describe")) {
+        return describePlugin(config, err);
     }
 
     NativeHostOutputPump outputPump(config.diagnostics.maximumBufferedLogs,
