@@ -39,6 +39,12 @@ enum class ExecNodeKind {
     SequenceCall
 };
 
+enum class ExecutionPhase {
+    Setup,
+    Main,
+    Cleanup
+};
+
 enum class EdgeKind {
     Dependency,
     Control,
@@ -138,6 +144,7 @@ struct ExecNode {
     bool checkpointAfter = false;
     bool resultRecording = true;
     QStringList tags;
+    ExecutionPhase phase = ExecutionPhase::Main;
 };
 
 struct ExecEdge {
@@ -210,5 +217,6 @@ struct ExecutionPlan {
 bool isTerminalOutcome(NodeOutcome outcome);
 bool triggerMatchesOutcome(EdgeTrigger trigger, NodeOutcome outcome);
 QString nodeOutcomeName(NodeOutcome outcome);
+QString executionPhaseName(ExecutionPhase phase);
 
 } // namespace PicoATE::Core

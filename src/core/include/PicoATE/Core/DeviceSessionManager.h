@@ -32,7 +32,9 @@ struct DeviceSessionConfig {
     DeviceId deviceId;
     QString deviceType;
     DeviceDriverId driverId;
+    QString pluginPath;
     QString address;
+    int timeoutMs = 30000;
     DeviceSessionLifetime lifetime = DeviceSessionLifetime::Station;
     QVariantMap options;
 };

@@ -1,0 +1,6 @@
+{
+  "stationId": "default-station",
+  "name": "Default Development Station",
+  "scanDialogEnabled": true,
+  "devices": []
+}

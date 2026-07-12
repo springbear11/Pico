@@ -26,6 +26,8 @@ enum class RuntimeEventKind {
     BarrierReleased,
     CleanupActivated,
     DeviceStateChanged,
+    BreakpointHit,
+    DebugStepCompleted,
     ModuleLog
 };
 
@@ -54,6 +56,7 @@ struct RuntimeEvent {
     QString errorCode;
     QString message;
     QVariantMap details;
+    ExecutionPhase nodePhase = ExecutionPhase::Main;
 };
 
 class IRuntimeEventSink {

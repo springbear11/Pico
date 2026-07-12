@@ -342,3 +342,18 @@ extern "C" PICOATE_PLUGIN_EXPORT int PICOATE_PLUGIN_CALL PicoATE_Execute(
                                         responseBufferSize,
                                         PicoATE::Plugins::Can::execute);
 }
+
+extern "C" PICOATE_PLUGIN_EXPORT int PICOATE_PLUGIN_CALL PicoATE_Describe(
+    char* descriptionJsonUtf8,
+    int descriptionBufferSize)
+{
+    return PicoATE::Plugin::writeDescription(
+        PicoATE::Plugins::Can::pluginDescription(),
+        descriptionJsonUtf8,
+        descriptionBufferSize);
+}
+
+extern "C" PICOATE_PLUGIN_EXPORT int PICOATE_PLUGIN_CALL PicoATE_GetAbiVersion()
+{
+    return PicoATE::Plugin::AbiVersion;
+}

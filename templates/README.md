@@ -54,6 +54,11 @@ bin/Debug/PicoATE.CAN.GCAN.dll
 bin/Release/...
 ```
 
+厂商目录可同时提供 `<插件名>.picoate-plugin.json`。构建 DLL 后，CMake 会自动把该
+清单复制到 DLL 输出目录，Admin 流程编辑器据此显示插件分类、功能、输入参数和输出。
+详细格式见 `../docs/插件功能清单规范.md`。功能清单只服务编辑器，不替代 NativeHost
+清单或 Sequence 的 `moduleBindings`。
+
 ## 新增插件
 
 以新增 `CAN/ZLG` 为例：

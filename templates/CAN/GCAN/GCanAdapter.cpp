@@ -159,6 +159,102 @@ std::string fixedString(const char* value, std::size_t size)
 
 } // namespace
 
+Plugin::Json pluginDescription()
+{
+    using Json = Plugin::Json;
+    return {
+        {"name", "GCAN USB-CAN"},
+        {"category", "CAN"},
+        {"functions", Json::array({
+            {
+                {"id", "open"},
+                {"name", "Open CAN"},
+                {"description", "Open and initialize a GCAN channel"},
+                {"timeoutMs", 5000},
+                {"inputs", Json::array({
+                    {{"key", "deviceType"}, {"name", "Device Type"}, {"type", "enum"},
+                     {"required", false}, {"default", 0},
+                     {"options", Json::array({
+                         {{"label", "Auto"}, {"value", 0}},
+                         {{"label", "USBCAN-I"}, {"value", 3}},
+                         {{"label", "USBCAN-II"}, {"value", 4}}
+                     })}},
+                    {{"key", "deviceIndex"}, {"name", "Device Index"}, {"type", "integer"},
+                     {"required", false}, {"default", 0}, {"minimum", 0}},
+                    {{"key", "channelIndex"}, {"name", "Channel"}, {"type", "integer"},
+                     {"required", false}, {"default", 0}, {"minimum", 0}, {"maximum", 1}},
+                    {{"key", "bitrate"}, {"name", "Bitrate"}, {"type", "enum"},
+                     {"required", false}, {"default", 500000},
+                     {"options", Json::array({
+                         {{"label", "125 kbit/s"}, {"value", 125000}},
+                         {{"label", "250 kbit/s"}, {"value", 250000}},
+                         {{"label", "500 kbit/s"}, {"value", 500000}},
+                         {{"label", "1 Mbit/s"}, {"value", 1000000}}
+                     })}},
+                    {{"key", "listenOnly"}, {"name", "Listen Only"}, {"type", "boolean"},
+                     {"required", false}, {"default", false}},
+                    {{"key", "selfTest"}, {"name", "Self Test"}, {"type", "boolean"},
+                     {"required", false}, {"default", false}}
+                })},
+                {"outputs", Json::array({
+                    {{"key", "connected"}, {"name", "Connected"}, {"type", "boolean"}},
+                    {{"key", "device"}, {"name", "Device"}, {"type", "string"}}
+                })}
+            },
+            {
+                {"id", "write"},
+                {"name", "Send CAN Frame"},
+                {"description", "Transmit one CAN frame"},
+                {"timeoutMs", 2000},
+                {"inputs", Json::array({
+                    {{"key", "id"}, {"name", "CAN ID"}, {"type", "string"},
+                     {"required", true}, {"default", "0x123"}},
+                    {{"key", "data"}, {"name", "Frame Data"}, {"type", "hex-bytes"},
+                     {"required", true}, {"default", "01 02 03 04"}},
+                    {{"key", "extended"}, {"name", "Extended Frame"}, {"type", "boolean"},
+                     {"required", false}, {"default", false}},
+                    {{"key", "remote"}, {"name", "Remote Frame"}, {"type", "boolean"},
+                     {"required", false}, {"default", false}}
+                })},
+                {"outputs", Json::array({
+                    {{"key", "transmitted"}, {"name", "Transmitted"}, {"type", "boolean"}}
+                })}
+            },
+            {
+                {"id", "read"},
+                {"name", "Read CAN Frame"},
+                {"description", "Receive one CAN frame with an optional ID filter"},
+                {"timeoutMs", 2500},
+                {"inputs", Json::array({
+                    {{"key", "filterId"}, {"name", "Filter ID"}, {"type", "string"},
+                     {"required", false}, {"default", "0x000"}},
+                    {{"key", "filterMask"}, {"name", "Filter Mask"}, {"type", "string"},
+                     {"required", false}, {"default", "0x000"}},
+                    {{"key", "timeoutMs"}, {"name", "Receive Timeout"}, {"type", "integer"},
+                     {"required", false}, {"default", 1500}, {"minimum", 0},
+                     {"maximum", 60000}, {"unit", "ms"}}
+                })},
+                {"outputs", Json::array({
+                    {{"key", "id"}, {"name", "CAN ID"}, {"type", "string"}},
+                    {{"key", "dataHex"}, {"name", "Frame Data"}, {"type", "hex-bytes"}},
+                    {{"key", "dlc"}, {"name", "Data Length"}, {"type", "integer"}, {"unit", "byte"}}
+                })}
+            },
+            {
+                {"id", "close"},
+                {"name", "Close CAN"},
+                {"description", "Close the active GCAN channel"},
+                {"stepKind", "cleanup"},
+                {"timeoutMs", 3000},
+                {"inputs", Json::array()},
+                {"outputs", Json::array({
+                    {{"key", "connected"}, {"name", "Connected"}, {"type", "boolean"}}
+                })}
+            }
+        })}
+    };
+}
+
 class GCanAdapter::Impl
 {
 public:

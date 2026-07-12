@@ -20,6 +20,8 @@ namespace PicoATE::Plugin {
 
 using Json = nlohmann::json;
 
+inline constexpr int AbiVersion = 1;
+
 inline Json response(std::string_view outcome,
                      Json outputs = Json::object(),
                      Json measurements = Json::object(),
@@ -69,6 +71,11 @@ inline int writeResponse(const Json& value, char* buffer, int bufferSize) noexce
         buffer[0] = '\0';
         return 4;
     }
+}
+
+inline int writeDescription(const Json& value, char* buffer, int bufferSize) noexcept
+{
+    return writeResponse(value, buffer, bufferSize);
 }
 
 template<typename Execute>

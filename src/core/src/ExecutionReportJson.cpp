@@ -108,6 +108,14 @@ std::optional<ExecNodeKind> nodeKindFromString(const QString& value)
     return std::nullopt;
 }
 
+std::optional<ExecutionPhase> executionPhaseFromString(const QString& value)
+{
+    if (value.compare("Setup", Qt::CaseInsensitive) == 0) return ExecutionPhase::Setup;
+    if (value.compare("Main", Qt::CaseInsensitive) == 0) return ExecutionPhase::Main;
+    if (value.compare("Cleanup", Qt::CaseInsensitive) == 0) return ExecutionPhase::Cleanup;
+    return std::nullopt;
+}
+
 std::optional<NodeOutcome> outcomeFromString(const QString& value)
 {
     if (value == "Unknown") return NodeOutcome::Unknown;
@@ -225,6 +233,7 @@ QJsonObject attemptToJson(const AttemptReport& attempt)
     return {
         {"index", attempt.index},
         {"outcome", nodeOutcomeName(attempt.outcome)},
+        {"durationMs", attempt.durationMs},
         {"errorCode", attempt.errorCode},
         {"errorMessage", attempt.errorMessage},
         {"loopIteration", loopIterationToJson(attempt.loopIteration)},
@@ -242,6 +251,9 @@ AttemptReport attemptFromJson(const QJsonObject& object,
     const auto outcome = outcomeFromString(outcomeText);
     if (outcome) attempt.outcome = *outcome;
     else addError(errors, path + ".outcome", "Unsupported node outcome: " + outcomeText);
+    if (object.contains("durationMs")) {
+        attempt.durationMs = object.value("durationMs").toVariant().toLongLong();
+    }
     attempt.errorCode = object.value("errorCode").toString();
     attempt.errorMessage = object.value("errorMessage").toString();
     attempt.loopIteration = loopIterationFromJson(object.value("loopIteration").toObject());
@@ -287,8 +299,10 @@ QJsonObject stepToJson(const StepReport& step)
         {"nodePath", step.nodePath},
         {"displayName", step.displayName},
         {"kind", nodeKindName(step.kind)},
+        {"phase", executionPhaseName(step.phase)},
         {"state", activationStateName(step.state)},
         {"outcome", nodeOutcomeName(step.outcome)},
+        {"durationMs", step.durationMs},
         {"wasError", step.wasError},
         {"loop", stepLoopToJson(step.loop)},
         {"measurements", measurementsToJson(step.measurements)},
@@ -309,6 +323,12 @@ StepReport stepFromJson(const QJsonObject& object,
     const auto kind = nodeKindFromString(kindText);
     if (kind) step.kind = *kind;
     else addError(errors, path + ".kind", "Unsupported node kind: " + kindText);
+    if (object.contains("phase")) {
+        const auto phaseText = object.value("phase").toString();
+        const auto phase = executionPhaseFromString(phaseText);
+        if (phase) step.phase = *phase;
+        else addError(errors, path + ".phase", "Unsupported execution phase: " + phaseText);
+    }
     const auto stateText = object.value("state").toString("Created");
     const auto state = activationStateFromString(stateText);
     if (state) step.state = *state;
@@ -317,6 +337,9 @@ StepReport stepFromJson(const QJsonObject& object,
     const auto outcome = outcomeFromString(outcomeText);
     if (outcome) step.outcome = *outcome;
     else addError(errors, path + ".outcome", "Unsupported node outcome: " + outcomeText);
+    if (object.contains("durationMs")) {
+        step.durationMs = object.value("durationMs").toVariant().toLongLong();
+    }
     step.wasError = object.value("wasError").toBool(false);
     step.loop = stepLoopFromJson(object.value("loop").toObject());
     step.measurements = measurementsFromJson(

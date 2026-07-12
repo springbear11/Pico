@@ -20,6 +20,7 @@ struct SchedulerStepResult {
     bool progressed = false;
     bool blocked = false;
     bool hasError = false;
+    NodeId nodeId;
     QVector<NodeResult> nodeResults;
 };
 
@@ -36,6 +37,7 @@ public:
 
     SchedulerResult run(UutExecution& uut, const FrameId& frameId = "root");
     SchedulerStepResult pumpOnce(UutExecution& uut, const FrameId& frameId = "root");
+    std::optional<NodeId> nextReadyNodeId(const UutExecution& uut) const;
     void setCohortUuts(const QSet<UutId>& uutIds);
     void releaseBarrierNodes(const BarrierReleaseDecision& decision);
     void applyBarrierReleases(const QVector<UutExecution*>& uuts);

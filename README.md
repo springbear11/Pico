@@ -15,6 +15,12 @@ PicoATE 是面向 ATE 产线测试的 C++20/Qt6 执行框架，目标是让 UI�
 - RuntimeEvent 实时事件、ExecutionReport、JSON/CSV 报告
 - C++ DLL 内 `PicoATE_Log` 实时送达 CLI/UI，具备高频日志限流和关键事件保护
 - Qt Widgets Runner 与实时增量模型
+- TEST/Admin 双模式：产线扫码即测与工程师流程编辑、调试分离
+- Flow Editor 插件功能拖放、跨 TestItem 层级移动和一键包裹 TestItem
+- `PicoATE_Describe` 插件自描述、PluginRegistry 扫描缓存和参数表单生成
+- `CAN1`、`DMM1` 等逻辑设备与具体厂家插件解耦，可在 Station 中换型
+- Station 插件绑定即时诊断，DLL 丢失和重复绑定在运行前定位
+- 真实 GCAN USB-CAN 自收发闭环验证
 - CLI 逐 Step 实时输出及便携 Release 目录
 
 PicoATE 内置 C/C++ DLL 和 Python 脚本加载能力。其他语言由项目团队自行打包为 `.exe`，框架不提供对应 SDK 或模板。
@@ -76,3 +82,16 @@ out/build/vs2022-qt6-all/portable/Release/PicoATE.Cli/
 ## 文档
 
 从 [文档索引](docs/文档索引.md) 开始阅读。当前进度和每日改动统一记录在 [开发日志](docs/开发日志.md) 与 [开发进度与计划](docs/开发进度与计划.md)。
+
+## 仓库目录
+
+```text
+src/        任务引擎、CLI、NativeHost 与测试模块
+ui/         独立 Qt6 UI 工程、UI 测试与交互原型
+templates/  C++ 插件工具包，包含 CAN/GCAN、Modbus、VISA 分类
+examples/   Sequence 与 Station JSON 示例
+tests/      调度引擎自动化测试
+docs/       中文架构、规范、进度与硬件验证文档
+```
+
+`out/`、Qt/VS 构建产物、厂商 DLL、运行报告及本机缓存不会提交到仓库。真实设备项目需按工具包说明自行准备对应厂商动态库。

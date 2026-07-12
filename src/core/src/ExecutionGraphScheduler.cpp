@@ -203,6 +203,7 @@ SchedulerStepResult ExecutionGraphScheduler::pumpOnce(UutExecution& uut, const F
         step.blocked = true;
         return step;
     }
+    step.nodeId = nodeId;
 
     const auto previousState = uut.stateOf(nodeId);
     auto result = executeNode(uut, *node, frameId);
@@ -227,6 +228,15 @@ SchedulerStepResult ExecutionGraphScheduler::pumpOnce(UutExecution& uut, const F
                     result.outcome == NodeOutcome::Error ||
                     result.outcome == NodeOutcome::Timeout;
     return step;
+}
+
+std::optional<NodeId> ExecutionGraphScheduler::nextReadyNodeId(const UutExecution& uut) const
+{
+    const auto readyNodes = findReadyNodes(uut);
+    if (readyNodes.isEmpty()) {
+        return std::nullopt;
+    }
+    return readyNodes.first();
 }
 
 void ExecutionGraphScheduler::setCohortUuts(const QSet<UutId>& uutIds)
@@ -1152,6 +1162,7 @@ void ExecutionGraphScheduler::publishNodeEvent(RuntimeEventKind kind,
     }
     event.nodeDisplayName = node.displayName;
     event.nodeKind = node.kind;
+    event.nodePhase = node.phase;
     event.activationState = state;
     event.outcome = outcome;
     event.message = message;
@@ -1159,6 +1170,11 @@ void ExecutionGraphScheduler::publishNodeEvent(RuntimeEventKind kind,
     const auto activation = uut.activations.constFind(node.id);
     if (activation != uut.activations.constEnd()) {
         event.frameId = activation->frameId;
+        if (activation->createdAt.isValid() && activation->completedAt.isValid()) {
+            event.details.insert(
+                "durationMs",
+                qMax<qint64>(0, activation->createdAt.msecsTo(activation->completedAt)));
+        }
     }
     m_events->publish(event);
 }
@@ -1184,6 +1200,7 @@ void ExecutionGraphScheduler::publishAttemptEvent(RuntimeEventKind kind,
     }
     event.nodeDisplayName = node.displayName;
     event.nodeKind = node.kind;
+    event.nodePhase = node.phase;
     event.attemptId = attempt.id;
     event.attemptIndex = attempt.attemptIndex + 1;
     event.attemptState = attempt.state;
@@ -1192,6 +1209,11 @@ void ExecutionGraphScheduler::publishAttemptEvent(RuntimeEventKind kind,
     event.measurements = attempt.result.measurements;
     event.errorCode = attempt.result.errorCode;
     event.message = message;
+    if (attempt.result.startedAt.isValid() && attempt.result.finishedAt.isValid()) {
+        event.details.insert(
+            "durationMs",
+            qMax<qint64>(0, attempt.result.startedAt.msecsTo(attempt.result.finishedAt)));
+    }
     const auto activation = uut.activations.constFind(node.id);
     if (activation != uut.activations.constEnd()) {
         event.frameId = activation->frameId;

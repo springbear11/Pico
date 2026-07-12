@@ -615,6 +615,24 @@ int runCommand(const QCommandLineParser& parser, const QStringList& positional, 
         return 2;
     }
 
+    if (stationRuntime.hasStationConfig()) {
+        const auto variables = defaultRuntimeVariables();
+        StationPluginRegistrationOptions stationPluginOptions;
+        stationPluginOptions.stationFilePath = QFileInfo(stationPath).absoluteFilePath();
+        stationPluginOptions.projectDir = QString::fromUtf8(PICOATE_SOURCE_DIR);
+        stationPluginOptions.nativeHostProgram =
+            variables.value(QStringLiteral("PICOATE_NATIVE_HOST"));
+        stationPluginOptions.variables = variables;
+        const auto stationBindings = registerStationPluginModules(
+            session,
+            stationRuntime.stationConfig(),
+            stationPluginOptions);
+        if (!stationBindings.ok()) {
+            printModuleBindingErrors(stationBindings, err);
+            return 2;
+        }
+    }
+
     session.run();
     const auto report = session.report();
     printExecutionSummary(report, out);

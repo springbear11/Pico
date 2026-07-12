@@ -5,6 +5,8 @@
 #include "PicoATE/Core/DeviceTransportSession.h"
 #include "PicoATE/Core/DllBridgeInvoker.h"
 #include "PicoATE/Core/ExecutionGraphScheduler.h"
+#include "PicoATE/Core/ExecutionControl.h"
+#include "PicoATE/Core/ExecutionDebug.h"
 #include "PicoATE/Core/ExecutionSession.h"
 #include "PicoATE/Core/ExecutionReportJson.h"
 #include "PicoATE/Core/InstrumentAdapterModules.h"
@@ -243,6 +245,26 @@ private:
     QVector<RuntimeEvent> events;
 };
 
+class PauseOnBarrierEventSink final : public IRuntimeEventSink {
+public:
+    explicit PauseOnBarrierEventSink(std::shared_ptr<ExecutionControl> control)
+        : m_control(std::move(control))
+    {
+    }
+
+    void publish(const RuntimeEvent& event) override
+    {
+        if (event.kind == RuntimeEventKind::BarrierWaiting && m_control && !m_requested) {
+            m_requested = true;
+            m_control->requestPause();
+        }
+    }
+
+private:
+    std::shared_ptr<ExecutionControl> m_control;
+    bool m_requested = false;
+};
+
 void PICOATE_PLUGIN_CALL collectPluginLog(void* userData, const char* messageUtf8)
 {
     auto* messages = static_cast<QStringList*>(userData);
@@ -432,6 +454,7 @@ private slots:
     void persistentQProcessTransportReusesHostStateAcrossCalls();
     void persistentInstrumentHostReportsHealthReconnectAndShutdown();
     void moduleRuntimeServicesInvokesTransportDeviceSession();
+    void stationPluginBindingRunsLogicalDeviceThroughNativeHost();
     void executionSessionRunsActionThroughQProcessTransport();
     void dllBridgeInvokerCallsTestDll();
     void dllBridgeInvokerStreamsPluginLogs();
@@ -459,6 +482,15 @@ private slots:
     void executionSessionStopRunsCleanupOnly();
     void stopTokenEscalatesAtomically();
     void executionSessionConsumesCrossThreadStopToken();
+    void executionSessionPausesAtNodeBoundaryAndResumes();
+    void executionSessionPausePreservesMultiUutBarrierState();
+    void executionSessionStopWakesPausedRunAndRunsCleanup();
+    void breakpointAddressResolvesNestedLocalPaths();
+    void executionSessionBreakpointPausesBeforeNodeAndExposesDebugSnapshot();
+    void disabledBreakpointDoesNotPause();
+    void executionSessionStepIntoRunsOneNodeAndPausesAgain();
+    void executionSessionStepOverLoopRunsWholeLoopBeforePausing();
+    void executionSessionStepOverSuppressesBreakpointsInsideLoop();
     void sequenceDefModelsSetupMainCleanup();
     void sequenceDefDetectsDuplicateStepIds();
     void sequenceDefPreservesBarrierAndResourcePolicies();
@@ -1420,6 +1452,63 @@ void CoreTests::moduleRuntimeServicesInvokesTransportDeviceSession()
     QVERIFY(manager.session("DMM1"));
     QVERIFY(manager.session("DMM1")->state() != DeviceConnectionState::Connected);
     transport->shutdown();
+}
+
+void CoreTests::stationPluginBindingRunsLogicalDeviceThroughNativeHost()
+{
+    const auto host = nativeHostPath();
+    const auto dll = testDllPath();
+    QVERIFY2(QFileInfo::exists(host), qPrintable(host));
+    QVERIFY2(QFileInfo::exists(dll), qPrintable(dll));
+
+    const auto document = QJsonDocument::fromJson(R"json(
+    {
+      "id": "logical-device-test",
+      "name": "Logical Device Test",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [{
+          "id": "echo",
+          "name": "Echo through CAN1",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "echo",
+          "inputs": {"deviceId": "CAN1", "value": "logical-device"}
+        }]
+      }]
+    })json");
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(document.object());
+    QVERIFY(compiled.ok());
+
+    ExecutionSession session(compiled.plan);
+    session.addUut(QStringLiteral("uut-1"));
+
+    StationConfig station;
+    station.stationId = QStringLiteral("station-1");
+    DeviceSessionConfig device;
+    device.deviceId = QStringLiteral("CAN1");
+    device.deviceType = QStringLiteral("CAN");
+    device.driverId = QStringLiteral("plugin.test.dll");
+    device.pluginPath = dll;
+    device.lifetime = DeviceSessionLifetime::Run;
+    station.devices.push_back(device);
+    QVERIFY(configureDeviceSessions(station, session.devices()).isEmpty());
+
+    StationPluginRegistrationOptions options;
+    options.nativeHostProgram = host;
+    options.projectDir = projectRootPath();
+    const auto registration = registerStationPluginModules(session, station, options);
+    QVERIFY(registration.ok());
+    QVERIFY(registration.registeredModuleIds.contains(QStringLiteral("device")));
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QCOMPARE(result.nodeResults.size(), 1);
+    QCOMPARE(result.nodeResults.first().outcome, NodeOutcome::Passed);
+    QCOMPARE(result.nodeResults.first().outputs.value(QStringLiteral("value")).toString(),
+             QStringLiteral("logical-device"));
 }
 
 void CoreTests::executionSessionRunsActionThroughQProcessTransport()
@@ -2388,6 +2477,513 @@ void CoreTests::executionSessionConsumesCrossThreadStopToken()
     QCOMPARE(uut.outcomeOf("cleanup"), NodeOutcome::Passed);
 }
 
+void CoreTests::executionSessionPausesAtNodeBoundaryAndResumes()
+{
+    ExecutionPlan plan;
+    plan.id = "plan-pause-resume";
+
+    ExecNode first;
+    first.id = "first";
+    first.displayName = "First";
+    first.kind = ExecNodeKind::Wait;
+    first.payload.insert("ms", 100);
+    first.resources.push_back({"DMM1", ResourceMode::Exclusive, 1, 0});
+    QVERIFY(plan.addNode(first));
+
+    ExecNode second;
+    second.id = "second";
+    second.displayName = "Second";
+    second.kind = ExecNodeKind::Noop;
+    QVERIFY(plan.addNode(second));
+    plan.addEdge({"first-to-second",
+                  "first",
+                  "second",
+                  EdgeKind::Dependency,
+                  EdgeTrigger::OnSuccess,
+                  {},
+                  0});
+
+    auto stopToken = std::make_shared<StopToken>();
+    auto control = std::make_shared<ExecutionControl>();
+    CollectingRuntimeEventSink events;
+    ExecutionSession session(plan, stopToken, &events, control);
+    session.addUut("uut-1");
+
+    ExecutionSessionResult result;
+    std::thread runner([&] { result = session.run(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    QVERIFY(control->requestPause());
+
+    QTRY_VERIFY_WITH_TIMEOUT(control->state() == ExecutionControlState::Paused, 1000);
+    QCOMPARE(session.uuts().first().outcomeOf("first"), NodeOutcome::Passed);
+    QCOMPARE(session.uuts().first().stateOf("second"), ActivationState::Created);
+    QVERIFY(session.snapshot().resources.activeLeases.isEmpty());
+
+    bool sawPausedEvent = false;
+    for (const auto& event : events.records()) {
+        sawPausedEvent = sawPausedEvent ||
+                         (event.kind == RuntimeEventKind::SessionStateChanged &&
+                          event.executionState == ExecutionState::Paused);
+    }
+    QVERIFY(sawPausedEvent);
+
+    control->resume();
+    runner.join();
+
+    QVERIFY(result.completed);
+    QCOMPARE(result.state, ExecutionState::Completed);
+    QCOMPARE(session.uuts().first().outcomeOf("second"), NodeOutcome::Passed);
+}
+
+void CoreTests::executionSessionPausePreservesMultiUutBarrierState()
+{
+    ExecutionPlan plan;
+    plan.id = "plan-pause-barrier";
+
+    ExecNode barrier;
+    barrier.id = "batch-ready";
+    barrier.kind = ExecNodeKind::Barrier;
+    barrier.payload.insert("barrierName", "batch-ready");
+    barrier.payload.insert("cohortId", "batch-1");
+    QVERIFY(plan.addNode(barrier));
+
+    ExecNode after;
+    after.id = "after-barrier";
+    after.kind = ExecNodeKind::Noop;
+    QVERIFY(plan.addNode(after));
+    plan.addEdge({"barrier-after",
+                  "batch-ready",
+                  "after-barrier",
+                  EdgeKind::Control,
+                  EdgeTrigger::OnSuccess,
+                  {},
+                  0});
+
+    auto control = std::make_shared<ExecutionControl>();
+    PauseOnBarrierEventSink events(control);
+    ExecutionSession session(plan, {}, &events, control);
+    session.addUut("uut-1");
+    session.addUut("uut-2");
+
+    ExecutionSessionResult result;
+    std::thread runner([&] { result = session.run(); });
+    QTRY_VERIFY_WITH_TIMEOUT(control->state() == ExecutionControlState::Paused, 1000);
+
+    QCOMPARE(session.uuts()[0].stateOf("batch-ready"), ActivationState::WaitingAtBarrier);
+    QCOMPARE(session.uuts()[1].stateOf("batch-ready"), ActivationState::Created);
+    const auto barriers = session.snapshot().barriers;
+    QCOMPARE(barriers.size(), 1);
+    QCOMPARE(barriers.first().state, BarrierState::Waiting);
+    QVERIFY(barriers.first().arrived.contains("uut-1"));
+    QVERIFY(!barriers.first().arrived.contains("uut-2"));
+
+    control->resume();
+    runner.join();
+
+    QVERIFY(result.completed);
+    QCOMPARE(result.state, ExecutionState::Completed);
+    for (const auto& uut : session.uuts()) {
+        QCOMPARE(uut.outcomeOf("batch-ready"), NodeOutcome::Passed);
+        QCOMPARE(uut.outcomeOf("after-barrier"), NodeOutcome::Passed);
+    }
+}
+
+void CoreTests::executionSessionStopWakesPausedRunAndRunsCleanup()
+{
+    ExecutionPlan plan;
+    plan.id = "plan-stop-paused";
+
+    ExecNode first;
+    first.id = "first";
+    first.kind = ExecNodeKind::Wait;
+    first.payload.insert("ms", 100);
+    QVERIFY(plan.addNode(first));
+
+    ExecNode second;
+    second.id = "second";
+    second.kind = ExecNodeKind::Noop;
+    QVERIFY(plan.addNode(second));
+    plan.addEdge({"first-to-second",
+                  "first",
+                  "second",
+                  EdgeKind::Dependency,
+                  EdgeTrigger::OnSuccess,
+                  {},
+                  0});
+
+    ExecNode cleanup;
+    cleanup.id = "cleanup";
+    cleanup.kind = ExecNodeKind::Cleanup;
+    cleanup.alwaysRun = true;
+    QVERIFY(plan.addNode(cleanup));
+
+    CleanupRegion region;
+    region.id = "pause-stop-cleanup";
+    region.entryNodes = {"cleanup"};
+    region.triggers = {CleanupReason::UserStop, CleanupReason::UserAbort};
+    plan.cleanupRegions.push_back(region);
+
+    auto stopToken = std::make_shared<StopToken>();
+    auto control = std::make_shared<ExecutionControl>();
+    ExecutionSession session(plan, stopToken, nullptr, control);
+    session.addUut("uut-1");
+
+    ExecutionSessionResult result;
+    std::thread runner([&] { result = session.run(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    QVERIFY(control->requestPause());
+    QTRY_VERIFY_WITH_TIMEOUT(control->state() == ExecutionControlState::Paused, 1000);
+
+    // Exercise callers that own StopToken directly; the paused wait must still wake.
+    stopToken->requestStop(StopMode::Graceful);
+    runner.join();
+
+    QVERIFY(result.completed);
+    QCOMPARE(result.state, ExecutionState::Completed);
+    QCOMPARE(control->state(), ExecutionControlState::Running);
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.outcomeOf("first"), NodeOutcome::Passed);
+    QCOMPARE(uut.outcomeOf("second"), NodeOutcome::Skipped);
+    QCOMPARE(uut.outcomeOf("cleanup"), NodeOutcome::Passed);
+}
+
+void CoreTests::breakpointAddressResolvesNestedLocalPaths()
+{
+    const auto json = R"json({
+      "id": "debug-addresses",
+      "name": "Debug Addresses",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [
+          {
+            "id": "001",
+            "kind": "testItem",
+            "steps": [
+              { "id": "01", "kind": "action" },
+              { "id": "03", "kind": "action" }
+            ]
+          },
+          {
+            "id": "002",
+            "kind": "testItem",
+            "steps": [
+              { "id": "03", "kind": "action" }
+            ]
+          }
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compile.ok(), qPrintable(compile.errors.isEmpty() ? QString() : compile.errors.first().message));
+
+    QCOMPARE(debugLocalPathForNode(compile.plan, "001.03"), QString("001/03"));
+    QCOMPARE(debugLocalPathForNode(compile.plan, "002.03"), QString("002/03"));
+
+    const auto first = resolveBreakpointAddress(
+        compile.plan, BreakpointAddress::localPath("001/03"));
+    QVERIFY(first.has_value());
+    QCOMPARE(*first, NodeId("001.03"));
+
+    const auto firstWithDots = resolveBreakpointAddress(
+        compile.plan, BreakpointAddress::localPath("001.03"));
+    QVERIFY(firstWithDots.has_value());
+    QCOMPARE(*firstWithDots, NodeId("001.03"));
+
+    const auto second = resolveBreakpointAddress(
+        compile.plan, BreakpointAddress::nodePath("002.03"));
+    QVERIFY(second.has_value());
+    QCOMPARE(*second, NodeId("002.03"));
+}
+
+void CoreTests::executionSessionBreakpointPausesBeforeNodeAndExposesDebugSnapshot()
+{
+    ExecutionPlan plan;
+    plan.id = "plan-breakpoint";
+
+    ExecNode first;
+    first.id = "first";
+    first.localId = "001";
+    first.displayName = "First";
+    first.kind = ExecNodeKind::Noop;
+    QVERIFY(plan.addNode(first));
+
+    ExecNode second;
+    second.id = "second";
+    second.localId = "002";
+    second.displayName = "Second";
+    second.kind = ExecNodeKind::Noop;
+    QVERIFY(plan.addNode(second));
+    plan.addEdge({"first-to-second",
+                  "first",
+                  "second",
+                  EdgeKind::Dependency,
+                  EdgeTrigger::OnSuccess,
+                  {},
+                  0});
+
+    auto control = std::make_shared<ExecutionControl>();
+    BreakpointSpec breakpoint;
+    breakpoint.id = "bp-second";
+    breakpoint.address = BreakpointAddress::nodePath("second");
+    control->setBreakpoints({breakpoint});
+
+    CollectingRuntimeEventSink events;
+    ExecutionSession session(plan, {}, &events, control);
+    session.addUut("uut-1");
+
+    ExecutionSessionResult result;
+    std::thread runner([&] { result = session.run(); });
+
+    QTRY_VERIFY_WITH_TIMEOUT(control->state() == ExecutionControlState::Paused, 1000);
+    QCOMPARE(session.uuts().first().outcomeOf("first"), NodeOutcome::Passed);
+    QCOMPARE(session.uuts().first().stateOf("second"), ActivationState::Created);
+
+    const auto snapshot = control->debugSnapshot();
+    QVERIFY(snapshot.has_value());
+    QCOMPARE(snapshot->pauseReason, DebugPauseReason::Breakpoint);
+    QCOMPARE(snapshot->currentUutId, UutId("uut-1"));
+    QCOMPARE(snapshot->currentNodeId, NodeId("second"));
+    QCOMPARE(snapshot->currentLocalPath, QString("002"));
+    QCOMPARE(snapshot->uuts.size(), 1);
+
+    const auto& uutSnapshot = snapshot->uuts.first();
+    const auto findNode = [&uutSnapshot](const NodeId& nodeId) -> const DebugNodeSnapshot* {
+        for (const auto& node : uutSnapshot.nodes) {
+            if (node.nodeId == nodeId) {
+                return &node;
+            }
+        }
+        return nullptr;
+    };
+    const auto* firstSnapshot = findNode("first");
+    const auto* secondSnapshot = findNode("second");
+    QVERIFY(firstSnapshot != nullptr);
+    QVERIFY(secondSnapshot != nullptr);
+    QCOMPARE(firstSnapshot->state, ActivationState::Passed);
+    QCOMPARE(secondSnapshot->state, ActivationState::Created);
+
+    bool sawBreakpointEvent = false;
+    for (const auto& event : events.records()) {
+        sawBreakpointEvent = sawBreakpointEvent ||
+                             (event.kind == RuntimeEventKind::BreakpointHit &&
+                              event.nodeId == "second" &&
+                              event.details.value("breakpointId").toString() == "bp-second");
+    }
+    QVERIFY(sawBreakpointEvent);
+    QCOMPARE(control->breakpoints().first().hitCount, 1);
+
+    control->resume();
+    runner.join();
+
+    QVERIFY(result.completed);
+    QCOMPARE(result.state, ExecutionState::Completed);
+    QCOMPARE(session.uuts().first().outcomeOf("second"), NodeOutcome::Passed);
+    QCOMPARE(control->breakpoints().first().hitCount, 1);
+}
+
+void CoreTests::disabledBreakpointDoesNotPause()
+{
+    ExecutionPlan plan;
+    plan.id = "plan-disabled-breakpoint";
+
+    ExecNode node;
+    node.id = "only-step";
+    node.kind = ExecNodeKind::Noop;
+    QVERIFY(plan.addNode(node));
+
+    auto control = std::make_shared<ExecutionControl>();
+    BreakpointSpec breakpoint;
+    breakpoint.id = "bp-disabled";
+    breakpoint.address = BreakpointAddress::nodePath("only-step");
+    breakpoint.enabled = false;
+    control->setBreakpoints({breakpoint});
+
+    ExecutionSession session(plan, {}, nullptr, control);
+    session.addUut("uut-1");
+    const auto result = session.run();
+
+    QVERIFY(result.completed);
+    QCOMPARE(session.uuts().first().outcomeOf("only-step"), NodeOutcome::Passed);
+    QCOMPARE(control->state(), ExecutionControlState::Running);
+    QCOMPARE(control->breakpoints().first().hitCount, 0);
+    QVERIFY(!control->debugSnapshot().has_value());
+}
+
+void CoreTests::executionSessionStepIntoRunsOneNodeAndPausesAgain()
+{
+    ExecutionPlan plan;
+    plan.id = "plan-step-into";
+
+    ExecNode first;
+    first.id = "first";
+    first.displayName = "First";
+    first.kind = ExecNodeKind::Noop;
+    QVERIFY(plan.addNode(first));
+
+    ExecNode second;
+    second.id = "second";
+    second.displayName = "Second";
+    second.kind = ExecNodeKind::Noop;
+    QVERIFY(plan.addNode(second));
+    plan.addEdge({"first-to-second",
+                  "first",
+                  "second",
+                  EdgeKind::Dependency,
+                  EdgeTrigger::OnSuccess,
+                  {},
+                  0});
+
+    auto control = std::make_shared<ExecutionControl>();
+    BreakpointSpec breakpoint;
+    breakpoint.id = "bp-first";
+    breakpoint.address = BreakpointAddress::nodePath("first");
+    control->setBreakpoints({breakpoint});
+
+    CollectingRuntimeEventSink events;
+    ExecutionSession session(plan, {}, &events, control);
+    session.addUut("uut-1");
+
+    ExecutionSessionResult result;
+    std::thread runner([&] { result = session.run(); });
+    QTRY_VERIFY_WITH_TIMEOUT(control->state() == ExecutionControlState::Paused, 1000);
+    QCOMPARE(session.uuts().first().stateOf("first"), ActivationState::Created);
+
+    QVERIFY(control->stepInto());
+    QTRY_VERIFY_WITH_TIMEOUT(control->state() == ExecutionControlState::Paused, 1000);
+    QCOMPARE(session.uuts().first().outcomeOf("first"), NodeOutcome::Passed);
+    QCOMPARE(session.uuts().first().stateOf("second"), ActivationState::Created);
+
+    const auto snapshot = control->debugSnapshot();
+    QVERIFY(snapshot.has_value());
+    QCOMPARE(snapshot->pauseReason, DebugPauseReason::StepInto);
+    QCOMPARE(snapshot->currentNodeId, NodeId("first"));
+
+    bool sawStepEvent = false;
+    for (const auto& event : events.records()) {
+        sawStepEvent = sawStepEvent ||
+                       (event.kind == RuntimeEventKind::DebugStepCompleted &&
+                        event.nodeId == "first" &&
+                        event.details.value("stepMode").toString() == "into");
+    }
+    QVERIFY(sawStepEvent);
+
+    control->resume();
+    runner.join();
+    QVERIFY(result.completed);
+    QCOMPARE(session.uuts().first().outcomeOf("second"), NodeOutcome::Passed);
+}
+
+void CoreTests::executionSessionStepOverLoopRunsWholeLoopBeforePausing()
+{
+    const auto json = R"json({
+      "id": "debug-step-over-loop",
+      "name": "Debug Step Over Loop",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [
+          {
+            "id": "repeat",
+            "kind": "loop",
+            "loop": { "variable": "sample", "from": 0, "to": 2, "step": 1 },
+            "steps": [
+              { "id": "sample", "kind": "action",
+                "parameters": { "outputs": { "value": "${loop.value}" } } }
+            ]
+          },
+          { "id": "after", "kind": "action" }
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compile.ok(), qPrintable(compile.errors.isEmpty() ? QString() : compile.errors.first().message));
+
+    auto control = std::make_shared<ExecutionControl>();
+    BreakpointSpec breakpoint;
+    breakpoint.id = "bp-loop";
+    breakpoint.address = BreakpointAddress::nodePath("repeat");
+    control->setBreakpoints({breakpoint});
+
+    ExecutionSession session(compile.plan, {}, nullptr, control);
+    session.addUut("uut-1");
+
+    ExecutionSessionResult result;
+    std::thread runner([&] { result = session.run(); });
+    QTRY_VERIFY_WITH_TIMEOUT(control->state() == ExecutionControlState::Paused, 1000);
+    QCOMPARE(session.uuts().first().stateOf("repeat"), ActivationState::Created);
+
+    QVERIFY(control->stepOver());
+    QTRY_VERIFY_WITH_TIMEOUT(control->state() == ExecutionControlState::Paused, 1000);
+
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.outcomeOf("repeat"), NodeOutcome::Passed);
+    QCOMPARE(uut.stateOf("after"), ActivationState::Created);
+    QCOMPARE(session.results().history("uut-1", "root", "repeat.sample").size(), 3);
+    const auto snapshot = control->debugSnapshot();
+    QVERIFY(snapshot.has_value());
+    QCOMPARE(snapshot->pauseReason, DebugPauseReason::StepOver);
+    QCOMPARE(snapshot->currentNodeId, NodeId("repeat"));
+
+    control->resume();
+    runner.join();
+    QVERIFY(result.completed);
+    QCOMPARE(session.uuts().first().outcomeOf("after"), NodeOutcome::Passed);
+}
+
+void CoreTests::executionSessionStepOverSuppressesBreakpointsInsideLoop()
+{
+    const auto json = R"json({
+      "id": "debug-step-over-loop-breakpoints",
+      "name": "Debug Step Over Loop Breakpoints",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [{
+          "id": "repeat",
+          "kind": "loop",
+          "loop": { "variable": "sample", "from": 0, "to": 2, "step": 1 },
+          "steps": [{ "id": "sample", "kind": "action" }]
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compile.ok());
+
+    auto control = std::make_shared<ExecutionControl>();
+    BreakpointSpec loopBreakpoint;
+    loopBreakpoint.id = "bp-loop";
+    loopBreakpoint.address = BreakpointAddress::nodePath("repeat");
+    BreakpointSpec bodyBreakpoint;
+    bodyBreakpoint.id = "bp-body";
+    bodyBreakpoint.address = BreakpointAddress::nodePath("repeat.sample");
+    control->setBreakpoints({loopBreakpoint, bodyBreakpoint});
+
+    ExecutionSession session(compile.plan, {}, nullptr, control);
+    session.addUut("uut-1");
+
+    ExecutionSessionResult result;
+    std::thread runner([&] { result = session.run(); });
+    QTRY_VERIFY_WITH_TIMEOUT(control->state() == ExecutionControlState::Paused, 1000);
+    QVERIFY(control->stepOver());
+    QTRY_VERIFY_WITH_TIMEOUT(control->state() == ExecutionControlState::Paused, 1000);
+
+    const auto breakpoints = control->breakpoints();
+    QCOMPARE(breakpoints[0].hitCount, 1);
+    QCOMPARE(breakpoints[1].hitCount, 0);
+    QCOMPARE(session.results().history("uut-1", "root", "repeat.sample").size(), 3);
+
+    control->resume();
+    runner.join();
+    QVERIFY(result.completed);
+}
+
 void CoreTests::sequenceDefModelsSetupMainCleanup()
 {
     SequenceDef sequence;
@@ -2682,6 +3278,10 @@ void CoreTests::planBuilderSkipsDisabledAndBridgesCustomGroups()
     QCOMPARE(result.plan.nodes.size(), 4);
     QVERIFY(result.plan.node("disabled-measure") == nullptr);
     QVERIFY(result.plan.node("disabled-group-step") == nullptr);
+    QCOMPARE(result.plan.node("open-fixture")->phase, ExecutionPhase::Setup);
+    QCOMPARE(result.plan.node("operator-check")->phase, ExecutionPhase::Main);
+    QCOMPARE(result.plan.node("measure")->phase, ExecutionPhase::Main);
+    QCOMPARE(result.plan.node("power-off")->phase, ExecutionPhase::Cleanup);
 
     const auto hasEdge = [&](const NodeId& from, const NodeId& to, EdgeKind kind, EdgeTrigger trigger) {
         return std::any_of(result.plan.edges.cbegin(), result.plan.edges.cend(), [&](const ExecEdge& edge) {
@@ -3927,11 +4527,14 @@ void CoreTests::executionSessionReportCapturesRetryAttempts()
     QCOMPARE(measure->state, ActivationState::Passed);
     QCOMPARE(measure->outcome, NodeOutcome::Passed);
     QVERIFY(!measure->wasError);
+    QVERIFY(measure->durationMs >= 0);
     QCOMPARE(measure->attempts.size(), 2);
     QCOMPARE(measure->attempts[0].index, 1);
     QCOMPARE(measure->attempts[0].outcome, NodeOutcome::Failed);
+    QVERIFY(measure->attempts[0].durationMs >= 0);
     QCOMPARE(measure->attempts[1].index, 2);
     QCOMPARE(measure->attempts[1].outcome, NodeOutcome::Passed);
+    QVERIFY(measure->attempts[1].durationMs >= 0);
 
     const auto* powerOff = findStep(uut, "power-off");
     QVERIFY(powerOff != nullptr);

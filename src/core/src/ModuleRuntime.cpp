@@ -62,6 +62,15 @@ ModuleResult moduleResultFromDeviceError(const DeviceSessionError& error)
     return result;
 }
 
+QString normalizedFunction(QString value)
+{
+    value = value.trimmed().toLower();
+    value.remove('-');
+    value.remove('_');
+    value.remove(' ');
+    return value;
+}
+
 } // namespace
 
 ModuleRuntimeServices::ModuleRuntimeServices(DeviceSessionManager& devices)
@@ -255,6 +264,61 @@ ModuleResult MockActionModule::execute(const ModuleFunction&,
         mapFromMaps(context.inputs, context.parameters, "measurements"),
         toMeasurementStatus(result.outcome));
     return result;
+}
+
+LogicalDeviceModule::LogicalDeviceModule(ModuleId id)
+    : m_id(std::move(id))
+{
+}
+
+ModuleId LogicalDeviceModule::moduleId() const
+{
+    return m_id;
+}
+
+ModuleResult LogicalDeviceModule::execute(const ModuleFunction& functionName,
+                                          const ModuleExecutionContext& context)
+{
+    ModuleResult result;
+    if (!context.runtimeServices) {
+        result.outcome = ModuleOutcome::Error;
+        result.errorCode = "RuntimeServicesUnavailable";
+        result.errorMessage = "Logical device module requires runtime services";
+        return result;
+    }
+
+    const auto deviceId = context.inputs.value("deviceId").toString().trimmed();
+    if (deviceId.isEmpty()) {
+        result.outcome = ModuleOutcome::Error;
+        result.errorCode = "DeviceIdMissing";
+        result.errorMessage = "Logical device action requires inputs.deviceId";
+        return result;
+    }
+
+    auto forwardedInputs = context.inputs;
+    forwardedInputs.remove("deviceId");
+    const auto function = normalizedFunction(functionName);
+    if (function == "open" || function == "connect") {
+        const auto opened = context.runtimeServices->openDeviceSession(deviceId);
+        if (!opened.ok()) {
+            return moduleResultFromDeviceError(opened.error);
+        }
+        result.outputs.insert("deviceId", deviceId);
+        result.outputs.insert("connected", true);
+        result.outputs.insert("reusedExisting", opened.reusedExisting);
+        return result;
+    }
+    if (function == "close" || function == "disconnect") {
+        const auto error = context.runtimeServices->closeDeviceSession(deviceId);
+        if (error.hasError()) {
+            return moduleResultFromDeviceError(error);
+        }
+        result.outputs.insert("deviceId", deviceId);
+        result.outputs.insert("connected", false);
+        return result;
+    }
+    return context.runtimeServices->invokeDevice(
+        deviceId, functionName, forwardedInputs, context);
 }
 
 NodeOutcome toNodeOutcome(ModuleOutcome outcome)

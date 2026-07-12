@@ -1,0 +1,30 @@
+{
+  "stationId": "GCAN-HW-01",
+  "name": "GCAN Hardware Verification Station",
+  "scanDialogEnabled": true,
+  "metadata": {
+    "order": "GCAN-SELF-TEST",
+    "tester": "Hardware Verification",
+    "jigNo": "SELF-LOOP"
+  },
+  "devices": [
+    {
+      "deviceId": "CAN1",
+      "deviceType": "CAN",
+      "driverId": "plugin.can.gcan",
+      "pluginPath": "${PROJECT_DIR}/templates/bin/Debug/PicoATE.CAN.GCAN.dll",
+      "address": "GCAN:0:0",
+      "timeoutMs": 6000,
+      "lifetime": "Run",
+      "enabled": true,
+      "options": {
+        "deviceType": 0,
+        "deviceIndex": 0,
+        "channelIndex": 0,
+        "bitrate": 500000,
+        "canFd": false,
+        "selfTest": true
+      }
+    }
+  ]
+}

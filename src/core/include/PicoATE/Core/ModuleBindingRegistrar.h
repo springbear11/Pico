@@ -2,6 +2,7 @@
 
 #include "PicoATE/Core/ExecutionSession.h"
 #include "PicoATE/Core/SequenceDef.h"
+#include "PicoATE/Core/StationConfig.h"
 
 #include <QHash>
 
@@ -30,5 +31,17 @@ ModuleBindingRegistrationResult registerConfiguredModules(
     ExecutionSession& session,
     const SequenceDef& sequence,
     const ModuleBindingRegistrationOptions& options = {});
+
+struct StationPluginRegistrationOptions {
+    QString stationFilePath;
+    QString projectDir;
+    QString nativeHostProgram;
+    QHash<QString, QString> variables;
+};
+
+ModuleBindingRegistrationResult registerStationPluginModules(
+    ExecutionSession& session,
+    const StationConfig& station,
+    const StationPluginRegistrationOptions& options = {});
 
 } // namespace PicoATE::Core
