@@ -13,6 +13,7 @@
 #include "StationDeviceModel.h"
 #include "StationDocument.h"
 #include "StartupSupport.h"
+#include "StepOutputCatalog.h"
 
 #include "PicoATE/Core/ExecutionReportJson.h"
 #include "PicoATE/Core/SequenceCompiler.h"
@@ -328,6 +329,7 @@ private slots:
     void pluginCatalogScansNativeDllThroughHost();
     void pluginCatalogValidatesStationBindings();
     void pluginFunctionModelBuildsHierarchyAndDropsGeneratedStep();
+    void stepOutputExpressionsUsePreviousScopedPluginOutputs();
     void runnerModelsExposeReportHierarchyAndDetails();
     void uutStepModelUsesProductionStateColors();
     void uutStepModelBuildsSingleUutPhaseLayout();
@@ -348,14 +350,18 @@ private slots:
     void sequenceDocumentUndoRedoTracksCleanState();
     void sequenceDocumentRelocatesAcrossShiftedParentPaths();
     void sequenceDocumentWrapsContiguousStepsInTestItem();
+    void sequenceDocumentBatchEditsSelectedStepsAtomically();
+    void sequenceDocumentDuplicatesMixedSelectionAtomically();
     void sequenceDocumentDestructionSilencesUndoStack();
     void sequenceDiagnosticPathsResolveNestedFields();
     void sequenceTreeModelBuildsHierarchyAndEditsSteps();
     void sequenceTreeModelTogglesTransientBreakpoints();
     void sequenceTreeModelMovesAcrossValidParents();
     void stationDocumentPreservesUnknownFieldsAndUndoHistory();
+    void defaultStationTemplateProvidesDisabledCommonDeviceSlots();
     void stationDeviceModelEditsAndReordersDevices();
     void coreServiceCompilesProvidedSequenceSnapshot();
+    void stationFailurePolicyContinuesOuterItemsButStopsFailedTestItem();
     void coreServiceTestsDeviceConnectionAndFailurePaths();
 };
 
@@ -717,6 +723,7 @@ void ExecutionViewModelTests::startupSupportDiscoversSequencesAndValidatesDailyP
         "stationId": "station-test",
         "name": "Station Test",
         "scanDialogEnabled": false,
+        "snLength": 10,
         "devices": []
     })");
     station.close();
@@ -725,6 +732,7 @@ void ExecutionViewModelTests::startupSupportDiscoversSequencesAndValidatesDailyP
     QCOMPARE(discovered, QStringList({QFileInfo(sequencePath).absoluteFilePath()}));
     QCOMPARE(StartupSupport::stationPathForSequence(sequencePath), stationPath);
     QVERIFY(!StartupSupport::stationScanDialogEnabled(stationPath));
+    QCOMPARE(StartupSupport::stationSnLength(stationPath), 10);
 
     const auto testValidation = StartupSupport::validateSelection(
         UiMode::Test, sequencePath, stationPath);
@@ -1000,8 +1008,27 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     functionModel.setPlugins({manifest.manifest});
     functionModel.setDeviceBindings({
         {QStringLiteral("plugin.can.gcan"), QStringList{QStringLiteral("CAN1")}}});
-    QCOMPARE(functionModel.rowCount(), 1);
-    const auto category = functionModel.index(0, 0);
+    QCOMPARE(functionModel.rowCount(), 2);
+    const auto basicSection = functionModel.index(0, 0);
+    QCOMPARE(basicSection.data().toString(), QStringLiteral("Basic Functions"));
+    QCOMPARE(functionModel.rowCount(basicSection), 6);
+    const auto limitFunction = functionModel.index(1, 0, basicSection);
+    QCOMPARE(limitFunction.data(PluginFunctionModel::FunctionIdRole).toString(),
+             QStringLiteral("limit"));
+    std::unique_ptr<QMimeData> limitMime(functionModel.mimeData({limitFunction}));
+    QVERIFY(limitMime);
+    const auto limitTemplate = QJsonDocument::fromJson(
+        limitMime->data(PluginFunctionMimeType)).object();
+    QCOMPARE(functionModel.stepTemplate(limitFunction), limitTemplate);
+    QCOMPARE(limitTemplate.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("limit"));
+    QCOMPARE(limitTemplate.value(QStringLiteral("parameters")).toObject()
+                 .value(QStringLiteral("comparison")).toString(),
+             QStringLiteral("between"));
+
+    const auto pluginSection = functionModel.index(1, 0);
+    QCOMPARE(pluginSection.data().toString(), QStringLiteral("Plugin Functions"));
+    const auto category = functionModel.index(0, 0, pluginSection);
     QCOMPARE(category.data().toString(), QStringLiteral("CAN"));
     const auto plugin = functionModel.index(0, 0, category);
     QCOMPARE(plugin.data().toString(), QStringLiteral("GCAN USB-CAN"));
@@ -1043,10 +1070,23 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
                  .value(QStringLiteral("deviceId")).toString(),
              QStringLiteral("CAN1"));
 
+    const auto refreshedMainGroup = sequenceModel.index(
+        0, SequenceTreeModel::NameColumn);
+    QVERIFY(sequenceModel.dropMimeData(
+        limitMime.get(), Qt::CopyAction, -1, 0, refreshedMainGroup));
+    SequenceItemPath limitPath;
+    limitPath.groupIndex = 0;
+    limitPath.stepIndices = {previousCount + 1};
+    const auto insertedLimit = document.objectAt(limitPath);
+    QCOMPARE(insertedLimit.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("limit"));
+    QVERIFY(!insertedLimit.value(QStringLiteral("id")).toString().isEmpty());
+
     functionModel.setDeviceBindings({
         {QStringLiteral("plugin.can.gcan"),
          QStringList{QStringLiteral("CAN1"), QStringLiteral("CAN2")}}});
-    const auto multiCategory = functionModel.index(0, 0);
+    const auto multiPluginSection = functionModel.index(1, 0);
+    const auto multiCategory = functionModel.index(0, 0, multiPluginSection);
     const auto multiPlugin = functionModel.index(0, 0, multiCategory);
     QCOMPARE(functionModel.rowCount(multiPlugin), 8);
     const auto can2Write = functionModel.index(5, 0, multiPlugin);
@@ -1062,7 +1102,63 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
              QStringLiteral("CAN2"));
 
     document.undoStack()->undo();
+    document.undoStack()->undo();
     QCOMPARE(sequenceModel.rowCount(sequenceModel.index(0, 0)), previousCount);
+}
+
+void ExecutionViewModelTests::stepOutputExpressionsUsePreviousScopedPluginOutputs()
+{
+    const auto projectDir = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR);
+    const auto manifest = PluginCatalog::load(
+        projectDir + QStringLiteral(
+            "/templates/CAN/GCAN/PicoATE.CAN.GCAN.picoate-plugin.json"));
+    QVERIFY(manifest.ok());
+
+    const auto sequence = QJsonDocument::fromJson(R"json({
+      "id":"expressions","name":"Expressions","groups":[
+        {"id":"main","kind":"main","steps":[
+          {"id":"001","kind":"testItem","steps":[
+            {"id":"01","key":"tx","kind":"action","moduleId":"device",
+             "function":"write","inputs":{"deviceId":"CAN1"}},
+            {"id":"02","key":"disabled","kind":"action","enabled":false,
+             "moduleId":"device","function":"read","inputs":{"deviceId":"CAN1"}},
+            {"id":"03","key":"rx","kind":"action","moduleId":"device",
+             "function":"read","inputs":{"deviceId":"CAN1"}},
+            {"id":"04","key":"consumer","kind":"action","moduleId":"device",
+             "function":"write","inputs":{"deviceId":"CAN1"}},
+            {"id":"05","key":"later","kind":"action","moduleId":"device",
+             "function":"read","inputs":{"deviceId":"CAN1"}}
+          ]}
+        ]},
+        {"id":"setup","kind":"setup","steps":[
+          {"id":"open","kind":"action","moduleId":"device","function":"open",
+           "inputs":{"deviceId":"CAN1"}}
+        ]}
+      ]
+    })json").object();
+
+    const auto candidates = buildStepOutputExpressionCandidates(
+        sequence,
+        SequenceItemPath{0, {0, 3}},
+        {manifest.manifest},
+        {{QStringLiteral("CAN1"), manifest.manifest.moduleId}});
+    QStringList expressions;
+    for (const auto& candidate : candidates) {
+        expressions.push_back(candidate.expression);
+    }
+
+    QVERIFY(expressions.contains(QStringLiteral("${step:open.outputs.opened}")));
+    QVERIFY(expressions.contains(QStringLiteral("${step:001.tx.outputs.sent}")));
+    QVERIFY(expressions.contains(QStringLiteral("${step:001.rx.outputs.dlc}")));
+    QVERIFY(expressions.contains(QStringLiteral("${step:001.rx.outputs.data}")));
+    QVERIFY(!std::any_of(expressions.cbegin(), expressions.cend(), [](const QString& value) {
+        return value.contains(QStringLiteral("disabled")) ||
+               value.contains(QStringLiteral("later"));
+    }));
+
+    const auto invalid = buildStepOutputExpressionCandidates(
+        sequence, SequenceItemPath{}, {manifest.manifest});
+    QVERIFY(invalid.isEmpty());
 }
 
 void ExecutionViewModelTests::runnerModelsExposeReportHierarchyAndDetails()
@@ -2352,6 +2448,143 @@ void ExecutionViewModelTests::sequenceDocumentWrapsContiguousStepsInTestItem()
              3);
 }
 
+void ExecutionViewModelTests::sequenceDocumentBatchEditsSelectedStepsAtomically()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath(QStringLiteral("batch-edit.json"));
+    QFile source(path);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write(R"json({
+      "id":"batch","name":"Batch","groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"001","kind":"noop","enabled":true},
+          {"id":"002","kind":"testItem","enabled":true,"steps":[
+            {"id":"01","kind":"noop","enabled":true},
+            {"id":"02","kind":"noop","enabled":true}
+          ]},
+          {"id":"003","kind":"noop","enabled":true}
+        ]
+      }]
+    })json");
+    source.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(path));
+    const QVector<SequenceItemPath> selected = {
+        SequenceItemPath{0, {0}}, SequenceItemPath{0, {1, 1}},
+        SequenceItemPath{0, {2}}};
+
+    QVERIFY(document.setStepsEnabled(selected, false));
+    QCOMPARE(document.undoStack()->undoText(), QString("Disable Selected Steps"));
+    QVERIFY(!document.objectAt(SequenceItemPath{0, {0}})
+                 .value("enabled").toBool(true));
+    QVERIFY(!document.objectAt(SequenceItemPath{0, {1, 1}})
+                 .value("enabled").toBool(true));
+    QVERIFY(!document.objectAt(SequenceItemPath{0, {2}})
+                 .value("enabled").toBool(true));
+    document.undoStack()->undo();
+    QVERIFY(document.objectAt(SequenceItemPath{0, {0}})
+                .value("enabled").toBool(false));
+    QVERIFY(document.objectAt(SequenceItemPath{0, {1, 1}})
+                .value("enabled").toBool(false));
+
+    QVERIFY(document.removeSteps({SequenceItemPath{0, {0}},
+                                  SequenceItemPath{0, {1, 0}},
+                                  SequenceItemPath{0, {2}}}));
+    QCOMPARE(document.undoStack()->undoText(), QString("Delete Selected Steps"));
+    auto steps = document.objectAt(SequenceItemPath{0, {}})
+                     .value("steps").toArray();
+    QCOMPARE(steps.size(), 1);
+    QCOMPARE(steps.at(0).toObject().value("id").toString(), QString("002"));
+    const auto children = steps.at(0).toObject().value("steps").toArray();
+    QCOMPARE(children.size(), 1);
+    QCOMPARE(children.at(0).toObject().value("id").toString(), QString("02"));
+    document.undoStack()->undo();
+    QCOMPARE(document.objectAt(SequenceItemPath{0, {}})
+                 .value("steps").toArray().size(), 3);
+
+    QVERIFY(!document.setStepsEnabled({}, true));
+    QVERIFY(!document.removeSteps({SequenceItemPath{0, {9}}}));
+}
+
+void ExecutionViewModelTests::sequenceDocumentDuplicatesMixedSelectionAtomically()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath(QStringLiteral("batch-copy.json"));
+    QFile source(path);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write(R"json({
+      "id":"batch-copy","name":"Batch Copy","groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"001","key":"communication","name":"Communication","kind":"testItem","steps":[
+            {"id":"01","key":"tx","name":"TX","kind":"noop"},
+            {"id":"02","key":"rx","name":"RX","kind":"noop"}
+          ]},
+          {"id":"002","key":"delay","name":"Delay","kind":"wait","ms":10},
+          {"id":"003","name":"Analysis","kind":"testItem","steps":[
+            {"id":"01","key":"parse","name":"Parse","kind":"noop"},
+            {"id":"02","key":"limit","name":"Limit","kind":"noop"}
+          ]}
+        ]
+      }]
+    })json");
+    source.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(path));
+    const QVector<SequenceItemPath> selected = {
+        SequenceItemPath{0, {0}},
+        SequenceItemPath{0, {0, 0}}, // Covered by the selected TestItem.
+        SequenceItemPath{0, {1}},
+        SequenceItemPath{0, {2, 0}}};
+
+    QVERIFY(document.duplicateSteps(selected));
+    QCOMPARE(document.undoStack()->undoText(),
+             QStringLiteral("Duplicate Selected Steps"));
+
+    const auto topSteps = document.rootObject().value("groups").toArray().at(0)
+                              .toObject().value("steps").toArray();
+    QCOMPARE(topSteps.size(), 5);
+    QCOMPARE(topSteps.at(0).toObject().value("id").toString(), QString("001"));
+    QCOMPARE(topSteps.at(1).toObject().value("id").toString(), QString("004"));
+    QCOMPARE(topSteps.at(2).toObject().value("id").toString(), QString("002"));
+    QCOMPARE(topSteps.at(3).toObject().value("id").toString(), QString("005"));
+    QCOMPARE(topSteps.at(4).toObject().value("id").toString(), QString("003"));
+
+    const auto copiedCommunication = topSteps.at(1).toObject();
+    QVERIFY(!copiedCommunication.contains("key"));
+    QCOMPARE(copiedCommunication.value("name").toString(),
+             QString("Communication Copy"));
+    const auto copiedChildren = copiedCommunication.value("steps").toArray();
+    QCOMPARE(copiedChildren.size(), 2);
+    QCOMPARE(copiedChildren.at(0).toObject().value("id").toString(), QString("01"));
+    QCOMPARE(copiedChildren.at(1).toObject().value("id").toString(), QString("02"));
+
+    const auto copiedDelay = topSteps.at(3).toObject();
+    QVERIFY(!copiedDelay.contains("key"));
+    QCOMPARE(copiedDelay.value("name").toString(), QString("Delay Copy"));
+
+    const auto analysisChildren = topSteps.at(4).toObject().value("steps").toArray();
+    QCOMPARE(analysisChildren.size(), 3);
+    QCOMPARE(analysisChildren.at(0).toObject().value("id").toString(), QString("01"));
+    QCOMPARE(analysisChildren.at(1).toObject().value("id").toString(), QString("03"));
+    QCOMPARE(analysisChildren.at(2).toObject().value("id").toString(), QString("02"));
+    QVERIFY(!analysisChildren.at(1).toObject().contains("key"));
+
+    document.undoStack()->undo();
+    QCOMPARE(document.rootObject().value("groups").toArray().at(0)
+                 .toObject().value("steps").toArray().size(),
+             3);
+    document.undoStack()->redo();
+    QCOMPARE(document.rootObject().value("groups").toArray().at(0)
+                 .toObject().value("steps").toArray().size(),
+             5);
+    QVERIFY(!document.duplicateSteps({}));
+    QVERIFY(!document.duplicateSteps({SequenceItemPath{0, {99}}}));
+}
+
 void ExecutionViewModelTests::sequenceDocumentRelocatesAcrossShiftedParentPaths()
 {
     QTemporaryDir directory;
@@ -2629,6 +2862,37 @@ void ExecutionViewModelTests::stationDocumentPreservesUnknownFieldsAndUndoHistor
     QVERIFY(snapshot.json.contains("x-device"));
 }
 
+void ExecutionViewModelTests::defaultStationTemplateProvidesDisabledCommonDeviceSlots()
+{
+    StationDocument document;
+    const auto path = QDir(QString::fromUtf8(PICOATE_UI_TEST_PROJECT_DIR))
+        .filePath(QStringLiteral("examples/StationSystem.json"));
+    QVERIFY(document.load(path));
+    QVERIFY(document.diagnostics().isEmpty());
+    QCOMPARE(document.deviceCount(), 8);
+
+    const QStringList expectedIds = {
+        QStringLiteral("CAN1"), QStringLiteral("CAN2"),
+        QStringLiteral("PPS1"), QStringLiteral("PPS2"),
+        QStringLiteral("DMM1"), QStringLiteral("DMM2"),
+        QStringLiteral("SCOPE1"), QStringLiteral("SCOPE2")};
+    QStringList actualIds;
+    for (int row = 0; row < document.deviceCount(); ++row) {
+        const auto device = document.deviceAt(row);
+        actualIds.push_back(device.value(QStringLiteral("deviceId")).toString());
+        QVERIFY(!device.value(QStringLiteral("enabled")).toBool(true));
+        QVERIFY(device.value(QStringLiteral("driverId")).toString().isEmpty());
+        QVERIFY(device.value(QStringLiteral("address")).toString().isEmpty());
+    }
+    QCOMPARE(actualIds, expectedIds);
+
+    StationDeviceModel model(&document);
+    QCOMPARE(model.data(model.index(0, StationDeviceModel::ConnectionColumn)).toString(),
+             QStringLiteral("Disabled"));
+    QVERIFY(model.data(model.index(0, StationDeviceModel::DeviceIdColumn),
+                       Qt::ForegroundRole).canConvert<QBrush>());
+}
+
 void ExecutionViewModelTests::stationDeviceModelEditsAndReordersDevices()
 {
     QTemporaryDir directory;
@@ -2721,6 +2985,78 @@ void ExecutionViewModelTests::coreServiceCompilesProvidedSequenceSnapshot()
     QCOMPARE(result.sequenceName, QString("Snapshot Sequence"));
     QCOMPARE(result.sequenceVersion, QString("2.0"));
     QCOMPARE(result.nodeCount, 2);
+}
+
+void ExecutionViewModelTests::stationFailurePolicyContinuesOuterItemsButStopsFailedTestItem()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QByteArray sequence = R"({
+        "id": "station-policy",
+        "name": "Station Policy",
+        "groups": [{
+            "id": "main",
+            "kind": "main",
+            "steps": [
+                {
+                    "id": "001",
+                    "name": "Composite Check",
+                    "kind": "testItem",
+                    "steps": [
+                        {
+                            "id": "01",
+                            "name": "Fail Limit",
+                            "kind": "limit",
+                            "inputs": {"actual": 10},
+                            "parameters": {"comparison": "equal", "expected": 5}
+                        },
+                        {"id": "02", "name": "Must Skip", "kind": "noop"}
+                    ]
+                },
+                {"id": "002", "name": "Continue Outer Item", "kind": "noop"}
+            ]
+        }]
+    })";
+    const QByteArray station = R"({
+        "stationId": "policy-station",
+        "stopOnFailure": false,
+        "devices": []
+    })";
+
+    CoreExecutionService service(directory.path());
+    CompileRequest compileRequest;
+    compileRequest.requestId = 101;
+    compileRequest.sequencePath = directory.filePath(QStringLiteral("sequence.json"));
+    compileRequest.sequenceJson = sequence;
+    compileRequest.stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    compileRequest.stationJson = station;
+    const auto compiled = service.compile(compileRequest);
+    QVERIFY2(compiled.success,
+             qPrintable(compiled.diagnostics.isEmpty()
+                 ? QStringLiteral("compile failed")
+                 : compiled.diagnostics.first().message));
+
+    RunRequest runRequest;
+    runRequest.requestId = 102;
+    runRequest.uuts = {{QStringLiteral("SN-001"), {}}};
+    const auto run = service.run(
+        runRequest, std::make_shared<PicoATE::Core::StopToken>());
+    QVERIFY(run.executed);
+    QCOMPARE(run.report.uuts.size(), 1);
+    const auto& steps = run.report.uuts.first().steps;
+    const auto parent = std::find_if(steps.cbegin(), steps.cend(), [](const auto& step) {
+        return step.stepId == QStringLiteral("001");
+    });
+    const auto next = std::find_if(steps.cbegin(), steps.cend(), [](const auto& step) {
+        return step.stepId == QStringLiteral("002");
+    });
+    QVERIFY(parent != steps.cend());
+    QVERIFY(next != steps.cend());
+    QCOMPARE(parent->state, PicoATE::Core::ActivationState::Failed);
+    QCOMPARE(parent->children.size(), 2);
+    QCOMPARE(parent->children.at(0).state, PicoATE::Core::ActivationState::Failed);
+    QCOMPARE(parent->children.at(1).state, PicoATE::Core::ActivationState::Skipped);
+    QCOMPARE(next->state, PicoATE::Core::ActivationState::Passed);
 }
 
 void ExecutionViewModelTests::coreServiceTestsDeviceConnectionAndFailurePaths()

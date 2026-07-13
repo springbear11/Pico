@@ -73,7 +73,10 @@ public:
                     int row = -1,
                     QJsonObject step = {});
     bool removeStep(const SequenceItemPath& path);
+    bool removeSteps(QVector<SequenceItemPath> paths);
+    bool setStepsEnabled(const QVector<SequenceItemPath>& paths, bool enabled);
     bool duplicateStep(const SequenceItemPath& path);
+    bool duplicateSteps(QVector<SequenceItemPath> paths);
     bool moveStep(const SequenceItemPath& path, int offset);
     bool relocateStep(const SequenceItemPath& sourcePath,
                       const SequenceItemPath& destinationParent,

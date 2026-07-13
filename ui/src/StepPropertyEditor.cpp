@@ -11,6 +11,7 @@
 #include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
@@ -19,6 +20,7 @@
 #include <QTabWidget>
 #include <QTextCursor>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <array>
@@ -163,6 +165,96 @@ void addItems(QComboBox* combo, std::initializer_list<const char*> values)
     }
 }
 
+QString normalizedLimitComparison(QString value)
+{
+    value = value.trimmed().toLower();
+    value.remove(QLatin1Char('-'));
+    value.remove(QLatin1Char('_'));
+    value.remove(QLatin1Char(' '));
+    return value;
+}
+
+QString limitEditorMode(const QJsonObject& parameters)
+{
+    const auto comparison = normalizedLimitComparison(
+        parameters.value(QStringLiteral("comparison")).toString(
+            QStringLiteral("between")));
+    if (comparison == QStringLiteral("between") ||
+        comparison == QStringLiteral("range")) {
+        return parameters.contains(QStringLiteral("lower")) ||
+               parameters.contains(QStringLiteral("lowerLimit")) ||
+               parameters.contains(QStringLiteral("upper")) ||
+               parameters.contains(QStringLiteral("upperLimit"))
+            ? QStringLiteral("betweenLimits")
+            : QStringLiteral("betweenTolerance");
+    }
+    if (comparison == QStringLiteral("==") || comparison == QStringLiteral("eq")) return QStringLiteral("equal");
+    if (comparison == QStringLiteral("!=") || comparison == QStringLiteral("ne")) return QStringLiteral("notEqual");
+    if (comparison == QStringLiteral(">") || comparison == QStringLiteral("gt")) return QStringLiteral("greaterThan");
+    if (comparison == QStringLiteral(">=") || comparison == QStringLiteral("ge") || comparison == QStringLiteral("gte")) return QStringLiteral("greaterOrEqual");
+    if (comparison == QStringLiteral("<") || comparison == QStringLiteral("lt")) return QStringLiteral("lessThan");
+    if (comparison == QStringLiteral("<=") || comparison == QStringLiteral("le") || comparison == QStringLiteral("lte")) return QStringLiteral("lessOrEqual");
+    if (comparison == QStringLiteral("greaterthan")) return QStringLiteral("greaterThan");
+    if (comparison == QStringLiteral("greaterorequal")) return QStringLiteral("greaterOrEqual");
+    if (comparison == QStringLiteral("lessthan")) return QStringLiteral("lessThan");
+    if (comparison == QStringLiteral("lessorequal")) return QStringLiteral("lessOrEqual");
+    if (comparison == QStringLiteral("notequal")) return QStringLiteral("notEqual");
+    if (comparison == QStringLiteral("startswith")) return QStringLiteral("startsWith");
+    if (comparison == QStringLiteral("endswith")) return QStringLiteral("endsWith");
+    if (comparison == QStringLiteral("istrue")) return QStringLiteral("isTrue");
+    if (comparison == QStringLiteral("isfalse")) return QStringLiteral("isFalse");
+    return comparison;
+}
+
+QString runtimeLimitComparison(const QString& editorMode)
+{
+    if (editorMode == QStringLiteral("betweenTolerance") ||
+        editorMode == QStringLiteral("betweenLimits")) {
+        return QStringLiteral("between");
+    }
+    return editorMode;
+}
+
+QString jsonValueText(const QJsonValue& value)
+{
+    if (value.isUndefined() || value.isNull()) {
+        return {};
+    }
+    if (value.isString()) {
+        return value.toString();
+    }
+    return QString::fromUtf8(
+        QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact))
+        .mid(1).chopped(1);
+}
+
+QJsonValue jsonScalarFromText(const QString& source)
+{
+    const auto text = source.trimmed();
+    if (text.isEmpty()) {
+        return QJsonValue(QJsonValue::Undefined);
+    }
+    const auto parsed = QJsonDocument::fromJson(
+        (QStringLiteral("[") + text + QStringLiteral("]")).toUtf8());
+    if (parsed.isArray() && parsed.array().size() == 1 &&
+        !parsed.array().first().isObject() && !parsed.array().first().isArray()) {
+        return parsed.array().first();
+    }
+    return text;
+}
+
+void insertOrRemoveScalar(QJsonObject& object,
+                          const QString& key,
+                          const QString& text)
+{
+    const auto value = jsonScalarFromText(text);
+    if (value.isUndefined()) {
+        object.remove(key);
+    } else {
+        object.insert(key, value);
+    }
+}
+
 } // namespace
 
 StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
@@ -177,11 +269,12 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
     root->setContentsMargins(8, 0, 0, 0);
     root->setSpacing(6);
 
-    auto* title = new QLabel(tr("Properties"), this);
-    auto titleFont = title->font();
+    m_titleLabel = new QLabel(tr("Properties"), this);
+    m_titleLabel->setObjectName(QStringLiteral("propertyEditorTitle"));
+    auto titleFont = m_titleLabel->font();
     titleFont.setBold(true);
-    title->setFont(titleFont);
-    root->addWidget(title);
+    m_titleLabel->setFont(titleFont);
+    root->addWidget(m_titleLabel);
 
     m_emptyLabel = new QLabel(tr("No sequence item selected"), this);
     root->addWidget(m_emptyLabel);
@@ -211,6 +304,10 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
             &QComboBox::currentIndexChanged,
             this,
             [this] { if (!m_loading) updateKindRows(); });
+    connect(m_limitComparisonCombo,
+            &QComboBox::currentIndexChanged,
+            this,
+            [this] { if (!m_loading) updateLimitRows(); });
     connect(m_applyButton, &QPushButton::clicked,
             this, &StepPropertyEditor::applyChanges);
     connect(m_moduleIdEdit, &QLineEdit::editingFinished,
@@ -241,15 +338,48 @@ SequenceItemPath StepPropertyEditor::currentPath() const
 
 void StepPropertyEditor::setCurrentItem(const SequenceItemPath& path)
 {
+    m_previewing = false;
+    m_previewObject = {};
     m_path = path;
+    loadCurrentObject();
+}
+
+void StepPropertyEditor::setPreviewObject(QJsonObject object)
+{
+    m_path = {};
+    m_previewObject = std::move(object);
+    m_previewing = !m_previewObject.isEmpty();
     loadCurrentObject();
 }
 
 void StepPropertyEditor::setEditable(bool editable)
 {
     m_editable = editable;
-    m_tabs->setEnabled(editable && m_path.isValid());
-    m_applyButton->setEnabled(editable && m_path.isValid());
+    const bool hasObject = !m_sourceObject.isEmpty();
+    const bool canEdit = editable && m_path.isValid() && !m_previewing;
+    m_tabs->setEnabled(hasObject);
+    for (auto* edit : m_tabs->findChildren<QLineEdit*>()) {
+        edit->setReadOnly(!canEdit);
+    }
+    for (auto* edit : m_tabs->findChildren<QPlainTextEdit*>()) {
+        edit->setReadOnly(!canEdit);
+    }
+    for (auto* combo : m_tabs->findChildren<QComboBox*>()) {
+        combo->setEnabled(canEdit);
+    }
+    for (auto* check : m_tabs->findChildren<QCheckBox*>()) {
+        check->setEnabled(canEdit);
+    }
+    for (auto* spin : m_tabs->findChildren<QSpinBox*>()) {
+        spin->setEnabled(canEdit);
+    }
+    for (auto* spin : m_tabs->findChildren<QDoubleSpinBox*>()) {
+        spin->setEnabled(canEdit);
+    }
+    for (auto* button : m_tabs->findChildren<QToolButton*>()) {
+        button->setEnabled(canEdit);
+    }
+    m_applyButton->setEnabled(canEdit);
 }
 
 void StepPropertyEditor::setPluginRegistry(QVector<PluginManifest> plugins)
@@ -289,8 +419,26 @@ bool StepPropertyEditor::focusField(const QString& fieldPath)
     else if (field == "tags") widget = m_tagsEdit;
     else if (field == "moduleId") { widget = m_moduleIdEdit; tabIndex = 1; }
     else if (field == "function") { widget = m_functionEdit; tabIndex = 1; }
-    else if (field == "inputs") { widget = m_inputsEdit; tabIndex = 1; }
-    else if (field == "parameters") { widget = m_parametersEdit; tabIndex = 1; }
+    else if (field == "inputs") {
+        widget = segments.size() > 1 && segments[1] == QStringLiteral("actual")
+            ? static_cast<QWidget*>(m_limitActualEdit)
+            : static_cast<QWidget*>(m_inputsEdit);
+        tabIndex = 1;
+    }
+    else if (field == "parameters") {
+        tabIndex = 1;
+        if (!m_isGroup && m_kindCombo->currentData().toString() == QStringLiteral("limit")) {
+            if (nested == QStringLiteral("comparison")) widget = m_limitComparisonCombo;
+            else if (nested == QStringLiteral("expected")) widget = m_limitExpectedEdit;
+            else if (nested == QStringLiteral("lower") || nested == QStringLiteral("lowerLimit")) widget = m_limitLowerEdit;
+            else if (nested == QStringLiteral("upper") || nested == QStringLiteral("upperLimit")) widget = m_limitUpperEdit;
+            else if (nested == QStringLiteral("tolerance")) widget = m_limitToleranceSpin;
+            else if (nested == QStringLiteral("inclusive")) widget = m_limitInclusiveCheck;
+            else if (nested == QStringLiteral("measurementName")) widget = m_limitMeasurementNameEdit;
+            else if (nested == QStringLiteral("unit")) widget = m_limitUnitEdit;
+        }
+        if (!widget) widget = m_parametersEdit;
+    }
     else if (field == "ms") { widget = m_waitMsSpin; tabIndex = 1; }
     else if (field == "loop") {
         tabIndex = 1;
@@ -441,6 +589,56 @@ void StepPropertyEditor::buildDataPage()
     m_inputsEdit->setObjectName(QStringLiteral("propertyInputsEdit"));
     m_inputsEdit->setMinimumHeight(100);
     m_dataForm->addRow(tr("Advanced inputs (JSON)"), m_inputsEdit);
+    m_limitActualEdit = new QLineEdit(content);
+    m_limitActualEdit->setObjectName(QStringLiteral("propertyLimitActualEdit"));
+    m_limitActualEdit->setPlaceholderText(tr("Value or ${step:...outputs...}"));
+    m_limitActualField = wrapExpressionEditor(m_limitActualEdit);
+    if (auto* picker = m_limitActualField->findChild<QToolButton*>(
+            QStringLiteral("expressionPickerButton"))) {
+        m_limitExpressionMenu = picker->menu();
+    }
+    m_dataForm->addRow(tr("Actual value"), m_limitActualField);
+    m_limitComparisonCombo = new QComboBox(content);
+    m_limitComparisonCombo->setObjectName(QStringLiteral("propertyLimitComparisonCombo"));
+    m_limitComparisonCombo->addItem(tr("Between (expected +/- tolerance)"), QStringLiteral("betweenTolerance"));
+    m_limitComparisonCombo->addItem(tr("Between (lower / upper)"), QStringLiteral("betweenLimits"));
+    m_limitComparisonCombo->addItem(tr("Equal"), QStringLiteral("equal"));
+    m_limitComparisonCombo->addItem(tr("Not equal"), QStringLiteral("notEqual"));
+    m_limitComparisonCombo->addItem(tr("Greater than"), QStringLiteral("greaterThan"));
+    m_limitComparisonCombo->addItem(tr("Greater than or equal"), QStringLiteral("greaterOrEqual"));
+    m_limitComparisonCombo->addItem(tr("Less than"), QStringLiteral("lessThan"));
+    m_limitComparisonCombo->addItem(tr("Less than or equal"), QStringLiteral("lessOrEqual"));
+    m_limitComparisonCombo->addItem(tr("Contains"), QStringLiteral("contains"));
+    m_limitComparisonCombo->addItem(tr("Starts with"), QStringLiteral("startsWith"));
+    m_limitComparisonCombo->addItem(tr("Ends with"), QStringLiteral("endsWith"));
+    m_limitComparisonCombo->addItem(tr("Is true"), QStringLiteral("isTrue"));
+    m_limitComparisonCombo->addItem(tr("Is false"), QStringLiteral("isFalse"));
+    m_dataForm->addRow(tr("Comparison"), m_limitComparisonCombo);
+    m_limitExpectedEdit = new QLineEdit(content);
+    m_limitExpectedEdit->setObjectName(QStringLiteral("propertyLimitExpectedEdit"));
+    m_limitExpectedEdit->setPlaceholderText(tr("Expected value or threshold"));
+    m_dataForm->addRow(tr("Expected / threshold"), m_limitExpectedEdit);
+    m_limitLowerEdit = new QLineEdit(content);
+    m_limitLowerEdit->setObjectName(QStringLiteral("propertyLimitLowerEdit"));
+    m_dataForm->addRow(tr("Lower limit"), m_limitLowerEdit);
+    m_limitUpperEdit = new QLineEdit(content);
+    m_limitUpperEdit->setObjectName(QStringLiteral("propertyLimitUpperEdit"));
+    m_dataForm->addRow(tr("Upper limit"), m_limitUpperEdit);
+    m_limitToleranceSpin = new QDoubleSpinBox(content);
+    m_limitToleranceSpin->setObjectName(QStringLiteral("propertyLimitToleranceSpin"));
+    m_limitToleranceSpin->setRange(0.0, std::numeric_limits<double>::max());
+    m_limitToleranceSpin->setDecimals(9);
+    m_limitToleranceSpin->setSingleStep(0.1);
+    m_dataForm->addRow(tr("Tolerance (+/-)"), m_limitToleranceSpin);
+    m_limitInclusiveCheck = new QCheckBox(content);
+    m_limitInclusiveCheck->setObjectName(QStringLiteral("propertyLimitInclusiveCheck"));
+    m_dataForm->addRow(tr("Include boundaries"), m_limitInclusiveCheck);
+    m_limitMeasurementNameEdit = new QLineEdit(content);
+    m_limitMeasurementNameEdit->setObjectName(QStringLiteral("propertyLimitMeasurementNameEdit"));
+    m_dataForm->addRow(tr("Measurement name"), m_limitMeasurementNameEdit);
+    m_limitUnitEdit = new QLineEdit(content);
+    m_limitUnitEdit->setObjectName(QStringLiteral("propertyLimitUnitEdit"));
+    m_dataForm->addRow(tr("Unit"), m_limitUnitEdit);
     m_parametersEdit = new QPlainTextEdit(content);
     m_parametersEdit->setObjectName(QStringLiteral("propertyParametersEdit"));
     m_parametersEdit->setMinimumHeight(100);
@@ -561,14 +759,18 @@ void StepPropertyEditor::loadCurrentObject()
 {
     m_loading = true;
     m_errorLabel->hide();
-    m_sourceObject = m_document && m_path.isValid()
-        ? m_document->objectAt(m_path)
-        : QJsonObject{};
+    m_sourceObject = m_previewing
+        ? m_previewObject
+        : (m_document && m_path.isValid()
+               ? m_document->objectAt(m_path)
+               : QJsonObject{});
     const bool valid = !m_sourceObject.isEmpty();
-    m_isGroup = valid && m_path.isGroup();
+    m_isGroup = valid && !m_previewing && m_path.isGroup();
+    m_titleLabel->setText(m_previewing ? tr("Function Preview")
+                                      : tr("Properties"));
     m_emptyLabel->setVisible(!valid);
     m_tabs->setVisible(valid);
-    m_applyButton->setVisible(valid);
+    m_applyButton->setVisible(valid && !m_previewing);
     if (!valid) {
         m_loading = false;
         return;
@@ -596,7 +798,24 @@ void StepPropertyEditor::loadCurrentObject()
     m_moduleIdEdit->setText(m_sourceObject.value("moduleId").toString());
     m_functionEdit->setText(m_sourceObject.value("function").toString());
     m_inputsEdit->setPlainText(objectText(m_sourceObject.value("inputs").toObject()));
-    m_parametersEdit->setPlainText(objectText(m_sourceObject.value("parameters").toObject()));
+    m_limitActualEdit->setText(
+        m_sourceObject.value("inputs").toObject().value("actual").toVariant().toString());
+    const auto parameters = m_sourceObject.value("parameters").toObject();
+    m_parametersEdit->setPlainText(objectText(parameters));
+    setComboValue(m_limitComparisonCombo, limitEditorMode(parameters));
+    m_limitExpectedEdit->setText(jsonValueText(parameters.value(QStringLiteral("expected"))));
+    m_limitLowerEdit->setText(jsonValueText(
+        parameters.contains(QStringLiteral("lower"))
+            ? parameters.value(QStringLiteral("lower"))
+            : parameters.value(QStringLiteral("lowerLimit"))));
+    m_limitUpperEdit->setText(jsonValueText(
+        parameters.contains(QStringLiteral("upper"))
+            ? parameters.value(QStringLiteral("upper"))
+            : parameters.value(QStringLiteral("upperLimit"))));
+    m_limitToleranceSpin->setValue(parameters.value(QStringLiteral("tolerance")).toDouble(0.0));
+    m_limitInclusiveCheck->setChecked(parameters.value(QStringLiteral("inclusive")).toBool(true));
+    m_limitMeasurementNameEdit->setText(parameters.value(QStringLiteral("measurementName")).toString());
+    m_limitUnitEdit->setText(parameters.value(QStringLiteral("unit")).toString());
     m_waitMsSpin->setValue(m_sourceObject.value("ms").toInt(
         m_sourceObject.value("parameters").toObject().value("ms").toInt(0)));
 
@@ -639,6 +858,7 @@ void StepPropertyEditor::loadCurrentObject()
     m_resourcesEdit->setPlainText(arrayText(m_sourceObject.value("resources").toArray()));
 
     rebuildPluginInputEditors();
+    rebuildExpressionMenu(m_limitExpressionMenu, m_limitActualEdit);
 
     setFormRowVisible(m_generalForm, m_keyEdit, !m_isGroup);
     setFormRowVisible(m_generalForm, m_alwaysRunCheck, !m_isGroup);
@@ -663,18 +883,22 @@ void StepPropertyEditor::updateKindRows()
     }
     const auto kind = m_kindCombo->currentData().toString();
     const bool action = kind == "action";
-    const bool inputData = action || kind == "limit" ||
-                           kind == "statement" || kind == "sequenceCall";
+    const bool inputData = action || kind == "statement" || kind == "sequenceCall";
     const bool parameters = kind != "barrier" && kind != "loop" &&
                             kind != "testItem";
     const bool loop = kind == "loop";
     const bool barrier = kind == "barrier";
+    const bool limit = kind == "limit";
 
     setFormRowVisible(m_dataForm, m_moduleIdEdit, action);
     setFormRowVisible(m_dataForm, m_functionEdit, action);
     m_pluginInputsGroup->setVisible(action && !m_pluginInputEditors.isEmpty());
     setFormRowVisible(m_dataForm, m_inputsEdit, inputData);
-    setFormRowVisible(m_dataForm, m_parametersEdit, parameters);
+    setFormRowVisible(m_dataForm, m_limitActualField, limit);
+    setFormRowVisible(m_dataForm, m_limitComparisonCombo, limit);
+    setFormRowVisible(m_dataForm, m_limitMeasurementNameEdit, limit);
+    setFormRowVisible(m_dataForm, m_limitUnitEdit, limit);
+    setFormRowVisible(m_dataForm, m_parametersEdit, parameters && !limit);
     setFormRowVisible(m_dataForm, m_waitMsSpin, kind == "wait");
     const std::array<QWidget*, 4> loopFields = {
         m_loopVariableEdit, m_loopFromSpin, m_loopToSpin, m_loopStepSpin};
@@ -690,6 +914,48 @@ void StepPropertyEditor::updateKindRows()
     for (auto* field : barrierFields) {
         setFormRowVisible(m_dataForm, field, barrier);
     }
+    updateLimitRows();
+}
+
+void StepPropertyEditor::updateLimitRows()
+{
+    const bool limit = !m_isGroup &&
+        m_kindCombo->currentData().toString() == QStringLiteral("limit");
+    const auto mode = m_limitComparisonCombo->currentData().toString();
+    const bool betweenTolerance = mode == QStringLiteral("betweenTolerance");
+    const bool betweenLimits = mode == QStringLiteral("betweenLimits");
+    const bool equality = mode == QStringLiteral("equal") ||
+                          mode == QStringLiteral("notEqual");
+    const bool boolean = mode == QStringLiteral("isTrue") ||
+                         mode == QStringLiteral("isFalse");
+    if (auto* label = qobject_cast<QLabel*>(
+            m_dataForm->labelForField(m_limitExpectedEdit))) {
+        if (mode == QStringLiteral("greaterThan") ||
+            mode == QStringLiteral("greaterOrEqual")) {
+            label->setText(tr("Lower threshold"));
+            m_limitExpectedEdit->setPlaceholderText(tr("Value must be above this threshold"));
+        } else if (mode == QStringLiteral("lessThan") ||
+                   mode == QStringLiteral("lessOrEqual")) {
+            label->setText(tr("Upper threshold"));
+            m_limitExpectedEdit->setPlaceholderText(tr("Value must be below this threshold"));
+        } else if (mode == QStringLiteral("contains") ||
+                   mode == QStringLiteral("startsWith") ||
+                   mode == QStringLiteral("endsWith")) {
+            label->setText(tr("Expected text"));
+            m_limitExpectedEdit->setPlaceholderText(tr("Text to compare"));
+        } else {
+            label->setText(tr("Expected value"));
+            m_limitExpectedEdit->setPlaceholderText(tr("Expected value"));
+        }
+    }
+    setFormRowVisible(m_dataForm, m_limitExpectedEdit,
+                      limit && !betweenLimits && !boolean);
+    setFormRowVisible(m_dataForm, m_limitLowerEdit, limit && betweenLimits);
+    setFormRowVisible(m_dataForm, m_limitUpperEdit, limit && betweenLimits);
+    setFormRowVisible(m_dataForm, m_limitToleranceSpin,
+                      limit && (betweenTolerance || equality));
+    setFormRowVisible(m_dataForm, m_limitInclusiveCheck,
+                      limit && (betweenTolerance || betweenLimits));
 }
 
 const PluginFunctionDefinition* StepPropertyEditor::currentPluginFunction() const
@@ -823,10 +1089,75 @@ void StepPropertyEditor::rebuildPluginInputEditors()
         const auto label = definition.required
             ? tr("%1 *").arg(definition.name)
             : definition.name;
-        m_pluginInputsForm->addRow(label, editor);
+        auto* fieldWidget = editor;
+        if (auto* lineEdit = qobject_cast<QLineEdit*>(editor)) {
+            fieldWidget = wrapExpressionEditor(lineEdit);
+        }
+        m_pluginInputsForm->addRow(label, fieldWidget);
         m_pluginInputEditors.push_back({definition, editor});
     }
     m_pluginInputsGroup->show();
+}
+
+QWidget* StepPropertyEditor::wrapExpressionEditor(QLineEdit* editor)
+{
+    auto* container = new QWidget(editor->parentWidget());
+    auto* layout = new QHBoxLayout(container);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+    layout->addWidget(editor, 1);
+
+    auto* button = new QToolButton(container);
+    button->setObjectName(QStringLiteral("expressionPickerButton"));
+    button->setText(QStringLiteral("fx"));
+    button->setToolTip(tr("Insert an output from a previous step"));
+    button->setPopupMode(QToolButton::InstantPopup);
+    button->setFixedSize(28, 28);
+    auto* menu = new QMenu(button);
+    rebuildExpressionMenu(menu, editor);
+    connect(menu, &QMenu::aboutToShow, this,
+            [this, menu, editor] { rebuildExpressionMenu(menu, editor); });
+    button->setMenu(menu);
+    layout->addWidget(button);
+    return container;
+}
+
+void StepPropertyEditor::rebuildExpressionMenu(QMenu* menu, QLineEdit* editor)
+{
+    if (!menu || !editor) {
+        return;
+    }
+    menu->clear();
+    const auto candidates = m_document
+        ? buildStepOutputExpressionCandidates(
+              m_document->rootObject(), m_path, m_plugins, m_pluginByDeviceId)
+        : QVector<StepOutputExpressionCandidate>{};
+    QHash<QString, QMenu*> sourceMenus;
+    for (const auto& candidate : candidates) {
+        auto* sourceMenu = sourceMenus.value(candidate.stepPath, nullptr);
+        if (!sourceMenu) {
+            sourceMenu = menu->addMenu(
+                QStringLiteral("%1 - %2").arg(candidate.stepPath, candidate.stepName));
+            sourceMenus.insert(candidate.stepPath, sourceMenu);
+        }
+        auto* action = sourceMenu->addAction(
+            QStringLiteral("%1 [%2]")
+                .arg(candidate.outputName, candidate.outputKey));
+        auto details = pluginParameterTypeName(candidate.type);
+        if (!candidate.unit.isEmpty()) {
+            details += QStringLiteral(" / %1").arg(candidate.unit);
+        }
+        action->setToolTip(details);
+        connect(action, &QAction::triggered, editor,
+                [editor, expression = candidate.expression] {
+                    editor->setText(expression);
+                    editor->setFocus();
+                    editor->selectAll();
+                });
+    }
+    if (auto* button = qobject_cast<QToolButton*>(menu->parentWidget())) {
+        button->setEnabled(m_editable && !candidates.isEmpty());
+    }
 }
 
 bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
@@ -978,6 +1309,68 @@ void StepPropertyEditor::applyChanges()
         if (kind == "wait") {
             parameters.remove("ms");
             updated.insert("ms", m_waitMsSpin->value());
+        }
+        if (kind == "limit") {
+            const auto actual = m_limitActualEdit->text().trimmed();
+            if (actual.isEmpty()) {
+                inputs.remove("actual");
+            } else {
+                inputs.insert("actual", actual);
+            }
+            const auto mode = m_limitComparisonCombo->currentData().toString();
+            const bool betweenTolerance = mode == QStringLiteral("betweenTolerance");
+            const bool betweenLimits = mode == QStringLiteral("betweenLimits");
+            const bool boolean = mode == QStringLiteral("isTrue") ||
+                                 mode == QStringLiteral("isFalse");
+            if (!boolean && !betweenLimits &&
+                m_limitExpectedEdit->text().trimmed().isEmpty()) {
+                showError(tr("Expected / threshold is required for this comparison"));
+                return;
+            }
+            if (betweenLimits &&
+                (m_limitLowerEdit->text().trimmed().isEmpty() ||
+                 m_limitUpperEdit->text().trimmed().isEmpty())) {
+                showError(tr("Both lower and upper limits are required"));
+                return;
+            }
+            parameters.insert(QStringLiteral("comparison"),
+                              runtimeLimitComparison(mode));
+            parameters.remove(QStringLiteral("lowerLimit"));
+            parameters.remove(QStringLiteral("upperLimit"));
+            if (betweenLimits) {
+                parameters.remove(QStringLiteral("expected"));
+                parameters.remove(QStringLiteral("tolerance"));
+                insertOrRemoveScalar(parameters, QStringLiteral("lower"),
+                                     m_limitLowerEdit->text());
+                insertOrRemoveScalar(parameters, QStringLiteral("upper"),
+                                     m_limitUpperEdit->text());
+            } else {
+                parameters.remove(QStringLiteral("lower"));
+                parameters.remove(QStringLiteral("upper"));
+                if (boolean) {
+                    parameters.remove(QStringLiteral("expected"));
+                } else {
+                    insertOrRemoveScalar(parameters, QStringLiteral("expected"),
+                                         m_limitExpectedEdit->text());
+                }
+                if (betweenTolerance || mode == QStringLiteral("equal") ||
+                    mode == QStringLiteral("notEqual")) {
+                    parameters.insert(QStringLiteral("tolerance"),
+                                      m_limitToleranceSpin->value());
+                } else {
+                    parameters.remove(QStringLiteral("tolerance"));
+                }
+            }
+            if (betweenTolerance || betweenLimits) {
+                parameters.insert(QStringLiteral("inclusive"),
+                                  m_limitInclusiveCheck->isChecked());
+            } else {
+                parameters.remove(QStringLiteral("inclusive"));
+            }
+            insertOrRemove(parameters, QStringLiteral("measurementName"),
+                           m_limitMeasurementNameEdit->text());
+            insertOrRemove(parameters, QStringLiteral("unit"),
+                           m_limitUnitEdit->text());
         }
         if (inputs.isEmpty()) updated.remove("inputs"); else updated.insert("inputs", inputs);
         if (parameters.isEmpty()) updated.remove("parameters"); else updated.insert("parameters", parameters);

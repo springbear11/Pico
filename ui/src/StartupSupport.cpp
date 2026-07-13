@@ -100,6 +100,20 @@ bool StartupSupport::stationScanDialogEnabled(const QString& stationPath,
     return value.isBool() ? value.toBool() : defaultValue;
 }
 
+int StartupSupport::stationSnLength(const QString& stationPath, int defaultValue)
+{
+    QJsonObject root;
+    if (!readJsonObject(stationPath, root)) {
+        return defaultValue;
+    }
+    const auto value = root.value(QStringLiteral("snLength"));
+    if (!value.isDouble()) {
+        return defaultValue;
+    }
+    const int length = value.toInt(defaultValue);
+    return length >= 0 && length <= 256 ? length : defaultValue;
+}
+
 StartupValidationResult StartupSupport::validateSelection(
     UiMode mode,
     const QString& sequencePath,

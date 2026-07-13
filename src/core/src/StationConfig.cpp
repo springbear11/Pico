@@ -255,6 +255,17 @@ StationConfigResult parseStationConfigJson(const QJsonObject& object,
         result.config.stationId = readString(object, "id", result, "id");
     }
     result.config.name = readString(object, "name", result, "name", result.config.stationId);
+    result.config.stopOnFailure = readBool(
+        object, "stopOnFailure", result, "stopOnFailure", true);
+    result.config.scanDialogEnabled = readBool(
+        object, "scanDialogEnabled", result, "scanDialogEnabled", true);
+    result.config.snLength = readInt(object, "snLength", result, "snLength", 0);
+    if (result.config.snLength < 0 || result.config.snLength > 256) {
+        addError(result,
+                 "snLength",
+                 "SN length must be between 0 and 256",
+                 "Use 0 for unrestricted length, or enter the required length");
+    }
     result.config.metadata = readObjectMap(object, "metadata", result, "metadata");
 
     result.config.stationId = resolveStringField(result.config.stationId, resolver, result, "stationId");

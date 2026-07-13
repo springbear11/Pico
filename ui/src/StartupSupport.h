@@ -29,6 +29,8 @@ public:
     static QString stationPathForSequence(const QString& sequencePath);
     static bool stationScanDialogEnabled(const QString& stationPath,
                                          bool defaultValue = true);
+    static int stationSnLength(const QString& stationPath,
+                               int defaultValue = 0);
     static StartupValidationResult validateSelection(
         UiMode mode,
         const QString& sequencePath,

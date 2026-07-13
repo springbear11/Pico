@@ -1,11 +1,29 @@
 #include "PluginFunctionModel.h"
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QMimeData>
 
 #include <algorithm>
 
 namespace PicoATE::Ui {
+
+namespace {
+
+QJsonObject basicStep(const QString& name,
+                      const QString& kind,
+                      QJsonObject extra = {})
+{
+    QJsonObject step{{QStringLiteral("name"), name},
+                     {QStringLiteral("kind"), kind},
+                     {QStringLiteral("enabled"), true}};
+    for (auto iterator = extra.constBegin(); iterator != extra.constEnd(); ++iterator) {
+        step.insert(iterator.key(), iterator.value());
+    }
+    return step;
+}
+
+} // namespace
 
 PluginFunctionModel::PluginFunctionModel(QObject* parent)
     : QAbstractItemModel(parent)
@@ -74,6 +92,12 @@ QVariant PluginFunctionModel::data(const QModelIndex& modelIndex, int role) cons
     if (role == Qt::DisplayRole) return item->text;
     if (role == Qt::ToolTipRole) return item->tooltip;
     if (role == ItemKindRole) return QVariant::fromValue(item->kind);
+    if (!item->stepTemplate.isEmpty()) {
+        if (role == CategoryRole) return QStringLiteral("Basic");
+        if (role == FunctionIdRole) {
+            return item->stepTemplate.value(QStringLiteral("kind")).toString();
+        }
+    }
     if (item->pluginIndex >= 0 && item->pluginIndex < m_plugins.size()) {
         const auto& plugin = m_plugins[item->pluginIndex];
         if (role == CategoryRole) return plugin.category;
@@ -92,7 +116,7 @@ QVariant PluginFunctionModel::headerData(int section,
                                          int role) const
 {
     return section == 0 && orientation == Qt::Horizontal && role == Qt::DisplayRole
-        ? tr("Plugin Functions")
+        ? tr("Function Palette")
         : QVariant{};
 }
 
@@ -104,7 +128,7 @@ Qt::ItemFlags PluginFunctionModel::flags(const QModelIndex& modelIndex) const
     auto result = QAbstractItemModel::flags(modelIndex);
     const auto* item = itemForIndex(modelIndex);
     if (item && item->kind == ItemKind::Function) {
-        if (!item->deviceId.isEmpty()) {
+        if (!item->stepTemplate.isEmpty() || !item->deviceId.isEmpty()) {
             result |= Qt::ItemIsDragEnabled;
         }
     }
@@ -121,25 +145,16 @@ QMimeData* PluginFunctionModel::mimeData(const QModelIndexList& indexes) const
     for (const auto& modelIndex : indexes) {
         const auto* item = itemForIndex(modelIndex);
         if (!item || modelIndex.column() != 0 ||
-            item->kind != ItemKind::Function ||
-            item->pluginIndex < 0 || item->pluginIndex >= m_plugins.size()) {
+            item->kind != ItemKind::Function) {
             continue;
         }
-        const auto& plugin = m_plugins[item->pluginIndex];
-        if (item->functionIndex < 0 ||
-            item->functionIndex >= plugin.functions.size()) {
+        if (item->stepTemplate.isEmpty() && item->deviceId.isEmpty()) {
             continue;
         }
-        auto step = PluginCatalog::createStep(
-            plugin, plugin.functions[item->functionIndex], {});
-        const auto deviceId = item->deviceId;
-        if (deviceId.isEmpty()) {
+        const auto step = stepTemplate(modelIndex);
+        if (step.isEmpty()) {
             continue;
         }
-        auto inputs = step.value("inputs").toObject();
-        inputs.insert("deviceId", deviceId);
-        step.insert("inputs", inputs);
-        step.insert("moduleId", "device");
         auto* mime = new QMimeData;
         mime->setData(PluginFunctionMimeType,
                       QJsonDocument(step).toJson(QJsonDocument::Compact));
@@ -175,10 +190,101 @@ QVector<PluginManifest> PluginFunctionModel::plugins() const
     return m_plugins;
 }
 
+QJsonObject PluginFunctionModel::stepTemplate(const QModelIndex& modelIndex) const
+{
+    const auto* item = itemForIndex(modelIndex);
+    if (!item || item->kind != ItemKind::Function) {
+        return {};
+    }
+    if (!item->stepTemplate.isEmpty()) {
+        return item->stepTemplate;
+    }
+    if (item->pluginIndex < 0 || item->pluginIndex >= m_plugins.size()) {
+        return {};
+    }
+    const auto& plugin = m_plugins[item->pluginIndex];
+    if (item->functionIndex < 0 || item->functionIndex >= plugin.functions.size()) {
+        return {};
+    }
+    auto step = PluginCatalog::createStep(
+        plugin, plugin.functions[item->functionIndex], {});
+    if (!item->deviceId.isEmpty()) {
+        auto inputs = step.value(QStringLiteral("inputs")).toObject();
+        inputs.insert(QStringLiteral("deviceId"), item->deviceId);
+        step.insert(QStringLiteral("inputs"), inputs);
+        step.insert(QStringLiteral("moduleId"), QStringLiteral("device"));
+    }
+    return step;
+}
+
 void PluginFunctionModel::rebuild()
 {
     m_root = std::make_unique<Item>();
     m_root->kind = ItemKind::Root;
+
+    auto basicSection = std::make_unique<Item>();
+    basicSection->kind = ItemKind::Section;
+    basicSection->text = tr("Basic Functions");
+    basicSection->tooltip = tr("Built-in flow control and result evaluation steps");
+    basicSection->parent = m_root.get();
+    auto* basicSectionPointer = basicSection.get();
+    m_root->children.push_back(std::move(basicSection));
+
+    const QVector<QPair<QString, QJsonObject>> basicFunctions = {
+        {tr("Wait"), basicStep(tr("Wait"), QStringLiteral("wait"),
+                               {{QStringLiteral("ms"), 1000}})},
+        {tr("Limit Check"), basicStep(
+             tr("Limit Check"), QStringLiteral("limit"),
+             {{QStringLiteral("inputs"), QJsonObject{{QStringLiteral("actual"), QString()}}},
+              {QStringLiteral("parameters"),
+               QJsonObject{{QStringLiteral("comparison"), QStringLiteral("between")},
+                           {QStringLiteral("expected"), 0.0},
+                           {QStringLiteral("tolerance"), 0.0},
+                           {QStringLiteral("inclusive"), true},
+                           {QStringLiteral("measurementName"), tr("Measurement")}}}})},
+        {tr("Test Item"), basicStep(tr("Test Item"), QStringLiteral("testItem"),
+                                    {{QStringLiteral("steps"), QJsonArray{}}})},
+        {tr("For Loop"), basicStep(
+             tr("For Loop"), QStringLiteral("loop"),
+             {{QStringLiteral("loop"),
+               QJsonObject{{QStringLiteral("type"), QStringLiteral("for")},
+                           {QStringLiteral("variable"), QStringLiteral("i")},
+                           {QStringLiteral("from"), 0},
+                           {QStringLiteral("to"), 0},
+                           {QStringLiteral("step"), 1}}},
+              {QStringLiteral("steps"), QJsonArray{}}})},
+        {tr("Barrier"), basicStep(
+             tr("Barrier"), QStringLiteral("barrier"),
+             {{QStringLiteral("barrier"),
+               QJsonObject{{QStringLiteral("cohortId"), QStringLiteral("default")},
+                           {QStringLiteral("expectedUutCount"), -1},
+                           {QStringLiteral("arrivalPolicy"), QStringLiteral("WaitAll")},
+                           {QStringLiteral("releasePolicy"), QStringLiteral("Lockstep")},
+                           {QStringLiteral("failurePolicy"), QStringLiteral("FailBarrier")},
+                           {QStringLiteral("timeoutPolicy"), QStringLiteral("FailArrivedAndWaiting")},
+                           {QStringLiteral("arrivalTimeoutMs"), 60000},
+                           {QStringLiteral("releaseTimeoutMs"), 5000},
+                           {QStringLiteral("releaseHeldResourcesOnWait"), true}}}})},
+        {tr("No Operation"), basicStep(tr("No Operation"), QStringLiteral("noop"))}
+    };
+    for (const auto& definition : basicFunctions) {
+        auto function = std::make_unique<Item>();
+        function->kind = ItemKind::Function;
+        function->text = definition.first;
+        function->tooltip = tr("Drag to the sequence to add a %1 step")
+                                .arg(definition.first);
+        function->stepTemplate = definition.second;
+        function->parent = basicSectionPointer;
+        basicSectionPointer->children.push_back(std::move(function));
+    }
+
+    auto pluginSection = std::make_unique<Item>();
+    pluginSection->kind = ItemKind::Section;
+    pluginSection->text = tr("Plugin Functions");
+    pluginSection->tooltip = tr("Functions provided by scanned device plugins");
+    pluginSection->parent = m_root.get();
+    auto* pluginSectionPointer = pluginSection.get();
+    m_root->children.push_back(std::move(pluginSection));
 
     QVector<int> order(m_plugins.size());
     for (int index = 0; index < order.size(); ++index) order[index] = index;
@@ -194,7 +300,7 @@ void PluginFunctionModel::rebuild()
     for (const int pluginIndex : order) {
         const auto& plugin = m_plugins[pluginIndex];
         Item* categoryItem = nullptr;
-        for (const auto& child : m_root->children) {
+        for (const auto& child : pluginSectionPointer->children) {
             if (child->text.compare(plugin.category, Qt::CaseInsensitive) == 0) {
                 categoryItem = child.get();
                 break;
@@ -205,9 +311,9 @@ void PluginFunctionModel::rebuild()
             category->kind = ItemKind::Category;
             category->text = plugin.category;
             category->tooltip = tr("%1 device plugins").arg(plugin.category);
-            category->parent = m_root.get();
+            category->parent = pluginSectionPointer;
             categoryItem = category.get();
-            m_root->children.push_back(std::move(category));
+            pluginSectionPointer->children.push_back(std::move(category));
         }
 
         auto pluginItem = std::make_unique<Item>();

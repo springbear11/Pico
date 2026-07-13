@@ -1,8 +1,10 @@
 #include "MainWindow.h"
 
 #include "ExecutionViewModel.h"
+#include "OnOffControl.h"
 #include "PluginCatalog.h"
 #include "PluginFunctionModel.h"
+#include "ProportionalHeaderView.h"
 #include "ReportExporter.h"
 #include "ReportHistoryStore.h"
 #include "RunnerModels.h"
@@ -12,6 +14,7 @@
 #include "StationDeviceModel.h"
 #include "StationDocument.h"
 #include "StationPropertyEditor.h"
+#include "StationSettingsEditor.h"
 #include "StepPropertyEditor.h"
 
 #include <QAction>
@@ -21,6 +24,7 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFont>
 #include <QFrame>
 #include <QFormLayout>
 #include <QGuiApplication>
@@ -34,6 +38,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPainter>
 #include <QPushButton>
 #include <QProgressBar>
 #include <QRegularExpression>
@@ -44,6 +49,7 @@
 #include <QSplitter>
 #include <QSortFilterProxyModel>
 #include <QStatusBar>
+#include <QStyledItemDelegate>
 #include <QStyle>
 #include <QTableView>
 #include <QTabWidget>
@@ -65,6 +71,70 @@ namespace PicoATE::Ui {
 namespace {
 
 constexpr int MaxRecentFiles = 8;
+
+void installProportionalHeader(QTableView* view, QVector<int> weights)
+{
+    auto* header = new ProportionalHeaderView(view);
+    view->setHorizontalHeader(header);
+    header->setSectionWeights(std::move(weights));
+}
+
+void installProportionalHeader(QTreeView* view, QVector<int> weights)
+{
+    auto* header = new ProportionalHeaderView(view);
+    view->setHeader(header);
+    header->setSectionWeights(std::move(weights));
+}
+
+void polishReadableTreeView(QTreeView* view)
+{
+    view->setIndentation(22);
+
+    auto font = view->font();
+    font.setFamily(QStringLiteral("Microsoft YaHei UI"));
+    if (font.pointSizeF() > 0.0) {
+        font.setPointSizeF(font.pointSizeF() + 0.5);
+    }
+    font.setWeight(QFont::Medium);
+    view->setFont(font);
+}
+
+class DragHandleDelegate final : public QStyledItemDelegate
+{
+public:
+    explicit DragHandleDelegate(QObject* parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+        setObjectName(QStringLiteral("dragHandleDelegate"));
+    }
+
+    void paint(QPainter* painter,
+               const QStyleOptionViewItem& option,
+               const QModelIndex& index) const override
+    {
+        QStyledItemDelegate::paint(painter, option, index);
+        if (index.column() != 0 ||
+            !(index.flags() & Qt::ItemIsDragEnabled)) {
+            return;
+        }
+
+        const QColor color = option.state & QStyle::State_Selected
+            ? QColor(QStringLiteral("#6f99b4"))
+            : (option.state & QStyle::State_MouseOver
+                   ? QColor(QStringLiteral("#86aabd"))
+                   : QColor(QStringLiteral("#b2c6d2")));
+        QPen pen(color, 1.5, Qt::SolidLine, Qt::RoundCap);
+        painter->save();
+        painter->setPen(pen);
+        const int right = option.rect.right() - 8;
+        const int left = right - 11;
+        const int center = option.rect.center().y();
+        for (const int offset : {-4, 0, 4}) {
+            painter->drawLine(left, center + offset, right, center + offset);
+        }
+        painter->restore();
+    }
+};
 
 QString normalizedRecentPath(const QString& filePath)
 {
@@ -318,6 +388,15 @@ MainWindow::MainWindow(QWidget* parent)
                 }
                 m_stepPropertyEditor->setCurrentItem(path);
                 updateCommandState();
+            });
+    connect(m_pluginFunctionView->selectionModel(),
+            &QItemSelectionModel::currentChanged,
+            this,
+            [this](const QModelIndex& current) {
+                const auto preview = m_pluginFunctionModel->stepTemplate(current);
+                if (!preview.isEmpty()) {
+                    m_stepPropertyEditor->setPreviewObject(preview);
+                }
             });
     connect(m_sequenceTreeView->selectionModel(),
             &QItemSelectionModel::selectionChanged,
@@ -644,32 +723,43 @@ void MainWindow::addSequenceStep()
 
 void MainWindow::deleteSequenceStep()
 {
-    const auto path = m_sequenceTreeModel->pathForIndex(
-        m_sequenceTreeView->currentIndex());
-    if (!path.isValid() || path.isGroup()) {
+    const auto paths = selectedSequenceStepPaths();
+    if (paths.isEmpty()) {
         return;
     }
 
-    auto parentPath = path;
+    auto parentPath = paths.first();
     const int row = parentPath.stepIndices.takeLast();
     m_selectedSequencePath = parentPath;
     if (row > 0) {
         m_selectedSequencePath.stepIndices.push_back(row - 1);
     }
-    m_sequenceDocument->removeStep(path);
+    m_sequenceDocument->removeSteps(paths);
+}
+
+void MainWindow::setSelectedSequenceStepsEnabled(bool enabled)
+{
+    const auto paths = selectedSequenceStepPaths();
+    if (!m_sequenceDocument->setStepsEnabled(paths, enabled)) {
+        statusBar()->showMessage(
+            enabled ? tr("Selected steps are already enabled")
+                    : tr("Selected steps are already disabled"),
+            3000);
+    }
 }
 
 void MainWindow::duplicateSequenceStep()
 {
-    const auto path = m_sequenceTreeModel->pathForIndex(
-        m_sequenceTreeView->currentIndex());
-    if (!path.isValid() || path.isGroup()) {
+    const auto paths = selectedSequenceStepPaths();
+    if (paths.isEmpty()) {
         return;
     }
 
-    m_selectedSequencePath = path;
+    m_selectedSequencePath = paths.first();
     ++m_selectedSequencePath.stepIndices.last();
-    m_sequenceDocument->duplicateStep(path);
+    if (!m_sequenceDocument->duplicateSteps(paths)) {
+        statusBar()->showMessage(tr("Unable to duplicate selected steps"), 4000);
+    }
 }
 
 QVector<SequenceItemPath> MainWindow::selectedSequenceStepPaths() const
@@ -826,6 +916,11 @@ void MainWindow::showScanDialog()
         statusBar()->showMessage(tr("Compile the sequence before scanning"), 4000);
         return;
     }
+    const auto station = m_stationDocument
+        ? m_stationDocument->rootObject()
+        : QJsonObject{};
+    m_scanDialog->setExpectedLength(
+        qBound(0, station.value(QStringLiteral("snLength")).toInt(0), 256));
     m_scanDialog->showForNextScan();
 }
 
@@ -1067,9 +1162,6 @@ void MainWindow::updateSequenceEditor()
     }
 
     m_editorDiagnosticModel->setDiagnostics(m_sequenceDocument->diagnostics());
-    if (m_editorDiagnosticView) {
-        m_editorDiagnosticView->resizeColumnsToContents();
-    }
     if (m_sequenceTreeView) {
         m_sequenceTreeView->expandAll();
         auto selected = m_sequenceTreeModel->indexForPath(m_selectedSequencePath);
@@ -1097,9 +1189,6 @@ void MainWindow::updateStationEditor()
     auto diagnostics = m_stationDocument->diagnostics();
     diagnostics += stationPluginDiagnostics();
     m_stationDiagnosticModel->setDiagnostics(std::move(diagnostics));
-    if (m_stationDiagnosticView) {
-        m_stationDiagnosticView->resizeColumnsToContents();
-    }
     const int count = m_stationDocument->deviceCount();
     if (count == 0) {
         m_selectedStationDeviceRow = -1;
@@ -1213,7 +1302,9 @@ void MainWindow::focusStationDiagnostic(const QModelIndex& index)
         }
     }
     m_workspaceTabs->setCurrentIndex(1);
-    const bool focused = m_stationPropertyEditor->focusField(diagnostic->path);
+    const bool focused = diagnostic->path.startsWith(QStringLiteral("devices["))
+        ? m_stationPropertyEditor->focusField(diagnostic->path)
+        : m_stationSettingsEditor->focusField(diagnostic->path);
     statusBar()->showMessage(
         focused ? tr("Located station field: %1").arg(diagnostic->path)
                 : tr("Located station diagnostic: %1").arg(diagnostic->path),
@@ -1304,7 +1395,11 @@ void MainWindow::buildActions()
     connect(m_deleteStepAction, &QAction::triggered, this, [this] { deleteSequenceStep(); });
 
     m_duplicateStepAction = new QAction(
-        style()->standardIcon(QStyle::SP_FileLinkIcon), tr("Duplicate Step"), this);
+        style()->standardIcon(QStyle::SP_FileLinkIcon), tr("Duplicate Selected"), this);
+    m_duplicateStepAction->setObjectName(QStringLiteral("duplicateStepAction"));
+    m_duplicateStepAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
+    m_duplicateStepAction->setToolTip(
+        tr("Duplicate all selected Steps and TestItems"));
     connect(m_duplicateStepAction, &QAction::triggered, this, [this] { duplicateSequenceStep(); });
 
     m_wrapTestItemAction = new QAction(
@@ -1314,6 +1409,20 @@ void MainWindow::buildActions()
         tr("Wrap selected contiguous steps in a TestItem"));
     connect(m_wrapTestItemAction, &QAction::triggered,
             this, [this] { wrapSelectedStepsInTestItem(); });
+
+    m_enableStepsAction = new QAction(
+        style()->standardIcon(QStyle::SP_DialogApplyButton), tr("Enable Selected"), this);
+    m_enableStepsAction->setObjectName(QStringLiteral("enableStepsAction"));
+    m_enableStepsAction->setToolTip(tr("Enable all selected steps"));
+    connect(m_enableStepsAction, &QAction::triggered,
+            this, [this] { setSelectedSequenceStepsEnabled(true); });
+
+    m_disableStepsAction = new QAction(
+        style()->standardIcon(QStyle::SP_DialogCancelButton), tr("Disable Selected"), this);
+    m_disableStepsAction->setObjectName(QStringLiteral("disableStepsAction"));
+    m_disableStepsAction->setToolTip(tr("Disable all selected steps"));
+    connect(m_disableStepsAction, &QAction::triggered,
+            this, [this] { setSelectedSequenceStepsEnabled(false); });
 
     m_moveStepUpAction = new QAction(
         style()->standardIcon(QStyle::SP_ArrowUp), tr("Move Up"), this);
@@ -1490,6 +1599,8 @@ void MainWindow::buildActions()
     editMenu->addAction(m_addStepAction);
     editMenu->addAction(m_duplicateStepAction);
     editMenu->addAction(m_deleteStepAction);
+    editMenu->addAction(m_enableStepsAction);
+    editMenu->addAction(m_disableStepsAction);
     editMenu->addSeparator();
     editMenu->addAction(m_moveStepUpAction);
     editMenu->addAction(m_moveStepDownAction);
@@ -1569,6 +1680,8 @@ void MainWindow::buildLayout()
     sequenceToolbar->addAction(m_duplicateStepAction);
     sequenceToolbar->addAction(m_wrapTestItemAction);
     sequenceToolbar->addAction(m_deleteStepAction);
+    sequenceToolbar->addAction(m_enableStepsAction);
+    sequenceToolbar->addAction(m_disableStepsAction);
     sequenceToolbar->addSeparator();
     sequenceToolbar->addAction(m_moveStepUpAction);
     sequenceToolbar->addAction(m_moveStepDownAction);
@@ -1592,8 +1705,11 @@ void MainWindow::buildLayout()
     m_pluginFunctionView->setDragEnabled(true);
     m_pluginFunctionView->setDragDropMode(QAbstractItemView::DragOnly);
     m_pluginFunctionView->setDefaultDropAction(Qt::CopyAction);
+    m_pluginFunctionView->setItemDelegateForColumn(
+        0, new DragHandleDelegate(m_pluginFunctionView));
     m_pluginFunctionView->setMinimumWidth(190);
     m_pluginFunctionView->setMaximumWidth(360);
+    polishReadableTreeView(m_pluginFunctionView);
     m_pluginFunctionView->header()->setStretchLastSection(true);
     m_sequenceTreeView = new QTreeView;
     m_sequenceTreeView->setObjectName(QStringLiteral("sequenceTreeView"));
@@ -1608,21 +1724,16 @@ void MainWindow::buildLayout()
     m_sequenceTreeView->setDropIndicatorShown(true);
     m_sequenceTreeView->setDragDropMode(QAbstractItemView::DragDrop);
     m_sequenceTreeView->setDefaultDropAction(Qt::MoveAction);
+    m_sequenceTreeView->setItemDelegateForColumn(
+        SequenceTreeModel::NameColumn,
+        new DragHandleDelegate(m_sequenceTreeView));
     auto treeSizePolicy = m_sequenceTreeView->sizePolicy();
     treeSizePolicy.setHorizontalPolicy(QSizePolicy::Ignored);
     m_sequenceTreeView->setSizePolicy(treeSizePolicy);
     m_sequenceTreeView->setMinimumWidth(320);
     m_sequenceTreeView->setMaximumWidth(720);
-    m_sequenceTreeView->header()->setSectionResizeMode(
-        SequenceTreeModel::NameColumn, QHeaderView::Stretch);
-    m_sequenceTreeView->header()->setSectionResizeMode(
-        SequenceTreeModel::KindColumn, QHeaderView::ResizeToContents);
-    m_sequenceTreeView->header()->setSectionResizeMode(
-        SequenceTreeModel::IdColumn, QHeaderView::ResizeToContents);
-    m_sequenceTreeView->header()->setSectionResizeMode(
-        SequenceTreeModel::BreakpointColumn, QHeaderView::ResizeToContents);
-    m_sequenceTreeView->header()->setSectionResizeMode(
-        SequenceTreeModel::EnabledColumn, QHeaderView::ResizeToContents);
+    polishReadableTreeView(m_sequenceTreeView);
+    installProportionalHeader(m_sequenceTreeView, {4, 2, 2, 1, 1});
 
     m_stepPropertyEditor = new StepPropertyEditor(m_sequenceDocument);
     sequenceWorkArea->addWidget(m_pluginFunctionView);
@@ -1640,9 +1751,7 @@ void MainWindow::buildLayout()
     m_editorDiagnosticView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_editorDiagnosticView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_editorDiagnosticView->verticalHeader()->setVisible(false);
-    m_editorDiagnosticView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_editorDiagnosticView->horizontalHeader()->setSectionResizeMode(
-        DiagnosticModel::MessageColumn, QHeaderView::Stretch);
+    installProportionalHeader(m_editorDiagnosticView, {1, 2, 5, 3});
     sequenceSplitter->addWidget(sequenceWorkArea);
     sequenceSplitter->addWidget(m_editorDiagnosticView);
     sequenceSplitter->setStretchFactor(0, 4);
@@ -1691,34 +1800,56 @@ void MainWindow::buildLayout()
     auto* stationWorkArea = new QSplitter(Qt::Horizontal);
     stationWorkArea->setObjectName(QStringLiteral("stationWorkSplitter"));
     stationWorkArea->setChildrenCollapsible(false);
-    m_stationDeviceView = new QTableView;
+    m_stationSettingsEditor = new StationSettingsEditor(m_stationDocument);
+
+    auto* devicePane = new QWidget(stationWorkArea);
+    devicePane->setObjectName(QStringLiteral("stationDevicePane"));
+    auto* deviceLayout = new QVBoxLayout(devicePane);
+    deviceLayout->setContentsMargins(8, 8, 8, 8);
+    deviceLayout->setSpacing(8);
+    auto* deviceTitle = new QLabel(tr("Devices"), devicePane);
+    auto deviceTitleFont = deviceTitle->font();
+    deviceTitleFont.setBold(true);
+    deviceTitleFont.setPointSize(deviceTitleFont.pointSize() + 1);
+    deviceTitle->setFont(deviceTitleFont);
+    deviceLayout->addWidget(deviceTitle);
+
+    m_stationDeviceView = new QTableView(devicePane);
     m_stationDeviceView->setObjectName(QStringLiteral("stationDeviceView"));
     m_stationDeviceView->setModel(m_stationDeviceModel);
     m_stationDeviceView->setAlternatingRowColors(true);
     m_stationDeviceView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_stationDeviceView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_stationDeviceView->verticalHeader()->setVisible(false);
-    m_stationDeviceView->horizontalHeader()->setSectionResizeMode(
-        StationDeviceModel::DeviceIdColumn, QHeaderView::ResizeToContents);
-    m_stationDeviceView->horizontalHeader()->setSectionResizeMode(
-        StationDeviceModel::DeviceTypeColumn, QHeaderView::ResizeToContents);
-    m_stationDeviceView->horizontalHeader()->setSectionResizeMode(
-        StationDeviceModel::DriverIdColumn, QHeaderView::ResizeToContents);
-    m_stationDeviceView->horizontalHeader()->setSectionResizeMode(
-        StationDeviceModel::AddressColumn, QHeaderView::Stretch);
-    m_stationDeviceView->horizontalHeader()->setSectionResizeMode(
-        StationDeviceModel::LifetimeColumn, QHeaderView::ResizeToContents);
-    m_stationDeviceView->horizontalHeader()->setSectionResizeMode(
-        StationDeviceModel::ConnectionColumn, QHeaderView::ResizeToContents);
-    m_stationDeviceView->horizontalHeader()->setSectionResizeMode(
-        StationDeviceModel::EnabledColumn, QHeaderView::ResizeToContents);
-    m_stationDeviceView->setMinimumWidth(480);
+    installProportionalHeader(m_stationDeviceView, {2, 2, 3, 4, 2, 2, 2});
+    m_stationDeviceView->setItemDelegateForColumn(
+        StationDeviceModel::EnabledColumn,
+        new OnOffItemDelegate(m_stationDeviceView));
+    m_stationDeviceView->verticalHeader()->setDefaultSectionSize(34);
+    m_stationDeviceView->setMinimumWidth(360);
+    deviceLayout->addWidget(m_stationDeviceView, 1);
+
+    auto* propertyPane = new QWidget(stationWorkArea);
+    propertyPane->setObjectName(QStringLiteral("stationDevicePropertyPane"));
+    auto* propertyLayout = new QVBoxLayout(propertyPane);
+    propertyLayout->setContentsMargins(8, 8, 8, 8);
+    propertyLayout->setSpacing(8);
+    auto* propertyTitle = new QLabel(tr("Device Parameters"), propertyPane);
+    auto propertyTitleFont = propertyTitle->font();
+    propertyTitleFont.setBold(true);
+    propertyTitleFont.setPointSize(propertyTitleFont.pointSize() + 1);
+    propertyTitle->setFont(propertyTitleFont);
+    propertyLayout->addWidget(propertyTitle);
     m_stationPropertyEditor = new StationPropertyEditor(m_stationDocument);
-    stationWorkArea->addWidget(m_stationDeviceView);
-    stationWorkArea->addWidget(m_stationPropertyEditor);
-    stationWorkArea->setStretchFactor(0, 3);
-    stationWorkArea->setStretchFactor(1, 2);
-    stationWorkArea->setSizes({850, 420});
+    m_stationPropertyEditor->setStationPageVisible(false);
+    propertyLayout->addWidget(m_stationPropertyEditor, 1);
+    stationWorkArea->addWidget(m_stationSettingsEditor);
+    stationWorkArea->addWidget(devicePane);
+    stationWorkArea->addWidget(propertyPane);
+    stationWorkArea->setStretchFactor(0, 1);
+    stationWorkArea->setStretchFactor(1, 3);
+    stationWorkArea->setStretchFactor(2, 2);
+    stationWorkArea->setSizes({260, 610, 390});
 
     m_stationDiagnosticView = new QTableView;
     m_stationDiagnosticView->setObjectName(QStringLiteral("stationDiagnosticView"));
@@ -1727,10 +1858,7 @@ void MainWindow::buildLayout()
     m_stationDiagnosticView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_stationDiagnosticView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_stationDiagnosticView->verticalHeader()->setVisible(false);
-    m_stationDiagnosticView->horizontalHeader()->setSectionResizeMode(
-        QHeaderView::ResizeToContents);
-    m_stationDiagnosticView->horizontalHeader()->setSectionResizeMode(
-        DiagnosticModel::MessageColumn, QHeaderView::Stretch);
+    installProportionalHeader(m_stationDiagnosticView, {1, 2, 5, 3});
     stationSplitter->addWidget(stationWorkArea);
     stationSplitter->addWidget(m_stationDiagnosticView);
     stationSplitter->setStretchFactor(0, 4);
@@ -1809,13 +1937,8 @@ void MainWindow::buildLayout()
     m_resultView->setAlternatingRowColors(true);
     m_resultView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_resultView->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_resultView->header()->setSectionResizeMode(UutStepModel::NameColumn, QHeaderView::Stretch);
-    for (int column = UutStepModel::ErrorCodeColumn;
-         column < UutStepModel::LoopColumn;
-         ++column) {
-        m_resultView->header()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
-    }
-    m_resultView->header()->setSectionResizeMode(UutStepModel::LoopColumn, QHeaderView::Stretch);
+    polishReadableTreeView(m_resultView);
+    installProportionalHeader(m_resultView, {2, 1, 1, 1, 1, 1, 1, 1, 1, 1});
     m_resultView->setColumnHidden(UutStepModel::StateColumn, true);
     m_resultView->setColumnHidden(UutStepModel::AttemptsColumn, true);
     m_resultView->setColumnHidden(UutStepModel::LoopColumn, true);
@@ -1828,8 +1951,7 @@ void MainWindow::buildLayout()
     m_attemptView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_attemptView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_attemptView->verticalHeader()->setVisible(false);
-    m_attemptView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_attemptView->horizontalHeader()->setStretchLastSection(true);
+    installProportionalHeader(m_attemptView, {1, 2, 1, 1, 4});
     details->addTab(m_attemptView, tr("Attempts"));
 
     m_measurementView = new QTableView(details);
@@ -1838,10 +1960,7 @@ void MainWindow::buildLayout()
     m_measurementView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_measurementView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_measurementView->verticalHeader()->setVisible(false);
-    m_measurementView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_measurementView->horizontalHeader()->setSectionResizeMode(
-        MeasurementModel::NameColumn,
-        QHeaderView::Stretch);
+    installProportionalHeader(m_measurementView, {2, 2, 1, 3, 1});
     details->addTab(m_measurementView, tr("Measurements"));
 
     m_runtimeTimelineView = new QTableView(details);
@@ -1851,10 +1970,7 @@ void MainWindow::buildLayout()
     m_runtimeTimelineView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_runtimeTimelineView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_runtimeTimelineView->verticalHeader()->setVisible(false);
-    m_runtimeTimelineView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_runtimeTimelineView->horizontalHeader()->setSectionResizeMode(
-        RuntimeTimelineModel::DetailColumn,
-        QHeaderView::Stretch);
+    installProportionalHeader(m_runtimeTimelineView, {1, 2, 2, 1, 2, 1, 5});
     details->addTab(m_runtimeTimelineView, tr("Timeline"));
     connect(m_runtimeTimelineView,
             &QTableView::clicked,
@@ -1867,10 +1983,7 @@ void MainWindow::buildLayout()
     m_runtimeLogView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_runtimeLogView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_runtimeLogView->verticalHeader()->setVisible(false);
-    m_runtimeLogView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_runtimeLogView->horizontalHeader()->setSectionResizeMode(
-        RuntimeLogModel::MessageColumn,
-        QHeaderView::Stretch);
+    installProportionalHeader(m_runtimeLogView, {2, 1, 2, 1, 6});
     details->addTab(m_runtimeLogView, tr("Logs"));
 
     m_debugSnapshotView = new QTableView(details);
@@ -1880,10 +1993,7 @@ void MainWindow::buildLayout()
     m_debugSnapshotView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_debugSnapshotView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_debugSnapshotView->verticalHeader()->setVisible(false);
-    m_debugSnapshotView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_debugSnapshotView->horizontalHeader()->setSectionResizeMode(
-        DebugSnapshotModel::ValueColumn,
-        QHeaderView::Stretch);
+    installProportionalHeader(m_debugSnapshotView, {2, 2, 5});
     details->addTab(m_debugSnapshotView, tr("Debug"));
 
     m_deviceStatusView = new QTableView(details);
@@ -1892,10 +2002,7 @@ void MainWindow::buildLayout()
     m_deviceStatusView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_deviceStatusView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_deviceStatusView->verticalHeader()->setVisible(false);
-    m_deviceStatusView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_deviceStatusView->horizontalHeader()->setSectionResizeMode(
-        DeviceStatusModel::MessageColumn,
-        QHeaderView::Stretch);
+    installProportionalHeader(m_deviceStatusView, {2, 2, 3, 2, 5});
     details->addTab(m_deviceStatusView, tr("Devices"));
 
     auto* historyPage = new QWidget(m_workspaceTabs);
@@ -1933,9 +2040,7 @@ void MainWindow::buildLayout()
     m_historyView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_historyView->setSortingEnabled(true);
     m_historyView->verticalHeader()->setVisible(false);
-    m_historyView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_historyView->horizontalHeader()->setSectionResizeMode(
-        HistoryModel::UutsColumn, QHeaderView::Stretch);
+    installProportionalHeader(m_historyView, {2, 3, 1, 1, 1, 1});
     historyLayout->addWidget(m_historyView, 1);
 
     connect(m_historyFilter,
@@ -1953,10 +2058,7 @@ void MainWindow::buildLayout()
     m_diagnosticView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_diagnosticView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_diagnosticView->verticalHeader()->setVisible(false);
-    m_diagnosticView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_diagnosticView->horizontalHeader()->setSectionResizeMode(
-        DiagnosticModel::MessageColumn,
-        QHeaderView::Stretch);
+    installProportionalHeader(m_diagnosticView, {1, 2, 5, 3});
     details->addTab(m_diagnosticView, tr("Diagnostics"));
 
     runDataSplitter->setStretchFactor(0, 3);
@@ -2033,6 +2135,15 @@ void MainWindow::buildLayout()
         QTableView::item:hover, QTableView::item:selected,
         QListView::item:hover, QListView::item:selected {
             background: #cfe4f3; color: #20272e;
+        }
+        QTreeView#pluginFunctionView::item,
+        QTreeView#sequenceTreeView::item {
+            min-height: 28px;
+            padding: 3px 6px;
+        }
+        QTreeView#resultView::item {
+            min-height: 29px;
+            padding: 3px 6px;
         }
         QTabBar::tab:selected {
             background: #cfe4f3; color: #20272e;
@@ -2129,8 +2240,11 @@ void MainWindow::updateCommandState()
     m_redoAction->setEnabled(
         canChangeSources && m_sequenceDocument->undoStack()->canRedo());
     m_addStepAction->setEnabled(canChangeSources && hasDocument && hasSelection);
-    m_deleteStepAction->setEnabled(canChangeSources && stepSelected);
-    m_duplicateStepAction->setEnabled(canChangeSources && stepSelected);
+    const bool hasSelectedSteps = !selectedStepPaths.isEmpty();
+    m_deleteStepAction->setEnabled(canChangeSources && hasSelectedSteps);
+    m_duplicateStepAction->setEnabled(canChangeSources && hasSelectedSteps);
+    m_enableStepsAction->setEnabled(canChangeSources && hasSelectedSteps);
+    m_disableStepsAction->setEnabled(canChangeSources && hasSelectedSteps);
     m_wrapTestItemAction->setEnabled(
         canChangeSources &&
         m_sequenceDocument->canWrapStepsInTestItem(selectedStepPaths));
@@ -2193,11 +2307,13 @@ void MainWindow::updateCommandState()
     if (m_stationPropertyEditor) {
         m_stationPropertyEditor->setEditable(canChangeSources);
     }
+    if (m_stationSettingsEditor) {
+        m_stationSettingsEditor->setEditable(canChangeSources);
+    }
 }
 void MainWindow::updateDiagnostics()
 {
     m_diagnosticModel->setDiagnostics(m_viewModel->diagnostics());
-    m_diagnosticView->resizeColumnsToContents();
 }
 
 void MainWindow::updateCompilePreview()
@@ -2326,10 +2442,6 @@ void MainWindow::updateReport()
 void MainWindow::updateDebugSnapshot()
 {
     m_debugSnapshotModel->setSnapshot(m_viewModel->debugSnapshot());
-    m_debugSnapshotView->resizeColumnsToContents();
-    m_debugSnapshotView->horizontalHeader()->setSectionResizeMode(
-        DebugSnapshotModel::ValueColumn,
-        QHeaderView::Stretch);
 }
 
 void MainWindow::displayReport(const PicoATE::Core::ExecutionReport& report)
@@ -2615,7 +2727,7 @@ void MainWindow::restoreUiSettings()
     restoreSplitter("sequenceVerticalSplitter", "SequenceVerticalSplitter");
     restoreSplitter("sequenceWorkSplitter", "SequenceWorkSplitter");
     restoreSplitter("stationVerticalSplitter", "StationVerticalSplitter");
-    restoreSplitter("stationWorkSplitter", "StationWorkSplitter");
+    restoreSplitter("stationWorkSplitter", "StationWorkSplitterV2");
     restoreSplitter("runSplitter", "RunSplitter");
 
     const int workspaceTab = settings.value(QStringLiteral("WorkspaceTab"), 0).toInt();
@@ -2652,7 +2764,7 @@ void MainWindow::saveUiSettings() const
     saveSplitter("sequenceVerticalSplitter", "SequenceVerticalSplitter");
     saveSplitter("sequenceWorkSplitter", "SequenceWorkSplitter");
     saveSplitter("stationVerticalSplitter", "StationVerticalSplitter");
-    saveSplitter("stationWorkSplitter", "StationWorkSplitter");
+    saveSplitter("stationWorkSplitter", "StationWorkSplitterV2");
     saveSplitter("runSplitter", "RunSplitter");
     settings.setValue(QStringLiteral("WorkspaceTab"), m_workspaceTabs->currentIndex());
     if (const auto* details = findChild<QTabWidget*>(QStringLiteral("runDetailsTabs"))) {
@@ -2686,7 +2798,7 @@ void MainWindow::resetUiLayout()
         splitter->setSizes({520, 140});
     }
     if (auto* splitter = findChild<QSplitter*>(QStringLiteral("stationWorkSplitter"))) {
-        splitter->setSizes({850, 420});
+        splitter->setSizes({260, 610, 390});
     }
     if (auto* splitter = findChild<QSplitter*>(QStringLiteral("runSplitter"))) {
         splitter->setSizes({700, 460});

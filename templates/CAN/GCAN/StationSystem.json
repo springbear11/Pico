@@ -1,7 +1,9 @@
 {
   "stationId": "GCAN-HW-01",
   "name": "GCAN Hardware Verification Station",
+  "stopOnFailure": true,
   "scanDialogEnabled": true,
+  "snLength": 0,
   "metadata": {
     "order": "GCAN-SELF-TEST",
     "tester": "Hardware Verification",
@@ -25,6 +27,13 @@
         "canFd": false,
         "selfTest": true
       }
-    }
+    },
+    {"deviceId":"CAN2","deviceType":"CAN","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"PPS1","deviceType":"PSU","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"PPS2","deviceType":"PSU","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"DMM1","deviceType":"DMM","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"DMM2","deviceType":"DMM","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"SCOPE1","deviceType":"SCOPE","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"SCOPE2","deviceType":"SCOPE","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}}
   ]
 }

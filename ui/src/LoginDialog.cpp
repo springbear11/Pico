@@ -139,6 +139,7 @@ void LoginDialog::submit()
     m_selection.stationPath = QFileInfo(stationPath).absoluteFilePath();
     m_selection.scanDialogEnabled = StartupSupport::stationScanDialogEnabled(
         m_selection.stationPath);
+    m_selection.snLength = StartupSupport::stationSnLength(m_selection.stationPath);
     accept();
 }
 

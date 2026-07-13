@@ -1,5 +1,7 @@
 #include "ProductionWindow.h"
 
+#include "ProportionalHeaderView.h"
+
 #include "ExecutionViewModel.h"
 #include "PicoATE/Core/StationConfig.h"
 #include "RunnerModels.h"
@@ -10,6 +12,7 @@
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QFileInfo>
+#include <QFont>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHeaderView>
@@ -115,6 +118,7 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
     m_resultModel->setSingleUutPhaseLayout(true);
     m_logModel = new RuntimeLogModel(this);
     m_scanDialog = new ScanDialog(this);
+    m_scanDialog->setExpectedLength(m_selection.snLength);
     buildUi();
 
     connect(m_viewModel, &ExecutionViewModel::stateChanged,
@@ -282,14 +286,17 @@ void ProductionWindow::buildUi()
     m_resultView->setModel(m_resultModel);
     m_resultView->setAlternatingRowColors(true);
     m_resultView->setUniformRowHeights(true);
-    m_resultView->header()->setSectionResizeMode(UutStepModel::NameColumn,
-                                                  QHeaderView::Stretch);
-    for (int column = UutStepModel::ErrorCodeColumn;
-         column < UutStepModel::ColumnCount;
-         ++column) {
-        m_resultView->header()->setSectionResizeMode(column,
-                                                     QHeaderView::ResizeToContents);
+    m_resultView->setIndentation(22);
+    auto resultTreeFont = m_resultView->font();
+    resultTreeFont.setFamily(QStringLiteral("Microsoft YaHei UI"));
+    if (resultTreeFont.pointSizeF() > 0.0) {
+        resultTreeFont.setPointSizeF(resultTreeFont.pointSizeF() + 0.5);
     }
+    resultTreeFont.setWeight(QFont::Medium);
+    m_resultView->setFont(resultTreeFont);
+    auto* resultHeader = new ProportionalHeaderView(m_resultView);
+    m_resultView->setHeader(resultHeader);
+    resultHeader->setSectionWeights({2, 1, 1, 1, 1, 1, 1, 1, 1, 1});
     m_resultView->setColumnHidden(UutStepModel::AttemptsColumn, true);
     m_resultView->setColumnHidden(UutStepModel::LoopColumn, true);
     m_resultView->setColumnHidden(UutStepModel::StateColumn, true);
@@ -307,9 +314,9 @@ void ProductionWindow::buildUi()
     m_logView->setModel(m_logModel);
     m_logView->setAlternatingRowColors(true);
     m_logView->verticalHeader()->setVisible(false);
-    m_logView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_logView->horizontalHeader()->setSectionResizeMode(
-        RuntimeLogModel::MessageColumn, QHeaderView::Stretch);
+    auto* logHeader = new ProportionalHeaderView(m_logView);
+    m_logView->setHorizontalHeader(logHeader);
+    logHeader->setSectionWeights({2, 1, 2, 1, 6});
     logsLayout->addWidget(m_logView, 1);
     rightSplitter->setStretchFactor(0, 4);
     rightSplitter->setStretchFactor(1, 1);
@@ -407,7 +414,10 @@ void ProductionWindow::buildUi()
             selection-background-color: #cfe4f3;
             selection-color: #20272e;
         }
-        QTreeView#productionResultView::item,
+        QTreeView#productionResultView::item {
+            min-height: 29px;
+            padding: 3px 6px;
+        }
         QTableView#productionLogView::item {
             min-height: 25px;
             padding: 2px 4px;

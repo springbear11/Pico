@@ -4,6 +4,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -75,6 +76,125 @@ bool pathStartsWith(const QVector<int>& path, const QVector<int>& prefix)
         return false;
     }
     return std::equal(prefix.cbegin(), prefix.cend(), path.cbegin());
+}
+
+bool pathLess(const SequenceItemPath& left, const SequenceItemPath& right)
+{
+    if (left.groupIndex != right.groupIndex) {
+        return left.groupIndex < right.groupIndex;
+    }
+    return std::lexicographical_compare(
+        left.stepIndices.cbegin(), left.stepIndices.cend(),
+        right.stepIndices.cbegin(), right.stepIndices.cend());
+}
+
+QJsonObject objectAtRoot(const QJsonObject& root, const SequenceItemPath& path)
+{
+    const auto groups = root.value(QStringLiteral("groups")).toArray();
+    if (!path.isValid() || path.groupIndex < 0 || path.groupIndex >= groups.size() ||
+        !groups[path.groupIndex].isObject()) {
+        return {};
+    }
+    return nestedObject(groups[path.groupIndex].toObject(), path.stepIndices);
+}
+
+QString idScopeKey(const SequenceItemPath& parentPath)
+{
+    if (parentPath.stepIndices.isEmpty()) {
+        return QStringLiteral("top-level");
+    }
+    QString key = QString::number(parentPath.groupIndex);
+    for (const int index : parentPath.stepIndices) {
+        key += QLatin1Char('/') + QString::number(index);
+    }
+    return key;
+}
+
+bool insertStepCopy(QJsonObject& root,
+                    const SequenceItemPath& sourcePath,
+                    const QJsonObject& copy)
+{
+    auto groups = root.value(QStringLiteral("groups")).toArray();
+    if (!sourcePath.isValid() || sourcePath.stepIndices.isEmpty() ||
+        sourcePath.groupIndex < 0 || sourcePath.groupIndex >= groups.size() ||
+        !groups[sourcePath.groupIndex].isObject()) {
+        return false;
+    }
+
+    auto group = groups[sourcePath.groupIndex].toObject();
+    auto parentSteps = sourcePath.stepIndices;
+    const int sourceRow = parentSteps.takeLast();
+    if (!mutateNestedSteps(group, parentSteps, 0, [&](QJsonArray& steps) {
+            if (sourceRow < 0 || sourceRow >= steps.size()) {
+                return false;
+            }
+            steps.insert(sourceRow + 1, copy);
+            return true;
+        })) {
+        return false;
+    }
+    groups[sourcePath.groupIndex] = group;
+    root.insert(QStringLiteral("groups"), groups);
+    return true;
+}
+
+bool mutateStepInRoot(
+    QJsonObject& root,
+    const SequenceItemPath& path,
+    const std::function<bool(QJsonObject&)>& mutation)
+{
+    auto groups = root.value(QStringLiteral("groups")).toArray();
+    if (!path.isValid() || path.stepIndices.isEmpty() ||
+        path.groupIndex < 0 || path.groupIndex >= groups.size() ||
+        !groups[path.groupIndex].isObject()) {
+        return false;
+    }
+
+    auto group = groups[path.groupIndex].toObject();
+    auto parentSteps = path.stepIndices;
+    const int row = parentSteps.takeLast();
+    if (!mutateNestedSteps(group, parentSteps, 0, [&](QJsonArray& steps) {
+            if (row < 0 || row >= steps.size() || !steps[row].isObject()) {
+                return false;
+            }
+            auto step = steps[row].toObject();
+            if (!mutation(step)) {
+                return false;
+            }
+            steps[row] = step;
+            return true;
+        })) {
+        return false;
+    }
+    groups[path.groupIndex] = group;
+    root.insert(QStringLiteral("groups"), groups);
+    return true;
+}
+
+bool removeStepFromRoot(QJsonObject& root, const SequenceItemPath& path)
+{
+    auto groups = root.value(QStringLiteral("groups")).toArray();
+    if (!path.isValid() || path.stepIndices.isEmpty() ||
+        path.groupIndex < 0 || path.groupIndex >= groups.size() ||
+        !groups[path.groupIndex].isObject()) {
+        return false;
+    }
+
+    auto group = groups[path.groupIndex].toObject();
+    auto parentSteps = path.stepIndices;
+    const int row = parentSteps.takeLast();
+    if (!mutateNestedSteps(group, parentSteps, 0, [&](QJsonArray& steps) {
+            if (row < 0 || row >= steps.size()) {
+                return false;
+            }
+            steps.removeAt(row);
+            return true;
+        })) {
+        return false;
+    }
+    groups[path.groupIndex] = group;
+    root.insert(QStringLiteral("groups"), groups);
+    return true;
 }
 
 bool normalizeSiblingPaths(QVector<SequenceItemPath> paths,
@@ -438,33 +558,160 @@ bool SequenceDocument::removeStep(const SequenceItemPath& path)
     }, tr("Delete Step"));
 }
 
-bool SequenceDocument::duplicateStep(const SequenceItemPath& path)
+bool SequenceDocument::removeSteps(QVector<SequenceItemPath> paths)
 {
-    if (!path.isValid() || path.stepIndices.isEmpty()) {
+    if (paths.isEmpty()) {
         return false;
     }
+    std::sort(paths.begin(), paths.end(), [](const auto& left, const auto& right) {
+        if (left.groupIndex != right.groupIndex) {
+            return left.groupIndex > right.groupIndex;
+        }
+        return std::lexicographical_compare(
+            right.stepIndices.cbegin(), right.stepIndices.cend(),
+            left.stepIndices.cbegin(), left.stepIndices.cend());
+    });
+    paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
 
-    const auto source = objectAt(path);
-    if (source.isEmpty()) {
-        return false;
-    }
-
-    auto parentPath = path;
-    const int sourceRow = parentPath.stepIndices.takeLast();
-    auto copy = source;
-    const auto id = nextStepId(parentPath);
-    copy.insert("id", id);
-    copy.remove("key");
-    const auto name = copy.value("name").toString(copy.value("id").toString());
-    copy.insert("name", tr("%1 Copy").arg(name));
-
-    return mutateSteps(parentPath, [&](QJsonArray& steps) {
-        if (sourceRow < 0 || sourceRow >= steps.size()) {
+    auto root = m_root;
+    for (const auto& path : paths) {
+        if (!removeStepFromRoot(root, path)) {
             return false;
         }
-        steps.insert(sourceRow + 1, copy);
-        return true;
-    }, tr("Duplicate Step"));
+    }
+    return commitRoot(std::move(root), tr("Delete Selected Steps"));
+}
+
+bool SequenceDocument::setStepsEnabled(
+    const QVector<SequenceItemPath>& paths,
+    bool enabled)
+{
+    if (paths.isEmpty()) {
+        return false;
+    }
+
+    auto root = m_root;
+    QVector<SequenceItemPath> uniquePaths;
+    for (const auto& path : paths) {
+        if (uniquePaths.contains(path)) {
+            continue;
+        }
+        uniquePaths.push_back(path);
+        if (!mutateStepInRoot(root, path, [enabled](QJsonObject& step) {
+                step.insert(QStringLiteral("enabled"), enabled);
+                return true;
+            })) {
+            return false;
+        }
+    }
+    return commitRoot(
+        std::move(root), enabled ? tr("Enable Selected Steps")
+                                 : tr("Disable Selected Steps"));
+}
+
+bool SequenceDocument::duplicateStep(const SequenceItemPath& path)
+{
+    return duplicateSteps({path});
+}
+
+bool SequenceDocument::duplicateSteps(QVector<SequenceItemPath> paths)
+{
+    if (paths.isEmpty()) {
+        return false;
+    }
+    std::sort(paths.begin(), paths.end(), pathLess);
+    paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
+
+    QVector<SequenceItemPath> roots;
+    for (const auto& path : paths) {
+        if (!path.isValid() || path.stepIndices.isEmpty() ||
+            objectAtRoot(m_root, path).isEmpty()) {
+            return false;
+        }
+        const bool coveredBySelectedParent = std::any_of(
+            roots.cbegin(), roots.cend(), [&path](const auto& root) {
+                return root.groupIndex == path.groupIndex &&
+                       pathStartsWith(path.stepIndices, root.stepIndices);
+            });
+        if (!coveredBySelectedParent) {
+            roots.push_back(path);
+        }
+    }
+    if (roots.isEmpty()) {
+        return false;
+    }
+
+    struct IdCursor {
+        int maximum = 0;
+        int width = 2;
+    };
+    QHash<QString, IdCursor> cursors;
+    auto nextId = [&](const SequenceItemPath& parentPath) {
+        const auto scope = idScopeKey(parentPath);
+        auto cursor = cursors.find(scope);
+        if (cursor == cursors.end()) {
+            IdCursor created;
+            created.width = parentPath.stepIndices.isEmpty() ? 3 : 2;
+            QJsonArray siblings;
+            if (parentPath.stepIndices.isEmpty()) {
+                const auto groups = m_root.value(QStringLiteral("groups")).toArray();
+                for (const auto& groupValue : groups) {
+                    for (const auto& stepValue :
+                         groupValue.toObject().value(QStringLiteral("steps")).toArray()) {
+                        siblings.push_back(stepValue);
+                    }
+                }
+            } else {
+                siblings = objectAtRoot(m_root, parentPath)
+                               .value(QStringLiteral("steps")).toArray();
+            }
+            for (const auto& siblingValue : siblings) {
+                bool numeric = false;
+                const auto id = siblingValue.toObject()
+                                    .value(QStringLiteral("id")).toString();
+                const int number = id.toInt(&numeric);
+                if (numeric) {
+                    created.maximum = qMax(created.maximum, number);
+                    created.width = qMax(created.width, id.size());
+                }
+            }
+            cursor = cursors.insert(scope, created);
+        }
+        ++cursor->maximum;
+        return QStringLiteral("%1").arg(
+            cursor->maximum, cursor->width, 10, QLatin1Char('0'));
+    };
+
+    struct CopyEntry {
+        SequenceItemPath sourcePath;
+        QJsonObject object;
+    };
+    QVector<CopyEntry> copies;
+    copies.reserve(roots.size());
+    for (const auto& path : roots) {
+        auto parentPath = path;
+        parentPath.stepIndices.removeLast();
+        auto copy = objectAtRoot(m_root, path);
+        const auto originalName = copy.value(QStringLiteral("name")).toString(
+            copy.value(QStringLiteral("id")).toString());
+        copy.insert(QStringLiteral("id"), nextId(parentPath));
+        copy.remove(QStringLiteral("key"));
+        copy.insert(QStringLiteral("name"), tr("%1 Copy").arg(originalName));
+        copies.push_back({path, std::move(copy)});
+    }
+
+    std::sort(copies.begin(), copies.end(), [](const auto& left, const auto& right) {
+        return pathLess(right.sourcePath, left.sourcePath);
+    });
+    auto root = m_root;
+    for (const auto& copy : copies) {
+        if (!insertStepCopy(root, copy.sourcePath, copy.object)) {
+            return false;
+        }
+    }
+    return commitRoot(
+        std::move(root), roots.size() == 1 ? tr("Duplicate Step")
+                                           : tr("Duplicate Selected Steps"));
 }
 
 bool SequenceDocument::moveStep(const SequenceItemPath& path, int offset)
