@@ -5,6 +5,7 @@
 #include <QPointer>
 #include <QWidget>
 
+class QAbstractButton;
 class QCheckBox;
 class QComboBox;
 class QLabel;
@@ -28,6 +29,7 @@ public:
 
     void setCurrentDevice(int row);
     void setEditable(bool editable);
+    void setStationPageVisible(bool visible);
     void setPluginRegistry(QVector<PluginManifest> plugins);
     bool focusField(const QString& path);
 
@@ -63,7 +65,7 @@ private:
     QLineEdit* m_addressEdit = nullptr;
     QSpinBox* m_timeoutSpin = nullptr;
     QComboBox* m_lifetimeCombo = nullptr;
-    QCheckBox* m_enabledCheck = nullptr;
+    QAbstractButton* m_enabledCheck = nullptr;
     QPlainTextEdit* m_optionsEdit = nullptr;
     QLabel* m_deviceError = nullptr;
     QPushButton* m_applyDeviceButton = nullptr;

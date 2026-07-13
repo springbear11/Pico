@@ -39,6 +39,10 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/LoginDialog.h
     ../src/ProductionWindow.cpp
     ../src/ProductionWindow.h
+    ../src/ProportionalHeaderView.cpp
+    ../src/ProportionalHeaderView.h
+    ../src/OnOffControl.cpp
+    ../src/OnOffControl.h
     ../src/ScanDialog.cpp
     ../src/ScanDialog.h
     MainWindowLifecycleTests.cpp
@@ -48,6 +52,8 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/StepPropertyEditor.h
     ../src/StationPropertyEditor.cpp
     ../src/StationPropertyEditor.h
+    ../src/StationSettingsEditor.cpp
+    ../src/StationSettingsEditor.h
 )
 
 target_link_libraries(PicoATEUiWindowTests

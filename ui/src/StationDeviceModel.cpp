@@ -1,5 +1,8 @@
 #include "StationDeviceModel.h"
 
+#include <QBrush>
+#include <QColor>
+
 namespace PicoATE::Ui {
 
 namespace {
@@ -45,6 +48,10 @@ QVariant StationDeviceModel::data(const QModelIndex& index, int role) const
     if (role == Qt::CheckStateRole && index.column() == EnabledColumn) {
         return device.value("enabled").toBool(true) ? Qt::Checked : Qt::Unchecked;
     }
+    const bool enabled = device.value("enabled").toBool(true);
+    if (role == Qt::ForegroundRole && !enabled) {
+        return QBrush(QColor(QStringLiteral("#98a2b3")));
+    }
     if (role == Qt::ToolTipRole && index.column() == ConnectionColumn) {
         return m_connectionDetails.value(deviceId);
     }
@@ -64,7 +71,8 @@ QVariant StationDeviceModel::data(const QModelIndex& index, int role) const
     case LifetimeColumn:
         return device.value("lifetime").toString("Station");
     case ConnectionColumn:
-        return m_connectionStates.value(deviceId, tr("Not tested"));
+        return enabled ? m_connectionStates.value(deviceId, tr("Not tested"))
+                       : tr("Disabled");
     case EnabledColumn:
         return {};
     default:
@@ -110,7 +118,7 @@ QVariant StationDeviceModel::headerData(int section,
     case AddressColumn: return tr("Address");
     case LifetimeColumn: return tr("Lifetime");
     case ConnectionColumn: return tr("Connection");
-    case EnabledColumn: return tr("Enabled");
+    case EnabledColumn: return tr("Enable");
     default: return {};
     }
 }

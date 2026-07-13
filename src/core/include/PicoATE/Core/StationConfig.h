@@ -19,6 +19,9 @@ struct StationConfigDiagnostic {
 struct StationConfig {
     QString stationId;
     QString name;
+    bool stopOnFailure = true;
+    bool scanDialogEnabled = true;
+    int snLength = 0;
     QVariantMap metadata;
     QVector<DeviceSessionConfig> devices;
 };

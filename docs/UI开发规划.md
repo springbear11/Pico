@@ -568,6 +568,10 @@ Step Over 跳过结构块内部断点均已有回归测试。Run 页右侧的 De
 UI-8.1 已完成：窗口位置与尺寸、五处分栏、工作区/详情页签、UUT 数量和连接超时均可持久化；
 File 菜单提供最近 Sequence/Station，View 菜单可以恢复默认布局；损坏或离屏窗口配置会自动回到主屏。
 
+Flow Editor 已补齐插件输出表达式选择：`StepOutputCatalog` 根据插件 Describe outputs、Station 逻辑设备绑定、
+当前 Step 位置和引擎 Group 执行顺序生成候选；插件参数及 Limit Actual 均可通过 `fx` 菜单写入完整作用域
+表达式，禁用和未来 Step 自动排除，失效引用继续由编译诊断定位。
+
 下一项实现工作是 UI-8.4：建立可复制运行的 Release 发布目录，自动收集 Qt Runtime、NativeHost、
 示例和必要配置，再接安装包与干净机器验证。`UI-TECH-001` 按当前决定保留为暂缓遗留项。
 

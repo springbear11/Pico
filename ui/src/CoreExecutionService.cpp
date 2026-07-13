@@ -29,6 +29,27 @@ UiDiagnostic error(QString path, QString message, QString suggestion = {})
             std::move(suggestion)};
 }
 
+void applyStationExecutionPolicy(const PicoATE::Core::StationConfig& station,
+                                 PicoATE::Core::ExecutionPlan& plan)
+{
+    if (station.stopOnFailure) {
+        return;
+    }
+
+    const auto nodeIds = plan.nodes.keys();
+    for (const auto& nodeId : nodeIds) {
+        auto node = plan.nodes.find(nodeId);
+        if (node == plan.nodes.end() || plan.structuralParentOf(nodeId).has_value() ||
+            node->kind == PicoATE::Core::ExecNodeKind::Cleanup || node->alwaysRun) {
+            continue;
+        }
+        node->errorPolicy.onFail = PicoATE::Core::ErrorAction::Continue;
+        node->errorPolicy.onError = PicoATE::Core::ErrorAction::Continue;
+        node->errorPolicy.onTimeout = PicoATE::Core::ErrorAction::Continue;
+        node->errorPolicy.stopUutOnFailure = false;
+    }
+}
+
 } // namespace
 
 CoreExecutionService::CoreExecutionService(QString projectDir)
@@ -97,6 +118,7 @@ CompileServiceResult CoreExecutionService::compile(const CompileRequest& request
         }
         artifact.station = stationResult.config;
         artifact.stationPath = QFileInfo(request.stationPath).absoluteFilePath();
+        applyStationExecutionPolicy(stationResult.config, artifact.plan);
 
         const auto registryPath = QDir(QCoreApplication::applicationDirPath())
                                       .absoluteFilePath(

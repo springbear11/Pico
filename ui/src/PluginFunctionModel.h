@@ -4,6 +4,7 @@
 
 #include <QAbstractItemModel>
 #include <QHash>
+#include <QJsonObject>
 
 #include <memory>
 #include <vector>
@@ -28,6 +29,7 @@ public:
 
     enum class ItemKind {
         Root,
+        Section,
         Category,
         Plugin,
         Function
@@ -54,6 +56,7 @@ public:
     void setPlugins(QVector<PluginManifest> plugins);
     void setDeviceBindings(QHash<QString, QStringList> devicesByModuleId);
     QVector<PluginManifest> plugins() const;
+    QJsonObject stepTemplate(const QModelIndex& index) const;
 
 private:
     struct Item {
@@ -63,6 +66,7 @@ private:
         int pluginIndex = -1;
         int functionIndex = -1;
         QString deviceId;
+        QJsonObject stepTemplate;
         Item* parent = nullptr;
         std::vector<std::unique_ptr<Item>> children;
     };

@@ -43,6 +43,7 @@ class ScanDialog;
 class StationDeviceModel;
 class StationDocument;
 class StationPropertyEditor;
+class StationSettingsEditor;
 class StepPropertyEditor;
 class UutStepModel;
 
@@ -74,6 +75,7 @@ private:
     void deleteSequenceStep();
     void duplicateSequenceStep();
     void wrapSelectedStepsInTestItem();
+    void setSelectedSequenceStepsEnabled(bool enabled);
     QVector<SequenceItemPath> selectedSequenceStepPaths() const;
     void moveSequenceStep(int offset);
     void applyUndoRedo(bool redo);
@@ -156,6 +158,8 @@ private:
     QAction* m_deleteStepAction = nullptr;
     QAction* m_duplicateStepAction = nullptr;
     QAction* m_wrapTestItemAction = nullptr;
+    QAction* m_enableStepsAction = nullptr;
+    QAction* m_disableStepsAction = nullptr;
     QAction* m_moveStepUpAction = nullptr;
     QAction* m_moveStepDownAction = nullptr;
     QAction* m_openStationAction = nullptr;
@@ -206,6 +210,7 @@ private:
     StepPropertyEditor* m_stepPropertyEditor = nullptr;
     QTableView* m_editorDiagnosticView = nullptr;
     QTableView* m_stationDeviceView = nullptr;
+    StationSettingsEditor* m_stationSettingsEditor = nullptr;
     StationPropertyEditor* m_stationPropertyEditor = nullptr;
     QTableView* m_stationDiagnosticView = nullptr;
     QTreeView* m_resultView = nullptr;

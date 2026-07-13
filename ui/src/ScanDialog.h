@@ -15,6 +15,7 @@ class ScanDialog final : public QDialog
 public:
     explicit ScanDialog(QWidget* parent = nullptr);
 
+    void setExpectedLength(int length);
     void showForNextScan();
 
 signals:
@@ -30,6 +31,7 @@ private slots:
 private:
     QLineEdit* m_barcodeEdit = nullptr;
     QLabel* m_errorLabel = nullptr;
+    int m_expectedLength = 0;
 };
 
 } // namespace PicoATE::Ui

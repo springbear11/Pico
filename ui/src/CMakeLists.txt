@@ -26,6 +26,8 @@ add_library(PicoATEUiRuntime STATIC
     StationDeviceModel.h
     StationDocument.cpp
     StationDocument.h
+    StepOutputCatalog.cpp
+    StepOutputCatalog.h
     StartupSupport.cpp
     StartupSupport.h
     UiExecutionTypes.cpp
@@ -62,14 +64,20 @@ qt_add_executable(PicoATEUi WIN32
     Main.cpp
     MainWindow.cpp
     MainWindow.h
+    OnOffControl.cpp
+    OnOffControl.h
     ProductionWindow.cpp
     ProductionWindow.h
+    ProportionalHeaderView.cpp
+    ProportionalHeaderView.h
     ScanDialog.cpp
     ScanDialog.h
     StepPropertyEditor.cpp
     StepPropertyEditor.h
     StationPropertyEditor.cpp
     StationPropertyEditor.h
+    StationSettingsEditor.cpp
+    StationSettingsEditor.h
 )
 
 target_link_libraries(PicoATEUi

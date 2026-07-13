@@ -1,5 +1,6 @@
 #include "StationPropertyEditor.h"
 
+#include "OnOffControl.h"
 #include "StationDocument.h"
 
 #include <QCheckBox>
@@ -79,7 +80,7 @@ StationPropertyEditor::StationPropertyEditor(StationDocument* document,
 {
     Q_ASSERT(m_document);
     setObjectName(QStringLiteral("stationPropertyEditor"));
-    setMinimumWidth(300);
+    setMinimumWidth(240);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 0, 0, 0);
@@ -182,7 +183,9 @@ void StationPropertyEditor::buildDevicePage()
                                  QString::fromLatin1(lifetime));
     }
     form->addRow(tr("Lifetime"), m_lifetimeCombo);
-    m_enabledCheck = new QCheckBox(content);
+    m_enabledCheck = new OnOffSwitch(content);
+    m_enabledCheck->setObjectName(QStringLiteral("deviceEnabledSwitch"));
+    m_enabledCheck->setAccessibleName(tr("Enable device"));
     form->addRow(tr("Enabled"), m_enabledCheck);
     m_optionsEdit = new QPlainTextEdit(content);
     m_optionsEdit->setObjectName(QStringLiteral("deviceOptionsEdit"));
@@ -222,6 +225,14 @@ void StationPropertyEditor::setEditable(bool editable)
     }
     m_tabs->setEnabled(true);
     loadDevice();
+}
+
+void StationPropertyEditor::setStationPageVisible(bool visible)
+{
+    m_tabs->setTabVisible(0, visible);
+    if (!visible) {
+        m_tabs->setCurrentIndex(1);
+    }
 }
 
 void StationPropertyEditor::setPluginRegistry(QVector<PluginManifest> plugins)

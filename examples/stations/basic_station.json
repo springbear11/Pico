@@ -1,6 +1,9 @@
 {
   "stationId": "bench-01",
   "name": "PicoATE Bench 01",
+  "stopOnFailure": true,
+  "scanDialogEnabled": false,
+  "snLength": 12,
   "metadata": {
     "site": "lab",
     "owner": "ATE"

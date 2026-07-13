@@ -638,6 +638,9 @@ void CoreTests::stationConfigParsesDevicesAndConfiguresSessionManager()
     const auto load = loadStationConfigFile(examplePath("stations/basic_station.json"), options);
     QVERIFY(load.ok());
     QCOMPARE(load.config.stationId, QString("bench-01"));
+    QVERIFY(load.config.stopOnFailure);
+    QVERIFY(!load.config.scanDialogEnabled);
+    QCOMPARE(load.config.snLength, 12);
     QCOMPARE(load.config.devices.size(), 2);
 
     const auto dmm = load.config.devices[0];
@@ -685,6 +688,7 @@ void CoreTests::stationConfigReportsDeviceErrors()
     const auto json = R"json(
     {
       "stationId": "bad-station",
+      "snLength": -1,
       "devices": [
         {
           "deviceId": "DMM1",
@@ -725,6 +729,7 @@ void CoreTests::stationConfigReportsDeviceErrors()
     };
 
     QVERIFY(hasErrorAt("devices[0].address"));
+    QVERIFY(hasErrorAt("snLength"));
     QVERIFY(hasErrorAt("devices[0].lifetime"));
     QVERIFY(hasErrorAt("devices[1].driverId"));
     QVERIFY(hasErrorAt("devices[1].deviceId"));

@@ -1,6 +1,17 @@
 {
   "stationId": "default-station",
   "name": "Default Development Station",
+  "stopOnFailure": true,
   "scanDialogEnabled": true,
-  "devices": []
+  "snLength": 0,
+  "devices": [
+    {"deviceId":"CAN1","deviceType":"CAN","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"CAN2","deviceType":"CAN","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"PPS1","deviceType":"PSU","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"PPS2","deviceType":"PSU","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"DMM1","deviceType":"DMM","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"DMM2","deviceType":"DMM","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"SCOPE1","deviceType":"SCOPE","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"SCOPE2","deviceType":"SCOPE","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}}
+  ]
 }

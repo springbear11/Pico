@@ -1,7 +1,7 @@
 #pragma once
 
-#include "PluginCatalog.h"
 #include "SequenceDocument.h"
+#include "StepOutputCatalog.h"
 
 #include <QWidget>
 #include <QPointer>
@@ -14,6 +14,7 @@ class QFormLayout;
 class QGroupBox;
 class QLabel;
 class QLineEdit;
+class QMenu;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
@@ -31,6 +32,7 @@ public:
 
     SequenceItemPath currentPath() const;
     void setCurrentItem(const SequenceItemPath& path);
+    void setPreviewObject(QJsonObject object);
     void setEditable(bool editable);
     void setPluginRegistry(QVector<PluginManifest> plugins);
     void setDevicePluginBindings(QHash<QString, QString> pluginByDeviceId);
@@ -45,7 +47,10 @@ private:
     void buildPolicyPage();
     void loadCurrentObject();
     void updateKindRows();
+    void updateLimitRows();
     void rebuildPluginInputEditors();
+    QWidget* wrapExpressionEditor(QLineEdit* editor);
+    void rebuildExpressionMenu(QMenu* menu, QLineEdit* editor);
     const PluginFunctionDefinition* currentPluginFunction() const;
     bool mergePluginInputValues(QJsonObject& inputs, QString& errorMessage) const;
     void applyChanges();
@@ -54,6 +59,8 @@ private:
     QPointer<SequenceDocument> m_document;
     SequenceItemPath m_path;
     QJsonObject m_sourceObject;
+    QJsonObject m_previewObject;
+    bool m_previewing = false;
     bool m_isGroup = false;
     bool m_loading = false;
     bool m_editable = true;
@@ -66,6 +73,7 @@ private:
     };
     QVector<PluginInputEditor> m_pluginInputEditors;
 
+    QLabel* m_titleLabel = nullptr;
     QLabel* m_emptyLabel = nullptr;
     QTabWidget* m_tabs = nullptr;
     QLabel* m_errorLabel = nullptr;
@@ -89,6 +97,17 @@ private:
     QGroupBox* m_pluginInputsGroup = nullptr;
     QFormLayout* m_pluginInputsForm = nullptr;
     QPlainTextEdit* m_inputsEdit = nullptr;
+    QLineEdit* m_limitActualEdit = nullptr;
+    QWidget* m_limitActualField = nullptr;
+    QMenu* m_limitExpressionMenu = nullptr;
+    QComboBox* m_limitComparisonCombo = nullptr;
+    QLineEdit* m_limitExpectedEdit = nullptr;
+    QLineEdit* m_limitLowerEdit = nullptr;
+    QLineEdit* m_limitUpperEdit = nullptr;
+    QDoubleSpinBox* m_limitToleranceSpin = nullptr;
+    QCheckBox* m_limitInclusiveCheck = nullptr;
+    QLineEdit* m_limitMeasurementNameEdit = nullptr;
+    QLineEdit* m_limitUnitEdit = nullptr;
     QPlainTextEdit* m_parametersEdit = nullptr;
     QSpinBox* m_waitMsSpin = nullptr;
     QLineEdit* m_loopVariableEdit = nullptr;

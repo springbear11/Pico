@@ -49,6 +49,11 @@ ScanDialog::ScanDialog(QWidget* parent)
             this, &ScanDialog::submitBarcode);
 }
 
+void ScanDialog::setExpectedLength(int length)
+{
+    m_expectedLength = qBound(0, length, 256);
+}
+
 void ScanDialog::showForNextScan()
 {
     m_errorLabel->hide();
@@ -76,6 +81,16 @@ void ScanDialog::submitBarcode()
     if (barcode.isEmpty()) {
         m_errorLabel->setText(tr("SN cannot be empty"));
         m_errorLabel->show();
+        m_barcodeEdit->setFocus(Qt::OtherFocusReason);
+        return;
+    }
+    if (m_expectedLength > 0 && barcode.size() != m_expectedLength) {
+        m_errorLabel->setText(
+            tr("SN must contain exactly %1 characters (current: %2)")
+                .arg(m_expectedLength)
+                .arg(barcode.size()));
+        m_errorLabel->show();
+        m_barcodeEdit->selectAll();
         m_barcodeEdit->setFocus(Qt::OtherFocusReason);
         return;
     }
