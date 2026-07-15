@@ -209,7 +209,14 @@ QJsonObject PluginFunctionModel::stepTemplate(const QModelIndex& modelIndex) con
     auto step = PluginCatalog::createStep(
         plugin, plugin.functions[item->functionIndex], {});
     if (!item->deviceId.isEmpty()) {
-        auto inputs = step.value(QStringLiteral("inputs")).toObject();
+        const auto functionId = plugin.functions[item->functionIndex].id;
+        const bool stationManagedConnection =
+            functionId.compare(QStringLiteral("open"), Qt::CaseInsensitive) == 0 ||
+            functionId.compare(QStringLiteral("connect"), Qt::CaseInsensitive) == 0 ||
+            functionId.compare(QStringLiteral("connectCan"), Qt::CaseInsensitive) == 0;
+        auto inputs = stationManagedConnection
+            ? QJsonObject{}
+            : step.value(QStringLiteral("inputs")).toObject();
         inputs.insert(QStringLiteral("deviceId"), item->deviceId);
         step.insert(QStringLiteral("inputs"), inputs);
         step.insert(QStringLiteral("moduleId"), QStringLiteral("device"));

@@ -14,6 +14,8 @@
 #include "StepPropertyEditor.h"
 #include "StationDeviceModel.h"
 #include "StationDocument.h"
+#include "StationPropertyEditor.h"
+#include "StationSettingsEditor.h"
 
 #include <QApplication>
 #include <QAbstractButton>
@@ -25,6 +27,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGroupBox>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QMessageBox>
 #include <QMenu>
@@ -33,7 +38,9 @@
 #include <QPixmap>
 #include <QSettings>
 #include <QScreen>
+#include <QScrollBar>
 #include <QSpinBox>
+#include <QStatusBar>
 #include <QStandardItemModel>
 #include <QSplitter>
 #include <QTableView>
@@ -60,6 +67,11 @@ private slots:
     void stationEditorFeedsCompileSnapshot_data();
     void stationEditorFeedsCompileSnapshot();
     void stationConnectionActionUpdatesStatus();
+    void stationDeviceApplyPreservesDllPathWhenModelIsUnchanged();
+    void compileFailureFocusesDiagnosticAndExplainsDisabledRun();
+    void stationCtrlSaveCommitsDraftAndClearsWindowMarker();
+    void switchingStationDevicesCanDiscardCurrentDraft();
+    void disabledReferencedDeviceDiagnosticPersistsAcrossEditors();
     void runActionSyncsTreeBreakpointsAndStopsAtBreakpoint();
     void runPopulatesRuntimeTimeline();
     void persistsLayoutAndRecentFiles();
@@ -72,11 +84,17 @@ private slots:
     void productionWindowShowsSkippedStepsAndCleanupAfterFailure();
     void pluginPropertyEditorValidatesRequiredAndRangeAndSavesInputs();
     void pluginPropertyEditorInsertsPreviousStepOutputExpression();
+    void logicalDeviceOpenKeepsStationParametersOutOfStepInputs();
+    void ctrlSaveConfirmsAndCommitsCurrentStepDraft();
+    void switchingStepsCanDiscardCurrentDraft();
     void limitPropertyEditorSwitchesComparisonFieldsAndRemovesStaleValues();
     void wrapsSelectedStepsInTestItemFromToolbar();
-    void duplicatesSelectedItemsFromToolbar();
+    void copiesAndPastesSelectedItemsFromToolbar();
+    void flowBlankClickClearsSelection();
+    void compileSilentlySavesCurrentDraft();
     void functionPalettePreviewsParametersAndShowsDragHandles();
     void proportionalHeaderDistributesAvailableWidthByWeight();
+    void flowEnableTogglePreservesTreePosition();
 
 private:
     QTemporaryDir m_settingsDirectory;
@@ -143,22 +161,25 @@ void MainWindowLifecycleTests::wrapsSelectedStepsInTestItemFromToolbar()
     QVERIFY(!document->isModified());
 }
 
-void MainWindowLifecycleTests::duplicatesSelectedItemsFromToolbar()
+void MainWindowLifecycleTests::copiesAndPastesSelectedItemsFromToolbar()
 {
     MainWindow window;
     const auto path = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
         + QStringLiteral("/examples/test_item_sequence.json");
     QVERIFY(window.openSequenceFile(path));
+    window.show();
+    QTest::qWait(20);
 
     auto* tree = window.findChild<QTreeView*>(QStringLiteral("sequenceTreeView"));
     auto* model = window.findChild<SequenceTreeModel*>();
     auto* document = window.findChild<SequenceDocument*>();
-    auto* action = window.findChild<QAction*>(QStringLiteral("duplicateStepAction"));
+    auto* copyAction = window.findChild<QAction*>(QStringLiteral("copyStepAction"));
+    auto* pasteAction = window.findChild<QAction*>(QStringLiteral("pasteStepAction"));
     QVERIFY(tree);
     QVERIFY(model);
     QVERIFY(document);
-    QVERIFY(action);
-    QCOMPARE(action->shortcut(), QKeySequence(Qt::CTRL | Qt::Key_D));
+    QVERIFY(copyAction);
+    QVERIFY(pasteAction);
 
     const auto group = model->index(0, SequenceTreeModel::NameColumn);
     const auto firstTestItem = model->index(0, SequenceTreeModel::NameColumn, group);
@@ -177,15 +198,114 @@ void MainWindowLifecycleTests::duplicatesSelectedItemsFromToolbar()
         firstChild, QItemSelectionModel::Select | QItemSelectionModel::Rows);
     tree->selectionModel()->select(
         secondItem, QItemSelectionModel::Select | QItemSelectionModel::Rows);
-    QVERIFY(action->isEnabled());
+    QVERIFY(copyAction->isEnabled());
+    QVERIFY(!pasteAction->isEnabled());
 
-    action->trigger();
+    tree->setFocus();
+    QTest::keyClick(tree, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(model->rowCount(group), 2);
+    QVERIFY(pasteAction->isEnabled());
+    QTest::keyClick(tree, Qt::Key_V, Qt::ControlModifier);
     const auto refreshedGroup = model->index(0, SequenceTreeModel::NameColumn);
     QCOMPARE(model->rowCount(refreshedGroup), 4);
     QCOMPARE(document->undoStack()->undoText(),
-             QStringLiteral("Duplicate Selected Steps"));
+             QStringLiteral("Paste Selected Steps"));
+    QCOMPARE(document->objectAt(SequenceItemPath{0, {1}})
+             .value(QStringLiteral("id")).toString(),
+             QStringLiteral("001"));
+    QCOMPARE(document->objectAt(SequenceItemPath{0, {2}})
+             .value(QStringLiteral("id")).toString(),
+             QStringLiteral("002"));
     document->undoStack()->undo();
     QCOMPARE(model->rowCount(model->index(0, SequenceTreeModel::NameColumn)), 2);
+}
+
+void MainWindowLifecycleTests::flowBlankClickClearsSelection()
+{
+    MainWindow window;
+    const auto path = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+        + QStringLiteral("/examples/simple_sequence.json");
+    QVERIFY(window.openSequenceFile(path));
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(30);
+
+    auto* tree = window.findChild<QTreeView*>(QStringLiteral("sequenceTreeView"));
+    auto* model = window.findChild<SequenceTreeModel*>();
+    auto* editor = window.findChild<StepPropertyEditor*>();
+    QVERIFY(tree && model && editor);
+    const auto step = model->index(
+        0, SequenceTreeModel::NameColumn,
+        model->index(0, SequenceTreeModel::NameColumn));
+    tree->setCurrentIndex(step);
+    tree->selectionModel()->select(
+        step, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    QVERIFY(editor->currentPath().isValid());
+
+    const QPoint blankPoint(tree->viewport()->width() / 2,
+                            tree->viewport()->height() - 3);
+    QVERIFY(!tree->indexAt(blankPoint).isValid());
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton,
+                      Qt::NoModifier, blankPoint);
+
+    QVERIFY(!tree->currentIndex().isValid());
+    QVERIFY(tree->selectionModel()->selectedRows().isEmpty());
+    QVERIFY(!editor->currentPath().isValid());
+}
+
+void MainWindowLifecycleTests::compileSilentlySavesCurrentDraft()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(
+        QStringLiteral("compile_save.json"));
+    QVERIFY(QFile::copy(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+                           + QStringLiteral("/examples/simple_sequence.json"),
+                       sequencePath));
+
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(sequencePath));
+    auto* tree = window.findChild<QTreeView*>(QStringLiteral("sequenceTreeView"));
+    auto* model = window.findChild<SequenceTreeModel*>();
+    auto* editor = window.findChild<StepPropertyEditor*>();
+    auto* document = window.findChild<SequenceDocument*>();
+    auto* viewModel = window.findChild<ExecutionViewModel*>();
+    auto* compileAction = window.findChild<QAction*>(
+        QStringLiteral("compileAction"));
+    QVERIFY(tree && model && editor && document && viewModel && compileAction);
+
+    const auto step = model->index(
+        0, SequenceTreeModel::NameColumn,
+        model->index(0, SequenceTreeModel::NameColumn));
+    tree->setCurrentIndex(step);
+    auto* name = editor->findChild<QLineEdit*>(
+        QStringLiteral("propertyNameEdit"));
+    QVERIFY(name);
+    name->setText(QStringLiteral("Saved by Compile"));
+    QVERIFY(editor->hasPendingChanges());
+
+    bool confirmationShown = false;
+    QTimer::singleShot(0, [&confirmationShown] {
+        for (auto* widget : QApplication::topLevelWidgets()) {
+            if (auto* messageBox = qobject_cast<QMessageBox*>(widget)) {
+                confirmationShown = true;
+                messageBox->accept();
+            }
+        }
+    });
+    compileAction->trigger();
+    QVERIFY(!confirmationShown);
+    QVERIFY(!editor->hasPendingChanges());
+    QVERIFY(!document->isModified());
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 3000);
+
+    QFile saved(sequencePath);
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    const auto root = QJsonDocument::fromJson(saved.readAll()).object();
+    QCOMPARE(root.value(QStringLiteral("groups")).toArray().first().toObject()
+                 .value(QStringLiteral("steps")).toArray().first().toObject()
+                 .value(QStringLiteral("name")).toString(),
+             QStringLiteral("Saved by Compile"));
 }
 
 void MainWindowLifecycleTests::functionPalettePreviewsParametersAndShowsDragHandles()
@@ -220,26 +340,111 @@ void MainWindowLifecycleTests::functionPalettePreviewsParametersAndShowsDragHand
         QStringLiteral("propertyEditorTitle"));
     auto* comparison = editor->findChild<QComboBox*>(
         QStringLiteral("propertyLimitComparisonCombo"));
+    auto* enabledCheck = editor->findChild<QCheckBox*>(
+        QStringLiteral("propertyEnabledCheck"));
     auto* apply = editor->findChild<QPushButton*>(
         QStringLiteral("applyPropertiesButton"));
-    QVERIFY(title && comparison && apply);
+    QVERIFY(title && comparison && enabledCheck);
+    QVERIFY(!apply);
     QCOMPARE(title->text(), QStringLiteral("Function Preview"));
     QCOMPARE(comparison->currentData().toString(),
              QStringLiteral("betweenTolerance"));
     QVERIFY(!comparison->isEnabled());
-    QVERIFY(apply->isHidden());
     QVERIFY(!editor->currentPath().isValid());
 
     const auto group = sequenceModel->index(0, SequenceTreeModel::NameColumn);
+    editor->setCurrentItem(sequenceModel->pathForIndex(group));
+    QVERIFY(enabledCheck->isHidden());
+
     const auto step = sequenceModel->index(
         0, SequenceTreeModel::NameColumn, group);
-    sequence->selectionModel()->setCurrentIndex(
-        {}, QItemSelectionModel::NoUpdate);
-    sequence->selectionModel()->setCurrentIndex(
-        step, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    editor->setCurrentItem(sequenceModel->pathForIndex(step));
     QCOMPARE(title->text(), QStringLiteral("Properties"));
-    QVERIFY(!apply->isHidden());
     QVERIFY(editor->currentPath().isValid());
+    QVERIFY(!enabledCheck->isHidden());
+}
+
+void MainWindowLifecycleTests::flowEnableTogglePreservesTreePosition()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(
+        QStringLiteral("long_sequence.json"));
+
+    QJsonArray nestedSteps;
+    for (int index = 0; index < 4; ++index) {
+        nestedSteps.push_back(QJsonObject{
+            {QStringLiteral("id"), QStringLiteral("%1").arg(index + 1, 2, 10, QLatin1Char('0'))},
+            {QStringLiteral("name"), QStringLiteral("Nested %1").arg(index + 1)},
+            {QStringLiteral("kind"), QStringLiteral("noop")},
+            {QStringLiteral("enabled"), true}});
+    }
+
+    QJsonArray steps;
+    steps.push_back(QJsonObject{
+        {QStringLiteral("id"), QStringLiteral("001")},
+        {QStringLiteral("name"), QStringLiteral("Collapsible Item")},
+        {QStringLiteral("kind"), QStringLiteral("testItem")},
+        {QStringLiteral("enabled"), true},
+        {QStringLiteral("steps"), nestedSteps}});
+    for (int index = 1; index <= 50; ++index) {
+        steps.push_back(QJsonObject{
+            {QStringLiteral("id"), QStringLiteral("%1").arg(index + 1, 3, 10, QLatin1Char('0'))},
+            {QStringLiteral("name"), QStringLiteral("Step %1").arg(index)},
+            {QStringLiteral("kind"), QStringLiteral("noop")},
+            {QStringLiteral("enabled"), true}});
+    }
+
+    const QJsonObject root{
+        {QStringLiteral("id"), QStringLiteral("scroll-sequence")},
+        {QStringLiteral("name"), QStringLiteral("Scroll Sequence")},
+        {QStringLiteral("groups"), QJsonArray{QJsonObject{
+            {QStringLiteral("id"), QStringLiteral("main")},
+            {QStringLiteral("name"), QStringLiteral("Main")},
+            {QStringLiteral("kind"), QStringLiteral("main")},
+            {QStringLiteral("steps"), steps}}}}};
+    QFile file(sequencePath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const auto bytes = QJsonDocument(root).toJson();
+    QCOMPARE(file.write(bytes), qint64(bytes.size()));
+    file.close();
+
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(sequencePath));
+    window.resize(1100, 650);
+    window.show();
+    QTest::qWait(30);
+
+    auto* tree = window.findChild<QTreeView*>(QStringLiteral("sequenceTreeView"));
+    auto* model = window.findChild<SequenceTreeModel*>();
+    QVERIFY(tree && model);
+    const auto group = model->index(0, SequenceTreeModel::NameColumn);
+    auto testItem = model->index(0, SequenceTreeModel::NameColumn, group);
+    tree->collapse(testItem);
+
+    auto target = model->index(42, SequenceTreeModel::NameColumn, group);
+    QVERIFY(target.isValid());
+    const auto targetPath = model->pathForIndex(target);
+    tree->setCurrentIndex(target);
+    tree->scrollTo(target, QAbstractItemView::PositionAtCenter);
+    QCoreApplication::processEvents();
+    const int scrollBefore = tree->verticalScrollBar()->value();
+    QVERIFY(scrollBefore > 0);
+
+    QVERIFY(model->setData(
+        target.siblingAtColumn(SequenceTreeModel::EnabledColumn),
+        Qt::Unchecked,
+        Qt::CheckStateRole));
+    QCoreApplication::processEvents();
+
+    target = model->indexForPath(targetPath);
+    testItem = model->index(0, SequenceTreeModel::NameColumn,
+                            model->index(0, SequenceTreeModel::NameColumn));
+    QVERIFY(target.isValid());
+    QCOMPARE(model->pathForIndex(tree->currentIndex()), targetPath);
+    QVERIFY(qAbs(tree->verticalScrollBar()->value() - scrollBefore) <= 1);
+    QVERIFY(!tree->isExpanded(testItem));
+    QVERIFY(tree->visualRect(target).intersects(tree->viewport()->rect()));
 }
 
 void MainWindowLifecycleTests::proportionalHeaderDistributesAvailableWidthByWeight()
@@ -329,26 +534,25 @@ void MainWindowLifecycleTests::pluginPropertyEditorValidatesRequiredAndRangeAndS
     auto* data = editor.findChild<QLineEdit*>(QStringLiteral("pluginInput_data"));
     auto* timeout = editor.findChild<QLineEdit*>(
         QStringLiteral("pluginInput_timeoutMs"));
-    auto* apply = editor.findChild<QPushButton*>(
-        QStringLiteral("applyPropertiesButton"));
     auto* error = editor.findChild<QLabel*>(QStringLiteral("propertyErrorLabel"));
     QVERIFY(parameterGroup && !parameterGroup->isHidden());
     QVERIFY(data);
     QVERIFY(timeout);
-    QVERIFY(apply);
     QVERIFY(error);
 
-    apply->click();
+    data->setText(QStringLiteral(" "));
+    QVERIFY(editor.hasPendingChanges());
+    QVERIFY(!editor.commitPendingChanges());
     QVERIFY(error->isVisible());
     QVERIFY(error->text().contains(QStringLiteral("required"), Qt::CaseInsensitive));
 
     data->setText(QStringLiteral("01 02 03 04"));
     timeout->setText(QStringLiteral("70000"));
-    apply->click();
+    QVERIFY(!editor.commitPendingChanges());
     QVERIFY(error->text().contains(QStringLiteral("range"), Qt::CaseInsensitive));
 
     timeout->setText(QStringLiteral("1500"));
-    apply->click();
+    QVERIFY(editor.commitPendingChanges());
     QVERIFY(!error->isVisible());
     const auto inputs = document.objectAt(path).value(QStringLiteral("inputs")).toObject();
     QCOMPARE(inputs.value(QStringLiteral("data")).toString(),
@@ -410,6 +614,7 @@ void MainWindowLifecycleTests::pluginPropertyEditorInsertsPreviousStepOutputExpr
     QCOMPARE(sourceMenu->actions().size(), 1);
     sourceMenu->actions().first()->trigger();
     QCOMPARE(timeout->text(), QStringLiteral("${step:001.outputs.dlc}"));
+    QVERIFY(editor.commitPendingChanges());
 
     editor.setCurrentItem(SequenceItemPath{0, {2}});
     auto* actual = editor.findChild<QLineEdit*>(
@@ -423,14 +628,183 @@ void MainWindowLifecycleTests::pluginPropertyEditorInsertsPreviousStepOutputExpr
     QVERIFY(limitSourceMenu);
     limitSourceMenu->actions().first()->trigger();
     QCOMPARE(actual->text(), QStringLiteral("${step:001.outputs.dlc}"));
-    auto* apply = editor.findChild<QPushButton*>(
-        QStringLiteral("applyPropertiesButton"));
-    QVERIFY(apply);
-    apply->click();
+    QVERIFY(editor.commitPendingChanges());
     QCOMPARE(document.objectAt(SequenceItemPath{0, {2}})
                  .value(QStringLiteral("inputs")).toObject()
                  .value(QStringLiteral("actual")).toString(),
              QStringLiteral("${step:001.outputs.dlc}"));
+}
+
+void MainWindowLifecycleTests::logicalDeviceOpenKeepsStationParametersOutOfStepInputs()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("logical_open.json"));
+    QFile sequenceFile(sequencePath);
+    QVERIFY(sequenceFile.open(QIODevice::WriteOnly));
+    sequenceFile.write(R"({
+      "id":"logical-open","name":"Logical Open","groups":[{
+        "id":"setup","kind":"setup","steps":[{
+          "id":"001","name":"Open CX CAN2","kind":"action",
+          "moduleId":"device","function":"open",
+          "inputs":{"deviceId":"CX_CAN2"}
+        }]
+      }]
+    })");
+    sequenceFile.close();
+
+    const auto plugin = PluginCatalog::parseDescription(R"({
+      "name":"CX USB-CAN","category":"CAN","functions":[{
+        "id":"open","name":"Open CAN","inputs":[
+          {"key":"deviceType","name":"Device Type","type":"integer",
+           "required":false,"default":4},
+          {"key":"channelIndex","name":"Channel","type":"integer",
+           "required":false,"default":0},
+          {"key":"bitrate","name":"Bitrate","type":"integer",
+           "required":false,"default":500000}
+        ],"outputs":[]
+      }]
+    })", directory.filePath(QStringLiteral("PicoATE.CAN.CX.dll")), 1);
+    QVERIFY(plugin.ok());
+
+    SequenceDocument document;
+    QVERIFY(document.load(sequencePath));
+    StepPropertyEditor editor(&document);
+    editor.setPluginRegistry({plugin.manifest});
+    editor.setDevicePluginBindings({{QStringLiteral("CX_CAN2"),
+                                     QStringLiteral("plugin.can.cx")}});
+    editor.setDeviceConfigurations({{
+        QStringLiteral("CX_CAN2"),
+        QJsonObject{{QStringLiteral("deviceType"), 4},
+                    {QStringLiteral("channelIndex"), 1},
+                    {QStringLiteral("bitrate"), 250000}}}});
+    const SequenceItemPath path{0, {0}};
+    editor.setCurrentItem(path);
+    editor.show();
+    QTest::qWait(20);
+
+    auto* group = editor.findChild<QGroupBox*>(QStringLiteral("pluginInputsGroup"));
+    auto* channel = editor.findChild<QLineEdit*>(QStringLiteral("pluginInput_channelIndex"));
+    auto* bitrate = editor.findChild<QLineEdit*>(QStringLiteral("pluginInput_bitrate"));
+    QVERIFY(group && channel && bitrate);
+    QCOMPARE(group->title(), QStringLiteral("Connection Parameters - Station Config"));
+    QCOMPARE(channel->text(), QStringLiteral("1"));
+    QCOMPARE(bitrate->text(), QStringLiteral("250000"));
+    QVERIFY(!channel->isEnabled());
+    QVERIFY(!bitrate->isEnabled());
+
+    auto* nameEdit = editor.findChild<QLineEdit*>(QStringLiteral("propertyNameEdit"));
+    QVERIFY(nameEdit);
+    nameEdit->setText(QStringLiteral("Open CX CAN2 Updated"));
+    QVERIFY(editor.hasPendingChanges());
+    QCOMPARE(document.objectAt(path).value(QStringLiteral("name")).toString(),
+             QStringLiteral("Open CX CAN2"));
+    QVERIFY(editor.commitPendingChanges());
+
+    const auto updated = document.objectAt(path);
+    QCOMPARE(updated.value(QStringLiteral("name")).toString(),
+             QStringLiteral("Open CX CAN2 Updated"));
+    const auto inputs = updated.value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(inputs.size(), 1);
+    QCOMPARE(inputs.value(QStringLiteral("deviceId")).toString(),
+             QStringLiteral("CX_CAN2"));
+}
+
+void MainWindowLifecycleTests::ctrlSaveConfirmsAndCommitsCurrentStepDraft()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("draft_save.json"));
+    QVERIFY(QFile::copy(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+                           + QStringLiteral("/examples/simple_sequence.json"),
+                       sequencePath));
+
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(sequencePath));
+    window.show();
+    QTest::qWait(20);
+    auto* tree = window.findChild<QTreeView*>(QStringLiteral("sequenceTreeView"));
+    auto* model = window.findChild<SequenceTreeModel*>();
+    auto* editor = window.findChild<StepPropertyEditor*>();
+    auto* save = window.findChild<QAction*>(QStringLiteral("saveSequenceAction"));
+    QVERIFY(tree && model && editor && save);
+    const auto step = model->index(0, SequenceTreeModel::NameColumn,
+                                   model->index(0, SequenceTreeModel::NameColumn));
+    tree->setCurrentIndex(step);
+    auto* name = editor->findChild<QLineEdit*>(QStringLiteral("propertyNameEdit"));
+    QVERIFY(name);
+    const auto path = model->pathForIndex(step);
+    const auto oldName = window.findChild<SequenceDocument*>()->objectAt(path)
+                             .value(QStringLiteral("name")).toString();
+    name->setText(QStringLiteral("Saved through Ctrl+S"));
+    QVERIFY(editor->hasPendingChanges());
+    QVERIFY(save->isEnabled());
+    QCOMPARE(window.findChild<SequenceDocument*>()->objectAt(path)
+                 .value(QStringLiteral("name")).toString(), oldName);
+
+    QTimer::singleShot(0, [] {
+        for (auto* widget : QApplication::topLevelWidgets()) {
+            if (auto* messageBox = qobject_cast<QMessageBox*>(widget)) {
+                if (auto* button = messageBox->button(QMessageBox::Save)) {
+                    button->click();
+                }
+            }
+        }
+    });
+    save->trigger();
+    QVERIFY(!editor->hasPendingChanges());
+
+    QFile saved(sequencePath);
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    const auto root = QJsonDocument::fromJson(saved.readAll()).object();
+    const auto savedStep = root.value(QStringLiteral("groups")).toArray().at(0)
+                               .toObject().value(QStringLiteral("steps")).toArray().at(0)
+                               .toObject();
+    QCOMPARE(savedStep.value(QStringLiteral("name")).toString(),
+             QStringLiteral("Saved through Ctrl+S"));
+}
+
+void MainWindowLifecycleTests::switchingStepsCanDiscardCurrentDraft()
+{
+    MainWindow window;
+    const auto sequencePath = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+        + QStringLiteral("/examples/simple_sequence.json");
+    QVERIFY(window.openSequenceFile(sequencePath));
+    window.show();
+    QTest::qWait(20);
+    auto* tree = window.findChild<QTreeView*>(QStringLiteral("sequenceTreeView"));
+    auto* model = window.findChild<SequenceTreeModel*>();
+    auto* editor = window.findChild<StepPropertyEditor*>();
+    auto* document = window.findChild<SequenceDocument*>();
+    QVERIFY(tree && model && editor && document);
+    const auto first = model->index(0, SequenceTreeModel::NameColumn,
+                                    model->index(0, SequenceTreeModel::NameColumn));
+    const auto second = model->index(0, SequenceTreeModel::NameColumn,
+                                     model->index(1, SequenceTreeModel::NameColumn));
+    QVERIFY(first.isValid() && second.isValid());
+    tree->setCurrentIndex(first);
+    const auto firstPath = model->pathForIndex(first);
+    const auto originalName = document->objectAt(firstPath)
+                                  .value(QStringLiteral("name")).toString();
+    auto* name = editor->findChild<QLineEdit*>(QStringLiteral("propertyNameEdit"));
+    QVERIFY(name);
+    name->setText(QStringLiteral("Discard this draft"));
+    QVERIFY(editor->hasPendingChanges());
+
+    QTimer::singleShot(0, [] {
+        for (auto* widget : QApplication::topLevelWidgets()) {
+            if (auto* messageBox = qobject_cast<QMessageBox*>(widget)) {
+                if (auto* button = messageBox->button(QMessageBox::Discard)) {
+                    button->click();
+                }
+            }
+        }
+    });
+    tree->setCurrentIndex(second);
+    QCOMPARE(editor->currentPath(), model->pathForIndex(second));
+    QVERIFY(!editor->hasPendingChanges());
+    QCOMPARE(document->objectAt(firstPath).value(QStringLiteral("name")).toString(),
+             originalName);
 }
 
 void MainWindowLifecycleTests::limitPropertyEditorSwitchesComparisonFieldsAndRemovesStaleValues()
@@ -471,9 +845,7 @@ void MainWindowLifecycleTests::limitPropertyEditorSwitchesComparisonFieldsAndRem
         QStringLiteral("propertyLimitUpperEdit"));
     auto* tolerance = editor.findChild<QDoubleSpinBox*>(
         QStringLiteral("propertyLimitToleranceSpin"));
-    auto* apply = editor.findChild<QPushButton*>(
-        QStringLiteral("applyPropertiesButton"));
-    QVERIFY(comparison && expected && lower && upper && tolerance && apply);
+    QVERIFY(comparison && expected && lower && upper && tolerance);
     QCOMPARE(comparison->currentData().toString(),
              QStringLiteral("betweenTolerance"));
     QVERIFY(!expected->isHidden());
@@ -483,7 +855,7 @@ void MainWindowLifecycleTests::limitPropertyEditorSwitchesComparisonFieldsAndRem
     comparison->setCurrentIndex(comparison->findData(QStringLiteral("greaterThan")));
     expected->setText(QStringLiteral("10"));
     QVERIFY(tolerance->isHidden());
-    apply->click();
+    QVERIFY(editor.commitPendingChanges());
     auto parameters = document.objectAt(path).value(QStringLiteral("parameters")).toObject();
     QCOMPARE(parameters.value(QStringLiteral("comparison")).toString(),
              QStringLiteral("greaterThan"));
@@ -496,7 +868,7 @@ void MainWindowLifecycleTests::limitPropertyEditorSwitchesComparisonFieldsAndRem
     QVERIFY(!lower->isHidden());
     QVERIFY(!upper->isHidden());
     QVERIFY(expected->isHidden());
-    apply->click();
+    QVERIFY(editor.commitPendingChanges());
     parameters = document.objectAt(path).value(QStringLiteral("parameters")).toObject();
     QCOMPARE(parameters.value(QStringLiteral("comparison")).toString(),
              QStringLiteral("between"));
@@ -507,7 +879,7 @@ void MainWindowLifecycleTests::limitPropertyEditorSwitchesComparisonFieldsAndRem
     comparison->setCurrentIndex(comparison->findData(QStringLiteral("isTrue")));
     QVERIFY(expected->isHidden());
     QVERIFY(lower->isHidden());
-    apply->click();
+    QVERIFY(editor.commitPendingChanges());
     parameters = document.objectAt(path).value(QStringLiteral("parameters")).toObject();
     QCOMPARE(parameters.value(QStringLiteral("comparison")).toString(),
              QStringLiteral("isTrue"));
@@ -621,19 +993,23 @@ void MainWindowLifecycleTests::stationEditorFeedsCompileSnapshot()
         QStringLiteral("stationDeviceView"));
     auto* driverEdit = window.findChild<QLineEdit*>(
         QStringLiteral("deviceDriverIdEdit"));
-    auto* applyButton = window.findChild<QPushButton*>(
-        QStringLiteral("applyDevicePropertiesButton"));
+    auto* propertyEditor = window.findChild<StationPropertyEditor*>();
     auto* viewModel = window.findChild<ExecutionViewModel*>();
     QVERIFY(stationDocument);
     QVERIFY(stationModel);
     QVERIFY(stationView);
     QVERIFY(driverEdit);
-    QVERIFY(applyButton);
+    QVERIFY(propertyEditor);
+    QVERIFY(!window.findChild<QPushButton*>(
+        QStringLiteral("applyDevicePropertiesButton")));
     QVERIFY(viewModel);
 
     stationView->setCurrentIndex(stationModel->index(0, 0));
-    driverEdit->setText(QStringLiteral("snapshot.driver"));
-    QTest::mouseClick(applyButton, Qt::LeftButton);
+    driverEdit->setFocus();
+    driverEdit->selectAll();
+    QTest::keyClicks(driverEdit, QStringLiteral("snapshot.driver"));
+    QVERIFY(propertyEditor->hasPendingChanges());
+    QVERIFY(propertyEditor->commitPendingChanges());
     QCOMPARE(stationDocument->deviceAt(0).value("driverId").toString(),
              QString("snapshot.driver"));
     QCOMPARE(stationDocument->deviceAt(0).value("x-device").toInt(), 42);
@@ -651,6 +1027,369 @@ void MainWindowLifecycleTests::stationEditorFeedsCompileSnapshot()
     });
     QVERIFY(window.close());
     QCoreApplication::processEvents();
+}
+
+void MainWindowLifecycleTests::stationDeviceApplyPreservesDllPathWhenModelIsUnchanged()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto deployedDll = directory.filePath(QStringLiteral("deployed.dll"));
+    const auto catalogDll = directory.filePath(QStringLiteral("catalog.dll"));
+    for (const auto& path : {deployedDll, catalogDll}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("test");
+    }
+
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile stationFile(stationPath);
+    QVERIFY(stationFile.open(QIODevice::WriteOnly));
+    stationFile.write(QJsonDocument(QJsonObject{
+        {QStringLiteral("stationId"), QStringLiteral("station")},
+        {QStringLiteral("devices"), QJsonArray{QJsonObject{
+            {QStringLiteral("deviceId"), QStringLiteral("GCAN_CAN1")},
+            {QStringLiteral("deviceType"), QStringLiteral("CAN")},
+            {QStringLiteral("driverId"), QStringLiteral("plugin.can.gcan")},
+            {QStringLiteral("pluginPath"), deployedDll},
+            {QStringLiteral("enabled"), true}}}}})
+                          .toJson());
+    stationFile.close();
+
+    StationDocument document;
+    QVERIFY(document.load(stationPath));
+    StationPropertyEditor editor(&document);
+    PluginManifest plugin;
+    plugin.moduleId = QStringLiteral("plugin.can.gcan");
+    plugin.name = QStringLiteral("GCAN");
+    plugin.category = QStringLiteral("CAN");
+    plugin.dllPath = catalogDll;
+    editor.setPluginRegistry({plugin});
+    editor.setCurrentDevice(0);
+
+    auto* enabled = editor.findChild<QAbstractButton*>(
+        QStringLiteral("deviceEnabledSwitch"));
+    auto* combo = editor.findChild<QComboBox*>(
+        QStringLiteral("devicePluginCombo"));
+    auto* errorLabel = editor.findChild<QLabel*>(
+        QStringLiteral("devicePropertyError"));
+    QVERIFY(enabled);
+    QVERIFY(!editor.findChild<QPushButton*>(
+        QStringLiteral("applyDevicePropertiesButton")));
+    QVERIFY(combo);
+    QVERIFY(errorLabel);
+    QCOMPARE(combo->currentData().toString(), QStringLiteral("plugin.can.gcan"));
+
+    enabled->setChecked(false);
+    QVERIFY(editor.hasPendingChanges());
+    QVERIFY(editor.commitPendingChanges());
+    QCOMPARE(document.deviceAt(0).value(QStringLiteral("pluginPath")).toString(),
+             deployedDll);
+    QVERIFY(!document.deviceAt(0).value(QStringLiteral("enabled")).toBool());
+
+    enabled->setChecked(true);
+    QVERIFY(editor.commitPendingChanges());
+    QCOMPARE(document.deviceAt(0).value(QStringLiteral("pluginPath")).toString(),
+             deployedDll);
+    QVERIFY(document.deviceAt(0).value(QStringLiteral("enabled")).toBool());
+
+    QVERIFY(editor.commitPendingChanges());
+    QVERIFY(errorLabel->isHidden());
+    QCOMPARE(document.deviceAt(0).value(QStringLiteral("deviceId")).toString(),
+             QStringLiteral("GCAN_CAN1"));
+}
+
+void MainWindowLifecycleTests::stationCtrlSaveCommitsDraftAndClearsWindowMarker()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("sequence.json"));
+    QVERIFY(QFile::copy(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+                            + QStringLiteral("/examples/simple_sequence.json"),
+                        sequencePath));
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile stationFile(stationPath);
+    QVERIFY(stationFile.open(QIODevice::WriteOnly));
+    stationFile.write(R"({
+        "stationId":"station-save",
+        "devices":[{
+            "deviceId":"CAN1",
+            "deviceType":"CAN",
+            "driverId":"manual.can",
+            "pluginPath":"manual.dll",
+            "address":"CAN:0:0",
+            "enabled":false
+        }]
+    })");
+    stationFile.close();
+
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(sequencePath));
+    QVERIFY(window.openStationFile(stationPath));
+    window.show();
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
+    auto* stationPage = window.findChild<QWidget*>(QStringLiteral("stationEditorPage"));
+    auto* address = window.findChild<QLineEdit*>(QStringLiteral("deviceAddressEdit"));
+    auto* editor = window.findChild<StationPropertyEditor*>();
+    auto* stationDocument = window.findChild<StationDocument*>();
+    auto* save = window.findChild<QAction*>(QStringLiteral("saveSequenceAction"));
+    QVERIFY(tabs);
+    QVERIFY(stationPage);
+    QVERIFY(address);
+    QVERIFY(editor);
+    QVERIFY(stationDocument);
+    QVERIFY(save);
+    tabs->setCurrentWidget(stationPage);
+    QCOMPARE(save->text(), QStringLiteral("Save Station"));
+
+    address->setFocus();
+    address->selectAll();
+    QTest::keyClicks(address, QStringLiteral("CAN:0:1"));
+    QVERIFY(editor->hasPendingChanges());
+    QVERIFY(window.windowTitle().contains(QLatin1Char('*')));
+    QVERIFY(save->isEnabled());
+
+    QTimer::singleShot(0, [] {
+        for (auto* widget : QApplication::topLevelWidgets()) {
+            if (auto* messageBox = qobject_cast<QMessageBox*>(widget)) {
+                if (auto* button = messageBox->button(QMessageBox::Save)) {
+                    button->click();
+                }
+            }
+        }
+    });
+    save->trigger();
+
+    QVERIFY(!editor->hasPendingChanges());
+    QVERIFY(!stationDocument->isModified());
+    QVERIFY(!window.windowTitle().contains(QLatin1Char('*')));
+    QCOMPARE(stationDocument->deviceAt(0).value(QStringLiteral("address")).toString(),
+             QStringLiteral("CAN:0:1"));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Station saved")));
+    QVERIFY(!window.findChild<QPushButton*>(
+        QStringLiteral("applyDevicePropertiesButton")));
+    QVERIFY(!window.findChild<QPushButton*>(
+        QStringLiteral("applyStationSettingsButton")));
+
+    QFile saved(stationPath);
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    QCOMPARE(QJsonDocument::fromJson(saved.readAll()).object()
+                 .value(QStringLiteral("devices")).toArray().first().toObject()
+                 .value(QStringLiteral("address")).toString(),
+             QStringLiteral("CAN:0:1"));
+}
+
+void MainWindowLifecycleTests::switchingStationDevicesCanDiscardCurrentDraft()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile stationFile(stationPath);
+    QVERIFY(stationFile.open(QIODevice::WriteOnly));
+    stationFile.write(R"({
+        "stationId":"station-switch",
+        "devices":[
+            {"deviceId":"CAN1","deviceType":"CAN","driverId":"manual.can",
+             "address":"CAN:0:0","enabled":false},
+            {"deviceId":"CAN2","deviceType":"CAN","driverId":"manual.can",
+             "address":"CAN:0:1","enabled":false}
+        ]
+    })");
+    stationFile.close();
+
+    MainWindow window;
+    QVERIFY(window.openStationFile(stationPath));
+    window.show();
+    auto* document = window.findChild<StationDocument*>();
+    auto* model = window.findChild<StationDeviceModel*>();
+    auto* view = window.findChild<QTableView*>(QStringLiteral("stationDeviceView"));
+    auto* address = window.findChild<QLineEdit*>(QStringLiteral("deviceAddressEdit"));
+    auto* editor = window.findChild<StationPropertyEditor*>();
+    QVERIFY(document);
+    QVERIFY(model);
+    QVERIFY(view);
+    QVERIFY(address);
+    QVERIFY(editor);
+
+    view->setCurrentIndex(model->index(0, 0));
+    address->setFocus();
+    address->selectAll();
+    QTest::keyClicks(address, QStringLiteral("DRAFT"));
+    QVERIFY(editor->hasPendingChanges());
+
+    QTimer::singleShot(0, [] {
+        for (auto* widget : QApplication::topLevelWidgets()) {
+            if (auto* messageBox = qobject_cast<QMessageBox*>(widget)) {
+                if (auto* button = messageBox->button(QMessageBox::Discard)) {
+                    button->click();
+                }
+            }
+        }
+    });
+    view->setCurrentIndex(model->index(1, 0));
+    QCOMPARE(editor->currentDeviceRow(), 1);
+    QVERIFY(!editor->hasPendingChanges());
+    QCOMPARE(document->deviceAt(0).value(QStringLiteral("address")).toString(),
+             QStringLiteral("CAN:0:0"));
+    QCOMPARE(address->text(), QStringLiteral("CAN:0:1"));
+}
+
+void MainWindowLifecycleTests::disabledReferencedDeviceDiagnosticPersistsAcrossEditors()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("device_sequence.json"));
+    QFile sequenceFile(sequencePath);
+    QVERIFY(sequenceFile.open(QIODevice::WriteOnly));
+    sequenceFile.write(R"({
+        "id":"device-sequence",
+        "name":"Device Sequence",
+        "version":"1.0",
+        "groups":[{
+            "id":"main",
+            "name":"Main",
+            "kind":"Main",
+            "steps":[{
+                "id":"001",
+                "name":"Open GCAN CAN1",
+                "kind":"action",
+                "moduleId":"device",
+                "function":"open",
+                "inputs":{"deviceId":"GCAN_CAN1"}
+            }]
+        }]
+    })");
+    sequenceFile.close();
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile stationFile(stationPath);
+    QVERIFY(stationFile.open(QIODevice::WriteOnly));
+    stationFile.write(R"({
+        "stationId":"diagnostic-station",
+        "devices":[{
+            "deviceId":"GCAN_CAN1",
+            "deviceType":"CAN",
+            "driverId":"plugin.can.gcan",
+            "pluginPath":"missing-test-plugin.dll",
+            "address":"GCAN:0:0",
+            "enabled":true
+        }]
+    })");
+    stationFile.close();
+
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(sequencePath));
+    QVERIFY(window.openStationFile(stationPath));
+    window.show();
+    auto* stationDocument = window.findChild<StationDocument*>();
+    auto* stationDiagnostics = window.findChild<QTableView*>(
+        QStringLiteral("stationDiagnosticView"));
+    auto* flowDiagnostics = window.findChild<QTableView*>(
+        QStringLiteral("sequenceDiagnosticView"));
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
+    auto* stationPage = window.findChild<QWidget*>(QStringLiteral("stationEditorPage"));
+    auto* flowPage = window.findChild<QWidget*>(QStringLiteral("sequenceEditorPage"));
+    QVERIFY(stationDocument);
+    QVERIFY(stationDiagnostics);
+    QVERIFY(flowDiagnostics);
+    QVERIFY(tabs);
+    QVERIFY(stationPage);
+    QVERIFY(flowPage);
+
+    QVERIFY(stationDocument->setDeviceValue(0, QStringLiteral("enabled"), false));
+    QCoreApplication::processEvents();
+    const auto findDisabledReference = [](QAbstractItemModel* model) {
+        for (int row = 0; row < model->rowCount(); ++row) {
+            const auto message = model->index(row, DiagnosticModel::MessageColumn)
+                                     .data().toString();
+            if (message.contains(QStringLiteral("GCAN_CAN1")) &&
+                message.contains(QStringLiteral("disabled"), Qt::CaseInsensitive)) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    const int stationRow = findDisabledReference(stationDiagnostics->model());
+    const int flowRow = findDisabledReference(flowDiagnostics->model());
+    QVERIFY(stationRow >= 0);
+    QVERIFY(flowRow >= 0);
+
+    tabs->setCurrentWidget(stationPage);
+    QVERIFY(findDisabledReference(stationDiagnostics->model()) >= 0);
+    tabs->setCurrentWidget(flowPage);
+    QVERIFY(findDisabledReference(flowDiagnostics->model()) >= 0);
+    const auto flowDiagnostic = flowDiagnostics->model()->index(
+        flowRow, DiagnosticModel::MessageColumn);
+    flowDiagnostics->scrollTo(flowDiagnostic);
+    QCoreApplication::processEvents();
+    QTest::mouseClick(flowDiagnostics->viewport(), Qt::LeftButton,
+                      Qt::NoModifier,
+                      flowDiagnostics->visualRect(flowDiagnostic).center());
+    QCOMPARE(tabs->currentWidget(), stationPage);
+}
+
+void MainWindowLifecycleTests::compileFailureFocusesDiagnosticAndExplainsDisabledRun()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto firstDll = directory.filePath(QStringLiteral("first.dll"));
+    const auto secondDll = directory.filePath(QStringLiteral("second.dll"));
+    for (const auto& path : {firstDll, secondDll}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("test");
+    }
+
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile stationFile(stationPath);
+    QVERIFY(stationFile.open(QIODevice::WriteOnly));
+    stationFile.write(QJsonDocument(QJsonObject{
+        {QStringLiteral("stationId"), QStringLiteral("conflict-station")},
+        {QStringLiteral("devices"), QJsonArray{
+            QJsonObject{{QStringLiteral("deviceId"), QStringLiteral("CAN1")},
+                        {QStringLiteral("deviceType"), QStringLiteral("CAN")},
+                        {QStringLiteral("driverId"), QStringLiteral("plugin.can.test")},
+                        {QStringLiteral("pluginPath"), firstDll},
+                        {QStringLiteral("enabled"), true}},
+            QJsonObject{{QStringLiteral("deviceId"), QStringLiteral("CAN2")},
+                        {QStringLiteral("deviceType"), QStringLiteral("CAN")},
+                        {QStringLiteral("driverId"), QStringLiteral("plugin.can.test")},
+                        {QStringLiteral("pluginPath"), secondDll},
+                        {QStringLiteral("enabled"), true}}}}})
+                          .toJson());
+    stationFile.close();
+
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(
+        QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+        + QStringLiteral("/examples/simple_sequence.json")));
+    QVERIFY(window.openStationFile(stationPath));
+    window.show();
+
+    auto* compileAction = window.findChild<QAction*>(QStringLiteral("compileAction"));
+    auto* runAction = window.findChild<QAction*>(QStringLiteral("runAction"));
+    auto* viewModel = window.findChild<ExecutionViewModel*>();
+    auto* workspaceTabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
+    auto* detailsTabs = window.findChild<QTabWidget*>(QStringLiteral("runDetailsTabs"));
+    QVERIFY(compileAction);
+    QVERIFY(runAction);
+    QVERIFY(viewModel);
+    QVERIFY(workspaceTabs);
+    QVERIFY(detailsTabs);
+
+    compileAction->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::CompileFailed, 3000);
+    QCOMPARE(workspaceTabs->currentIndex(), 0);
+    auto* diagnosticView = qobject_cast<QTableView*>(detailsTabs->currentWidget());
+    QVERIFY(diagnosticView);
+    QVERIFY(diagnosticView->model()->rowCount() > 0);
+    QVERIFY(diagnosticView->currentIndex().isValid());
+    QVERIFY(detailsTabs->tabText(detailsTabs->currentIndex()).startsWith(
+        QStringLiteral("Diagnostics (")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Compile failed"), Qt::CaseInsensitive));
+    QVERIFY(!runAction->isEnabled());
+    QVERIFY(runAction->toolTip().contains(
+        QStringLiteral("compilation failed"), Qt::CaseInsensitive));
 }
 
 void MainWindowLifecycleTests::stationConnectionActionUpdatesStatus()
@@ -958,7 +1697,17 @@ void MainWindowLifecycleTests::loginDialogDiscoversSequenceAndValidatesAdminPass
                        sequencePath));
     QFile station(directory.filePath(QStringLiteral("StationSystem.json")));
     QVERIFY(station.open(QIODevice::WriteOnly));
-    station.write(R"({"stationId":"line-1","scanDialogEnabled":true,"devices":[]})");
+    station.write(R"({
+        "stationId":"line-1",
+        "scanDialogEnabled":true,
+        "devices":[{
+            "deviceId":"CAN1",
+            "deviceType":"CAN",
+            "enabled":true,
+            "driverId":"",
+            "address":""
+        }]
+    })");
     station.close();
 
     LoginDialog dialog(directory.path());
@@ -978,6 +1727,10 @@ void MainWindowLifecycleTests::loginDialogDiscoversSequenceAndValidatesAdminPass
     QCOMPARE(UiMode(mode->currentData().toInt()), UiMode::Test);
     QCOMPARE(sequences->count(), 1);
     QVERIFY(password->isHidden());
+
+    login->click();
+    QVERIFY(!error->isHidden());
+    QCOMPARE(dialog.result(), 0);
 
     mode->setCurrentIndex(1);
     QVERIFY(!password->isHidden());
@@ -1027,8 +1780,7 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
         QStringLiteral("stationScanDialogSwitch"));
     auto* snLength = window.findChild<QSpinBox*>(
         QStringLiteral("stationSnLengthSpin"));
-    auto* apply = window.findChild<QPushButton*>(
-        QStringLiteral("applyStationSettingsButton"));
+    auto* settingsEditor = window.findChild<StationSettingsEditor*>();
     auto* workArea = window.findChild<QSplitter*>(
         QStringLiteral("stationWorkSplitter"));
     auto* deviceView = window.findChild<QTableView*>(
@@ -1037,7 +1789,9 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QVERIFY(stopOnFailure);
     QVERIFY(scanEnabled);
     QVERIFY(snLength);
-    QVERIFY(apply);
+    QVERIFY(settingsEditor);
+    QVERIFY(!window.findChild<QPushButton*>(
+        QStringLiteral("applyStationSettingsButton")));
     QVERIFY(workArea);
     QVERIFY(deviceView);
     QVERIFY(document);
@@ -1078,7 +1832,8 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     stopOnFailure->setChecked(false);
     scanEnabled->setChecked(false);
     snLength->setValue(10);
-    apply->click();
+    QVERIFY(settingsEditor->hasPendingChanges());
+    QVERIFY(settingsEditor->commitPendingChanges());
     QCOMPARE(document->rootObject().value(QStringLiteral("stopOnFailure")).toBool(),
              false);
     QCOMPARE(document->rootObject().value(QStringLiteral("scanDialogEnabled")).toBool(),

@@ -22,6 +22,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
@@ -29,9 +30,12 @@
 #include <QFormLayout>
 #include <QGuiApplication>
 #include <QHeaderView>
+#include <QHash>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QItemSelectionModel>
 #include <QJsonArray>
+#include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
 #include <QMessageBox>
@@ -39,10 +43,12 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QPainter>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QProgressBar>
 #include <QRegularExpression>
 #include <QScreen>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSizePolicy>
 #include <QSpinBox>
@@ -65,12 +71,40 @@
 #include <optional>
 #include <initializer_list>
 #include <algorithm>
+#include <functional>
 
 namespace PicoATE::Ui {
 
 namespace {
 
 constexpr int MaxRecentFiles = 8;
+const QString StationDiagnosticPrefix = QStringLiteral("Station: ");
+
+void collectDeviceStepReferences(const QJsonArray& steps,
+                                 QHash<QString, QStringList>& references)
+{
+    for (const auto& value : steps) {
+        const auto step = value.toObject();
+        if (step.isEmpty() || !step.value(QStringLiteral("enabled")).toBool(true)) {
+            continue;
+        }
+        if (step.value(QStringLiteral("moduleId")).toString() ==
+            QStringLiteral("device")) {
+            const auto deviceId = step.value(QStringLiteral("inputs"))
+                                      .toObject()
+                                      .value(QStringLiteral("deviceId"))
+                                      .toString()
+                                      .trimmed();
+            if (!deviceId.isEmpty()) {
+                const auto stepName = step.value(QStringLiteral("name")).toString(
+                    step.value(QStringLiteral("id")).toString());
+                references[deviceId].push_back(stepName);
+            }
+        }
+        collectDeviceStepReferences(step.value(QStringLiteral("steps")).toArray(),
+                                    references);
+    }
+}
 
 void installProportionalHeader(QTableView* view, QVector<int> weights)
 {
@@ -323,7 +357,31 @@ MainWindow::MainWindow(QWidget* parent)
                     m_sequenceTreeModel->setCurrentDebugNodePath({});
                 }
                 updateAdminRunState(state);
-                statusBar()->showMessage(uiRunStateName(state));
+                if (state == UiRunState::CompileFailed) {
+                    if (m_workspaceTabs) {
+                        m_workspaceTabs->setCurrentIndex(0);
+                    }
+                    if (auto* details = findChild<QTabWidget*>(
+                            QStringLiteral("runDetailsTabs"))) {
+                        details->setCurrentWidget(m_diagnosticView);
+                    }
+                    if (m_diagnosticView && m_diagnosticModel->rowCount() > 0) {
+                        const auto first = m_diagnosticModel->index(0, 0);
+                        m_diagnosticView->setCurrentIndex(first);
+                        m_diagnosticView->scrollTo(first);
+                    }
+                    const auto diagnostics = m_viewModel->diagnostics();
+                    const auto summary = diagnostics.isEmpty()
+                        ? tr("Compile failed. Open Diagnostics for details.")
+                        : tr("Compile failed: %1 [%2]")
+                              .arg(diagnostics.first().message,
+                                   diagnostics.first().path.isEmpty()
+                                       ? tr("root")
+                                       : diagnostics.first().path);
+                    statusBar()->showMessage(summary, 15000);
+                } else {
+                    statusBar()->showMessage(uiRunStateName(state));
+                }
             });
     connect(m_scanDialog,
             &ScanDialog::barcodeAccepted,
@@ -363,7 +421,15 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_sequenceDocument,
             &SequenceDocument::diagnosticsChanged,
             this,
-            &MainWindow::updateSequenceEditor);
+            [this] {
+                refreshEditorDiagnostics();
+                updateWindowTitle();
+                updateCommandState();
+            });
+    connect(m_sequenceTreeModel,
+            &QAbstractItemModel::modelAboutToBeReset,
+            this,
+            &MainWindow::captureSequenceTreeViewState);
     connect(m_sequenceDocument,
             &SequenceDocument::filePathChanged,
             this,
@@ -378,11 +444,40 @@ MainWindow::MainWindow(QWidget* parent)
                 updateWindowTitle();
                 updateCommandState();
             });
+    connect(m_stepPropertyEditor,
+            &StepPropertyEditor::pendingChangesChanged,
+            this,
+            [this] {
+                updateWindowTitle();
+                updateCommandState();
+            });
     connect(m_sequenceTreeView->selectionModel(),
             &QItemSelectionModel::currentChanged,
             this,
-            [this](const QModelIndex& current) {
+            [this](const QModelIndex& current, const QModelIndex&) {
+                if (m_handlingSequenceSelection) {
+                    return;
+                }
                 const auto path = m_sequenceTreeModel->pathForIndex(current);
+                const auto previousPath = m_stepPropertyEditor->currentPath();
+                if (path != previousPath &&
+                    m_stepPropertyEditor->hasPendingChanges()) {
+                    m_handlingSequenceSelection = true;
+                    if (!resolvePendingStepChanges()) {
+                        const auto previousIndex =
+                            m_sequenceTreeModel->indexForPath(previousPath);
+                        if (previousIndex.isValid()) {
+                            m_sequenceTreeView->setCurrentIndex(previousIndex);
+                        }
+                        m_handlingSequenceSelection = false;
+                        return;
+                    }
+                    const auto refreshed = m_sequenceTreeModel->indexForPath(path);
+                    if (refreshed.isValid()) {
+                        m_sequenceTreeView->setCurrentIndex(refreshed);
+                    }
+                    m_handlingSequenceSelection = false;
+                }
                 if (path.isValid()) {
                     m_selectedSequencePath = path;
                 }
@@ -392,7 +487,19 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_pluginFunctionView->selectionModel(),
             &QItemSelectionModel::currentChanged,
             this,
-            [this](const QModelIndex& current) {
+            [this](const QModelIndex& current, const QModelIndex& previous) {
+                if (m_handlingSequenceSelection) {
+                    return;
+                }
+                if (m_stepPropertyEditor->hasPendingChanges()) {
+                    m_handlingSequenceSelection = true;
+                    if (!resolvePendingStepChanges()) {
+                        m_pluginFunctionView->setCurrentIndex(previous);
+                        m_handlingSequenceSelection = false;
+                        return;
+                    }
+                    m_handlingSequenceSelection = false;
+                }
                 const auto preview = m_pluginFunctionModel->stepTemplate(current);
                 if (!preview.isEmpty()) {
                     m_stepPropertyEditor->setPreviewObject(preview);
@@ -452,10 +559,47 @@ MainWindow::MainWindow(QWidget* parent)
                 updateWindowTitle();
                 updateCommandState();
             });
+    connect(m_stationPropertyEditor,
+            &StationPropertyEditor::pendingChangesChanged,
+            this,
+            [this] {
+                updateWindowTitle();
+                updateCommandState();
+            });
+    connect(m_stationSettingsEditor,
+            &StationSettingsEditor::pendingChangesChanged,
+            this,
+            [this] {
+                updateWindowTitle();
+                updateCommandState();
+            });
     connect(m_stationDeviceView->selectionModel(),
             &QItemSelectionModel::currentChanged,
             this,
-            [this](const QModelIndex& current) {
+            [this](const QModelIndex& current, const QModelIndex&) {
+                if (m_handlingStationSelection) {
+                    return;
+                }
+                const int previousRow = m_stationPropertyEditor->currentDeviceRow();
+                const int currentRow = current.isValid() ? current.row() : -1;
+                if (currentRow < 0 && previousRow >= 0 &&
+                    previousRow < m_stationDocument->deviceCount()) {
+                    return;
+                }
+                if (currentRow != previousRow &&
+                    m_stationPropertyEditor->hasPendingChanges()) {
+                    m_handlingStationSelection = true;
+                    if (!resolvePendingStationDeviceChanges()) {
+                        const auto previousIndex =
+                            m_stationDeviceModel->index(previousRow, 0);
+                        if (previousIndex.isValid()) {
+                            m_stationDeviceView->setCurrentIndex(previousIndex);
+                        }
+                        m_handlingStationSelection = false;
+                        return;
+                    }
+                    m_handlingStationSelection = false;
+                }
                 m_selectedStationDeviceRow = current.isValid() ? current.row() : -1;
                 m_stationPropertyEditor->setCurrentDevice(m_selectedStationDeviceRow);
                 updateCommandState();
@@ -465,6 +609,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_stationDocument->undoStack(), &QUndoStack::canUndoChanged,
             this, [this] { updateCommandState(); });
     connect(m_stationDocument->undoStack(), &QUndoStack::canRedoChanged,
+            this, [this] { updateCommandState(); });
+    connect(m_workspaceTabs, &QTabWidget::currentChanged,
             this, [this] { updateCommandState(); });
     connect(m_resultView->selectionModel(),
             &QItemSelectionModel::currentChanged,
@@ -488,7 +634,12 @@ MainWindow::~MainWindow()
 
 bool MainWindow::openSequenceFile(const QString& filePath)
 {
-    if (!m_sequenceDocument->load(filePath)) {
+    m_loadingSequenceFile = true;
+    m_expandSequenceTreeOnNextUpdate = true;
+    const bool loaded = m_sequenceDocument->load(filePath);
+    m_loadingSequenceFile = false;
+    if (!loaded) {
+        m_expandSequenceTreeOnNextUpdate = false;
         updateSequenceEditor();
         return false;
     }
@@ -521,6 +672,41 @@ void MainWindow::closeEvent(QCloseEvent* event)
     } else {
         event->ignore();
     }
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* event)
+{
+    const bool sequenceTreeEvent = m_sequenceTreeView &&
+        (watched == m_sequenceTreeView ||
+         watched == m_sequenceTreeView->viewport());
+    if (sequenceTreeEvent && event->type() == QEvent::KeyPress) {
+        const auto* keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->matches(QKeySequence::Copy)) {
+            copySequenceSteps();
+            return true;
+        }
+        if (keyEvent->matches(QKeySequence::Paste)) {
+            pasteSequenceSteps();
+            return true;
+        }
+    }
+    if (m_sequenceTreeView && watched == m_sequenceTreeView->viewport() &&
+        event->type() == QEvent::MouseButtonPress) {
+        const auto* mouseEvent = static_cast<QMouseEvent*>(event);
+        if (mouseEvent->button() == Qt::LeftButton &&
+            !m_sequenceTreeView->indexAt(
+                mouseEvent->position().toPoint()).isValid()) {
+            if (!resolvePendingStepChanges()) {
+                return true;
+            }
+            m_selectedSequencePath = {};
+            m_sequenceTreeView->selectionModel()->clearSelection();
+            m_sequenceTreeView->setCurrentIndex({});
+            m_stepPropertyEditor->setCurrentItem({});
+            updateCommandState();
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 bool MainWindow::openStationFile(const QString& filePath)
@@ -566,7 +752,10 @@ void MainWindow::beginShutdown()
 
 bool MainWindow::maybeSaveSequence()
 {
-    if (!m_sequenceDocument || !m_sequenceDocument->isModified()) {
+    const bool hasPendingStep = m_stepPropertyEditor &&
+                                m_stepPropertyEditor->hasPendingChanges();
+    if (!m_sequenceDocument ||
+        (!m_sequenceDocument->isModified() && !hasPendingStep)) {
         return true;
     }
 
@@ -580,7 +769,66 @@ bool MainWindow::maybeSaveSequence()
         return false;
     }
     if (choice == QMessageBox::Discard) {
+        if (m_stepPropertyEditor) {
+            m_stepPropertyEditor->discardPendingChanges();
+        }
         return true;
+    }
+    if (hasPendingStep && !m_stepPropertyEditor->commitPendingChanges()) {
+        return false;
+    }
+    return saveSequence();
+}
+
+bool MainWindow::confirmAndSaveSequence()
+{
+    if (!m_sequenceDocument || m_sequenceDocument->isEmpty()) {
+        return false;
+    }
+    const bool hasPendingStep = m_stepPropertyEditor &&
+                                m_stepPropertyEditor->hasPendingChanges();
+    if (!hasPendingStep && !m_sequenceDocument->isModified()) {
+        statusBar()->showMessage(tr("No sequence changes to save"), 3000);
+        return true;
+    }
+
+    const auto choice = QMessageBox::question(
+        this,
+        tr("Save Sequence"),
+        tr("Save the current changes to %1?")
+            .arg(m_sequenceDocument->displayName()),
+        QMessageBox::Save | QMessageBox::Cancel,
+        QMessageBox::Save);
+    if (choice != QMessageBox::Save) {
+        return false;
+    }
+    if (hasPendingStep && !m_stepPropertyEditor->commitPendingChanges()) {
+        return false;
+    }
+    return saveSequence();
+}
+
+bool MainWindow::resolvePendingStepChanges()
+{
+    if (!m_stepPropertyEditor || !m_stepPropertyEditor->hasPendingChanges()) {
+        return true;
+    }
+
+    const auto choice = QMessageBox::warning(
+        this,
+        tr("Unsaved Step Changes"),
+        tr("The current Step has unsaved changes."),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Save);
+    if (choice == QMessageBox::Cancel) {
+        return false;
+    }
+    if (choice == QMessageBox::Discard) {
+        m_stepPropertyEditor->discardPendingChanges();
+        return true;
+    }
+    if (!m_stepPropertyEditor->commitPendingChanges()) {
+        return false;
     }
     return saveSequence();
 }
@@ -610,6 +858,10 @@ bool MainWindow::saveSequenceAs()
     if (!m_sequenceDocument || m_sequenceDocument->isEmpty()) {
         return false;
     }
+    if (m_stepPropertyEditor && m_stepPropertyEditor->hasPendingChanges() &&
+        !m_stepPropertyEditor->commitPendingChanges()) {
+        return false;
+    }
 
     const auto path = QFileDialog::getSaveFileName(
         this,
@@ -635,7 +887,10 @@ bool MainWindow::saveSequenceAs()
 
 bool MainWindow::maybeSaveStation()
 {
-    if (!m_stationDocument || !m_stationDocument->isModified()) {
+    const bool hasPending =
+        (m_stationPropertyEditor && m_stationPropertyEditor->hasPendingChanges()) ||
+        (m_stationSettingsEditor && m_stationSettingsEditor->hasPendingChanges());
+    if (!m_stationDocument || (!m_stationDocument->isModified() && !hasPending)) {
         return true;
     }
     const auto choice = QMessageBox::warning(
@@ -648,9 +903,119 @@ bool MainWindow::maybeSaveStation()
         return false;
     }
     if (choice == QMessageBox::Discard) {
+        discardPendingStationChanges();
         return true;
     }
+    if (!commitPendingStationChanges()) {
+        return false;
+    }
     return saveStation();
+}
+
+bool MainWindow::confirmAndSaveStation()
+{
+    if (!m_stationDocument || m_stationDocument->isEmpty()) {
+        return false;
+    }
+    const bool hasPending =
+        (m_stationPropertyEditor && m_stationPropertyEditor->hasPendingChanges()) ||
+        (m_stationSettingsEditor && m_stationSettingsEditor->hasPendingChanges());
+    if (!m_stationDocument->isModified() && !hasPending) {
+        statusBar()->showMessage(tr("No Station changes to save"), 3000);
+        return true;
+    }
+    const auto choice = QMessageBox::question(
+        this,
+        tr("Save Station"),
+        tr("Save the current Station changes to %1?")
+            .arg(m_stationDocument->displayName()),
+        QMessageBox::Save | QMessageBox::Cancel,
+        QMessageBox::Save);
+    if (choice != QMessageBox::Save || !commitPendingStationChanges()) {
+        return false;
+    }
+    return saveStation();
+}
+
+bool MainWindow::resolvePendingStationChanges()
+{
+    const bool hasPending =
+        (m_stationPropertyEditor && m_stationPropertyEditor->hasPendingChanges()) ||
+        (m_stationSettingsEditor && m_stationSettingsEditor->hasPendingChanges());
+    if (!hasPending) {
+        return true;
+    }
+    const auto choice = QMessageBox::warning(
+        this,
+        tr("Unsaved Station Changes"),
+        tr("Station Config has unsaved property changes."),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Save);
+    if (choice == QMessageBox::Cancel) {
+        return false;
+    }
+    if (choice == QMessageBox::Discard) {
+        discardPendingStationChanges();
+        return true;
+    }
+    return commitPendingStationChanges() && saveStation();
+}
+
+bool MainWindow::resolvePendingStationDeviceChanges()
+{
+    if (!m_stationPropertyEditor ||
+        !m_stationPropertyEditor->hasPendingChanges()) {
+        return true;
+    }
+    const auto choice = QMessageBox::warning(
+        this,
+        tr("Unsaved Device Changes"),
+        tr("The current Station device has unsaved changes."),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Save);
+    if (choice == QMessageBox::Cancel) {
+        return false;
+    }
+    if (choice == QMessageBox::Discard) {
+        m_stationPropertyEditor->discardPendingChanges();
+        return true;
+    }
+    return m_stationPropertyEditor->commitPendingChanges() && saveStation();
+}
+
+bool MainWindow::commitPendingStationChanges()
+{
+    if (m_stationSettingsEditor &&
+        !m_stationSettingsEditor->commitPendingChanges()) {
+        return false;
+    }
+    return !m_stationPropertyEditor ||
+           m_stationPropertyEditor->commitPendingChanges();
+}
+
+void MainWindow::discardPendingStationChanges()
+{
+    if (m_stationSettingsEditor) {
+        m_stationSettingsEditor->discardPendingChanges();
+    }
+    if (m_stationPropertyEditor) {
+        m_stationPropertyEditor->discardPendingChanges();
+    }
+}
+
+void MainWindow::saveActiveDocument()
+{
+    if (isStationWorkspaceActive()) {
+        confirmAndSaveStation();
+    } else {
+        confirmAndSaveSequence();
+    }
+}
+
+bool MainWindow::isStationWorkspaceActive() const
+{
+    return m_workspaceTabs && m_stationEditorPage &&
+           m_workspaceTabs->currentWidget() == m_stationEditorPage;
 }
 
 bool MainWindow::saveStation()
@@ -677,6 +1042,9 @@ bool MainWindow::saveStationAs()
     if (!m_stationDocument || m_stationDocument->isEmpty()) {
         return false;
     }
+    if (!commitPendingStationChanges()) {
+        return false;
+    }
     const auto path = QFileDialog::getSaveFileName(
         this,
         tr("Save Station As"),
@@ -700,6 +1068,9 @@ bool MainWindow::saveStationAs()
 
 void MainWindow::addSequenceStep()
 {
+    if (!resolvePendingStepChanges()) {
+        return;
+    }
     const auto current = m_sequenceTreeView->currentIndex();
     auto selectedPath = m_sequenceTreeModel->pathForIndex(current);
     if (!selectedPath.isValid()) {
@@ -723,6 +1094,9 @@ void MainWindow::addSequenceStep()
 
 void MainWindow::deleteSequenceStep()
 {
+    if (!resolvePendingStepChanges()) {
+        return;
+    }
     const auto paths = selectedSequenceStepPaths();
     if (paths.isEmpty()) {
         return;
@@ -739,6 +1113,9 @@ void MainWindow::deleteSequenceStep()
 
 void MainWindow::setSelectedSequenceStepsEnabled(bool enabled)
 {
+    if (!resolvePendingStepChanges()) {
+        return;
+    }
     const auto paths = selectedSequenceStepPaths();
     if (!m_sequenceDocument->setStepsEnabled(paths, enabled)) {
         statusBar()->showMessage(
@@ -748,18 +1125,67 @@ void MainWindow::setSelectedSequenceStepsEnabled(bool enabled)
     }
 }
 
-void MainWindow::duplicateSequenceStep()
+void MainWindow::copySequenceSteps()
 {
     const auto paths = selectedSequenceStepPaths();
     if (paths.isEmpty()) {
         return;
     }
-
-    m_selectedSequencePath = paths.first();
-    ++m_selectedSequencePath.stepIndices.last();
-    if (!m_sequenceDocument->duplicateSteps(paths)) {
-        statusBar()->showMessage(tr("Unable to duplicate selected steps"), 4000);
+    m_sequenceClipboard = m_sequenceDocument->copiedSteps(paths);
+    if (m_sequenceClipboard.isEmpty()) {
+        statusBar()->showMessage(tr("Unable to copy selected steps"), 4000);
+    } else {
+        statusBar()->showMessage(
+            tr("Copied %1 item(s)").arg(m_sequenceClipboard.size()), 2500);
     }
+    updateCommandState();
+}
+
+void MainWindow::pasteSequenceSteps()
+{
+    if (m_sequenceClipboard.isEmpty() || !resolvePendingStepChanges()) {
+        return;
+    }
+    const auto selectedPath = m_sequenceTreeModel->pathForIndex(
+        m_sequenceTreeView->currentIndex());
+    if (!selectedPath.isValid()) {
+        return;
+    }
+
+    auto parentPath = selectedPath;
+    int row = -1;
+    if (!selectedPath.isGroup()) {
+        row = parentPath.stepIndices.takeLast() + 1;
+    }
+
+    QVector<SequenceItemPath> pastedPaths;
+    if (!m_sequenceDocument->pasteSteps(
+            parentPath, row, m_sequenceClipboard, &pastedPaths) ||
+        pastedPaths.isEmpty()) {
+        statusBar()->showMessage(tr("Unable to paste copied steps here"), 4000);
+        return;
+    }
+
+    m_selectedSequencePath = pastedPaths.first();
+    auto* selection = m_sequenceTreeView->selectionModel();
+    selection->clearSelection();
+    for (const auto& path : std::as_const(pastedPaths)) {
+        const auto index = m_sequenceTreeModel->indexForPath(path);
+        if (index.isValid()) {
+            selection->select(
+                index,
+                QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        }
+    }
+    const auto current = m_sequenceTreeModel->indexForPath(
+        m_selectedSequencePath);
+    if (current.isValid()) {
+        m_sequenceTreeView->setCurrentIndex(current);
+        m_sequenceTreeView->scrollTo(
+            current, QAbstractItemView::PositionAtCenter);
+    }
+    statusBar()->showMessage(
+        tr("Pasted %1 item(s)").arg(pastedPaths.size()), 2500);
 }
 
 QVector<SequenceItemPath> MainWindow::selectedSequenceStepPaths() const
@@ -783,6 +1209,9 @@ QVector<SequenceItemPath> MainWindow::selectedSequenceStepPaths() const
 
 void MainWindow::wrapSelectedStepsInTestItem()
 {
+    if (!resolvePendingStepChanges()) {
+        return;
+    }
     const auto paths = selectedSequenceStepPaths();
     SequenceItemPath testItemPath;
     if (!m_sequenceDocument->wrapStepsInTestItem(paths, &testItemPath)) {
@@ -806,6 +1235,9 @@ void MainWindow::wrapSelectedStepsInTestItem()
 
 void MainWindow::moveSequenceStep(int offset)
 {
+    if (!resolvePendingStepChanges()) {
+        return;
+    }
     const auto path = m_sequenceTreeModel->pathForIndex(
         m_sequenceTreeView->currentIndex());
     if (!path.isValid() || path.isGroup() || offset == 0) {
@@ -821,6 +1253,9 @@ void MainWindow::moveSequenceStep(int offset)
 
 void MainWindow::applyUndoRedo(bool redo)
 {
+    if (!resolvePendingStepChanges()) {
+        return;
+    }
     auto* stack = m_sequenceDocument->undoStack();
     if ((redo && !stack->canRedo()) || (!redo && !stack->canUndo())) {
         return;
@@ -868,9 +1303,38 @@ void MainWindow::applyUndoRedo(bool redo)
     updateSequenceEditor();
 }
 
+void MainWindow::compileSequence()
+{
+    if (!m_viewModel) {
+        return;
+    }
+    if (m_stepPropertyEditor && m_stepPropertyEditor->hasPendingChanges() &&
+        !m_stepPropertyEditor->commitPendingChanges()) {
+        return;
+    }
+    if (m_sequenceDocument && m_sequenceDocument->isModified() &&
+        !saveSequence()) {
+        return;
+    }
+    const bool hasPendingStation =
+        (m_stationPropertyEditor &&
+         m_stationPropertyEditor->hasPendingChanges()) ||
+        (m_stationSettingsEditor &&
+         m_stationSettingsEditor->hasPendingChanges());
+    if (hasPendingStation && !commitPendingStationChanges()) {
+        return;
+    }
+    if (m_stationDocument && m_stationDocument->isModified() &&
+        !saveStation()) {
+        return;
+    }
+    m_viewModel->compile();
+}
+
 void MainWindow::runSequence()
 {
-    if (!m_viewModel || !m_sequenceTreeModel) {
+    if (!m_viewModel || !m_sequenceTreeModel || !resolvePendingStepChanges() ||
+        !resolvePendingStationChanges()) {
         return;
     }
     const auto uutId = QStringLiteral("UUT-%1")
@@ -912,6 +1376,9 @@ void MainWindow::runScannedUut(const QString& serialNumber)
 
 void MainWindow::showScanDialog()
 {
+    if (!resolvePendingStepChanges()) {
+        return;
+    }
     if (!m_viewModel || !m_viewModel->canRun()) {
         statusBar()->showMessage(tr("Compile the sequence before scanning"), 4000);
         return;
@@ -1039,6 +1506,7 @@ void MainWindow::updatePluginDeviceBindings()
     }
     QHash<QString, QStringList> devicesByModuleId;
     QHash<QString, QString> pluginByDeviceId;
+    QHash<QString, QJsonObject> deviceConfigurations;
     const auto devices = m_stationDocument->rootObject()
                              .value(QStringLiteral("devices")).toArray();
     for (const auto& value : devices) {
@@ -1055,13 +1523,24 @@ void MainWindow::updatePluginDeviceBindings()
         }
         devicesByModuleId[moduleId].push_back(deviceId);
         pluginByDeviceId.insert(deviceId, moduleId);
+        auto effectiveInputs = device.value(QStringLiteral("options")).toObject();
+        effectiveInputs.insert(QStringLiteral("deviceId"), deviceId);
+        effectiveInputs.insert(QStringLiteral("deviceType"),
+                               device.value(QStringLiteral("deviceType")));
+        effectiveInputs.insert(QStringLiteral("address"),
+                               device.value(QStringLiteral("address")));
+        deviceConfigurations.insert(deviceId, effectiveInputs);
     }
     m_pluginFunctionModel->setDeviceBindings(std::move(devicesByModuleId));
     m_stepPropertyEditor->setDevicePluginBindings(std::move(pluginByDeviceId));
+    m_stepPropertyEditor->setDeviceConfigurations(std::move(deviceConfigurations));
 }
 
 void MainWindow::addStationDevice()
 {
+    if (!resolvePendingStationChanges()) {
+        return;
+    }
     const int row = m_selectedStationDeviceRow < 0
         ? m_stationDocument->deviceCount()
         : m_selectedStationDeviceRow + 1;
@@ -1071,7 +1550,7 @@ void MainWindow::addStationDevice()
 
 void MainWindow::deleteStationDevice()
 {
-    if (m_selectedStationDeviceRow < 0) {
+    if (m_selectedStationDeviceRow < 0 || !resolvePendingStationChanges()) {
         return;
     }
     const int deletedRow = m_selectedStationDeviceRow;
@@ -1082,7 +1561,7 @@ void MainWindow::deleteStationDevice()
 
 void MainWindow::duplicateStationDevice()
 {
-    if (m_selectedStationDeviceRow < 0) {
+    if (m_selectedStationDeviceRow < 0 || !resolvePendingStationChanges()) {
         return;
     }
     const int sourceRow = m_selectedStationDeviceRow;
@@ -1094,7 +1573,8 @@ void MainWindow::duplicateStationDevice()
 
 void MainWindow::moveStationDevice(int offset)
 {
-    if (m_selectedStationDeviceRow < 0 || offset == 0) {
+    if (m_selectedStationDeviceRow < 0 || offset == 0 ||
+        !resolvePendingStationChanges()) {
         return;
     }
     const int sourceRow = m_selectedStationDeviceRow;
@@ -1106,6 +1586,9 @@ void MainWindow::moveStationDevice(int offset)
 
 void MainWindow::applyStationUndoRedo(bool redo)
 {
+    if (!resolvePendingStationChanges()) {
+        return;
+    }
     auto* stack = m_stationDocument->undoStack();
     if ((redo && !stack->canRedo()) || (!redo && !stack->canUndo())) {
         return;
@@ -1120,7 +1603,8 @@ void MainWindow::applyStationUndoRedo(bool redo)
 
 void MainWindow::testSelectedStationDevice()
 {
-    if (!m_stationDocument || !m_viewModel || !m_connectionTimeoutMs) {
+    if (!m_stationDocument || !m_viewModel || !m_connectionTimeoutMs ||
+        !resolvePendingStationChanges()) {
         return;
     }
     const int row = m_stationDeviceView && m_stationDeviceView->currentIndex().isValid()
@@ -1155,15 +1639,68 @@ void MainWindow::synchronizeStationSnapshot()
     m_viewModel->setStationDocument(snapshot.filePath, snapshot.json);
 }
 
+void MainWindow::captureSequenceTreeViewState()
+{
+    m_sequenceTreeStatePending = false;
+    m_expandedSequencePaths.clear();
+    if (!m_sequenceTreeView || !m_sequenceTreeModel ||
+        m_loadingSequenceFile) {
+        return;
+    }
+
+    m_sequenceTreeScrollValue =
+        m_sequenceTreeView->verticalScrollBar()->value();
+    const std::function<void(const QModelIndex&)> collectExpanded =
+        [this, &collectExpanded](const QModelIndex& parent) {
+            const int rows = m_sequenceTreeModel->rowCount(parent);
+            for (int row = 0; row < rows; ++row) {
+                const auto index = m_sequenceTreeModel->index(
+                    row, SequenceTreeModel::NameColumn, parent);
+                if (m_sequenceTreeView->isExpanded(index)) {
+                    m_expandedSequencePaths.push_back(
+                        m_sequenceTreeModel->pathForIndex(index));
+                }
+                collectExpanded(index);
+            }
+        };
+    collectExpanded({});
+    m_sequenceTreeStatePending = true;
+}
+
+void MainWindow::restoreSequenceTreeViewState()
+{
+    if (!m_sequenceTreeStatePending || !m_sequenceTreeView ||
+        !m_sequenceTreeModel) {
+        return;
+    }
+
+    m_sequenceTreeView->collapseAll();
+    for (const auto& path : std::as_const(m_expandedSequencePaths)) {
+        const auto index = m_sequenceTreeModel->indexForPath(path);
+        if (index.isValid()) {
+            m_sequenceTreeView->expand(index);
+        }
+    }
+    auto* scrollBar = m_sequenceTreeView->verticalScrollBar();
+    scrollBar->setValue(qBound(scrollBar->minimum(),
+                               m_sequenceTreeScrollValue,
+                               scrollBar->maximum()));
+    m_sequenceTreeStatePending = false;
+}
+
 void MainWindow::updateSequenceEditor()
 {
     if (!m_sequenceDocument || !m_editorDiagnosticModel) {
         return;
     }
 
-    m_editorDiagnosticModel->setDiagnostics(m_sequenceDocument->diagnostics());
+    refreshEditorDiagnostics();
     if (m_sequenceTreeView) {
-        m_sequenceTreeView->expandAll();
+        if (m_expandSequenceTreeOnNextUpdate) {
+            m_sequenceTreeView->expandAll();
+            m_expandSequenceTreeOnNextUpdate = false;
+            m_sequenceTreeStatePending = false;
+        }
         auto selected = m_sequenceTreeModel->indexForPath(m_selectedSequencePath);
         if (!selected.isValid() && m_sequenceTreeModel->rowCount() > 0) {
             selected = m_sequenceTreeModel->index(0, 0);
@@ -1176,6 +1713,7 @@ void MainWindow::updateSequenceEditor()
         } else {
             m_stepPropertyEditor->setCurrentItem({});
         }
+        restoreSequenceTreeViewState();
     }
     updateWindowTitle();
     updateCommandState();
@@ -1186,9 +1724,7 @@ void MainWindow::updateStationEditor()
     if (!m_stationDocument || !m_stationDiagnosticModel) {
         return;
     }
-    auto diagnostics = m_stationDocument->diagnostics();
-    diagnostics += stationPluginDiagnostics();
-    m_stationDiagnosticModel->setDiagnostics(std::move(diagnostics));
+    refreshEditorDiagnostics();
     const int count = m_stationDocument->deviceCount();
     if (count == 0) {
         m_selectedStationDeviceRow = -1;
@@ -1238,10 +1774,111 @@ QVector<UiDiagnostic> MainWindow::stationPluginDiagnostics() const
     return result;
 }
 
+QVector<UiDiagnostic> MainWindow::stationFlowDiagnostics() const
+{
+    QVector<UiDiagnostic> result;
+    if (!m_stationDocument || m_stationDocument->isEmpty() ||
+        !m_sequenceDocument || m_sequenceDocument->isEmpty()) {
+        return result;
+    }
+
+    QHash<QString, QStringList> references;
+    for (const auto& groupValue :
+         m_sequenceDocument->rootObject().value(QStringLiteral("groups")).toArray()) {
+        const auto group = groupValue.toObject();
+        if (!group.value(QStringLiteral("enabled")).toBool(true)) {
+            continue;
+        }
+        collectDeviceStepReferences(group.value(QStringLiteral("steps")).toArray(),
+                                    references);
+    }
+
+    QHash<QString, int> rowByDeviceId;
+    QSet<QString> enabledDeviceIds;
+    const auto devices = m_stationDocument->rootObject()
+                             .value(QStringLiteral("devices")).toArray();
+    for (int row = 0; row < devices.size(); ++row) {
+        const auto device = devices[row].toObject();
+        const auto deviceId = device.value(QStringLiteral("deviceId")).toString(
+            device.value(QStringLiteral("id")).toString()).trimmed();
+        if (deviceId.isEmpty()) {
+            continue;
+        }
+        rowByDeviceId.insert(deviceId, row);
+        if (device.value(QStringLiteral("enabled")).toBool(true)) {
+            enabledDeviceIds.insert(deviceId);
+        }
+    }
+
+    for (auto iterator = references.cbegin(); iterator != references.cend(); ++iterator) {
+        if (enabledDeviceIds.contains(iterator.key())) {
+            continue;
+        }
+        auto stepNames = iterator.value();
+        stepNames.removeDuplicates();
+        const bool configured = rowByDeviceId.contains(iterator.key());
+        const auto path = configured
+            ? QStringLiteral("devices[%1].enabled").arg(rowByDeviceId.value(iterator.key()))
+            : QStringLiteral("devices");
+        result.push_back({
+            UiDiagnosticSeverity::Error,
+            path,
+            configured
+                ? tr("Device '%1' is disabled but is used by Flow: %2")
+                      .arg(iterator.key(), stepNames.join(QStringLiteral(", ")))
+                : tr("Device '%1' is used by Flow but is not configured: %2")
+                      .arg(iterator.key(), stepNames.join(QStringLiteral(", "))),
+            configured
+                ? tr("Enable the Station device, or disable/remove the listed Flow steps")
+                : tr("Add and enable this logical device in Station Config")});
+    }
+    return result;
+}
+
+QVector<UiDiagnostic> MainWindow::stationEditorDiagnostics() const
+{
+    auto diagnostics = m_stationDocument
+        ? m_stationDocument->diagnostics()
+        : QVector<UiDiagnostic>{};
+    diagnostics += stationPluginDiagnostics();
+    diagnostics += stationFlowDiagnostics();
+    return diagnostics;
+}
+
+void MainWindow::refreshEditorDiagnostics()
+{
+    if (!m_editorDiagnosticModel || !m_stationDiagnosticModel) {
+        return;
+    }
+    const auto stationDiagnostics = stationEditorDiagnostics();
+    m_stationDiagnosticModel->setDiagnostics(stationDiagnostics);
+
+    auto flowDiagnostics = m_sequenceDocument
+        ? m_sequenceDocument->diagnostics()
+        : QVector<UiDiagnostic>{};
+    for (auto diagnostic : stationDiagnostics) {
+        diagnostic.path = StationDiagnosticPrefix +
+                          (diagnostic.path.isEmpty()
+                               ? QStringLiteral("root")
+                               : diagnostic.path);
+        flowDiagnostics.push_back(std::move(diagnostic));
+    }
+    m_editorDiagnosticModel->setDiagnostics(std::move(flowDiagnostics));
+}
+
 void MainWindow::focusSequenceDiagnostic(const QModelIndex& index)
 {
     const auto diagnostic = m_editorDiagnosticModel->diagnosticAt(index.row());
     if (!diagnostic) {
+        return;
+    }
+    if (diagnostic->path.startsWith(StationDiagnosticPrefix)) {
+        auto stationDiagnostic = *diagnostic;
+        stationDiagnostic.path.remove(0, StationDiagnosticPrefix.size());
+        if (stationDiagnostic.path == QStringLiteral("root")) {
+            stationDiagnostic.path.clear();
+        }
+        focusStationDiagnosticValue(stationDiagnostic);
         return;
     }
     const auto target = parseSequenceDiagnosticTarget(diagnostic->path);
@@ -1266,7 +1903,7 @@ void MainWindow::focusSequenceDiagnostic(const QModelIndex& index)
         return;
     }
 
-    m_workspaceTabs->setCurrentIndex(0);
+    m_workspaceTabs->setCurrentWidget(m_flowEditorPage);
     m_selectedSequencePath = resolvedPath;
     m_sequenceTreeView->setCurrentIndex(treeIndex);
     m_sequenceTreeView->scrollTo(treeIndex, QAbstractItemView::PositionAtCenter);
@@ -1287,9 +1924,14 @@ void MainWindow::focusStationDiagnostic(const QModelIndex& index)
     if (!diagnostic) {
         return;
     }
+    focusStationDiagnosticValue(*diagnostic);
+}
+
+void MainWindow::focusStationDiagnosticValue(const UiDiagnostic& diagnostic)
+{
     static const QRegularExpression devicePath(
         QStringLiteral("^devices\\[(\\d+)\\](?:\\.(.*))?$"));
-    const auto match = devicePath.match(diagnostic->path);
+    const auto match = devicePath.match(diagnostic.path);
     if (match.hasMatch()) {
         const int row = match.captured(1).toInt();
         if (row >= 0 && row < m_stationDeviceModel->rowCount()) {
@@ -1301,13 +1943,13 @@ void MainWindow::focusStationDiagnostic(const QModelIndex& index)
             m_stationPropertyEditor->setCurrentDevice(row);
         }
     }
-    m_workspaceTabs->setCurrentIndex(1);
-    const bool focused = diagnostic->path.startsWith(QStringLiteral("devices["))
-        ? m_stationPropertyEditor->focusField(diagnostic->path)
-        : m_stationSettingsEditor->focusField(diagnostic->path);
+    m_workspaceTabs->setCurrentWidget(m_stationEditorPage);
+    const bool focused = diagnostic.path.startsWith(QStringLiteral("devices["))
+        ? m_stationPropertyEditor->focusField(diagnostic.path)
+        : m_stationSettingsEditor->focusField(diagnostic.path);
     statusBar()->showMessage(
-        focused ? tr("Located station field: %1").arg(diagnostic->path)
-                : tr("Located station diagnostic: %1").arg(diagnostic->path),
+        focused ? tr("Located station field: %1").arg(diagnostic.path)
+                : tr("Located station diagnostic: %1").arg(diagnostic.path),
         4000);
 }
 
@@ -1316,13 +1958,18 @@ void MainWindow::updateWindowTitle()
     QString title = tr("PicoATE");
     if (m_sequenceDocument && !m_sequenceDocument->isEmpty()) {
         title += QStringLiteral(" - ") + m_sequenceDocument->displayName();
-        if (m_sequenceDocument->isModified()) {
+        if (m_sequenceDocument->isModified() ||
+            (m_stepPropertyEditor && m_stepPropertyEditor->hasPendingChanges())) {
             title += QLatin1Char('*');
         }
     }
     if (m_stationDocument && !m_stationDocument->isEmpty()) {
         title += QStringLiteral(" | ") + m_stationDocument->displayName();
-        if (m_stationDocument->isModified()) {
+        if (m_stationDocument->isModified() ||
+            (m_stationPropertyEditor &&
+             m_stationPropertyEditor->hasPendingChanges()) ||
+            (m_stationSettingsEditor &&
+             m_stationSettingsEditor->hasPendingChanges())) {
             title += QLatin1Char('*');
         }
     }
@@ -1353,9 +2000,11 @@ void MainWindow::buildActions()
 
     m_saveSequenceAction = new QAction(
         style()->standardIcon(QStyle::SP_DialogSaveButton), tr("Save Sequence"), this);
+    m_saveSequenceAction->setObjectName(QStringLiteral("saveSequenceAction"));
     m_saveSequenceAction->setShortcut(QKeySequence::Save);
     m_saveSequenceAction->setToolTip(tr("Save sequence JSON"));
-    connect(m_saveSequenceAction, &QAction::triggered, this, [this] { saveSequence(); });
+    connect(m_saveSequenceAction, &QAction::triggered,
+            this, &MainWindow::saveActiveDocument);
 
     m_saveSequenceAsAction = new QAction(tr("Save Sequence As..."), this);
     m_saveSequenceAsAction->setShortcut(QKeySequence::SaveAs);
@@ -1394,13 +2043,25 @@ void MainWindow::buildActions()
     m_deleteStepAction->setShortcut(QKeySequence::Delete);
     connect(m_deleteStepAction, &QAction::triggered, this, [this] { deleteSequenceStep(); });
 
-    m_duplicateStepAction = new QAction(
-        style()->standardIcon(QStyle::SP_FileLinkIcon), tr("Duplicate Selected"), this);
-    m_duplicateStepAction->setObjectName(QStringLiteral("duplicateStepAction"));
-    m_duplicateStepAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
-    m_duplicateStepAction->setToolTip(
-        tr("Duplicate all selected Steps and TestItems"));
-    connect(m_duplicateStepAction, &QAction::triggered, this, [this] { duplicateSequenceStep(); });
+    m_copyStepAction = new QAction(
+        QIcon::fromTheme(QStringLiteral("edit-copy"),
+                         style()->standardIcon(QStyle::SP_FileIcon)),
+        tr("Copy Selected"), this);
+    m_copyStepAction->setObjectName(QStringLiteral("copyStepAction"));
+    m_copyStepAction->setToolTip(
+        tr("Copy selected Steps and TestItems (Ctrl+C)"));
+    connect(m_copyStepAction, &QAction::triggered,
+            this, &MainWindow::copySequenceSteps);
+
+    m_pasteStepAction = new QAction(
+        QIcon::fromTheme(QStringLiteral("edit-paste"),
+                         style()->standardIcon(QStyle::SP_FileLinkIcon)),
+        tr("Paste"), this);
+    m_pasteStepAction->setObjectName(QStringLiteral("pasteStepAction"));
+    m_pasteStepAction->setToolTip(
+        tr("Paste copied items after the current item (Ctrl+V)"));
+    connect(m_pasteStepAction, &QAction::triggered,
+            this, &MainWindow::pasteSequenceSteps);
 
     m_wrapTestItemAction = new QAction(
         style()->standardIcon(QStyle::SP_DirIcon), tr("Wrap in TestItem"), this);
@@ -1445,7 +2106,7 @@ void MainWindow::buildActions()
         style()->standardIcon(QStyle::SP_DialogSaveButton), tr("Save Station"), this);
     m_saveStationAction->setToolTip(tr("Save station JSON"));
     connect(m_saveStationAction, &QAction::triggered,
-            this, [this] { saveStation(); });
+            this, [this] { confirmAndSaveStation(); });
     m_saveStationAsAction = new QAction(tr("Save Station As..."), this);
     connect(m_saveStationAsAction, &QAction::triggered,
             this, [this] { saveStationAs(); });
@@ -1507,7 +2168,8 @@ void MainWindow::buildActions()
         this);
     m_compileAction->setObjectName(QStringLiteral("compileAction"));
     m_compileAction->setToolTip(tr("Compile selected sequence"));
-    connect(m_compileAction, &QAction::triggered, m_viewModel, &ExecutionViewModel::compile);
+    connect(m_compileAction, &QAction::triggered,
+            this, &MainWindow::compileSequence);
 
     m_runAction = new QAction(
         style()->standardIcon(QStyle::SP_MediaPlay),
@@ -1597,7 +2259,8 @@ void MainWindow::buildActions()
     editMenu->addAction(m_redoAction);
     editMenu->addSeparator();
     editMenu->addAction(m_addStepAction);
-    editMenu->addAction(m_duplicateStepAction);
+    editMenu->addAction(m_copyStepAction);
+    editMenu->addAction(m_pasteStepAction);
     editMenu->addAction(m_deleteStepAction);
     editMenu->addAction(m_enableStepsAction);
     editMenu->addAction(m_disableStepsAction);
@@ -1662,7 +2325,8 @@ void MainWindow::buildLayout()
     m_workspaceTabs = new QTabWidget(central);
     m_workspaceTabs->setObjectName(QStringLiteral("workspaceTabs"));
 
-    auto* sequenceEditorPage = new QWidget(m_workspaceTabs);
+    m_flowEditorPage = new QWidget(m_workspaceTabs);
+    auto* sequenceEditorPage = m_flowEditorPage;
     sequenceEditorPage->setObjectName(QStringLiteral("sequenceEditorPage"));
     auto* sequenceEditorLayout = new QVBoxLayout(sequenceEditorPage);
     sequenceEditorLayout->setContentsMargins(0, 0, 0, 0);
@@ -1677,7 +2341,8 @@ void MainWindow::buildLayout()
     sequenceToolbar->addAction(m_redoAction);
     sequenceToolbar->addSeparator();
     sequenceToolbar->addAction(m_addStepAction);
-    sequenceToolbar->addAction(m_duplicateStepAction);
+    sequenceToolbar->addAction(m_copyStepAction);
+    sequenceToolbar->addAction(m_pasteStepAction);
     sequenceToolbar->addAction(m_wrapTestItemAction);
     sequenceToolbar->addAction(m_deleteStepAction);
     sequenceToolbar->addAction(m_enableStepsAction);
@@ -1724,6 +2389,10 @@ void MainWindow::buildLayout()
     m_sequenceTreeView->setDropIndicatorShown(true);
     m_sequenceTreeView->setDragDropMode(QAbstractItemView::DragDrop);
     m_sequenceTreeView->setDefaultDropAction(Qt::MoveAction);
+    m_sequenceTreeView->addAction(m_copyStepAction);
+    m_sequenceTreeView->addAction(m_pasteStepAction);
+    m_sequenceTreeView->installEventFilter(this);
+    m_sequenceTreeView->viewport()->installEventFilter(this);
     m_sequenceTreeView->setItemDelegateForColumn(
         SequenceTreeModel::NameColumn,
         new DragHandleDelegate(m_sequenceTreeView));
@@ -1760,7 +2429,8 @@ void MainWindow::buildLayout()
     sequenceEditorLayout->addWidget(sequenceSplitter, 1);
     m_workspaceTabs->addTab(sequenceEditorPage, tr("Flow Editor"));
 
-    auto* stationEditorPage = new QWidget(m_workspaceTabs);
+    m_stationEditorPage = new QWidget(m_workspaceTabs);
+    auto* stationEditorPage = m_stationEditorPage;
     stationEditorPage->setObjectName(QStringLiteral("stationEditorPage"));
     auto* stationEditorLayout = new QVBoxLayout(stationEditorPage);
     stationEditorLayout->setContentsMargins(0, 0, 0, 0);
@@ -2215,6 +2885,10 @@ void MainWindow::updateCommandState()
     m_openStationAction->setEnabled(canChangeSources);
     m_compileAction->setEnabled(m_viewModel->canCompile());
     m_runAction->setEnabled(m_viewModel->canRun());
+    m_runAction->setToolTip(
+        m_viewModel->state() == UiRunState::CompileFailed
+            ? tr("Run is unavailable because compilation failed. Fix the highlighted diagnostic and compile again.")
+            : tr("Run compiled sequence"));
     m_pauseAction->setEnabled(m_viewModel->canPause());
     m_resumeAction->setEnabled(m_viewModel->canResume());
     m_stepIntoAction->setEnabled(m_viewModel->canStepInto());
@@ -2232,8 +2906,24 @@ void MainWindow::updateCommandState()
     const bool stepSelected = hasSelection && !selectedPath.isGroup() &&
                               selectedStepPaths.size() == 1;
 
+    const bool sequenceHasChanges = hasDocument &&
+        (m_sequenceDocument->isModified() ||
+         (m_stepPropertyEditor && m_stepPropertyEditor->hasPendingChanges()));
+    const bool stationHasPending =
+        (m_stationPropertyEditor && m_stationPropertyEditor->hasPendingChanges()) ||
+        (m_stationSettingsEditor && m_stationSettingsEditor->hasPendingChanges());
+    const bool stationHasChanges = m_stationDocument &&
+        !m_stationDocument->isEmpty() &&
+        (m_stationDocument->isModified() || stationHasPending);
+    const bool stationActive = isStationWorkspaceActive();
+    m_saveSequenceAction->setText(
+        stationActive ? tr("Save Station") : tr("Save Sequence"));
+    m_saveSequenceAction->setToolTip(
+        stationActive ? tr("Save Station configuration")
+                      : tr("Save sequence JSON"));
     m_saveSequenceAction->setEnabled(
-        canChangeSources && hasDocument && m_sequenceDocument->isModified());
+        canChangeSources &&
+        (stationActive ? stationHasChanges : sequenceHasChanges));
     m_saveSequenceAsAction->setEnabled(canChangeSources && hasDocument);
     m_undoAction->setEnabled(
         canChangeSources && m_sequenceDocument->undoStack()->canUndo());
@@ -2242,7 +2932,9 @@ void MainWindow::updateCommandState()
     m_addStepAction->setEnabled(canChangeSources && hasDocument && hasSelection);
     const bool hasSelectedSteps = !selectedStepPaths.isEmpty();
     m_deleteStepAction->setEnabled(canChangeSources && hasSelectedSteps);
-    m_duplicateStepAction->setEnabled(canChangeSources && hasSelectedSteps);
+    m_copyStepAction->setEnabled(canChangeSources && hasSelectedSteps);
+    m_pasteStepAction->setEnabled(
+        canChangeSources && !m_sequenceClipboard.isEmpty() && hasSelection);
     m_enableStepsAction->setEnabled(canChangeSources && hasSelectedSteps);
     m_disableStepsAction->setEnabled(canChangeSources && hasSelectedSteps);
     m_wrapTestItemAction->setEnabled(
@@ -2278,7 +2970,7 @@ void MainWindow::updateCommandState()
     const bool hasDevice = hasStation && stationRow >= 0 &&
                            stationRow < m_stationDocument->deviceCount();
     m_saveStationAction->setEnabled(
-        canChangeSources && hasStation && m_stationDocument->isModified());
+        canChangeSources && hasStation && stationHasChanges);
     m_saveStationAsAction->setEnabled(canChangeSources && hasStation);
     m_stationUndoAction->setEnabled(
         canChangeSources && m_stationDocument->undoStack()->canUndo());
@@ -2313,7 +3005,18 @@ void MainWindow::updateCommandState()
 }
 void MainWindow::updateDiagnostics()
 {
-    m_diagnosticModel->setDiagnostics(m_viewModel->diagnostics());
+    const auto diagnostics = m_viewModel->diagnostics();
+    m_diagnosticModel->setDiagnostics(diagnostics);
+    if (auto* details = findChild<QTabWidget*>(QStringLiteral("runDetailsTabs"))) {
+        const int index = details->indexOf(m_diagnosticView);
+        if (index >= 0) {
+            details->setTabText(
+                index,
+                diagnostics.isEmpty()
+                    ? tr("Diagnostics")
+                    : tr("Diagnostics (%1)").arg(diagnostics.size()));
+        }
+    }
 }
 
 void MainWindow::updateCompilePreview()

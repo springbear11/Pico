@@ -24,13 +24,20 @@ public:
 
     void setEditable(bool editable);
     bool focusField(const QString& path);
+    bool hasPendingChanges() const;
+    bool commitPendingChanges();
+    void discardPendingChanges();
+
+signals:
+    void pendingChangesChanged(bool pending);
 
 private slots:
     void reload();
-    void apply();
 
 private:
     void showError(const QString& message);
+    void markPendingChanges();
+    void setPendingChanges(bool pending);
 
     QPointer<StationDocument> m_document;
     QLineEdit* m_stationIdEdit = nullptr;
@@ -40,8 +47,10 @@ private:
     QSpinBox* m_snLengthSpin = nullptr;
     QPlainTextEdit* m_metadataEdit = nullptr;
     QLabel* m_errorLabel = nullptr;
-    QPushButton* m_applyButton = nullptr;
+    QLabel* m_title = nullptr;
     bool m_editable = true;
+    bool m_loading = false;
+    bool m_pendingChanges = false;
 };
 
 } // namespace PicoATE::Ui

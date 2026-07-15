@@ -1,0 +1,90 @@
+{
+  "stationId": "GCAN-CX-CROSS-LOOP",
+  "name": "GCAN and CX Cross Channel Hardware Verification",
+  "stopOnFailure": true,
+  "scanDialogEnabled": false,
+  "snLength": 0,
+  "metadata": {
+    "order": "CAN-CROSS-LOOP",
+    "tester": "Hardware Verification",
+    "jigNo": "GCAN1-CX2_GCAN2-CX1"
+  },
+  "devices": [
+    {
+      "deviceId": "GCAN_CAN1",
+      "deviceType": "CAN",
+      "driverId": "plugin.can.gcan",
+      "pluginPath": "${PROJECT_DIR}/out/build/vs2022-qt6-all/ui/src/Debug/PicoATE.CAN.GCAN.dll",
+      "address": "GCAN:0:0",
+      "timeoutMs": 6000,
+      "lifetime": "Run",
+      "enabled": true,
+      "options": {
+        "deviceType": 0,
+        "deviceIndex": 0,
+        "channelIndex": 0,
+        "bitrate": 500000,
+        "canFd": false,
+        "listenOnly": false,
+        "selfTest": false
+      }
+    },
+    {
+      "deviceId": "GCAN_CAN2",
+      "deviceType": "CAN",
+      "driverId": "plugin.can.gcan",
+      "pluginPath": "${PROJECT_DIR}/out/build/vs2022-qt6-all/ui/src/Debug/PicoATE.CAN.GCAN.dll",
+      "address": "GCAN:0:1",
+      "timeoutMs": 6000,
+      "lifetime": "Run",
+      "enabled": true,
+      "options": {
+        "deviceType": 0,
+        "deviceIndex": 0,
+        "channelIndex": 1,
+        "bitrate": 500000,
+        "canFd": false,
+        "listenOnly": false,
+        "selfTest": false
+      }
+    },
+    {
+      "deviceId": "CX_CAN1",
+      "deviceType": "CAN",
+      "driverId": "plugin.can.cx",
+      "pluginPath": "${PROJECT_DIR}/out/build/vs2022-qt6-all/ui/src/Debug/PicoATE.CAN.CX.dll",
+      "address": "CX:0:0",
+      "timeoutMs": 6000,
+      "lifetime": "Run",
+      "enabled": true,
+      "options": {
+        "deviceType": 4,
+        "deviceIndex": 0,
+        "channelIndex": 0,
+        "bitrate": 500000,
+        "canFd": false,
+        "listenOnly": false,
+        "selfTest": false
+      }
+    },
+    {
+      "deviceId": "CX_CAN2",
+      "deviceType": "CAN",
+      "driverId": "plugin.can.cx",
+      "pluginPath": "${PROJECT_DIR}/out/build/vs2022-qt6-all/ui/src/Debug/PicoATE.CAN.CX.dll",
+      "address": "CX:0:1",
+      "timeoutMs": 6000,
+      "lifetime": "Run",
+      "enabled": true,
+      "options": {
+        "deviceType": 4,
+        "deviceIndex": 0,
+        "channelIndex": 1,
+        "bitrate": 500000,
+        "canFd": false,
+        "listenOnly": false,
+        "selfTest": false
+      }
+    }
+  ]
+}

@@ -594,7 +594,11 @@ QVector<PluginBindingDiagnostic> PluginCatalog::validateStationBindings(
     options.sequenceFilePath = stationFilePath;
     options.projectDir = projectDir;
     const PicoATE::Core::VariableResolver resolver(options);
-    QHash<QString, QString> resolvedPathByDriver;
+    struct DriverBinding {
+        QString deviceId;
+        QString resolvedPath;
+    };
+    QHash<QString, DriverBinding> bindingByDriver;
 
     const auto devices = station.value(QStringLiteral("devices")).toArray();
     for (int index = 0; index < devices.size(); ++index) {
@@ -605,6 +609,8 @@ QVector<PluginBindingDiagnostic> PluginCatalog::validateStationBindings(
         const auto basePath = QStringLiteral("devices[%1]").arg(index);
         const auto driverId = device.value(QStringLiteral("driverId")).toString(
             device.value(QStringLiteral("driver")).toString()).trimmed();
+        const auto deviceId = device.value(QStringLiteral("deviceId")).toString(
+            device.value(QStringLiteral("id")).toString()).trimmed();
         if (driverId.isEmpty()) {
             continue;
         }
@@ -653,16 +659,27 @@ QVector<PluginBindingDiagnostic> PluginCatalog::validateStationBindings(
                               QStringLiteral("Run Scan Plugins to refresh function descriptions"),
                               true});
         }
-        const auto previousPath = resolvedPathByDriver.value(driverId);
-        if (!previousPath.isEmpty() &&
-            QFileInfo(previousPath).canonicalFilePath() !=
+        const auto previous = bindingByDriver.value(driverId);
+        if (!previous.resolvedPath.isEmpty() &&
+            QFileInfo(previous.resolvedPath).canonicalFilePath() !=
                 QFileInfo(resolvedPath).canonicalFilePath()) {
             result.push_back({basePath + QStringLiteral(".pluginPath"),
-                              QStringLiteral("The same driverId is bound to different DLL files"),
-                              QStringLiteral("Use one DLL per driverId or give each plugin a unique moduleId"),
+                              QStringLiteral(
+                                  "Driver '%1' uses different DLL files: %2 -> %3; %4 -> %5")
+                                  .arg(driverId,
+                                       previous.deviceId.isEmpty()
+                                           ? QStringLiteral("previous device")
+                                           : previous.deviceId,
+                                       QDir::toNativeSeparators(previous.resolvedPath),
+                                       deviceId.isEmpty()
+                                           ? QStringLiteral("current device")
+                                           : deviceId,
+                                       QDir::toNativeSeparators(resolvedPath)),
+                              QStringLiteral(
+                                  "Choose the same Plugin / Model for these devices, apply the device settings, and save Station Config"),
                               false});
-        } else if (previousPath.isEmpty()) {
-            resolvedPathByDriver.insert(driverId, resolvedPath);
+        } else if (previous.resolvedPath.isEmpty()) {
+            bindingByDriver.insert(driverId, {deviceId, resolvedPath});
         }
     }
     return result;

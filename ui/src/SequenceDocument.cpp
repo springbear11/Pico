@@ -614,6 +614,102 @@ bool SequenceDocument::duplicateStep(const SequenceItemPath& path)
     return duplicateSteps({path});
 }
 
+QVector<QJsonObject> SequenceDocument::copiedSteps(
+    QVector<SequenceItemPath> paths) const
+{
+    std::sort(paths.begin(), paths.end(), pathLess);
+    paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
+
+    QVector<SequenceItemPath> roots;
+    QVector<QJsonObject> result;
+    for (const auto& path : paths) {
+        if (!path.isValid() || path.stepIndices.isEmpty()) {
+            continue;
+        }
+        const auto object = objectAtRoot(m_root, path);
+        if (object.isEmpty()) {
+            continue;
+        }
+        const bool coveredByParent = std::any_of(
+            roots.cbegin(), roots.cend(), [&path](const auto& root) {
+                return root.groupIndex == path.groupIndex &&
+                       pathStartsWith(path.stepIndices, root.stepIndices);
+            });
+        if (!coveredByParent) {
+            roots.push_back(path);
+            result.push_back(object);
+        }
+    }
+    return result;
+}
+
+bool SequenceDocument::pasteSteps(
+    const SequenceItemPath& parentPath,
+    int row,
+    const QVector<QJsonObject>& sourceSteps,
+    QVector<SequenceItemPath>* pastedPaths)
+{
+    if (!canContainSteps(parentPath) || sourceSteps.isEmpty()) {
+        return false;
+    }
+    for (const auto& step : sourceSteps) {
+        if (step.isEmpty()) {
+            return false;
+        }
+    }
+
+    const auto firstId = nextStepId(parentPath);
+    bool numericId = false;
+    int nextNumber = firstId.toInt(&numericId);
+    if (!numericId) {
+        return false;
+    }
+    const int idWidth = firstId.size();
+    QVector<QJsonObject> copies;
+    copies.reserve(sourceSteps.size());
+    for (const auto& source : sourceSteps) {
+        auto copy = source;
+        const auto originalName = copy.value(QStringLiteral("name")).toString(
+            copy.value(QStringLiteral("id")).toString());
+        copy.insert(QStringLiteral("id"),
+                    QStringLiteral("%1").arg(
+                        nextNumber++, idWidth, 10, QLatin1Char('0')));
+        copy.remove(QStringLiteral("key"));
+        copy.insert(QStringLiteral("name"), tr("%1 Copy").arg(originalName));
+        copies.push_back(std::move(copy));
+    }
+
+    const int existingCount = objectAt(parentPath)
+                                  .value(QStringLiteral("steps"))
+                                  .toArray()
+                                  .size();
+    const int insertionRow = row < 0 ? existingCount
+                                     : qBound(0, row, existingCount);
+    const bool changed = mutateSteps(
+        parentPath,
+        [insertionRow, &copies](QJsonArray& steps) {
+            for (int index = 0; index < copies.size(); ++index) {
+                steps.insert(insertionRow + index, copies[index]);
+            }
+            return true;
+        },
+        copies.size() == 1 ? tr("Paste Step") : tr("Paste Selected Steps"));
+    if (!changed) {
+        return false;
+    }
+
+    if (pastedPaths) {
+        pastedPaths->clear();
+        pastedPaths->reserve(copies.size());
+        for (int index = 0; index < copies.size(); ++index) {
+            auto path = parentPath;
+            path.stepIndices.push_back(insertionRow + index);
+            pastedPaths->push_back(std::move(path));
+        }
+    }
+    return true;
+}
+
 bool SequenceDocument::duplicateSteps(QVector<SequenceItemPath> paths)
 {
     if (paths.isEmpty()) {
