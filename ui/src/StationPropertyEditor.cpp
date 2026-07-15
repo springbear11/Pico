@@ -85,11 +85,11 @@ StationPropertyEditor::StationPropertyEditor(StationDocument* document,
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 0, 0, 0);
     layout->setSpacing(6);
-    auto* title = new QLabel(tr("Properties"), this);
-    auto font = title->font();
+    m_title = new QLabel(tr("Properties"), this);
+    auto font = m_title->font();
     font.setBold(true);
-    title->setFont(font);
-    layout->addWidget(title);
+    m_title->setFont(font);
+    layout->addWidget(m_title);
     m_tabs = new QTabWidget(this);
     buildStationPage();
     buildDevicePage();
@@ -104,6 +104,17 @@ StationPropertyEditor::StationPropertyEditor(StationDocument* document,
             child->setSizePolicy(policy);
         }
     }
+
+    const auto markPending = [this] { markPendingChanges(); };
+    for (auto* edit : {m_deviceIdEdit, m_deviceTypeEdit, m_driverIdEdit,
+                       m_addressEdit}) {
+        connect(edit, &QLineEdit::textEdited, this, markPending);
+    }
+    connect(m_pluginCombo, &QComboBox::currentIndexChanged, this, markPending);
+    connect(m_timeoutSpin, &QSpinBox::valueChanged, this, markPending);
+    connect(m_lifetimeCombo, &QComboBox::currentIndexChanged, this, markPending);
+    connect(m_enabledCheck, &QAbstractButton::toggled, this, markPending);
+    connect(m_optionsEdit, &QPlainTextEdit::textChanged, this, markPending);
 
     connect(m_document, &StationDocument::documentChanged,
             this, &StationPropertyEditor::reload);
@@ -138,15 +149,7 @@ void StationPropertyEditor::buildStationPage()
     m_stationError->setStyleSheet(QStringLiteral("color: #d9534f;"));
     m_stationError->hide();
     layout->addWidget(m_stationError);
-    auto* commands = new QHBoxLayout;
-    commands->addStretch(1);
-    m_applyStationButton = new QPushButton(tr("Apply"), content);
-    m_applyStationButton->setObjectName(QStringLiteral("applyStationPropertiesButton"));
-    commands->addWidget(m_applyStationButton);
-    layout->addLayout(commands);
     layout->addStretch(1);
-    connect(m_applyStationButton, &QPushButton::clicked,
-            this, &StationPropertyEditor::applyStation);
     m_tabs->addTab(scrollPage(content, m_tabs), tr("Station"));
 }
 
@@ -193,26 +196,46 @@ void StationPropertyEditor::buildDevicePage()
     form->addRow(tr("Options (JSON)"), m_optionsEdit);
     layout->addLayout(form);
     m_deviceError = new QLabel(content);
+    m_deviceError->setObjectName(QStringLiteral("devicePropertyError"));
     m_deviceError->setWordWrap(true);
     m_deviceError->setStyleSheet(QStringLiteral("color: #d9534f;"));
     m_deviceError->hide();
     layout->addWidget(m_deviceError);
-    auto* commands = new QHBoxLayout;
-    commands->addStretch(1);
-    m_applyDeviceButton = new QPushButton(tr("Apply"), content);
-    m_applyDeviceButton->setObjectName(QStringLiteral("applyDevicePropertiesButton"));
-    commands->addWidget(m_applyDeviceButton);
-    layout->addLayout(commands);
     layout->addStretch(1);
-    connect(m_applyDeviceButton, &QPushButton::clicked,
-            this, &StationPropertyEditor::applyDevice);
     m_tabs->addTab(scrollPage(content, m_tabs), tr("Device"));
 }
 
 void StationPropertyEditor::setCurrentDevice(int row)
 {
+    if (row == m_currentRow && m_pendingChanges) {
+        return;
+    }
     m_currentRow = row;
     loadDevice();
+}
+
+bool StationPropertyEditor::hasPendingChanges() const
+{
+    return m_pendingChanges;
+}
+
+bool StationPropertyEditor::commitPendingChanges()
+{
+    if (!m_pendingChanges) {
+        return true;
+    }
+    return commitDevice();
+}
+
+void StationPropertyEditor::discardPendingChanges()
+{
+    setPendingChanges(false);
+    loadDevice();
+}
+
+int StationPropertyEditor::currentDeviceRow() const
+{
+    return m_currentRow;
 }
 
 void StationPropertyEditor::setEditable(bool editable)
@@ -224,7 +247,9 @@ void StationPropertyEditor::setEditable(bool editable)
         }
     }
     m_tabs->setEnabled(true);
-    loadDevice();
+    if (!m_pendingChanges) {
+        loadDevice();
+    }
 }
 
 void StationPropertyEditor::setStationPageVisible(bool visible)
@@ -237,6 +262,7 @@ void StationPropertyEditor::setStationPageVisible(bool visible)
 
 void StationPropertyEditor::setPluginRegistry(QVector<PluginManifest> plugins)
 {
+    m_loading = true;
     m_plugins = std::move(plugins);
     m_pluginCombo->clear();
     m_pluginCombo->addItem(tr("Manual / legacy driver"), QString());
@@ -245,6 +271,7 @@ void StationPropertyEditor::setPluginRegistry(QVector<PluginManifest> plugins)
             QStringLiteral("%1 / %2").arg(plugin.category, plugin.name),
             plugin.moduleId);
     }
+    m_loading = false;
     loadDevice();
 }
 
@@ -275,11 +302,14 @@ bool StationPropertyEditor::focusField(const QString& path)
 void StationPropertyEditor::reload()
 {
     loadStation();
-    loadDevice();
+    if (!m_pendingChanges) {
+        loadDevice();
+    }
 }
 
 void StationPropertyEditor::loadStation()
 {
+    m_loading = true;
     const auto root = m_document ? m_document->rootObject() : QJsonObject{};
     const bool valid = !root.isEmpty();
     m_stationIdEdit->setText(valueWithAlias(root, "stationId", "id"));
@@ -287,12 +317,13 @@ void StationPropertyEditor::loadStation()
     m_scanDialogEnabledCheck->setChecked(
         root.value("scanDialogEnabled").toBool(true));
     m_metadataEdit->setPlainText(objectText(root.value("metadata").toObject()));
-    m_applyStationButton->setEnabled(m_editable && valid);
     m_stationError->hide();
+    m_loading = false;
 }
 
 void StationPropertyEditor::loadDevice()
 {
+    m_loading = true;
     const auto device = m_document ? m_document->deviceAt(m_currentRow) : QJsonObject{};
     const bool valid = !device.isEmpty();
     m_deviceIdEdit->setText(valueWithAlias(device, "deviceId", "id"));
@@ -316,24 +347,24 @@ void StationPropertyEditor::loadDevice()
     for (auto* widget : deviceFields) {
         widget->setEnabled(m_editable && valid);
     }
-    m_applyDeviceButton->setEnabled(m_editable && valid);
     m_deviceError->hide();
+    m_loading = false;
 }
 
-void StationPropertyEditor::applyStation()
+bool StationPropertyEditor::commitStation()
 {
     if (!m_document || m_document->isEmpty()) {
-        return;
+        return false;
     }
     if (m_stationIdEdit->text().trimmed().isEmpty()) {
         showStationError(tr("Station ID cannot be empty"));
-        return;
+        return false;
     }
     QJsonObject metadata;
     QString parseError;
     if (!parseObject(m_metadataEdit->toPlainText(), metadata, parseError)) {
         showStationError(tr("Metadata: %1").arg(parseError));
-        return;
+        return false;
     }
 
     auto root = m_document->rootObject();
@@ -347,30 +378,39 @@ void StationPropertyEditor::applyStation()
     if (changed) {
         emit stationApplied();
     }
+    return true;
 }
 
-void StationPropertyEditor::applyDevice()
+bool StationPropertyEditor::commitDevice()
 {
     if (!m_document || m_currentRow < 0) {
-        return;
+        return false;
+    }
+    const int appliedRow = m_currentRow;
+    const auto originalDevice = m_document->deviceAt(appliedRow);
+    if (originalDevice.isEmpty()) {
+        showDeviceError(tr("The selected device no longer exists"));
+        return false;
     }
     if (m_deviceIdEdit->text().trimmed().isEmpty()) {
         showDeviceError(tr("Logical device ID cannot be empty"));
-        return;
+        return false;
     }
     if (m_driverIdEdit->text().trimmed().isEmpty() &&
         m_pluginCombo->currentData().toString().isEmpty()) {
         showDeviceError(tr("Driver ID cannot be empty"));
-        return;
+        return false;
     }
     QJsonObject options;
     QString parseError;
     if (!parseObject(m_optionsEdit->toPlainText(), options, parseError)) {
         showDeviceError(tr("Options: %1").arg(parseError));
-        return;
+        return false;
     }
 
-    auto device = m_document->deviceAt(m_currentRow);
+    auto device = originalDevice;
+    const auto originalDriverId = valueWithAlias(device, "driverId", "driver").trimmed();
+    const auto originalPluginPath = device.value("pluginPath").toString().trimmed();
     const auto selectedModuleId = m_pluginCombo->currentData().toString();
     if (!selectedModuleId.isEmpty()) {
         const auto iterator = std::find_if(
@@ -381,7 +421,12 @@ void StationPropertyEditor::applyDevice()
         if (iterator != m_plugins.cend()) {
             m_driverIdEdit->setText(iterator->moduleId);
             m_deviceTypeEdit->setText(iterator->category);
-            device.insert("pluginPath", iterator->dllPath);
+            // Applying enable/address/options changes must not silently replace a
+            // deployed DLL with the catalog's source/build copy. Only a real
+            // plugin-model change (or a missing binding) owns pluginPath.
+            if (selectedModuleId != originalDriverId || originalPluginPath.isEmpty()) {
+                device.insert("pluginPath", iterator->dllPath);
+            }
         }
     } else {
         device.remove("pluginPath");
@@ -398,12 +443,41 @@ void StationPropertyEditor::applyDevice()
     device.insert("timeoutMs", m_timeoutSpin->value());
     device.insert("enabled", m_enabledCheck->isChecked());
     device.insert("options", options);
-    if (!m_document->replaceDevice(m_currentRow, std::move(device))) {
-        showDeviceError(tr("The selected device no longer exists"));
-        return;
+    if (device == originalDevice) {
+        m_deviceError->hide();
+        setPendingChanges(false);
+        return true;
+    }
+    if (!m_document->replaceDevice(appliedRow, std::move(device))) {
+        showDeviceError(m_document->deviceAt(appliedRow).isEmpty()
+                            ? tr("The selected device no longer exists")
+                            : tr("Unable to update the selected device"));
+        return false;
     }
     m_deviceError->hide();
-    emit deviceApplied(m_currentRow);
+    setPendingChanges(false);
+    loadDevice();
+    emit deviceApplied(appliedRow);
+    return true;
+}
+
+void StationPropertyEditor::markPendingChanges()
+{
+    if (!m_loading && m_editable && m_currentRow >= 0) {
+        setPendingChanges(true);
+    }
+}
+
+void StationPropertyEditor::setPendingChanges(bool pending)
+{
+    if (m_pendingChanges == pending) {
+        return;
+    }
+    m_pendingChanges = pending;
+    if (m_title) {
+        m_title->setText(m_pendingChanges ? tr("Properties *") : tr("Properties"));
+    }
+    emit pendingChangesChanged(m_pendingChanges);
 }
 
 void StationPropertyEditor::showStationError(const QString& message)

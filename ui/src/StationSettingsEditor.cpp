@@ -57,12 +57,12 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     layout->setContentsMargins(12, 8, 12, 12);
     layout->setSpacing(10);
 
-    auto* title = new QLabel(tr("Basic Settings"), this);
-    auto titleFont = title->font();
+    m_title = new QLabel(tr("Basic Settings"), this);
+    auto titleFont = m_title->font();
     titleFont.setBold(true);
     titleFont.setPointSize(titleFont.pointSize() + 1);
-    title->setFont(titleFont);
-    layout->addWidget(title);
+    m_title->setFont(titleFont);
+    layout->addWidget(m_title);
 
     auto* form = new QFormLayout;
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
@@ -109,12 +109,13 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_errorLabel->hide();
     layout->addWidget(m_errorLabel);
 
-    m_applyButton = new QPushButton(tr("Apply"), this);
-    m_applyButton->setObjectName(QStringLiteral("applyStationSettingsButton"));
-    layout->addWidget(m_applyButton);
-
-    connect(m_applyButton, &QPushButton::clicked,
-            this, &StationSettingsEditor::apply);
+    const auto markPending = [this] { markPendingChanges(); };
+    connect(m_stationIdEdit, &QLineEdit::textEdited, this, markPending);
+    connect(m_stationNameEdit, &QLineEdit::textEdited, this, markPending);
+    connect(m_stopOnFailureSwitch, &QAbstractButton::toggled, this, markPending);
+    connect(m_scanDialogSwitch, &QAbstractButton::toggled, this, markPending);
+    connect(m_snLengthSpin, &QSpinBox::valueChanged, this, markPending);
+    connect(m_metadataEdit, &QPlainTextEdit::textChanged, this, markPending);
     if (m_document) {
         connect(m_document, &StationDocument::documentChanged,
                 this, &StationSettingsEditor::reload);
@@ -125,6 +126,62 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
 void StationSettingsEditor::setEditable(bool editable)
 {
     m_editable = editable;
+    const bool valid = m_document && !m_document->isEmpty();
+    for (auto* field : {static_cast<QWidget*>(m_stationIdEdit),
+                        static_cast<QWidget*>(m_stationNameEdit),
+                        static_cast<QWidget*>(m_stopOnFailureSwitch),
+                        static_cast<QWidget*>(m_scanDialogSwitch),
+                        static_cast<QWidget*>(m_snLengthSpin),
+                        static_cast<QWidget*>(m_metadataEdit)}) {
+        field->setEnabled(m_editable && valid);
+    }
+    if (!m_pendingChanges) {
+        reload();
+    }
+}
+
+bool StationSettingsEditor::hasPendingChanges() const
+{
+    return m_pendingChanges;
+}
+
+bool StationSettingsEditor::commitPendingChanges()
+{
+    if (!m_pendingChanges) {
+        return true;
+    }
+    if (!m_document || m_document->isEmpty()) {
+        return false;
+    }
+    if (m_stationIdEdit->text().trimmed().isEmpty()) {
+        showError(tr("Station ID cannot be empty"));
+        return false;
+    }
+    QJsonObject metadata;
+    QString parseError;
+    if (!parseObject(m_metadataEdit->toPlainText(), metadata, parseError)) {
+        showError(tr("Metadata: %1").arg(parseError));
+        return false;
+    }
+
+    auto root = m_document->rootObject();
+    root.insert(QStringLiteral("stationId"), m_stationIdEdit->text().trimmed());
+    root.remove(QStringLiteral("id"));
+    root.insert(QStringLiteral("name"), m_stationNameEdit->text().trimmed());
+    root.insert(QStringLiteral("stopOnFailure"), m_stopOnFailureSwitch->isChecked());
+    root.insert(QStringLiteral("scanDialogEnabled"), m_scanDialogSwitch->isChecked());
+    root.insert(QStringLiteral("snLength"), m_snLengthSpin->value());
+    root.insert(QStringLiteral("metadata"), metadata);
+    m_document->replaceRootObject(std::move(root));
+    m_errorLabel->hide();
+    setPendingChanges(false);
+    reload();
+    return true;
+}
+
+void StationSettingsEditor::discardPendingChanges()
+{
+    setPendingChanges(false);
     reload();
 }
 
@@ -153,6 +210,10 @@ bool StationSettingsEditor::focusField(const QString& path)
 
 void StationSettingsEditor::reload()
 {
+    if (m_pendingChanges) {
+        return;
+    }
+    m_loading = true;
     const auto root = m_document ? m_document->rootObject() : QJsonObject{};
     const bool valid = !root.isEmpty();
     m_stationIdEdit->setText(root.value(QStringLiteral("stationId")).toString(
@@ -175,36 +236,29 @@ void StationSettingsEditor::reload()
                         static_cast<QWidget*>(m_metadataEdit)}) {
         field->setEnabled(m_editable && valid);
     }
-    m_applyButton->setEnabled(m_editable && valid);
     m_errorLabel->hide();
+    m_loading = false;
 }
 
-void StationSettingsEditor::apply()
+void StationSettingsEditor::markPendingChanges()
 {
-    if (!m_document || m_document->isEmpty()) {
-        return;
+    if (!m_loading && m_editable) {
+        setPendingChanges(true);
     }
-    if (m_stationIdEdit->text().trimmed().isEmpty()) {
-        showError(tr("Station ID cannot be empty"));
-        return;
-    }
-    QJsonObject metadata;
-    QString parseError;
-    if (!parseObject(m_metadataEdit->toPlainText(), metadata, parseError)) {
-        showError(tr("Metadata: %1").arg(parseError));
-        return;
-    }
+}
 
-    auto root = m_document->rootObject();
-    root.insert(QStringLiteral("stationId"), m_stationIdEdit->text().trimmed());
-    root.remove(QStringLiteral("id"));
-    root.insert(QStringLiteral("name"), m_stationNameEdit->text().trimmed());
-    root.insert(QStringLiteral("stopOnFailure"), m_stopOnFailureSwitch->isChecked());
-    root.insert(QStringLiteral("scanDialogEnabled"), m_scanDialogSwitch->isChecked());
-    root.insert(QStringLiteral("snLength"), m_snLengthSpin->value());
-    root.insert(QStringLiteral("metadata"), metadata);
-    m_document->replaceRootObject(std::move(root));
-    m_errorLabel->hide();
+void StationSettingsEditor::setPendingChanges(bool pending)
+{
+    if (m_pendingChanges == pending) {
+        return;
+    }
+    m_pendingChanges = pending;
+    if (m_title) {
+        m_title->setText(m_pendingChanges
+                             ? tr("Basic Settings *")
+                             : tr("Basic Settings"));
+    }
+    emit pendingChangesChanged(m_pendingChanges);
 }
 
 void StationSettingsEditor::showError(const QString& message)

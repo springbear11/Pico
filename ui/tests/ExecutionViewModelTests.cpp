@@ -355,6 +355,7 @@ private slots:
     void sequenceDocumentDestructionSilencesUndoStack();
     void sequenceDiagnosticPathsResolveNestedFields();
     void sequenceTreeModelBuildsHierarchyAndEditsSteps();
+    void sequenceTreeModelShowsInheritedDisabledState();
     void sequenceTreeModelTogglesTransientBreakpoints();
     void sequenceTreeModelMovesAcrossValidParents();
     void stationDocumentPreservesUnknownFieldsAndUndoHistory();
@@ -744,6 +745,30 @@ void ExecutionViewModelTests::startupSupportDiscoversSequencesAndValidatesDailyP
     QVERIFY(StartupSupport::validateSelection(
         UiMode::Admin, sequencePath, stationPath, QStringLiteral("40"),
         QDate(2026, 7, 10)).ok());
+
+    QVERIFY(station.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    station.write(R"({
+        "stationId": "station-test",
+        "devices": [{
+            "deviceId": "CAN1",
+            "deviceType": "CAN",
+            "enabled": true,
+            "driverId": "",
+            "address": ""
+        }]
+    })");
+    station.close();
+
+    const auto invalidTestStation = StartupSupport::validateSelection(
+        UiMode::Test, sequencePath, stationPath);
+    QVERIFY(!invalidTestStation.ok());
+    QVERIFY(invalidTestStation.errors.join(QStringLiteral("\n"))
+                .contains(QStringLiteral("driver"), Qt::CaseInsensitive));
+    const auto adminRepairAccess = StartupSupport::validateSelection(
+        UiMode::Admin, sequencePath, stationPath, QStringLiteral("40"),
+        QDate(2026, 7, 10));
+    QVERIFY2(adminRepairAccess.ok(),
+             qPrintable(adminRepairAccess.errors.join(QStringLiteral("\n"))));
 }
 
 void ExecutionViewModelTests::pluginCatalogParsesGcanManifestAndCreatesSteps()
@@ -992,6 +1017,17 @@ void ExecutionViewModelTests::pluginCatalogValidatesStationBindings()
     QVERIFY(hasDiagnostic(QStringLiteral("devices[2].driverId"), true));
     QVERIFY(hasDiagnostic(QStringLiteral("devices[3].pluginPath"), false));
     QVERIFY(hasDiagnostic(QStringLiteral("devices[4].pluginPath"), false));
+    const auto conflict = std::find_if(
+        diagnostics.cbegin(), diagnostics.cend(),
+        [](const PluginBindingDiagnostic& diagnostic) {
+            return diagnostic.path == QStringLiteral("devices[3].pluginPath");
+        });
+    QVERIFY(conflict != diagnostics.cend());
+    QVERIFY(conflict->message.contains(QStringLiteral("plugin.can.gcan")));
+    QVERIFY(conflict->message.contains(QStringLiteral("CAN1")));
+    QVERIFY(conflict->message.contains(QStringLiteral("CAN4")));
+    QVERIFY(conflict->message.contains(QDir::toNativeSeparators(firstDll)));
+    QVERIFY(conflict->message.contains(QDir::toNativeSeparators(secondDll)));
 }
 
 void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGeneratedStep()
@@ -1033,6 +1069,14 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     const auto plugin = functionModel.index(0, 0, category);
     QCOMPARE(plugin.data().toString(), QStringLiteral("GCAN USB-CAN"));
     QCOMPARE(functionModel.rowCount(plugin), 4);
+    const auto openFunction = functionModel.index(0, 0, plugin);
+    const auto openStep = functionModel.stepTemplate(openFunction);
+    QCOMPARE(openStep.value(QStringLiteral("moduleId")).toString(),
+             QStringLiteral("device"));
+    const auto openInputs = openStep.value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(openInputs.size(), 1);
+    QCOMPARE(openInputs.value(QStringLiteral("deviceId")).toString(),
+             QStringLiteral("CAN1"));
     const auto writeFunction = functionModel.index(1, 0, plugin);
     QCOMPARE(writeFunction.data(PluginFunctionModel::FunctionIdRole).toString(),
              QStringLiteral("write"));
@@ -2217,6 +2261,73 @@ void ExecutionViewModelTests::sequenceTreeModelBuildsHierarchyAndEditsSteps()
     QCOMPARE(groups.first().toObject().value("steps").toArray()
                  .last().toObject().value("id").toString(),
              QString("001"));
+}
+
+void ExecutionViewModelTests::sequenceTreeModelShowsInheritedDisabledState()
+{
+    SequenceDocument document;
+    QVERIFY(document.load(
+        QDir(QString::fromUtf8(PICOATE_UI_TEST_PROJECT_DIR))
+            .filePath("examples/test_item_sequence.json")));
+
+    SequenceTreeModel model(&document);
+    QAbstractItemModelTester tester(
+        &model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+
+    const auto mainGroup = model.index(0, SequenceTreeModel::NameColumn);
+    QVERIFY(mainGroup.isValid());
+    const auto groupEnabled = mainGroup.siblingAtColumn(
+        SequenceTreeModel::EnabledColumn);
+    QVERIFY(!groupEnabled.data(Qt::CheckStateRole).isValid());
+    QVERIFY(!(groupEnabled.flags() & Qt::ItemIsUserCheckable));
+
+    auto testItem = model.index(0, SequenceTreeModel::NameColumn, mainGroup);
+    const auto testItemPath = model.pathForIndex(testItem);
+    auto firstChild = model.index(0, SequenceTreeModel::NameColumn, testItem);
+    const auto firstChildPath = model.pathForIndex(firstChild);
+    QVERIFY(document.objectAt(firstChildPath)
+                .value(QStringLiteral("enabled")).toBool(true));
+
+    QVERIFY(model.setData(
+        testItem.siblingAtColumn(SequenceTreeModel::EnabledColumn),
+        Qt::Unchecked,
+        Qt::CheckStateRole));
+
+    testItem = model.indexForPath(testItemPath);
+    firstChild = model.indexForPath(firstChildPath);
+    QVERIFY(testItem.isValid());
+    QVERIFY(firstChild.isValid());
+    QCOMPARE(testItem.data(SequenceTreeModel::EffectiveEnabledRole).toBool(),
+             false);
+    QCOMPARE(firstChild.data(SequenceTreeModel::EffectiveEnabledRole).toBool(),
+             false);
+    QCOMPARE(firstChild.data(
+                 SequenceTreeModel::DisabledByAncestorRole).toBool(),
+             true);
+    QCOMPARE(firstChild.siblingAtColumn(SequenceTreeModel::EnabledColumn)
+                 .data(Qt::CheckStateRole).toInt(),
+             int(Qt::Unchecked));
+    QVERIFY(!(firstChild.siblingAtColumn(SequenceTreeModel::EnabledColumn)
+                  .flags() & Qt::ItemIsUserCheckable));
+    QVERIFY(!(firstChild.siblingAtColumn(SequenceTreeModel::EnabledColumn)
+                  .flags() & Qt::ItemIsEnabled));
+    QVERIFY(firstChild.data(Qt::FontRole).value<QFont>().strikeOut());
+    QVERIFY(firstChild.data(Qt::ForegroundRole).isValid());
+    QVERIFY(firstChild.data(Qt::BackgroundRole).isValid());
+    QVERIFY(document.objectAt(firstChildPath)
+                .value(QStringLiteral("enabled")).toBool(true));
+
+    QVERIFY(model.setData(
+        testItem.siblingAtColumn(SequenceTreeModel::EnabledColumn),
+        Qt::Checked,
+        Qt::CheckStateRole));
+    firstChild = model.indexForPath(firstChildPath);
+    QCOMPARE(firstChild.data(SequenceTreeModel::EffectiveEnabledRole).toBool(),
+             true);
+    QCOMPARE(firstChild.siblingAtColumn(SequenceTreeModel::EnabledColumn)
+                 .data(Qt::CheckStateRole).toInt(),
+             int(Qt::Checked));
+    QVERIFY(!firstChild.data(Qt::FontRole).isValid());
 }
 
 void ExecutionViewModelTests::sequenceTreeModelTogglesTransientBreakpoints()

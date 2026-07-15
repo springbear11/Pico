@@ -1,6 +1,7 @@
 #include "SequenceTreeModel.h"
 #include "PluginFunctionModel.h"
 
+#include <QColor>
 #include <QFont>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -157,7 +158,19 @@ QVariant SequenceTreeModel::data(const QModelIndex& modelIndex, int role) const
     if (role == JsonPathRole) {
         return item->path.jsonPath();
     }
+    if (role == EffectiveEnabledRole) {
+        return item->effectiveEnabled;
+    }
+    if (role == DisabledByAncestorRole) {
+        return item->disabledByAncestor;
+    }
     if (role == Qt::CheckStateRole && modelIndex.column() == EnabledColumn) {
+        if (item->type == ItemType::Group) {
+            return {};
+        }
+        if (item->disabledByAncestor) {
+            return Qt::Unchecked;
+        }
         return itemEnabled(item->object) ? Qt::Checked : Qt::Unchecked;
     }
     if (role == Qt::CheckStateRole && modelIndex.column() == BreakpointColumn &&
@@ -166,12 +179,30 @@ QVariant SequenceTreeModel::data(const QModelIndex& modelIndex, int role) const
             ? Qt::Checked
             : Qt::Unchecked;
     }
-    if (role == Qt::FontRole && item->nodePath == m_currentDebugNodePath) {
+    if (role == Qt::FontRole &&
+        (item->nodePath == m_currentDebugNodePath || !item->effectiveEnabled)) {
         QFont font;
-        font.setBold(true);
+        font.setBold(item->nodePath == m_currentDebugNodePath);
+        font.setStrikeOut(item->type == ItemType::Step &&
+                          !item->effectiveEnabled);
+        font.setItalic(item->disabledByAncestor);
         return font;
     }
+    if (role == Qt::ForegroundRole && !item->effectiveEnabled) {
+        return QColor(QStringLiteral("#737d87"));
+    }
+    if (role == Qt::BackgroundRole && !item->effectiveEnabled) {
+        return QColor(QStringLiteral("#eef1f3"));
+    }
     if (role == Qt::ToolTipRole) {
+        if (item->disabledByAncestor) {
+            return tr("Inactive because a parent TestItem or Loop is disabled");
+        }
+        if (!item->effectiveEnabled) {
+            return item->type == ItemType::Group
+                ? tr("This group is disabled in the sequence JSON")
+                : tr("This step is disabled and will not run");
+        }
         if (item->type == ItemType::Group) {
             return tr("Drop steps here; drag rows to reorder the group");
         }
@@ -246,6 +277,9 @@ bool SequenceTreeModel::setData(const QModelIndex& modelIndex,
     if (modelIndex.column() != EnabledColumn) {
         return false;
     }
+    if (item->type != ItemType::Step || item->disabledByAncestor) {
+        return false;
+    }
     return m_document->setItemValue(
         item->path, "enabled", value.toInt() == Qt::Checked);
 }
@@ -268,7 +302,13 @@ Qt::ItemFlags SequenceTreeModel::flags(const QModelIndex& modelIndex) const
         itemType(modelIndex) == ItemType::Step) {
         result |= Qt::ItemIsUserCheckable;
     }
-    if (modelIndex.column() == EnabledColumn) {
+    auto* item = itemForIndex(modelIndex);
+    if (modelIndex.column() == EnabledColumn && item &&
+        item->disabledByAncestor) {
+        result &= ~Qt::ItemIsEnabled;
+    }
+    if (modelIndex.column() == EnabledColumn && item &&
+        item->type == ItemType::Step && !item->disabledByAncestor) {
         result |= Qt::ItemIsUserCheckable;
     }
     return result;
@@ -489,10 +529,14 @@ void SequenceTreeModel::rebuild()
             group->type = ItemType::Group;
             group->path.groupIndex = groupIndex;
             group->object = groups[groupIndex].toObject();
+            group->effectiveEnabled = itemEnabled(group->object);
             group->parent = m_root.get();
             appendSteps(*group,
                         group->object.value("steps").toArray(),
-                        group->path);
+                        group->path,
+                        {},
+                        {},
+                        group->effectiveEnabled);
             m_root->children.push_back(std::move(group));
         }
     }
@@ -503,7 +547,8 @@ void SequenceTreeModel::appendSteps(Item& parent,
                                     const QJsonArray& steps,
                                     const SequenceItemPath& parentPath,
                                     const QString& parentNodePath,
-                                    const QString& parentLocalPath)
+                                    const QString& parentLocalPath,
+                                    bool parentEffectiveEnabled)
 {
     for (int index = 0; index < steps.size(); ++index) {
         if (!steps[index].isObject()) {
@@ -517,12 +562,16 @@ void SequenceTreeModel::appendSteps(Item& parent,
         child->object = steps[index].toObject();
         child->nodePath = childNodePath(parentNodePath, child->object);
         child->localPath = childLocalPath(parentLocalPath, child->object);
+        child->disabledByAncestor = !parentEffectiveEnabled;
+        child->effectiveEnabled = parentEffectiveEnabled &&
+                                  itemEnabled(child->object);
         child->parent = &parent;
         appendSteps(*child,
                     child->object.value("steps").toArray(),
                     child->path,
                     child->nodePath,
-                    child->localPath);
+                    child->localPath,
+                    child->effectiveEnabled);
         parent.children.push_back(std::move(child));
     }
 }

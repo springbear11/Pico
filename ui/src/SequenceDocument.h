@@ -75,6 +75,11 @@ public:
     bool removeStep(const SequenceItemPath& path);
     bool removeSteps(QVector<SequenceItemPath> paths);
     bool setStepsEnabled(const QVector<SequenceItemPath>& paths, bool enabled);
+    QVector<QJsonObject> copiedSteps(QVector<SequenceItemPath> paths) const;
+    bool pasteSteps(const SequenceItemPath& parentPath,
+                    int row,
+                    const QVector<QJsonObject>& steps,
+                    QVector<SequenceItemPath>* pastedPaths = nullptr);
     bool duplicateStep(const SequenceItemPath& path);
     bool duplicateSteps(QVector<SequenceItemPath> paths);
     bool moveStep(const SequenceItemPath& path, int offset);

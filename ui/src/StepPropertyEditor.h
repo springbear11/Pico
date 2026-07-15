@@ -16,7 +16,6 @@ class QLabel;
 class QLineEdit;
 class QMenu;
 class QPlainTextEdit;
-class QPushButton;
 class QSpinBox;
 class QTabWidget;
 
@@ -36,10 +35,15 @@ public:
     void setEditable(bool editable);
     void setPluginRegistry(QVector<PluginManifest> plugins);
     void setDevicePluginBindings(QHash<QString, QString> pluginByDeviceId);
+    void setDeviceConfigurations(QHash<QString, QJsonObject> deviceConfigurations);
     bool focusField(const QString& fieldPath);
+    bool hasPendingChanges() const;
+    bool commitPendingChanges();
+    void discardPendingChanges();
 
 signals:
     void itemApplied(const PicoATE::Ui::SequenceItemPath& path);
+    void pendingChangesChanged(bool pending);
 
 private:
     void buildGeneralPage();
@@ -49,11 +53,13 @@ private:
     void updateKindRows();
     void updateLimitRows();
     void rebuildPluginInputEditors();
+    void observeDraftWidget(QWidget* widget);
+    void markDraftDirty();
+    void setDraftDirty(bool dirty);
     QWidget* wrapExpressionEditor(QLineEdit* editor);
     void rebuildExpressionMenu(QMenu* menu, QLineEdit* editor);
     const PluginFunctionDefinition* currentPluginFunction() const;
     bool mergePluginInputValues(QJsonObject& inputs, QString& errorMessage) const;
-    void applyChanges();
     void showError(const QString& message);
 
     QPointer<SequenceDocument> m_document;
@@ -64,12 +70,15 @@ private:
     bool m_isGroup = false;
     bool m_loading = false;
     bool m_editable = true;
+    bool m_draftDirty = false;
     QVector<PluginManifest> m_plugins;
     QHash<QString, QString> m_pluginByDeviceId;
+    QHash<QString, QJsonObject> m_deviceConfigurations;
 
     struct PluginInputEditor {
         PluginParameterDefinition definition;
         QWidget* widget = nullptr;
+        bool inheritedFromStation = false;
     };
     QVector<PluginInputEditor> m_pluginInputEditors;
 
@@ -77,8 +86,6 @@ private:
     QLabel* m_emptyLabel = nullptr;
     QTabWidget* m_tabs = nullptr;
     QLabel* m_errorLabel = nullptr;
-    QPushButton* m_applyButton = nullptr;
-
     QFormLayout* m_generalForm = nullptr;
     QLineEdit* m_idEdit = nullptr;
     QLineEdit* m_keyEdit = nullptr;

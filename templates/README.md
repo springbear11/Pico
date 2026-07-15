@@ -15,6 +15,7 @@ templates/
 ├── CAN/
 │   ├── CanAdapter.h             # CAN 统一抽象：open/close/read/write
 │   ├── CanPluginBridge.cpp      # CAN JSON -> 抽象接口通用桥
+│   ├── CX/                      # 创芯 ControlCAN 动态库实现
 │   ├── GCAN/                    # 广成具体实现
 │   └── ZLG/                     # 周立功实现预留目录
 ├── VISA/
@@ -51,6 +52,7 @@ cmake --build --preset vs2022-release
 
 ```text
 bin/Debug/PicoATE.CAN.GCAN.dll
+bin/Debug/PicoATE.CAN.CX.dll
 bin/Release/...
 ```
 
@@ -95,6 +97,7 @@ dependencies/<类别>/<厂商>/x64/
 dependencies/CAN/GCAN/x64/ECanVci64.dll
 dependencies/CAN/GCAN/x64/CHUSBDLL64.dll
 dependencies/CAN/GCAN/x64/msvcr120.dll
+dependencies/CAN/CX/x64/ControlCAN.dll
 ```
 
 这里保存的是用户态运行库；真实硬件的 Windows 驱动仍需正常安装。

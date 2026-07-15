@@ -14,6 +14,7 @@
 
 class QAction;
 class QCloseEvent;
+class QEvent;
 class QLineEdit;
 class QLabel;
 class QMenu;
@@ -59,6 +60,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     void buildActions();
@@ -66,19 +68,30 @@ private:
     void chooseSequence();
     void chooseStation();
     bool maybeSaveSequence();
+    bool confirmAndSaveSequence();
+    bool resolvePendingStepChanges();
     bool saveSequence();
     bool saveSequenceAs();
     bool maybeSaveStation();
+    bool confirmAndSaveStation();
+    bool resolvePendingStationChanges();
+    bool resolvePendingStationDeviceChanges();
+    bool commitPendingStationChanges();
+    void discardPendingStationChanges();
+    void saveActiveDocument();
+    bool isStationWorkspaceActive() const;
     bool saveStation();
     bool saveStationAs();
     void addSequenceStep();
     void deleteSequenceStep();
-    void duplicateSequenceStep();
+    void copySequenceSteps();
+    void pasteSequenceSteps();
     void wrapSelectedStepsInTestItem();
     void setSelectedSequenceStepsEnabled(bool enabled);
     QVector<SequenceItemPath> selectedSequenceStepPaths() const;
     void moveSequenceStep(int offset);
     void applyUndoRedo(bool redo);
+    void compileSequence();
     void runSequence();
     void runScannedUut(const QString& serialNumber);
     void showScanDialog();
@@ -93,11 +106,17 @@ private:
     void testSelectedStationDevice();
     void synchronizeSequenceSnapshot();
     void synchronizeStationSnapshot();
+    void captureSequenceTreeViewState();
+    void restoreSequenceTreeViewState();
     void updateSequenceEditor();
     void updateStationEditor();
+    void refreshEditorDiagnostics();
     QVector<UiDiagnostic> stationPluginDiagnostics() const;
+    QVector<UiDiagnostic> stationFlowDiagnostics() const;
+    QVector<UiDiagnostic> stationEditorDiagnostics() const;
     void focusSequenceDiagnostic(const QModelIndex& index);
     void focusStationDiagnostic(const QModelIndex& index);
+    void focusStationDiagnosticValue(const UiDiagnostic& diagnostic);
     void updateWindowTitle();
     void updateCommandState();
     void updateDiagnostics();
@@ -156,7 +175,8 @@ private:
     QAction* m_redoAction = nullptr;
     QAction* m_addStepAction = nullptr;
     QAction* m_deleteStepAction = nullptr;
-    QAction* m_duplicateStepAction = nullptr;
+    QAction* m_copyStepAction = nullptr;
+    QAction* m_pasteStepAction = nullptr;
     QAction* m_wrapTestItemAction = nullptr;
     QAction* m_enableStepsAction = nullptr;
     QAction* m_disableStepsAction = nullptr;
@@ -190,6 +210,8 @@ private:
     QSpinBox* m_uutCount = nullptr;
     QSpinBox* m_connectionTimeoutMs = nullptr;
     QTabWidget* m_workspaceTabs = nullptr;
+    QWidget* m_flowEditorPage = nullptr;
+    QWidget* m_stationEditorPage = nullptr;
     ScanDialog* m_scanDialog = nullptr;
     QLabel* m_adminSequenceLabel = nullptr;
     QLabel* m_adminSerialLabel = nullptr;
@@ -227,11 +249,19 @@ private:
     std::unique_ptr<ReportHistoryStore> m_historyStore;
     QStringList m_recentSequences;
     QStringList m_recentStations;
+    QVector<QJsonObject> m_sequenceClipboard;
     SequenceItemPath m_selectedSequencePath;
+    QVector<SequenceItemPath> m_expandedSequencePaths;
+    int m_sequenceTreeScrollValue = 0;
     int m_selectedStationDeviceRow = -1;
     bool m_currentReportSaved = false;
     bool m_currentAdminRunCounted = false;
     bool m_shuttingDown = false;
+    bool m_handlingSequenceSelection = false;
+    bool m_handlingStationSelection = false;
+    bool m_sequenceTreeStatePending = false;
+    bool m_expandSequenceTreeOnNextUpdate = true;
+    bool m_loadingSequenceFile = false;
     int m_adminTotalNodes = 0;
     int m_adminPassedUnits = 0;
     int m_adminFailedUnits = 0;

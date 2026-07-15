@@ -30,7 +30,9 @@ public:
 
     enum Role {
         ItemTypeRole = Qt::UserRole + 1,
-        JsonPathRole
+        JsonPathRole,
+        EffectiveEnabledRole,
+        DisabledByAncestorRole
     };
 
     enum class ItemType {
@@ -92,6 +94,8 @@ private:
         QJsonObject object;
         QString nodePath;
         QString localPath;
+        bool effectiveEnabled = true;
+        bool disabledByAncestor = false;
         Item* parent = nullptr;
         std::vector<std::unique_ptr<Item>> children;
     };
@@ -101,7 +105,8 @@ private:
                      const QJsonArray& steps,
                      const SequenceItemPath& parentPath,
                      const QString& parentNodePath = {},
-                     const QString& parentLocalPath = {});
+                     const QString& parentLocalPath = {},
+                     bool parentEffectiveEnabled = true);
     Item* itemForIndex(const QModelIndex& index) const;
     QModelIndex findIndex(const Item& parent,
                           const SequenceItemPath& path) const;

@@ -140,17 +140,21 @@ StartupValidationResult StartupSupport::validateSelection(
         }
     }
 
-    if (!QFileInfo::exists(stationPath)) {
-        result.errors.push_back(QStringLiteral("缺少 StationSystem.json：%1")
-                                    .arg(stationPath));
-    } else {
-        const auto station = PicoATE::Core::loadStationConfigFile(stationPath);
-        if (!station.ok()) {
-            for (const auto& error : station.errors) {
-                result.errors.push_back(
-                    error.path.isEmpty()
-                        ? error.message
-                        : QStringLiteral("%1：%2").arg(error.path, error.message));
+    // Station validity is a production-run gate, not an Admin access gate.
+    // Admin must remain available so an invalid or missing Station can be repaired.
+    if (mode == UiMode::Test) {
+        if (!QFileInfo::exists(stationPath)) {
+            result.errors.push_back(QStringLiteral("缺少 StationSystem.json：%1")
+                                        .arg(stationPath));
+        } else {
+            const auto station = PicoATE::Core::loadStationConfigFile(stationPath);
+            if (!station.ok()) {
+                for (const auto& error : station.errors) {
+                    result.errors.push_back(
+                        error.path.isEmpty()
+                            ? error.message
+                            : QStringLiteral("%1：%2").arg(error.path, error.message));
+                }
             }
         }
     }

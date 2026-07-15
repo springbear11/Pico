@@ -13,7 +13,6 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
-#include <QPushButton>
 #include <QScrollArea>
 #include <QSizePolicy>
 #include <QSpinBox>
@@ -292,14 +291,6 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
     m_errorLabel->hide();
     root->addWidget(m_errorLabel);
 
-    auto* commands = new QHBoxLayout;
-    commands->addStretch(1);
-    m_applyButton = new QPushButton(tr("Apply"), this);
-    m_applyButton->setObjectName(QStringLiteral("applyPropertiesButton"));
-    m_applyButton->setDefault(false);
-    commands->addWidget(m_applyButton);
-    root->addLayout(commands);
-
     connect(m_kindCombo,
             &QComboBox::currentIndexChanged,
             this,
@@ -308,8 +299,6 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
             &QComboBox::currentIndexChanged,
             this,
             [this] { if (!m_loading) updateLimitRows(); });
-    connect(m_applyButton, &QPushButton::clicked,
-            this, &StepPropertyEditor::applyChanges);
     connect(m_moduleIdEdit, &QLineEdit::editingFinished,
             this, &StepPropertyEditor::rebuildPluginInputEditors);
     connect(m_functionEdit, &QLineEdit::editingFinished,
@@ -326,6 +315,7 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
             child->setSizePolicy(policy);
             child->setMinimumWidth(0);
         }
+        observeDraftWidget(child);
     }
 
     setCurrentItem({});
@@ -334,6 +324,64 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
 SequenceItemPath StepPropertyEditor::currentPath() const
 {
     return m_path;
+}
+
+bool StepPropertyEditor::hasPendingChanges() const
+{
+    return m_draftDirty && m_path.isValid() && !m_previewing;
+}
+
+void StepPropertyEditor::discardPendingChanges()
+{
+    if (hasPendingChanges()) {
+        loadCurrentObject();
+    }
+}
+
+void StepPropertyEditor::observeDraftWidget(QWidget* widget)
+{
+    if (!widget || widget->property("picoateDraftObserved").toBool()) {
+        return;
+    }
+    widget->setProperty("picoateDraftObserved", true);
+    if (auto* edit = qobject_cast<QLineEdit*>(widget)) {
+        connect(edit, &QLineEdit::textChanged, this,
+                [this] { markDraftDirty(); });
+    } else if (auto* edit = qobject_cast<QPlainTextEdit*>(widget)) {
+        connect(edit, &QPlainTextEdit::textChanged, this,
+                [this] { markDraftDirty(); });
+    } else if (auto* combo = qobject_cast<QComboBox*>(widget)) {
+        connect(combo, &QComboBox::currentIndexChanged, this,
+                [this] { markDraftDirty(); });
+    } else if (auto* check = qobject_cast<QCheckBox*>(widget)) {
+        connect(check, &QCheckBox::toggled, this,
+                [this] { markDraftDirty(); });
+    } else if (auto* spin = qobject_cast<QSpinBox*>(widget)) {
+        connect(spin, &QSpinBox::valueChanged, this,
+                [this] { markDraftDirty(); });
+    } else if (auto* spin = qobject_cast<QDoubleSpinBox*>(widget)) {
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                [this] { markDraftDirty(); });
+    }
+}
+
+void StepPropertyEditor::markDraftDirty()
+{
+    if (!m_loading && m_editable && m_path.isValid() && !m_previewing) {
+        setDraftDirty(true);
+    }
+}
+
+void StepPropertyEditor::setDraftDirty(bool dirty)
+{
+    if (m_draftDirty == dirty) {
+        return;
+    }
+    m_draftDirty = dirty;
+    m_titleLabel->setText(m_previewing
+        ? tr("Function Preview")
+        : (dirty ? tr("Properties *") : tr("Properties")));
+    emit pendingChangesChanged(dirty);
 }
 
 void StepPropertyEditor::setCurrentItem(const SequenceItemPath& path)
@@ -359,27 +407,26 @@ void StepPropertyEditor::setEditable(bool editable)
     const bool canEdit = editable && m_path.isValid() && !m_previewing;
     m_tabs->setEnabled(hasObject);
     for (auto* edit : m_tabs->findChildren<QLineEdit*>()) {
-        edit->setReadOnly(!canEdit);
+        edit->setReadOnly(!canEdit || edit->property("stationInherited").toBool());
     }
     for (auto* edit : m_tabs->findChildren<QPlainTextEdit*>()) {
         edit->setReadOnly(!canEdit);
     }
     for (auto* combo : m_tabs->findChildren<QComboBox*>()) {
-        combo->setEnabled(canEdit);
+        combo->setEnabled(canEdit && !combo->property("stationInherited").toBool());
     }
     for (auto* check : m_tabs->findChildren<QCheckBox*>()) {
-        check->setEnabled(canEdit);
+        check->setEnabled(canEdit && !check->property("stationInherited").toBool());
     }
     for (auto* spin : m_tabs->findChildren<QSpinBox*>()) {
-        spin->setEnabled(canEdit);
+        spin->setEnabled(canEdit && !spin->property("stationInherited").toBool());
     }
     for (auto* spin : m_tabs->findChildren<QDoubleSpinBox*>()) {
-        spin->setEnabled(canEdit);
+        spin->setEnabled(canEdit && !spin->property("stationInherited").toBool());
     }
     for (auto* button : m_tabs->findChildren<QToolButton*>()) {
-        button->setEnabled(canEdit);
+        button->setEnabled(canEdit && !button->property("stationInherited").toBool());
     }
-    m_applyButton->setEnabled(canEdit);
 }
 
 void StepPropertyEditor::setPluginRegistry(QVector<PluginManifest> plugins)
@@ -548,6 +595,7 @@ void StepPropertyEditor::buildGeneralPage()
     m_kindCombo->setObjectName(QStringLiteral("propertyKindCombo"));
     m_generalForm->addRow(tr("Kind"), m_kindCombo);
     m_enabledCheck = new QCheckBox(page);
+    m_enabledCheck->setObjectName(QStringLiteral("propertyEnabledCheck"));
     m_generalForm->addRow(tr("Enabled"), m_enabledCheck);
     m_alwaysRunCheck = new QCheckBox(page);
     m_generalForm->addRow(tr("Always run"), m_alwaysRunCheck);
@@ -770,9 +818,9 @@ void StepPropertyEditor::loadCurrentObject()
                                       : tr("Properties"));
     m_emptyLabel->setVisible(!valid);
     m_tabs->setVisible(valid);
-    m_applyButton->setVisible(valid && !m_previewing);
     if (!valid) {
         m_loading = false;
+        setDraftDirty(false);
         return;
     }
 
@@ -861,6 +909,7 @@ void StepPropertyEditor::loadCurrentObject()
     rebuildExpressionMenu(m_limitExpressionMenu, m_limitActualEdit);
 
     setFormRowVisible(m_generalForm, m_keyEdit, !m_isGroup);
+    setFormRowVisible(m_generalForm, m_enabledCheck, !m_isGroup);
     setFormRowVisible(m_generalForm, m_alwaysRunCheck, !m_isGroup);
     setFormRowVisible(m_generalForm, m_resultRecordingCheck, !m_isGroup);
     setFormRowVisible(m_generalForm, m_checkpointBeforeCheck, !m_isGroup);
@@ -873,6 +922,7 @@ void StepPropertyEditor::loadCurrentObject()
     }
     updateKindRows();
     m_loading = false;
+    setDraftDirty(false);
     setEditable(m_editable);
 }
 
@@ -990,6 +1040,13 @@ void StepPropertyEditor::setDevicePluginBindings(
     rebuildPluginInputEditors();
 }
 
+void StepPropertyEditor::setDeviceConfigurations(
+    QHash<QString, QJsonObject> deviceConfigurations)
+{
+    m_deviceConfigurations = std::move(deviceConfigurations);
+    rebuildPluginInputEditors();
+}
+
 void StepPropertyEditor::rebuildPluginInputEditors()
 {
     if (!m_pluginInputsForm || !m_pluginInputsGroup) {
@@ -1019,13 +1076,26 @@ void StepPropertyEditor::rebuildPluginInputEditors()
     QJsonObject currentInputs;
     QString ignoredError;
     parseObjectText(m_inputsEdit->toPlainText(), currentInputs, ignoredError);
-    m_pluginInputsGroup->setTitle(tr("Plugin Parameters - %1").arg(function->name));
+    const auto moduleId = m_moduleIdEdit->text().trimmed();
+    const auto functionId = m_functionEdit->text().trimmed();
+    const bool logicalDeviceConnection = moduleId == QStringLiteral("device") &&
+        (functionId.compare(QStringLiteral("open"), Qt::CaseInsensitive) == 0 ||
+         functionId.compare(QStringLiteral("connect"), Qt::CaseInsensitive) == 0 ||
+         functionId.compare(QStringLiteral("connectCan"), Qt::CaseInsensitive) == 0);
+    const auto deviceId = currentInputs.value(QStringLiteral("deviceId")).toString();
+    const auto stationInputs = m_deviceConfigurations.value(deviceId);
+    m_pluginInputsGroup->setTitle(logicalDeviceConnection
+        ? tr("Connection Parameters - Station Config")
+        : tr("Plugin Parameters - %1").arg(function->name));
 
     for (const auto& definition : function->inputs) {
         QVariant value;
         const auto current = currentInputs.value(definition.key);
+        const bool inheritedFromStation = logicalDeviceConnection && current.isUndefined();
         if (!current.isUndefined()) {
             value = current.toVariant();
+        } else if (inheritedFromStation && stationInputs.contains(definition.key)) {
+            value = stationInputs.value(definition.key).toVariant();
         } else if (definition.defaultValue.isValid()) {
             value = definition.defaultValue;
         }
@@ -1079,22 +1149,43 @@ void StepPropertyEditor::rebuildPluginInputEditors()
             editor = edit;
         }
 
+        editor->setProperty("stationInherited", inheritedFromStation);
         auto objectName = definition.key;
         objectName.replace(QLatin1Char('.'), QLatin1Char('_'));
         editor->setObjectName(QStringLiteral("pluginInput_%1").arg(objectName));
-        editor->setEnabled(m_editable);
-        if (!definition.unit.isEmpty()) {
-            editor->setToolTip(tr("Unit: %1").arg(definition.unit));
+        editor->setEnabled(m_editable && !inheritedFromStation);
+        QString tooltip;
+        if (inheritedFromStation) {
+            tooltip = tr("Inherited from Station Config and not stored in this Step");
         }
-        const auto label = definition.required
+        if (!definition.unit.isEmpty()) {
+            if (!tooltip.isEmpty()) {
+                tooltip += QLatin1Char('\n');
+            }
+            tooltip += tr("Unit: %1").arg(definition.unit);
+        }
+        editor->setToolTip(tooltip);
+        auto label = definition.required
             ? tr("%1 *").arg(definition.name)
             : definition.name;
+        if (inheritedFromStation) {
+            label += tr(" (Station)");
+        } else if (logicalDeviceConnection) {
+            label += tr(" (Step override)");
+        }
         auto* fieldWidget = editor;
         if (auto* lineEdit = qobject_cast<QLineEdit*>(editor)) {
             fieldWidget = wrapExpressionEditor(lineEdit);
+            if (inheritedFromStation) {
+                for (auto* button : fieldWidget->findChildren<QToolButton*>()) {
+                    button->setProperty("stationInherited", true);
+                    button->setEnabled(false);
+                }
+            }
         }
         m_pluginInputsForm->addRow(label, fieldWidget);
-        m_pluginInputEditors.push_back({definition, editor});
+        m_pluginInputEditors.push_back({definition, editor, inheritedFromStation});
+        observeDraftWidget(editor);
     }
     m_pluginInputsGroup->show();
 }
@@ -1171,6 +1262,9 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
 
     for (const auto& item : m_pluginInputEditors) {
         const auto& definition = item.definition;
+        if (item.inheritedFromStation) {
+            continue;
+        }
         if (const auto* check = qobject_cast<const QCheckBox*>(item.widget)) {
             if (check->isTristate() &&
                 check->checkState() == Qt::PartiallyChecked) {
@@ -1257,14 +1351,17 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
     return true;
 }
 
-void StepPropertyEditor::applyChanges()
+bool StepPropertyEditor::commitPendingChanges()
 {
+    if (!hasPendingChanges()) {
+        return true;
+    }
     if (!m_document || !m_path.isValid() || m_sourceObject.isEmpty()) {
-        return;
+        return false;
     }
     if (m_idEdit->text().trimmed().isEmpty()) {
         showError(tr("ID cannot be empty"));
-        return;
+        return false;
     }
 
     QJsonObject inputs;
@@ -1273,19 +1370,19 @@ void StepPropertyEditor::applyChanges()
     QString error;
     if (!m_isGroup && !parseObjectText(m_inputsEdit->toPlainText(), inputs, error)) {
         showError(tr("Inputs: %1").arg(error));
-        return;
+        return false;
     }
     if (!m_isGroup && !mergePluginInputValues(inputs, error)) {
         showError(error);
-        return;
+        return false;
     }
     if (!m_isGroup && !parseObjectText(m_parametersEdit->toPlainText(), parameters, error)) {
         showError(tr("Parameters: %1").arg(error));
-        return;
+        return false;
     }
     if (!m_isGroup && !parseArrayText(m_resourcesEdit->toPlainText(), resources, error)) {
         showError(tr("Resources: %1").arg(error));
-        return;
+        return false;
     }
 
     auto updated = m_sourceObject;
@@ -1293,9 +1390,9 @@ void StepPropertyEditor::applyChanges()
     insertOrRemove(updated, "name", m_nameEdit->text());
     updated.insert("kind", m_kindCombo->currentData().toString());
     updated.remove("type");
-    updated.insert("enabled", m_enabledCheck->isChecked());
 
     if (!m_isGroup) {
+        updated.insert("enabled", m_enabledCheck->isChecked());
         insertOrRemove(updated, "key", m_keyEdit->text());
         updated.insert("alwaysRun", m_alwaysRunCheck->isChecked());
         updated.insert("resultRecording", m_resultRecordingCheck->isChecked());
@@ -1325,13 +1422,13 @@ void StepPropertyEditor::applyChanges()
             if (!boolean && !betweenLimits &&
                 m_limitExpectedEdit->text().trimmed().isEmpty()) {
                 showError(tr("Expected / threshold is required for this comparison"));
-                return;
+                return false;
             }
             if (betweenLimits &&
                 (m_limitLowerEdit->text().trimmed().isEmpty() ||
                  m_limitUpperEdit->text().trimmed().isEmpty())) {
                 showError(tr("Both lower and upper limits are required"));
-                return;
+                return false;
             }
             parameters.insert(QStringLiteral("comparison"),
                               runtimeLimitComparison(mode));
@@ -1424,10 +1521,12 @@ void StepPropertyEditor::applyChanges()
 
     if (!m_document->replaceItemObject(m_path, std::move(updated))) {
         showError(tr("The selected sequence item no longer exists"));
-        return;
+        return false;
     }
     m_errorLabel->hide();
+    setDraftDirty(false);
     emit itemApplied(m_path);
+    return true;
 }
 
 void StepPropertyEditor::showError(const QString& message)

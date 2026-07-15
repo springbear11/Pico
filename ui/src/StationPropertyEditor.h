@@ -32,14 +32,15 @@ public:
     void setStationPageVisible(bool visible);
     void setPluginRegistry(QVector<PluginManifest> plugins);
     bool focusField(const QString& path);
+    bool hasPendingChanges() const;
+    bool commitPendingChanges();
+    void discardPendingChanges();
+    int currentDeviceRow() const;
 
 signals:
     void stationApplied();
     void deviceApplied(int row);
-
-private slots:
-    void applyStation();
-    void applyDevice();
+    void pendingChangesChanged(bool pending);
 
 private:
     void buildStationPage();
@@ -49,15 +50,19 @@ private:
     void loadDevice();
     void showStationError(const QString& message);
     void showDeviceError(const QString& message);
+    bool commitStation();
+    bool commitDevice();
+    void markPendingChanges();
+    void setPendingChanges(bool pending);
 
     QPointer<StationDocument> m_document;
+    QLabel* m_title = nullptr;
     QTabWidget* m_tabs = nullptr;
     QLineEdit* m_stationIdEdit = nullptr;
     QLineEdit* m_stationNameEdit = nullptr;
     QCheckBox* m_scanDialogEnabledCheck = nullptr;
     QPlainTextEdit* m_metadataEdit = nullptr;
     QLabel* m_stationError = nullptr;
-    QPushButton* m_applyStationButton = nullptr;
     QLineEdit* m_deviceIdEdit = nullptr;
     QLineEdit* m_deviceTypeEdit = nullptr;
     QLineEdit* m_driverIdEdit = nullptr;
@@ -68,9 +73,10 @@ private:
     QAbstractButton* m_enabledCheck = nullptr;
     QPlainTextEdit* m_optionsEdit = nullptr;
     QLabel* m_deviceError = nullptr;
-    QPushButton* m_applyDeviceButton = nullptr;
     int m_currentRow = -1;
     bool m_editable = true;
+    bool m_loading = false;
+    bool m_pendingChanges = false;
     QVector<PluginManifest> m_plugins;
 };
 
