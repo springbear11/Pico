@@ -3,6 +3,9 @@
   "name": "PicoATE Bench 01",
   "stopOnFailure": true,
   "scanDialogEnabled": false,
+  "txtLogEnabled": false,
+  "csvReportEnabled": false,
+  "reportOutputDirectory": "",
   "snLength": 12,
   "metadata": {
     "site": "lab",

@@ -64,8 +64,12 @@ class IModuleRuntimeServices {
 public:
     virtual ~IModuleRuntimeServices() = default;
 
-    virtual DeviceSessionOpenResult openDeviceSession(const DeviceId& deviceId) = 0;
-    virtual DeviceSessionError closeDeviceSession(const DeviceId& deviceId) = 0;
+    virtual DeviceSessionOpenResult openDeviceSession(
+        const DeviceId& deviceId,
+        const ModuleExecutionContext* context = nullptr) = 0;
+    virtual DeviceSessionError closeDeviceSession(
+        const DeviceId& deviceId,
+        const ModuleExecutionContext* context = nullptr) = 0;
     virtual std::shared_ptr<IDeviceSession> deviceSession(const DeviceId& deviceId) const = 0;
     virtual ModuleResult invokeDevice(const DeviceId& deviceId,
                                       const ModuleFunction& functionName,
@@ -77,8 +81,12 @@ class ModuleRuntimeServices final : public IModuleRuntimeServices {
 public:
     explicit ModuleRuntimeServices(DeviceSessionManager& devices);
 
-    DeviceSessionOpenResult openDeviceSession(const DeviceId& deviceId) override;
-    DeviceSessionError closeDeviceSession(const DeviceId& deviceId) override;
+    DeviceSessionOpenResult openDeviceSession(
+        const DeviceId& deviceId,
+        const ModuleExecutionContext* context = nullptr) override;
+    DeviceSessionError closeDeviceSession(
+        const DeviceId& deviceId,
+        const ModuleExecutionContext* context = nullptr) override;
     std::shared_ptr<IDeviceSession> deviceSession(const DeviceId& deviceId) const override;
     ModuleResult invokeDevice(const DeviceId& deviceId,
                               const ModuleFunction& functionName,

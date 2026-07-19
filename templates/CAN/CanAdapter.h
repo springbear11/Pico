@@ -63,11 +63,13 @@ public:
     virtual ~ICanAdapter() = default;
 
     virtual OperationResult open(const OpenOptions& options) = 0;
-    virtual void close() noexcept = 0;
-    virtual bool isOpen() const noexcept = 0;
-    virtual std::string deviceDescription() const = 0;
-    virtual OperationResult transmit(const Frame& frame) = 0;
-    virtual ReceiveResult receive(std::uint32_t filterId,
+    virtual OperationResult close(const OpenOptions& options) = 0;
+    virtual bool isOpen(const OpenOptions& options) const noexcept = 0;
+    virtual std::string deviceDescription(const OpenOptions& options) const = 0;
+    virtual OperationResult transmit(const OpenOptions& options,
+                                     const Frame& frame) = 0;
+    virtual ReceiveResult receive(const OpenOptions& options,
+                                  std::uint32_t filterId,
                                   std::uint32_t filterMask,
                                   int timeoutMs) = 0;
 };

@@ -70,6 +70,32 @@ bool isCompositeKind(QString kind)
            kind == "loop" || kind == "forloop";
 }
 
+QString normalizedGroupKind(const QJsonObject& group)
+{
+    auto kind = group.value(QStringLiteral("kind")).toString(
+        group.value(QStringLiteral("type")).toString());
+    kind = kind.trimmed().toLower();
+    kind.remove(QLatin1Char('-'));
+    kind.remove(QLatin1Char('_'));
+    kind.remove(QLatin1Char(' '));
+    return kind;
+}
+
+bool isStandardGroupKind(const QString& kind)
+{
+    return kind == QStringLiteral("setup") ||
+           kind == QStringLiteral("main") ||
+           kind == QStringLiteral("cleanup");
+}
+
+QJsonObject standardGroup(const QString& kind, const QString& name)
+{
+    return QJsonObject{{QStringLiteral("id"), kind},
+                       {QStringLiteral("name"), name},
+                       {QStringLiteral("kind"), kind},
+                       {QStringLiteral("steps"), QJsonArray{}}};
+}
+
 bool pathStartsWith(const QVector<int>& path, const QVector<int>& prefix)
 {
     if (prefix.size() > path.size()) {
@@ -406,6 +432,50 @@ QUndoStack* SequenceDocument::undoStack() const
     return m_undoStack;
 }
 
+QJsonValue rewriteScopedStepReferences(const QJsonValue& value,
+                                       const QString& oldRootId,
+                                       const QString& newRootId)
+{
+    if (value.isString()) {
+        auto text = value.toString();
+        text.replace(QStringLiteral("${step:%1.").arg(oldRootId),
+                     QStringLiteral("${step:%1.").arg(newRootId));
+        text.replace(QStringLiteral("${step:%1}").arg(oldRootId),
+                     QStringLiteral("${step:%1}").arg(newRootId));
+        return text;
+    }
+    if (value.isArray()) {
+        auto array = value.toArray();
+        for (int index = 0; index < array.size(); ++index) {
+            array[index] = rewriteScopedStepReferences(array[index], oldRootId, newRootId);
+        }
+        return array;
+    }
+    if (value.isObject()) {
+        auto object = value.toObject();
+        for (auto it = object.begin(); it != object.end(); ++it) {
+            it.value() = rewriteScopedStepReferences(it.value(), oldRootId, newRootId);
+        }
+        return object;
+    }
+    return value;
+}
+
+void assignCopiedRootId(QJsonObject& copy, const QString& newRootId)
+{
+    const auto oldRootId = copy.value(QStringLiteral("id")).toString();
+    copy = rewriteScopedStepReferences(copy, oldRootId, newRootId).toObject();
+    copy.insert(QStringLiteral("id"), newRootId);
+}
+
+bool SequenceDocument::replaceRootObject(QJsonObject root)
+{
+    if (root.isEmpty()) {
+        return false;
+    }
+    return commitRoot(std::move(root), tr("Update Sequence References"));
+}
+
 bool SequenceDocument::load(const QString& filePath)
 {
     const auto absolutePath = normalizedAbsolutePath(filePath);
@@ -493,6 +563,65 @@ void SequenceDocument::clear()
     }
     emit diagnosticsChanged();
     emit documentChanged();
+}
+
+bool SequenceDocument::ensureStandardGroups()
+{
+    if (m_root.isEmpty() || !m_root.value(QStringLiteral("groups")).isArray()) {
+        return false;
+    }
+
+    auto groups = m_root.value(QStringLiteral("groups")).toArray();
+    bool changed = false;
+    QSet<QString> kinds;
+    for (int index = 0; index < groups.size(); ++index) {
+        if (!groups[index].isObject()) {
+            continue;
+        }
+        auto group = groups[index].toObject();
+        const auto kind = normalizedGroupKind(group);
+        kinds.insert(kind);
+        if (isStandardGroupKind(kind) && group.contains(QStringLiteral("enabled"))) {
+            group.remove(QStringLiteral("enabled"));
+            groups[index] = group;
+            changed = true;
+        }
+    }
+
+    if (!kinds.contains(QStringLiteral("setup"))) {
+        groups.insert(0, standardGroup(QStringLiteral("setup"), tr("Setup")));
+        kinds.insert(QStringLiteral("setup"));
+        changed = true;
+    }
+    if (!kinds.contains(QStringLiteral("main"))) {
+        int insertionIndex = 0;
+        while (insertionIndex < groups.size() &&
+               normalizedGroupKind(groups[insertionIndex].toObject()) ==
+                   QStringLiteral("setup")) {
+            ++insertionIndex;
+        }
+        groups.insert(insertionIndex,
+                      standardGroup(QStringLiteral("main"), tr("Main")));
+        changed = true;
+    }
+    if (!kinds.contains(QStringLiteral("cleanup"))) {
+        groups.push_back(
+            standardGroup(QStringLiteral("cleanup"), tr("Cleanup")));
+        changed = true;
+    }
+    if (!changed) {
+        return false;
+    }
+
+    auto root = m_root;
+    root.insert(QStringLiteral("groups"), groups);
+    return commitRoot(std::move(root), tr("Normalize Setup/Main/Cleanup Groups"));
+}
+
+bool SequenceDocument::isStandardGroup(const SequenceItemPath& path) const
+{
+    return path.isGroup() &&
+           isStandardGroupKind(normalizedGroupKind(objectAt(path)));
 }
 
 QJsonObject SequenceDocument::objectAt(const SequenceItemPath& path) const
@@ -671,9 +800,9 @@ bool SequenceDocument::pasteSteps(
         auto copy = source;
         const auto originalName = copy.value(QStringLiteral("name")).toString(
             copy.value(QStringLiteral("id")).toString());
-        copy.insert(QStringLiteral("id"),
-                    QStringLiteral("%1").arg(
-                        nextNumber++, idWidth, 10, QLatin1Char('0')));
+        assignCopiedRootId(copy,
+                           QStringLiteral("%1").arg(
+                               nextNumber++, idWidth, 10, QLatin1Char('0')));
         copy.remove(QStringLiteral("key"));
         copy.insert(QStringLiteral("name"), tr("%1 Copy").arg(originalName));
         copies.push_back(std::move(copy));
@@ -790,7 +919,7 @@ bool SequenceDocument::duplicateSteps(QVector<SequenceItemPath> paths)
         auto copy = objectAtRoot(m_root, path);
         const auto originalName = copy.value(QStringLiteral("name")).toString(
             copy.value(QStringLiteral("id")).toString());
-        copy.insert(QStringLiteral("id"), nextId(parentPath));
+        assignCopiedRootId(copy, nextId(parentPath));
         copy.remove(QStringLiteral("key"));
         copy.insert(QStringLiteral("name"), tr("%1 Copy").arg(originalName));
         copies.push_back({path, std::move(copy)});

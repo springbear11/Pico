@@ -19,6 +19,7 @@ add_library(PicoATECore STATIC
     src/ModuleTransportJson.cpp
     src/NativeHostManifest.cpp
     src/NodeRunner.cpp
+    src/OperatorPrompt.cpp
     src/PlanBuilder.cpp
     src/PlanCache.cpp
     src/PersistentQProcessTransport.cpp

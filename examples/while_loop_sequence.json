@@ -1,0 +1,79 @@
+{
+  "id": "while-loop-sequence",
+  "name": "While Loop Voltage Stability Demo",
+  "version": "0.1.0",
+  "groups": [
+    {
+      "id": "setup",
+      "kind": "setup",
+      "steps": [
+        {"id": "connect-device", "name": "Connect Device", "kind": "noop"}
+      ]
+    },
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "wait-voltage-stable",
+          "name": "Wait Voltage Stable",
+          "kind": "loop",
+          "loop": {
+            "type": "while",
+            "intervalMs": 10,
+            "maxIterations": 20,
+            "timeoutMs": 5000,
+            "iterationErrorPolicy": "continueLoop"
+          },
+          "steps": [
+            {
+              "id": "read-voltage",
+              "name": "Read Voltage",
+              "kind": "action",
+              "parameters": {"outputs": {"voltage": "${loop.number}"}}
+            },
+            {
+              "id": "voltage-statistics",
+              "name": "Voltage Statistics",
+              "kind": "aggregate",
+              "inputs": {"value": "${step:read-voltage.outputs.voltage}"}
+            },
+            {
+              "id": "check-voltage",
+              "name": "Voltage At Least 3 V",
+              "kind": "limit",
+              "inputs": {"actual": "${step:read-voltage.outputs.voltage}"},
+              "parameters": {
+                "comparison": "greaterOrEqual",
+                "expected": 3,
+                "measurementName": "CHARGE_VOLTAGE",
+                "unit": "V"
+              }
+            },
+            {
+              "id": "stable-count",
+              "name": "Consecutive Stable Count",
+              "kind": "counter",
+              "inputs": {"condition": "${step:check-voltage.outcome}"},
+              "parameters": {"mode": "consecutive", "start": 0, "increment": 1}
+            },
+            {
+              "id": "stable-enough",
+              "name": "Break After 3 Stable Reads",
+              "kind": "break",
+              "inputs": {"actual": "${step:stable-count.outputs.value}"},
+              "parameters": {"comparison": "greaterOrEqual", "expected": 3}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {"id": "disconnect-device", "name": "Disconnect Device", "kind": "cleanup"}
+      ]
+    }
+  ]
+}

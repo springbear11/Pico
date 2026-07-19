@@ -35,6 +35,8 @@ set_target_properties(PicoATEUiTests
 add_test(NAME PicoATEUiTests COMMAND PicoATEUiTests)
 
 qt_add_executable(PicoATEUiWindowTests
+    ../src/FlowTargetSelector.cpp
+    ../src/FlowTargetSelector.h
     ../src/LoginDialog.cpp
     ../src/LoginDialog.h
     ../src/ProductionWindow.cpp
@@ -43,6 +45,8 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/ProportionalHeaderView.h
     ../src/OnOffControl.cpp
     ../src/OnOffControl.h
+    ../src/OperatorPromptPresenter.cpp
+    ../src/OperatorPromptPresenter.h
     ../src/ScanDialog.cpp
     ../src/ScanDialog.h
     MainWindowLifecycleTests.cpp

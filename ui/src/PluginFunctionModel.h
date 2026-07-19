@@ -55,7 +55,9 @@ public:
 
     void setPlugins(QVector<PluginManifest> plugins);
     void setDeviceBindings(QHash<QString, QStringList> devicesByModuleId);
+    void setSelectedDeviceId(const QString& deviceId);
     QVector<PluginManifest> plugins() const;
+    QString selectedDeviceId() const;
     QJsonObject stepTemplate(const QModelIndex& index) const;
 
 private:
@@ -76,6 +78,7 @@ private:
 
     QVector<PluginManifest> m_plugins;
     QHash<QString, QStringList> m_devicesByModuleId;
+    QString m_selectedDeviceId;
     std::unique_ptr<Item> m_root;
 };
 

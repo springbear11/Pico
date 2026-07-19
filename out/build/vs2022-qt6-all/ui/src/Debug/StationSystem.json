@@ -1,0 +1,85 @@
+{
+    "csvReportEnabled": false,
+    "devices": [
+        {
+            "deviceId": "CAN1.CH1",
+            "deviceType": "CAN",
+            "driverId": "plugin.can.gcan",
+            "enabled": true,
+            "lifetime": "Run",
+            "options": {
+                "bitrate": 1000000,
+                "channelIndex": 0,
+                "deviceIndex": 0,
+                "deviceType": 0,
+                "listenOnly": false,
+                "selfTest": false
+            },
+            "pluginPath": "D:/Work/PicoATE/templates/bin/Debug/PicoATE.CAN.GCAN.dll",
+            "timeoutMs": 30000
+        },
+        {
+            "deviceId": "CAN1.CH2",
+            "deviceType": "CAN",
+            "driverId": "plugin.can.gcan",
+            "enabled": true,
+            "lifetime": "Run",
+            "options": {
+                "bitrate": 500000,
+                "channelIndex": 1,
+                "deviceIndex": 0,
+                "deviceType": 0,
+                "listenOnly": false,
+                "selfTest": false
+            },
+            "pluginPath": "D:/Work/PicoATE/templates/bin/Debug/PicoATE.CAN.GCAN.dll",
+            "timeoutMs": 30000
+        },
+        {
+            "deviceId": "CAN2.CH1",
+            "deviceType": "CAN",
+            "driverId": "plugin.can.cx",
+            "enabled": true,
+            "lifetime": "Run",
+            "options": {
+                "bitrate": 500000,
+                "channelIndex": 0,
+                "deviceIndex": 0,
+                "deviceType": 4,
+                "listenOnly": false,
+                "selfTest": false
+            },
+            "pluginPath": "D:/Work/PicoATE/templates/bin/Debug/PicoATE.CAN.CX.dll",
+            "timeoutMs": 30000
+        },
+        {
+            "deviceId": "CAN2.CH2",
+            "deviceType": "CAN",
+            "driverId": "plugin.can.cx",
+            "enabled": true,
+            "lifetime": "Run",
+            "options": {
+                "bitrate": 1000000,
+                "channelIndex": 1,
+                "deviceIndex": 0,
+                "deviceType": 4,
+                "listenOnly": false,
+                "selfTest": false
+            },
+            "pluginPath": "D:/Work/PicoATE/templates/bin/Debug/PicoATE.CAN.CX.dll",
+            "timeoutMs": 30000
+        }
+    ],
+    "metadata": {
+        "jigNo": "NA",
+        "order": "NA",
+        "tester": "NA"
+    },
+    "name": "NA",
+    "scanDialogEnabled": false,
+    "snLength": 0,
+    "stationId": "NA",
+    "stopOnFailure": true,
+    "txtLogEnabled": true,
+    "xlsxReportEnabled": false
+}

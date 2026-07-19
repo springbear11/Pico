@@ -1,0 +1,62 @@
+{
+  "id": "operator-prompt-example",
+  "name": "Operator Prompt Example",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "setup",
+      "name": "Setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "001",
+          "name": "Confirm Fixture Connection",
+          "kind": "operatorPrompt",
+          "prompt": {
+            "mode": "confirm",
+            "title": "Fixture Connection",
+            "message": "Connect the fixture and product, then click Continue.",
+            "confirmText": "Continue",
+            "timeoutMs": 60000
+          }
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "name": "Main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "002",
+          "name": "Request Button Press",
+          "kind": "operatorPrompt",
+          "prompt": {
+            "mode": "notice",
+            "title": "Operator Action",
+            "message": "Press and hold the product button.",
+            "closeOnStep": "003",
+            "timeoutMs": 5000
+          }
+        },
+        {
+          "id": "003",
+          "name": "Button State Detected",
+          "kind": "noop"
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "name": "Cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "004",
+          "name": "Release Fixture",
+          "kind": "noop"
+        }
+      ]
+    }
+  ]
+}

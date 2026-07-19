@@ -41,6 +41,48 @@ const PluginFunctionDefinition* findPluginFunction(
     return nullptr;
 }
 
+void appendBuiltInOutputs(const QJsonObject& step,
+                          const QString& nodePath,
+                          const QString& stepName,
+                          QVector<StepOutputExpressionCandidate>& candidates)
+{
+    const auto kind = step.value(QStringLiteral("kind"))
+                          .toString(step.value(QStringLiteral("type")).toString())
+                          .trimmed().toLower();
+    QVector<QPair<QString, PluginParameterType>> outputs;
+    if (kind == QStringLiteral("limit")) {
+        outputs = {{QStringLiteral("actual"), PluginParameterType::Number},
+                   {QStringLiteral("passed"), PluginParameterType::Boolean},
+                   {QStringLiteral("comparison"), PluginParameterType::String}};
+    } else if (kind == QStringLiteral("break")) {
+        outputs = {{QStringLiteral("actual"), PluginParameterType::Number},
+                   {QStringLiteral("matched"), PluginParameterType::Boolean},
+                   {QStringLiteral("breakRequested"), PluginParameterType::Boolean}};
+    } else if (kind == QStringLiteral("counter")) {
+        outputs = {{QStringLiteral("value"), PluginParameterType::Number},
+                   {QStringLiteral("condition"), PluginParameterType::Boolean},
+                   {QStringLiteral("mode"), PluginParameterType::String}};
+    } else if (kind == QStringLiteral("aggregate")) {
+        outputs = {{QStringLiteral("last"), PluginParameterType::Number},
+                   {QStringLiteral("count"), PluginParameterType::Integer},
+                   {QStringLiteral("sum"), PluginParameterType::Number},
+                   {QStringLiteral("minimum"), PluginParameterType::Number},
+                   {QStringLiteral("maximum"), PluginParameterType::Number},
+                   {QStringLiteral("average"), PluginParameterType::Number}};
+    }
+
+    for (const auto& output : outputs) {
+        candidates.push_back({
+            nodePath,
+            stepName,
+            output.first,
+            output.first,
+            QStringLiteral("${step:%1.outputs.%2}").arg(nodePath, output.first),
+            output.second,
+            {}});
+    }
+}
+
 bool collectOutputCandidates(
     const QJsonArray& steps,
     int groupIndex,
@@ -70,10 +112,10 @@ bool collectOutputCandidates(
             ? segment
             : QStringLiteral("%1.%2").arg(parentNodePath, segment);
         if (enabled && !nodePath.isEmpty()) {
+            const auto stepName = step.value(QStringLiteral("name"))
+                                      .toString(step.value(QStringLiteral("id")).toString());
             if (const auto* function = findPluginFunction(
                     step, plugins, pluginByDeviceId)) {
-                const auto stepName = step.value(QStringLiteral("name"))
-                                          .toString(step.value(QStringLiteral("id")).toString());
                 for (const auto& output : function->outputs) {
                     if (output.key.trimmed().isEmpty()) {
                         continue;
@@ -88,6 +130,7 @@ bool collectOutputCandidates(
                         output.unit});
                 }
             }
+            appendBuiltInOutputs(step, nodePath, stepName, candidates);
         }
 
         auto childIndices = parentIndices;
@@ -106,6 +149,53 @@ bool collectOutputCandidates(
         }
     }
     return false;
+}
+
+struct OrderedStepReference {
+    SequenceItemPath itemPath;
+    FollowingStepReferenceCandidate candidate;
+};
+
+void collectOrderedStepReferences(const QJsonArray& steps,
+                                  int groupIndex,
+                                  const QVector<int>& parentIndices,
+                                  const QString& parentNodePath,
+                                  bool parentEnabled,
+                                  QVector<OrderedStepReference>& references)
+{
+    for (int row = 0; row < steps.size(); ++row) {
+        if (!steps[row].isObject()) {
+            continue;
+        }
+        auto itemPath = SequenceItemPath{groupIndex, parentIndices};
+        itemPath.stepIndices.push_back(row);
+        const auto step = steps[row].toObject();
+        const bool enabled = parentEnabled &&
+            step.value(QStringLiteral("enabled")).toBool(true);
+        const auto segment = stepNodeSegment(step, parentNodePath.isEmpty());
+        const auto nodePath = parentNodePath.isEmpty() || segment.isEmpty()
+            ? segment
+            : QStringLiteral("%1.%2").arg(parentNodePath, segment);
+        if (enabled && !nodePath.isEmpty()) {
+            references.push_back({
+                itemPath,
+                {nodePath,
+                 step.value(QStringLiteral("name"))
+                     .toString(step.value(QStringLiteral("id")).toString()),
+                 step.value(QStringLiteral("kind"))
+                     .toString(step.value(QStringLiteral("type")).toString())}});
+        }
+
+        auto childIndices = parentIndices;
+        childIndices.push_back(row);
+        collectOrderedStepReferences(
+            step.value(QStringLiteral("steps")).toArray(),
+            groupIndex,
+            childIndices,
+            nodePath,
+            enabled,
+            references);
+    }
 }
 
 int groupPhase(const QJsonObject& group)
@@ -165,6 +255,53 @@ QVector<StepOutputExpressionCandidate> buildStepOutputExpressionCandidates(
     }
     if (!currentFound) {
         candidates.clear();
+    }
+    return candidates;
+}
+
+QVector<FollowingStepReferenceCandidate> buildFollowingStepReferenceCandidates(
+    const QJsonObject& sequence,
+    const SequenceItemPath& currentPath)
+{
+    QVector<FollowingStepReferenceCandidate> candidates;
+    if (!currentPath.isValid() || currentPath.stepIndices.isEmpty()) {
+        return candidates;
+    }
+
+    const auto groups = sequence.value(QStringLiteral("groups")).toArray();
+    QVector<int> groupOrder;
+    groupOrder.reserve(groups.size());
+    for (int index = 0; index < groups.size(); ++index) {
+        groupOrder.push_back(index);
+    }
+    std::stable_sort(groupOrder.begin(), groupOrder.end(), [&](int left, int right) {
+        return groupPhase(groups[left].toObject()) < groupPhase(groups[right].toObject());
+    });
+
+    QVector<OrderedStepReference> references;
+    for (const int groupIndex : groupOrder) {
+        if (!groups[groupIndex].isObject()) {
+            continue;
+        }
+        const auto group = groups[groupIndex].toObject();
+        collectOrderedStepReferences(
+            group.value(QStringLiteral("steps")).toArray(),
+            groupIndex,
+            {},
+            {},
+            group.value(QStringLiteral("enabled")).toBool(true),
+            references);
+    }
+
+    const auto current = std::find_if(
+        references.cbegin(), references.cend(), [&](const OrderedStepReference& reference) {
+            return reference.itemPath == currentPath;
+        });
+    if (current == references.cend()) {
+        return candidates;
+    }
+    for (auto it = current + 1; it != references.cend(); ++it) {
+        candidates.push_back(it->candidate);
     }
     return candidates;
 }

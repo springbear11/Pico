@@ -1,5 +1,7 @@
 #include "GCanAdapter.h"
 
+#include "PicoATE/Plugin/PluginLog.h"
+
 #include <Windows.h>
 
 #include <algorithm>
@@ -9,7 +11,9 @@
 #include <filesystem>
 #include <format>
 #include <memory>
+#include <map>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -18,6 +22,7 @@ namespace PicoATE::Plugins::Can {
 namespace {
 
 constexpr std::uint32_t StatusOk = 1;
+constexpr std::uint32_t ReceiveError = 0xFFFFFFFFU;
 constexpr int UsbCan1 = 3;
 constexpr int UsbCan2 = 4;
 
@@ -157,6 +162,34 @@ std::string fixedString(const char* value, std::size_t size)
     return std::string(value, end);
 }
 
+std::string errorCodeText(std::uint32_t code)
+{
+    if (code == 0) {
+        return "OK";
+    }
+    const std::pair<std::uint32_t, const char*> names[] = {
+        {0x0001, "ERR_CAN_OVERFLOW"}, {0x0002, "ERR_CAN_ERRALARM"},
+        {0x0004, "ERR_CAN_PASSIVE"}, {0x0008, "ERR_CAN_LOSE"},
+        {0x0010, "ERR_CAN_BUSERR"}, {0x0020, "ERR_CAN_REG_FULL"},
+        {0x0040, "ERR_CAN_REG_OVER"}, {0x0080, "ERR_CAN_ACTIVE"},
+        {0x0100, "ERR_DEVICEOPENED"}, {0x0200, "ERR_DEVICEOPEN"},
+        {0x0400, "ERR_DEVICENOTOPEN"}, {0x0800, "ERR_BUFFEROVERFLOW"},
+        {0x1000, "ERR_DEVICENOTEXIST"}, {0x2000, "ERR_LOADKERNELDLL"},
+        {0x4000, "ERR_CMDFAILED"}, {0x8000, "ERR_BUFFERCREATE"},
+    };
+    std::string text;
+    for (const auto& [mask, name] : names) {
+        if ((code & mask) == 0) {
+            continue;
+        }
+        if (!text.empty()) {
+            text += '|';
+        }
+        text += name;
+    }
+    return text.empty() ? "UNKNOWN" : text;
+}
+
 } // namespace
 
 Plugin::Json pluginDescription()
@@ -207,7 +240,7 @@ Plugin::Json pluginDescription()
                 {"description", "Transmit one CAN frame"},
                 {"timeoutMs", 2000},
                 {"inputs", Json::array({
-                    {{"key", "id"}, {"name", "CAN ID"}, {"type", "string"},
+                    {{"key", "id"}, {"name", "CAN ID (Std 0x000-0x7FF / Ext 0x00000000-0x1FFFFFFF)"}, {"type", "string"},
                      {"required", true}, {"default", "0x123"}},
                     {{"key", "data"}, {"name", "Frame Data"}, {"type", "hex-bytes"},
                      {"required", true}, {"default", "01 02 03 04"}},
@@ -226,9 +259,9 @@ Plugin::Json pluginDescription()
                 {"description", "Receive one CAN frame with an optional ID filter"},
                 {"timeoutMs", 2500},
                 {"inputs", Json::array({
-                    {{"key", "filterId"}, {"name", "Filter ID"}, {"type", "string"},
+                    {{"key", "filterId"}, {"name", "Filter ID (0x00000000-0x1FFFFFFF)"}, {"type", "string"},
                      {"required", false}, {"default", "0x000"}},
-                    {{"key", "filterMask"}, {"name", "Filter Mask"}, {"type", "string"},
+                    {{"key", "filterMask"}, {"name", "Filter Mask (0=Any, Std Exact=0x7FF, Ext Exact=0x1FFFFFFF)"}, {"type", "string"},
                      {"required", false}, {"default", "0x000"}},
                     {{"key", "timeoutMs"}, {"name", "Receive Timeout"}, {"type", "integer"},
                      {"required", false}, {"default", 1500}, {"minimum", 0},
@@ -269,9 +302,22 @@ public:
     using Transmit = std::uint32_t(WINAPI*)(std::uint32_t, std::uint32_t, std::uint32_t, GCanObject*, std::uint32_t);
     using Receive = std::uint32_t(WINAPI*)(std::uint32_t, std::uint32_t, std::uint32_t, GCanObject*, std::uint32_t, int);
 
+    struct ChannelState {
+        bool opened = false;
+        OpenOptions options;
+    };
+
+    struct DeviceState {
+        int deviceType = 0;
+        int deviceIndex = 0;
+        int channelCount = 0;
+        std::array<ChannelState, 2> channels;
+        std::string description;
+    };
+
     ~Impl()
     {
-        close();
+        closeAll();
         unload();
     }
 
@@ -279,6 +325,9 @@ public:
     bool resolve(Function& function, const char* name, std::string& errorMessage)
     {
         function = reinterpret_cast<Function>(GetProcAddress(library, name));
+        PicoATE_Log("VENDOR GCAN GetProcAddress symbol={} result={}",
+                    name,
+                    function ? "FOUND" : "MISSING");
         if (function) {
             return true;
         }
@@ -298,20 +347,26 @@ public:
             return OperationResult::failed("InvalidLibraryPath", "libraryPath is not valid UTF-8");
         }
         const auto companionPath = path.parent_path() / L"CHUSBDLL64.dll";
+        PicoATE_Log("VENDOR GCAN LoadLibraryW path={}", companionPath.string());
         companion = LoadLibraryW(companionPath.c_str());
         if (!companion) {
+            PicoATE_Log("VENDOR GCAN LoadLibraryW result=NULL winError={}", GetLastError());
             return OperationResult::failed(
                 "CompanionDllLoadFailed",
                 std::format("Failed to load CHUSBDLL64.dll: {}", windowsError(GetLastError())));
         }
+        PicoATE_Log("VENDOR GCAN LoadLibraryW result=OK library=CHUSBDLL64.dll");
+        PicoATE_Log("VENDOR GCAN LoadLibraryW path={}", path.string());
         library = LoadLibraryW(path.c_str());
         if (!library) {
+            PicoATE_Log("VENDOR GCAN LoadLibraryW result=NULL winError={}", GetLastError());
             const auto message = windowsError(GetLastError());
             unload();
             return OperationResult::failed(
                 "VendorDllLoadFailed",
                 std::format("Failed to load ECanVci64.dll: {}", message));
         }
+        PicoATE_Log("VENDOR GCAN LoadLibraryW result=OK library=ECanVci64.dll");
 
         std::string errorMessage;
         if (!(resolve(openDevice, "OpenDevice", errorMessage) &&
@@ -333,38 +388,84 @@ public:
     void unload() noexcept
     {
         if (library) {
+            PicoATE_Log("VENDOR GCAN FreeLibrary library=ECanVci64.dll");
             FreeLibrary(library);
             library = nullptr;
         }
         if (companion) {
+            PicoATE_Log("VENDOR GCAN FreeLibrary library=CHUSBDLL64.dll");
             FreeLibrary(companion);
             companion = nullptr;
         }
     }
 
-    void close() noexcept
+    DeviceState* findDevice(int deviceIndex)
     {
-        if (opened && resetCan && closeDevice) {
-            resetCan(options.deviceType, options.deviceIndex, options.channelIndex);
-            closeDevice(options.deviceType, options.deviceIndex);
-        }
-        opened = false;
-        description.clear();
+        const auto it = devices.find(deviceIndex);
+        return it == devices.end() ? nullptr : &it->second;
     }
 
-    std::string errorDetails() const
+    const DeviceState* findDevice(int deviceIndex) const
     {
-        if (!opened || !readErrorInfo) {
+        const auto it = devices.find(deviceIndex);
+        return it == devices.end() ? nullptr : &it->second;
+    }
+
+    static bool anyChannelOpen(const DeviceState& device)
+    {
+        return std::any_of(device.channels.begin(), device.channels.end(),
+                           [](const ChannelState& channel) { return channel.opened; });
+    }
+
+    std::string errorDetails(int deviceType, int deviceIndex, int channelIndex)
+    {
+        if (!readErrorInfo) {
             return {};
         }
         GCanErrorInfo info{};
-        if (readErrorInfo(options.deviceType,
-                          options.deviceIndex,
-                          options.channelIndex,
-                          &info) != StatusOk) {
+        PicoATE_Log("VENDOR GCAN ReadErrInfo(type={}, device={}, channel={})",
+                    deviceType, deviceIndex, channelIndex);
+        const auto status = readErrorInfo(deviceType, deviceIndex, channelIndex, &info);
+        PicoATE_Log("VENDOR GCAN ReadErrInfo return={} errorCode=0x{:X} ({}) passive=[0x{:02X},0x{:02X},0x{:02X}] arbitrationLost=0x{:02X}",
+                    status,
+                    info.errorCode,
+                    errorCodeText(info.errorCode),
+                    info.passiveErrorData[0],
+                    info.passiveErrorData[1],
+                    info.passiveErrorData[2],
+                    info.arbitrationLostData);
+        if (status != StatusOk) {
             return {};
         }
-        return std::format(" (GCAN error=0x{:X})", info.errorCode);
+        return std::format(" (GCAN error=0x{:X} {})",
+                           info.errorCode,
+                           errorCodeText(info.errorCode));
+    }
+
+    void closeAll() noexcept
+    {
+        try {
+            for (auto& [deviceIndex, device] : devices) {
+                for (int channelIndex = 0; channelIndex < 2; ++channelIndex) {
+                    if (!device.channels[static_cast<std::size_t>(channelIndex)].opened ||
+                        !resetCan) {
+                        continue;
+                    }
+                    PicoATE_Log("VENDOR GCAN ResetCAN(type={}, device={}, channel={}) during shutdown",
+                                device.deviceType, deviceIndex, channelIndex);
+                    const auto status = resetCan(device.deviceType, deviceIndex, channelIndex);
+                    PicoATE_Log("VENDOR GCAN ResetCAN return={}", status);
+                }
+                if (closeDevice) {
+                    PicoATE_Log("VENDOR GCAN CloseDevice(type={}, device={}) during shutdown",
+                                device.deviceType, deviceIndex);
+                    const auto status = closeDevice(device.deviceType, deviceIndex);
+                    PicoATE_Log("VENDOR GCAN CloseDevice return={}", status);
+                }
+            }
+            devices.clear();
+        } catch (...) {
+        }
     }
 
     HMODULE companion = nullptr;
@@ -379,9 +480,7 @@ public:
     ResetCan resetCan = nullptr;
     Transmit transmit = nullptr;
     Receive receive = nullptr;
-    bool opened = false;
-    OpenOptions options;
-    std::string description;
+    std::map<int, DeviceState> devices;
 };
 
 GCanAdapter::GCanAdapter()
@@ -393,9 +492,6 @@ GCanAdapter::~GCanAdapter() = default;
 
 OperationResult GCanAdapter::open(const OpenOptions& options)
 {
-    if (m_impl->opened) {
-        return OperationResult::passed();
-    }
     if (options.canFd) {
         return OperationResult::failed(
             "CanFdNotSupported", "ECanVci64.dll supports classic CAN only; set canFd=false");
@@ -421,95 +517,287 @@ OperationResult GCanAdapter::open(const OpenOptions& options)
         return loadResult;
     }
 
-    std::vector<int> deviceTypes;
-    if (options.deviceType == 0) {
-        deviceTypes = {UsbCan2, UsbCan1};
-    } else if (options.deviceType == UsbCan1 || options.deviceType == UsbCan2) {
-        deviceTypes = {options.deviceType};
-    } else {
-        m_impl->unload();
+    if (options.deviceType != 0 && options.deviceType != UsbCan1 &&
+        options.deviceType != UsbCan2) {
         return OperationResult::failed(
             "InvalidDeviceType", "deviceType must be 0 (auto), 3 (USBCAN-I), or 4 (USBCAN-II)");
     }
 
-    std::string lastError;
-    for (const auto deviceType : deviceTypes) {
-        auto selected = options;
-        selected.deviceType = deviceType;
-        if (m_impl->openDevice(deviceType, selected.deviceIndex, 0) != StatusOk) {
-            continue;
-        }
+    auto* device = m_impl->findDevice(options.deviceIndex);
+    if (!device) {
+        const auto deviceTypes = options.deviceType == 0
+            ? std::vector<int>{UsbCan2, UsbCan1}
+            : std::vector<int>{options.deviceType};
+        std::string lastError;
+        for (const auto deviceType : deviceTypes) {
+            PicoATE_Log("VENDOR GCAN OpenDevice(type={}, device={}, reserved=0)",
+                        deviceType, options.deviceIndex);
+            const auto status = m_impl->openDevice(deviceType, options.deviceIndex, 0);
+            PicoATE_Log("VENDOR GCAN OpenDevice return={}", status);
+            if (status != StatusOk) {
+                lastError = "GCAN OpenDevice failed";
+                continue;
+            }
 
-        GCanInitConfig config{};
-        config.acceptanceCode = 0;
-        config.acceptanceMask = 0xFFFFFFFFU;
-        config.filter = 0;
-        config.timing0 = timing.timing0;
-        config.timing1 = timing.timing1;
-        config.mode = selected.selfTest ? 2 : (selected.listenOnly ? 1 : 0);
+            Impl::DeviceState state;
+            state.deviceType = deviceType;
+            state.deviceIndex = options.deviceIndex;
+            state.description = deviceType == UsbCan2
+                ? "GCAN USBCAN-II"
+                : "GCAN USBCAN-I";
 
-        if (m_impl->initCan(deviceType,
-                            selected.deviceIndex,
-                            selected.channelIndex,
-                            &config) != StatusOk) {
-            lastError = "GCAN InitCAN failed";
-            m_impl->closeDevice(deviceType, selected.deviceIndex);
-            continue;
+            GCanBoardInfo board{};
+            PicoATE_Log("VENDOR GCAN ReadBoardInfo(type={}, device={})",
+                        deviceType, options.deviceIndex);
+            const auto boardStatus = m_impl->readBoardInfo(deviceType,
+                                                            options.deviceIndex,
+                                                            &board);
+            PicoATE_Log("VENDOR GCAN ReadBoardInfo return={}", boardStatus);
+            if (boardStatus == StatusOk) {
+                const auto channels = board.canChannelCount >= '0' &&
+                                              board.canChannelCount <= '9'
+                    ? board.canChannelCount - '0'
+                    : board.canChannelCount;
+                state.channelCount = channels;
+                state.description = std::format(
+                    "GCAN type={} {} SN={} channels={}",
+                    deviceType,
+                    fixedString(board.hardwareType, sizeof(board.hardwareType)),
+                    fixedString(board.serialNumber, sizeof(board.serialNumber)),
+                    channels);
+                PicoATE_Log("VENDOR GCAN board hardware={} serial={} channels={}",
+                            fixedString(board.hardwareType, sizeof(board.hardwareType)),
+                            fixedString(board.serialNumber, sizeof(board.serialNumber)),
+                            channels);
+            }
+            m_impl->devices.emplace(options.deviceIndex, std::move(state));
+            device = m_impl->findDevice(options.deviceIndex);
+            break;
         }
-        m_impl->clearBuffer(deviceType, selected.deviceIndex, selected.channelIndex);
-        if (m_impl->startCan(deviceType,
-                             selected.deviceIndex,
-                             selected.channelIndex) != StatusOk) {
-            lastError = "GCAN StartCAN failed";
-            m_impl->closeDevice(deviceType, selected.deviceIndex);
-            continue;
+        if (!device) {
+            return OperationResult::failed(
+                "CanOpenFailed",
+                lastError.empty()
+                    ? std::format("GCAN OpenDevice failed for deviceIndex={}",
+                                  options.deviceIndex)
+                    : lastError);
         }
+    }
 
-        m_impl->options = selected;
-        m_impl->opened = true;
-        GCanBoardInfo board{};
-        if (m_impl->readBoardInfo(deviceType, selected.deviceIndex, &board) == StatusOk) {
-            const auto channels = board.canChannelCount >= '0' && board.canChannelCount <= '9'
-                ? board.canChannelCount - '0'
-                : board.canChannelCount;
-            m_impl->description = std::format("GCAN type={} {} SN={} channels={}",
-                                              deviceType,
-                                              fixedString(board.hardwareType, sizeof(board.hardwareType)),
-                                              fixedString(board.serialNumber, sizeof(board.serialNumber)),
-                                              channels);
-        } else {
-            m_impl->description = deviceType == UsbCan2 ? "GCAN USBCAN-II" : "GCAN USBCAN-I";
+    if (options.deviceType != 0 && options.deviceType != device->deviceType) {
+        return OperationResult::failed(
+            "DeviceTypeConflict",
+            std::format("GCAN device {} is already open as type {}, requested type {}",
+                        options.deviceIndex, device->deviceType, options.deviceType));
+    }
+    if (device->channelCount > 0 && options.channelIndex >= device->channelCount) {
+        const auto channelCount = device->channelCount;
+        if (!Impl::anyChannelOpen(*device)) {
+            const auto deviceType = device->deviceType;
+            PicoATE_Log("VENDOR GCAN CloseDevice(type={}, device={}) after unavailable channel request",
+                        deviceType, options.deviceIndex);
+            const auto status = m_impl->closeDevice(deviceType, options.deviceIndex);
+            PicoATE_Log("VENDOR GCAN CloseDevice return={}", status);
+            m_impl->devices.erase(options.deviceIndex);
         }
+        return OperationResult::failed(
+            "ChannelNotAvailable",
+            std::format("GCAN device reports {} channel(s); channel {} is unavailable",
+                        channelCount, options.channelIndex));
+    }
+
+    auto& channel = device->channels[static_cast<std::size_t>(options.channelIndex)];
+    if (channel.opened) {
+        if (channel.options.arbitrationBitrate != options.arbitrationBitrate ||
+            channel.options.listenOnly != options.listenOnly ||
+            channel.options.selfTest != options.selfTest) {
+            return OperationResult::failed(
+                "ChannelConfigurationConflict",
+                std::format("GCAN device {} channel {} is already configured at {} bit/s",
+                            options.deviceIndex,
+                            options.channelIndex,
+                            channel.options.arbitrationBitrate));
+        }
+        PicoATE_Log("VENDOR GCAN channel already initialized device={} channel={} bitrate={}",
+                    options.deviceIndex,
+                    options.channelIndex,
+                    options.arbitrationBitrate);
         return OperationResult::passed();
     }
 
-    m_impl->unload();
-    return OperationResult::failed(
-        "CanOpenFailed",
-        lastError.empty()
-            ? std::format("GCAN OpenDevice failed for deviceIndex={}", options.deviceIndex)
-            : lastError);
+    GCanInitConfig config{};
+    config.acceptanceCode = 0;
+    config.acceptanceMask = 0xFFFFFFFFU;
+    config.filter = 0;
+    config.timing0 = timing.timing0;
+    config.timing1 = timing.timing1;
+    config.mode = options.selfTest ? 2 : (options.listenOnly ? 1 : 0);
+
+    PicoATE_Log("VENDOR GCAN InitCAN(type={}, device={}, channel={}, accCode=0x{:08X}, accMask=0x{:08X}, filter={}, timing0=0x{:02X}, timing1=0x{:02X}, mode={})",
+                device->deviceType,
+                options.deviceIndex,
+                options.channelIndex,
+                config.acceptanceCode,
+                config.acceptanceMask,
+                config.filter,
+                config.timing0,
+                config.timing1,
+                config.mode);
+    const auto initStatus = m_impl->initCan(device->deviceType,
+                                             options.deviceIndex,
+                                             options.channelIndex,
+                                             &config);
+    PicoATE_Log("VENDOR GCAN InitCAN return={}", initStatus);
+    if (initStatus != StatusOk) {
+        const auto details = m_impl->errorDetails(device->deviceType,
+                                                  options.deviceIndex,
+                                                  options.channelIndex);
+        if (!Impl::anyChannelOpen(*device)) {
+            PicoATE_Log("VENDOR GCAN CloseDevice(type={}, device={}) after InitCAN failure",
+                        device->deviceType, options.deviceIndex);
+            const auto closeStatus = m_impl->closeDevice(device->deviceType,
+                                                         options.deviceIndex);
+            PicoATE_Log("VENDOR GCAN CloseDevice return={}", closeStatus);
+            m_impl->devices.erase(options.deviceIndex);
+        }
+        return OperationResult::failed("CanInitFailed", "GCAN InitCAN failed" + details);
+    }
+
+    PicoATE_Log("VENDOR GCAN ClearBuffer(type={}, device={}, channel={})",
+                device->deviceType, options.deviceIndex, options.channelIndex);
+    const auto clearStatus = m_impl->clearBuffer(device->deviceType,
+                                                  options.deviceIndex,
+                                                  options.channelIndex);
+    PicoATE_Log("VENDOR GCAN ClearBuffer return={}", clearStatus);
+    if (clearStatus != StatusOk) {
+        const auto details = m_impl->errorDetails(device->deviceType,
+                                                  options.deviceIndex,
+                                                  options.channelIndex);
+        PicoATE_Log("VENDOR GCAN ResetCAN(type={}, device={}, channel={}) after ClearBuffer failure",
+                    device->deviceType, options.deviceIndex, options.channelIndex);
+        const auto resetStatus = m_impl->resetCan(device->deviceType,
+                                                   options.deviceIndex,
+                                                   options.channelIndex);
+        PicoATE_Log("VENDOR GCAN ResetCAN return={}", resetStatus);
+        if (!Impl::anyChannelOpen(*device)) {
+            const auto deviceType = device->deviceType;
+            PicoATE_Log("VENDOR GCAN CloseDevice(type={}, device={}) after ClearBuffer failure",
+                        deviceType, options.deviceIndex);
+            const auto closeStatus = m_impl->closeDevice(deviceType, options.deviceIndex);
+            PicoATE_Log("VENDOR GCAN CloseDevice return={}", closeStatus);
+            m_impl->devices.erase(options.deviceIndex);
+        }
+        return OperationResult::failed("CanClearBufferFailed",
+                                       "GCAN ClearBuffer failed" + details);
+    }
+
+    PicoATE_Log("VENDOR GCAN StartCAN(type={}, device={}, channel={})",
+                device->deviceType, options.deviceIndex, options.channelIndex);
+    const auto startStatus = m_impl->startCan(device->deviceType,
+                                               options.deviceIndex,
+                                               options.channelIndex);
+    PicoATE_Log("VENDOR GCAN StartCAN return={}", startStatus);
+    if (startStatus != StatusOk) {
+        const auto details = m_impl->errorDetails(device->deviceType,
+                                                  options.deviceIndex,
+                                                  options.channelIndex);
+        PicoATE_Log("VENDOR GCAN ResetCAN(type={}, device={}, channel={}) after StartCAN failure",
+                    device->deviceType, options.deviceIndex, options.channelIndex);
+        const auto resetStatus = m_impl->resetCan(device->deviceType,
+                                                   options.deviceIndex,
+                                                   options.channelIndex);
+        PicoATE_Log("VENDOR GCAN ResetCAN return={}", resetStatus);
+        if (!Impl::anyChannelOpen(*device)) {
+            const auto deviceType = device->deviceType;
+            PicoATE_Log("VENDOR GCAN CloseDevice(type={}, device={}) after StartCAN failure",
+                        deviceType, options.deviceIndex);
+            const auto closeStatus = m_impl->closeDevice(deviceType, options.deviceIndex);
+            PicoATE_Log("VENDOR GCAN CloseDevice return={}", closeStatus);
+            m_impl->devices.erase(options.deviceIndex);
+        }
+        return OperationResult::failed("CanStartFailed", "GCAN StartCAN failed" + details);
+    }
+
+    channel.opened = true;
+    channel.options = options;
+    channel.options.deviceType = device->deviceType;
+    PicoATE_Log("VENDOR GCAN channel ready device={} channel={} bitrate={}",
+                options.deviceIndex, options.channelIndex, options.arbitrationBitrate);
+    return OperationResult::passed();
 }
 
-void GCanAdapter::close() noexcept
+OperationResult GCanAdapter::close(const OpenOptions& options)
 {
-    m_impl->close();
+    auto* device = m_impl->findDevice(options.deviceIndex);
+    if (!device || options.channelIndex < 0 || options.channelIndex > 1) {
+        PicoATE_Log("VENDOR GCAN close ignored device={} channel={} state=not-open",
+                    options.deviceIndex, options.channelIndex);
+        return OperationResult::passed();
+    }
+    auto& channel = device->channels[static_cast<std::size_t>(options.channelIndex)];
+    OperationResult result = OperationResult::passed();
+    if (channel.opened) {
+        PicoATE_Log("VENDOR GCAN ResetCAN(type={}, device={}, channel={})",
+                    device->deviceType, options.deviceIndex, options.channelIndex);
+        const auto status = m_impl->resetCan(device->deviceType,
+                                              options.deviceIndex,
+                                              options.channelIndex);
+        PicoATE_Log("VENDOR GCAN ResetCAN return={}", status);
+        if (status != StatusOk) {
+            result = OperationResult::failed(
+                "CanResetFailed",
+                "GCAN ResetCAN failed" + m_impl->errorDetails(device->deviceType,
+                                                               options.deviceIndex,
+                                                               options.channelIndex));
+        }
+        channel.opened = false;
+    }
+
+    if (!Impl::anyChannelOpen(*device)) {
+        const auto deviceType = device->deviceType;
+        PicoATE_Log("VENDOR GCAN CloseDevice(type={}, device={})",
+                    deviceType, options.deviceIndex);
+        const auto status = m_impl->closeDevice(deviceType, options.deviceIndex);
+        PicoATE_Log("VENDOR GCAN CloseDevice return={}", status);
+        if (status != StatusOk && result.success) {
+            result = OperationResult::failed("CanCloseFailed", "GCAN CloseDevice failed");
+        }
+        m_impl->devices.erase(options.deviceIndex);
+    }
+    return result;
 }
 
-bool GCanAdapter::isOpen() const noexcept
+bool GCanAdapter::isOpen(const OpenOptions& options) const noexcept
 {
-    return m_impl->opened;
+    const auto* device = m_impl->findDevice(options.deviceIndex);
+    return device && options.channelIndex >= 0 && options.channelIndex < 2 &&
+        device->channels[static_cast<std::size_t>(options.channelIndex)].opened;
 }
 
-std::string GCanAdapter::deviceDescription() const
+std::string GCanAdapter::deviceDescription(const OpenOptions& options) const
 {
-    return m_impl->opened ? m_impl->description : "Disconnected";
+    const auto* device = m_impl->findDevice(options.deviceIndex);
+    if (!device || options.channelIndex < 0 || options.channelIndex > 1) {
+        return "Disconnected";
+    }
+    const auto& channel = device->channels[static_cast<std::size_t>(options.channelIndex)];
+    if (!channel.opened) {
+        return "Disconnected";
+    }
+    return std::format("{} device={} channel={} bitrate={}",
+                       device->description,
+                       options.deviceIndex,
+                       options.channelIndex,
+                       channel.options.arbitrationBitrate);
 }
 
-OperationResult GCanAdapter::transmit(const Frame& frame)
+OperationResult GCanAdapter::transmit(const OpenOptions& options,
+                                      const Frame& frame)
 {
-    if (!m_impl->opened) {
-        return OperationResult::failed("CanNotOpen", "CAN device is not open");
+    auto* device = m_impl->findDevice(options.deviceIndex);
+    if (!device || options.channelIndex < 0 || options.channelIndex > 1 ||
+        !device->channels[static_cast<std::size_t>(options.channelIndex)].opened) {
+        return OperationResult::failed("CanNotOpen", "CAN channel is not open");
     }
     if (frame.data.size() > 8) {
         return OperationResult::failed("InvalidCanFrame", "Classic CAN data exceeds 8 bytes");
@@ -521,24 +809,40 @@ OperationResult GCanAdapter::transmit(const Frame& frame)
     object.extendedFlag = frame.extended ? 1 : 0;
     object.dataLength = static_cast<std::uint8_t>(frame.data.size());
     std::copy(frame.data.begin(), frame.data.end(), object.data);
-    const auto sent = m_impl->transmit(m_impl->options.deviceType,
-                                       m_impl->options.deviceIndex,
-                                       m_impl->options.channelIndex,
+    PicoATE_Log("VENDOR GCAN Transmit(type={}, device={}, channel={}, id=0x{:X}, sendType={}, remote={}, extended={}, dlc={})",
+                device->deviceType,
+                options.deviceIndex,
+                options.channelIndex,
+                object.id,
+                object.sendType,
+                object.remoteFlag,
+                object.extendedFlag,
+                object.dataLength);
+    const auto sent = m_impl->transmit(device->deviceType,
+                                       options.deviceIndex,
+                                       options.channelIndex,
                                        &object,
                                        1);
+    PicoATE_Log("VENDOR GCAN Transmit return={}", sent);
     if (sent != 1) {
         return OperationResult::failed(
-            "CanTransmitFailed", "GCAN Transmit failed" + m_impl->errorDetails());
+            "CanTransmitFailed",
+            "GCAN Transmit failed" + m_impl->errorDetails(device->deviceType,
+                                                           options.deviceIndex,
+                                                           options.channelIndex));
     }
     return OperationResult::passed();
 }
 
-ReceiveResult GCanAdapter::receive(std::uint32_t filterId,
+ReceiveResult GCanAdapter::receive(const OpenOptions& options,
+                                   std::uint32_t filterId,
                                    std::uint32_t filterMask,
                                    int timeoutMs)
 {
-    if (!m_impl->opened) {
-        return {ReceiveStatus::Error, {}, "CanNotOpen", "CAN device is not open"};
+    auto* device = m_impl->findDevice(options.deviceIndex);
+    if (!device || options.channelIndex < 0 || options.channelIndex > 1 ||
+        !device->channels[static_cast<std::size_t>(options.channelIndex)].opened) {
+        return {ReceiveStatus::Error, {}, "CanNotOpen", "CAN channel is not open"};
     }
     const auto started = std::chrono::steady_clock::now();
     do {
@@ -546,14 +850,37 @@ ReceiveResult GCanAdapter::receive(std::uint32_t filterId,
             std::chrono::steady_clock::now() - started).count();
         const auto remaining = std::max(0, timeoutMs - static_cast<int>(elapsed));
         GCanObject object{};
-        const auto count = m_impl->receive(m_impl->options.deviceType,
-                                           m_impl->options.deviceIndex,
-                                           m_impl->options.channelIndex,
+        PicoATE_Log("VENDOR GCAN Receive(type={}, device={}, channel={}, length=1, waitMs={})",
+                    device->deviceType,
+                    options.deviceIndex,
+                    options.channelIndex,
+                    remaining);
+        const auto count = m_impl->receive(device->deviceType,
+                                           options.deviceIndex,
+                                           options.channelIndex,
                                            &object,
                                            1,
                                            remaining);
+        PicoATE_Log("VENDOR GCAN Receive return={}", count);
+        if (count == ReceiveError) {
+            return {ReceiveStatus::Error,
+                    {},
+                    "CanReceiveFailed",
+                    "GCAN Receive failed" + m_impl->errorDetails(device->deviceType,
+                                                                  options.deviceIndex,
+                                                                  options.channelIndex)};
+        }
         if (count > 0) {
+            PicoATE_Log("VENDOR GCAN Receive frame id=0x{:X} remote={} extended={} dlc={} timestamp={} timeFlag={}",
+                        object.id,
+                        object.remoteFlag,
+                        object.extendedFlag,
+                        object.dataLength,
+                        object.timestamp,
+                        object.timeFlag);
             if ((object.id & filterMask) != (filterId & filterMask)) {
+                PicoATE_Log("VENDOR GCAN Receive frame filtered id=0x{:X} expected=0x{:X} mask=0x{:X}",
+                            object.id, filterId, filterMask);
                 continue;
             }
             if (object.dataLength > sizeof(object.data)) {
@@ -571,6 +898,10 @@ ReceiveResult GCanAdapter::receive(std::uint32_t filterId,
                 ? static_cast<std::uint64_t>(object.timestamp) * 100ULL
                 : 0;
             return {ReceiveStatus::Received, std::move(frame), {}, {}};
+        }
+        if (remaining > 0) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(std::min(20, remaining)));
         }
     } while (std::chrono::duration_cast<std::chrono::milliseconds>(
                  std::chrono::steady_clock::now() - started).count() < timeoutMs);

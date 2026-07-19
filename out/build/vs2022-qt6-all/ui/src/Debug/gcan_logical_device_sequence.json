@@ -1,0 +1,162 @@
+{
+    "groups": [
+        {
+            "enabled": true,
+            "id": "setup",
+            "kind": "setup",
+            "steps": [
+                {
+                    "function": "open",
+                    "id": "can-open",
+                    "inputs": {
+                        "deviceId": "CAN1"
+                    },
+                    "kind": "action",
+                    "moduleId": "device",
+                    "name": "Open CAN1"
+                }
+            ]
+        },
+        {
+            "id": "main",
+            "kind": "main",
+            "steps": [
+                {
+                    "id": "001",
+                    "kind": "testItem",
+                    "name": "CAN1 Send Delay Receive",
+                    "steps": [
+                        {
+                            "function": "write",
+                            "id": "01",
+                            "inputs": {
+                                "data": "01 02 03 04 05 06 07 08",
+                                "deviceId": "CAN1",
+                                "id": "0x123"
+                            },
+                            "key": "tx",
+                            "kind": "action",
+                            "moduleId": "device",
+                            "name": "Transmit Frame"
+                        },
+                        {
+                            "id": "02",
+                            "key": "delay",
+                            "kind": "wait",
+                            "ms": 50,
+                            "name": "Wait For Receive"
+                        },
+                        {
+                            "function": "read",
+                            "id": "03",
+                            "inputs": {
+                                "deviceId": "CAN1",
+                                "filterId": "0x123",
+                                "filterMask": "0x7FF",
+                                "timeoutMs": 1500
+                            },
+                            "key": "rx",
+                            "kind": "action",
+                            "moduleId": "device",
+                            "name": "Receive Echo Frame",
+                            "timeoutMs": 2500
+                        },
+                        {
+                            "id": "04",
+                            "inputs": {
+                                "actual": "${step:rx.outputs.dlc}"
+                            },
+                            "key": "dlc-limit",
+                            "kind": "limit",
+                            "name": "Validate Echo DLC",
+                            "parameters": {
+                                "comparison": "between",
+                                "expected": 8,
+                                "measurementName": "GCAN_ECHO_DLC",
+                                "tolerance": 0,
+                                "unit": "byte"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "id": "002",
+                    "kind": "testItem",
+                    "name": "CAN1 Send Delay Receive Copy",
+                    "steps": [
+                        {
+                            "function": "write",
+                            "id": "01",
+                            "inputs": {
+                                "data": "01 02 03 04 05 06 07 08",
+                                "deviceId": "CAN1",
+                                "id": "0x123"
+                            },
+                            "key": "tx",
+                            "kind": "action",
+                            "moduleId": "device",
+                            "name": "Transmit Frame"
+                        },
+                        {
+                            "id": "02",
+                            "key": "delay",
+                            "kind": "wait",
+                            "ms": 50,
+                            "name": "Wait For Receive"
+                        },
+                        {
+                            "function": "read",
+                            "id": "03",
+                            "inputs": {
+                                "deviceId": "CAN1",
+                                "filterId": "0x123",
+                                "filterMask": "0x7FF",
+                                "timeoutMs": 1500
+                            },
+                            "key": "rx",
+                            "kind": "action",
+                            "moduleId": "device",
+                            "name": "Receive Echo Frame",
+                            "timeoutMs": 2500
+                        },
+                        {
+                            "id": "04",
+                            "inputs": {
+                                "actual": "${step:rx.outputs.dlc}"
+                            },
+                            "key": "dlc-limit",
+                            "kind": "limit",
+                            "name": "Validate Echo DLC",
+                            "parameters": {
+                                "comparison": "between",
+                                "expected": 8,
+                                "measurementName": "GCAN_ECHO_DLC",
+                                "tolerance": 0,
+                                "unit": "byte"
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "cleanup",
+            "kind": "cleanup",
+            "steps": [
+                {
+                    "function": "close",
+                    "id": "can-close",
+                    "inputs": {
+                        "deviceId": "CAN1"
+                    },
+                    "kind": "cleanup",
+                    "moduleId": "device",
+                    "name": "Close CAN1"
+                }
+            ]
+        }
+    ],
+    "id": "gcan-logical-device-test",
+    "name": "GCAN Logical Device Hardware Loop",
+    "version": "0.1.0"
+}

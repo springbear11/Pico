@@ -11,6 +11,7 @@
 namespace PicoATE::Core {
 
 class RuntimeEventEmitter;
+struct ModuleExecutionContext;
 
 using DeviceId = QString;
 using DeviceDriverId = QString;
@@ -55,8 +56,9 @@ public:
     virtual DeviceId deviceId() const = 0;
     virtual QString deviceType() const = 0;
     virtual DeviceConnectionState state() const = 0;
-    virtual bool connect(QString& errorMessage) = 0;
-    virtual void disconnect() = 0;
+    virtual bool connect(QString& errorMessage,
+                         const ModuleExecutionContext* context = nullptr) = 0;
+    virtual void disconnect(const ModuleExecutionContext* context = nullptr) = 0;
     virtual QVariantMap metadata() const;
     virtual bool isHealthy(QString& errorMessage) const;
 };
@@ -88,8 +90,10 @@ public:
     std::shared_ptr<IDeviceSession> session(const DeviceId& deviceId) const;
     DeviceConnectionState stateOf(const DeviceId& deviceId) const;
 
-    DeviceSessionOpenResult openSession(const DeviceId& deviceId);
-    DeviceSessionError closeSession(const DeviceId& deviceId);
+    DeviceSessionOpenResult openSession(const DeviceId& deviceId,
+                                        const ModuleExecutionContext* context = nullptr);
+    DeviceSessionError closeSession(const DeviceId& deviceId,
+                                    const ModuleExecutionContext* context = nullptr);
     void closeAll();
 
     QVector<DeviceId> configuredDeviceIds() const;

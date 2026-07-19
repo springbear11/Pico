@@ -14,11 +14,13 @@ public:
     ~GCanAdapter() override;
 
     OperationResult open(const OpenOptions& options) override;
-    void close() noexcept override;
-    bool isOpen() const noexcept override;
-    std::string deviceDescription() const override;
-    OperationResult transmit(const Frame& frame) override;
-    ReceiveResult receive(std::uint32_t filterId,
+    OperationResult close(const OpenOptions& options) override;
+    bool isOpen(const OpenOptions& options) const noexcept override;
+    std::string deviceDescription(const OpenOptions& options) const override;
+    OperationResult transmit(const OpenOptions& options,
+                             const Frame& frame) override;
+    ReceiveResult receive(const OpenOptions& options,
+                          std::uint32_t filterId,
                           std::uint32_t filterMask,
                           int timeoutMs) override;
 

@@ -77,6 +77,40 @@ bool sourceRunsBeforeConsumer(const ExecutionPlan& plan,
     return sourceRoot != consumerRoot && hasPlanPath(plan, sourceRoot, consumerRoot);
 }
 
+std::optional<NodeId> resolveOperatorPromptCloseTarget(const ExecutionPlan& plan,
+                                                       const ExecNode& prompt,
+                                                       QString requested,
+                                                       bool& ambiguous)
+{
+    ambiguous = false;
+    requested = requested.trimmed();
+    if (requested.startsWith(QStringLiteral("step:"), Qt::CaseInsensitive)) {
+        requested = requested.mid(5).trimmed();
+    }
+    if (requested.isEmpty()) {
+        return std::nullopt;
+    }
+    if (plan.node(requested)) {
+        return requested;
+    }
+
+    QVector<NodeId> matches;
+    const auto parent = plan.structuralParentOf(prompt.id);
+    for (auto it = plan.nodes.constBegin(); it != plan.nodes.constEnd(); ++it) {
+        const auto& candidate = it.value();
+        if (candidate.localId != requested && candidate.key != requested) {
+            continue;
+        }
+        if (parent == plan.structuralParentOf(candidate.id)) {
+            matches.push_back(candidate.id);
+        }
+    }
+    ambiguous = matches.size() > 1;
+    return matches.size() == 1
+        ? std::optional<NodeId>{matches.first()}
+        : std::nullopt;
+}
+
 } // namespace
 
 PlanBuildResult PlanBuilder::build(const SequenceDef& sequence) const
@@ -208,10 +242,22 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
     QHash<NodeId, int> activeNodePathCounts;
     QHash<NodeId, QSet<QString>> idsByScope;
     QHash<NodeId, QSet<QString>> keysByScope;
+    const auto containsEnabledBreak = [](const StepDef& parent, const auto& self) -> bool {
+        for (const auto& child : parent.steps) {
+            if (!child.enabled) {
+                continue;
+            }
+            if (child.kind == StepKind::Break || self(child, self)) {
+                return true;
+            }
+        }
+        return false;
+    };
     const auto collectStep = [&](const StepDef& step,
                                  const NodeId& parentPath,
                                  bool insideLoop,
-                                 bool,
+                                 bool insideWhileLoop,
+                                 bool insideRetryingTestItem,
                                  const auto& collectRef) -> void {
         if (!step.enabled) {
             return;
@@ -261,9 +307,26 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
                 result.errors.push_back({"Nested loops are not supported yet",
                                          QString("Move nested loop %1 to a separate sequence or unroll it for now").arg(step.id)});
             }
-            if (step.loop.step == 0) {
+            if (step.loop.type == LoopType::For && step.loop.step == 0) {
                 result.errors.push_back({"Loop step must not be zero",
                                          QString("Set a non-zero loop.step for %1").arg(step.id)});
+            }
+            if (step.loop.type == LoopType::While) {
+                if (step.loop.intervalMs < 0) {
+                    result.errors.push_back({
+                        "While loop intervalMs must not be negative",
+                        QString("Set loop.intervalMs to 0 or greater for %1").arg(step.id)});
+                }
+                if (step.loop.maxIterations <= 0 && step.loop.timeoutMs <= 0) {
+                    result.errors.push_back({
+                        "While loop requires a finite guard",
+                        QString("Set loop.maxIterations or loop.timeoutMs for %1").arg(step.id)});
+                }
+                if (!containsEnabledBreak(step, containsEnabledBreak)) {
+                    result.errors.push_back({
+                        "While loop requires a Break If step",
+                        QString("Add an enabled break child to while loop %1").arg(step.id)});
+                }
             }
             if (step.steps.isEmpty()) {
                 result.errors.push_back({"Loop body is required",
@@ -276,17 +339,36 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
                 result.errors.push_back({"Test item children are required",
                                          QString("Add at least one child step to test item %1").arg(step.id)});
             }
-            if (step.retry.maxAttempts > 1) {
-                result.errors.push_back({"Test item retry is not supported yet",
-                                         QString("Put retry on child steps of %1 instead").arg(step.id)});
-            }
         }
 
+        if (step.kind == StepKind::Barrier && insideRetryingTestItem) {
+            result.errors.push_back({
+                "Barrier inside a retrying TestItem is not supported",
+                QString("Move barrier %1 outside the retrying TestItem; coordinated multi-UUT reset is undefined")
+                    .arg(step.id)});
+        }
+        if (step.kind == StepKind::Barrier && insideWhileLoop) {
+            result.errors.push_back({
+                "Barrier inside a While Loop is not supported",
+                QString("Move barrier %1 outside the While Loop; repeated multi-UUT generations are undefined")
+                    .arg(step.id)});
+        }
+        if (step.kind == StepKind::Break && !insideLoop) {
+            result.errors.push_back({
+                "Break If must be inside a Loop",
+                QString("Move break step %1 into a For or While loop").arg(step.id)});
+        }
+
+        const bool retryingTestItem = insideRetryingTestItem ||
+            (step.kind == StepKind::TestItem && step.retry.maxAttempts > 1);
+        const bool whileLoop = insideWhileLoop ||
+            (step.kind == StepKind::Loop && step.loop.type == LoopType::While);
         for (const auto& child : step.steps) {
             collectRef(child,
                        nodePath,
                        step.kind == StepKind::Loop || insideLoop,
-                       false,
+                       whileLoop,
+                       retryingTestItem,
                        collectRef);
         }
     };
@@ -296,7 +378,7 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
             continue;
         }
         for (const auto& step : group.steps) {
-            collectStep(step, {}, false, false, collectStep);
+            collectStep(step, {}, false, false, false, collectStep);
         }
     }
 
@@ -411,9 +493,17 @@ PlanBuilder::StepBuildInfo PlanBuilder::buildLoopStep(const StepDef& step,
     region.childNodeIds = bodyControlNodeIds;
     if (!bodyControlNodeIds.isEmpty()) {
         region.entryNodes = {bodyControlNodeIds.first()};
-        region.exitNodes = {bodyControlNodeIds.last()};
+    region.exitNodes = {bodyControlNodeIds.last()};
     }
+    region.type = step.loop.type;
     region.forLoop = step.loop.toRuntimeSpec();
+    region.whileLoop = step.loop.toRuntimeWhileSpec();
+    if (region.type == LoopType::While) {
+        region.forLoop.variableName = "iteration";
+        region.forLoop.from = 1;
+        region.forLoop.to = qMax(1, region.whileLoop.maxIterations);
+        region.forLoop.step = 1;
+    }
     plan.loopRegions.push_back(region);
 
     info.allNodeIds += bodyNodeIds;
@@ -499,6 +589,8 @@ ExecNode PlanBuilder::buildNode(const StepDef& step,
         node.payload = step.barrier.toPayload();
     } else if (step.kind == StepKind::Loop) {
         node.payload = step.loop.toPayload();
+    } else if (step.kind == StepKind::OperatorPrompt) {
+        node.payload = step.prompt.toPayload();
     }
 
     for (const auto& resource : step.resources) {
@@ -684,6 +776,37 @@ bool PlanBuilder::validatePlanReferences(const ExecutionPlan& plan, PlanBuildRes
                 result.errors.push_back({QString("Test item references missing child node: %1")
                                              .arg(childNode), {}});
             }
+        }
+    }
+
+    for (auto it = plan.nodes.constBegin(); it != plan.nodes.constEnd(); ++it) {
+        const auto& node = it.value();
+        if (node.kind != ExecNodeKind::OperatorPrompt ||
+            node.payload.value(QStringLiteral("mode")).toString() != QStringLiteral("notice")) {
+            continue;
+        }
+        const auto requested = node.payload.value(QStringLiteral("closeOnStep"))
+                                   .toString().trimmed();
+        if (requested.isEmpty()) {
+            continue;
+        }
+        bool ambiguous = false;
+        const auto target = resolveOperatorPromptCloseTarget(
+            plan, node, requested, ambiguous);
+        if (!target) {
+            result.errors.push_back({
+                ambiguous
+                    ? QString("Operator prompt closeOnStep is ambiguous: %1").arg(requested)
+                    : QString("Operator prompt closeOnStep references missing or disabled node: %1")
+                          .arg(requested),
+                QString("Select an enabled step after %1").arg(node.id)});
+            continue;
+        }
+        if (!sourceRunsBeforeConsumer(plan, node.id, *target)) {
+            result.errors.push_back({
+                QString("Operator prompt closeOnStep must reference a later node: %1")
+                    .arg(requested),
+                QString("Select an enabled step after %1").arg(node.id)});
         }
     }
 

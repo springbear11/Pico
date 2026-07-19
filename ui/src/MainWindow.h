@@ -7,6 +7,7 @@
 
 #include <QMainWindow>
 #include <QElapsedTimer>
+#include <QHash>
 #include <QSet>
 #include <QStringList>
 
@@ -33,11 +34,13 @@ class DebugSnapshotModel;
 class DiagnosticModel;
 class DeviceStatusModel;
 class ExecutionViewModel;
+class FlowTargetSelector;
 class HistoryModel;
 class MeasurementModel;
+class OperatorPromptPresenter;
 class PluginFunctionModel;
-class RuntimeLogModel;
 class RuntimeTimelineModel;
+class RunArtifactWriter;
 class SequenceDocument;
 class SequenceTreeModel;
 class ScanDialog;
@@ -63,6 +66,8 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    enum class HistoryExportFormat { Text, Csv, Xlsx };
+
     void buildActions();
     void buildLayout();
     void chooseSequence();
@@ -101,6 +106,7 @@ private:
     void addStationDevice();
     void deleteStationDevice();
     void duplicateStationDevice();
+    void fillPreviousStationDeviceSlot();
     void moveStationDevice(int offset);
     void applyStationUndoRedo(bool redo);
     void testSelectedStationDevice();
@@ -110,6 +116,8 @@ private:
     void restoreSequenceTreeViewState();
     void updateSequenceEditor();
     void updateStationEditor();
+    void normalizeStationLogicalIds();
+    void applyStationLogicalIdMigrations();
     void refreshEditorDiagnostics();
     QVector<UiDiagnostic> stationPluginDiagnostics() const;
     QVector<UiDiagnostic> stationFlowDiagnostics() const;
@@ -133,13 +141,14 @@ private:
     void selectRuntimeEvent(const PicoATE::Core::RuntimeEvent& event);
     void selectTimelineSequence(quint64 sequenceNumber);
     void selectTimelineEvent(const QModelIndex& index);
+    void focusExecutionLogForResult(const QModelIndex& index);
     void focusDebugNode(const PicoATE::Core::RuntimeEvent& event);
     void updateStepDetails(const QModelIndex& index);
     void updateAttemptMeasurements(const QModelIndex& index);
     void selectInitialResult();
     void refreshHistory();
     void loadSelectedHistory();
-    void exportSelectedHistory(bool csv);
+    void exportSelectedHistory(HistoryExportFormat format);
     void restoreUiSettings();
     void saveUiSettings() const;
     void resetUiLayout();
@@ -152,6 +161,7 @@ private:
     std::optional<ReportHistoryEntry> selectedHistoryEntry() const;
 
     ExecutionViewModel* m_viewModel = nullptr;
+    OperatorPromptPresenter* m_operatorPromptPresenter = nullptr;
     SequenceDocument* m_sequenceDocument = nullptr;
     SequenceTreeModel* m_sequenceTreeModel = nullptr;
     StationDocument* m_stationDocument = nullptr;
@@ -165,7 +175,6 @@ private:
     AttemptModel* m_attemptModel = nullptr;
     MeasurementModel* m_measurementModel = nullptr;
     PluginFunctionModel* m_pluginFunctionModel = nullptr;
-    RuntimeLogModel* m_runtimeLogModel = nullptr;
     RuntimeTimelineModel* m_runtimeTimelineModel = nullptr;
     DebugSnapshotModel* m_debugSnapshotModel = nullptr;
     QAction* m_openSequenceAction = nullptr;
@@ -190,6 +199,7 @@ private:
     QAction* m_addDeviceAction = nullptr;
     QAction* m_deleteDeviceAction = nullptr;
     QAction* m_duplicateDeviceAction = nullptr;
+    QAction* m_fillPreviousDeviceSlotAction = nullptr;
     QAction* m_moveDeviceUpAction = nullptr;
     QAction* m_moveDeviceDownAction = nullptr;
     QAction* m_testDeviceConnectionAction = nullptr;
@@ -229,9 +239,10 @@ private:
     QTimer* m_adminElapsedTimer = nullptr;
     QTreeView* m_sequenceTreeView = nullptr;
     QTreeView* m_pluginFunctionView = nullptr;
+    FlowTargetSelector* m_flowTargetSelector = nullptr;
     StepPropertyEditor* m_stepPropertyEditor = nullptr;
     QTableView* m_editorDiagnosticView = nullptr;
-    QTableView* m_stationDeviceView = nullptr;
+    QTreeView* m_stationDeviceView = nullptr;
     StationSettingsEditor* m_stationSettingsEditor = nullptr;
     StationPropertyEditor* m_stationPropertyEditor = nullptr;
     QTableView* m_stationDiagnosticView = nullptr;
@@ -239,7 +250,6 @@ private:
     QTableView* m_attemptView = nullptr;
     QTableView* m_measurementView = nullptr;
     QTableView* m_runtimeTimelineView = nullptr;
-    QTableView* m_runtimeLogView = nullptr;
     QTableView* m_debugSnapshotView = nullptr;
     QTableView* m_diagnosticView = nullptr;
     QTableView* m_deviceStatusView = nullptr;
@@ -247,6 +257,7 @@ private:
     QLineEdit* m_historyFilter = nullptr;
     QSortFilterProxyModel* m_historyProxy = nullptr;
     std::unique_ptr<ReportHistoryStore> m_historyStore;
+    std::unique_ptr<RunArtifactWriter> m_runArtifactWriter;
     QStringList m_recentSequences;
     QStringList m_recentStations;
     QVector<QJsonObject> m_sequenceClipboard;
@@ -254,6 +265,7 @@ private:
     QVector<SequenceItemPath> m_expandedSequencePaths;
     int m_sequenceTreeScrollValue = 0;
     int m_selectedStationDeviceRow = -1;
+    QHash<QString, QString> m_pendingStationLogicalIdMigrations;
     bool m_currentReportSaved = false;
     bool m_currentAdminRunCounted = false;
     bool m_shuttingDown = false;

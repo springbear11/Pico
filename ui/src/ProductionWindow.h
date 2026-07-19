@@ -9,6 +9,8 @@
 #include <QMainWindow>
 #include <QSet>
 
+#include <memory>
+
 class QAction;
 class QLabel;
 class QProgressBar;
@@ -19,7 +21,9 @@ class QTreeView;
 namespace PicoATE::Ui {
 
 class ExecutionViewModel;
-class RuntimeLogModel;
+class OperatorPromptPresenter;
+class RuntimeTimelineModel;
+class RunArtifactWriter;
 class ScanDialog;
 class UutStepModel;
 
@@ -42,6 +46,7 @@ private:
     void updateCompileSummary();
     void updateReport();
     void applyRuntimeEvents(const QVector<PicoATE::Core::RuntimeEvent>& events);
+    void focusExecutionLogForResult(const QModelIndex& index);
     void beginRun(const QString& serialNumber);
     void beginManualRun();
     void resetPreviewForUut(const QString& uutId);
@@ -52,8 +57,10 @@ private:
 
     StartupSelection m_selection;
     ExecutionViewModel* m_viewModel = nullptr;
+    OperatorPromptPresenter* m_operatorPromptPresenter = nullptr;
     UutStepModel* m_resultModel = nullptr;
-    RuntimeLogModel* m_logModel = nullptr;
+    RuntimeTimelineModel* m_logModel = nullptr;
+    std::unique_ptr<RunArtifactWriter> m_runArtifactWriter;
     ScanDialog* m_scanDialog = nullptr;
     QAction* m_startAction = nullptr;
     QAction* m_pauseAction = nullptr;

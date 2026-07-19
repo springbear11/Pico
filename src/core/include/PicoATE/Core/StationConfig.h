@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PicoATE/Core/DeviceSessionManager.h"
+#include "PicoATE/Core/ErrorPolicyEngine.h"
 #include "PicoATE/Core/VariableResolver.h"
 
 #include <QJsonObject>
@@ -21,6 +22,10 @@ struct StationConfig {
     QString name;
     bool stopOnFailure = true;
     bool scanDialogEnabled = true;
+    bool txtLogEnabled = false;
+    bool csvReportEnabled = false;
+    bool xlsxReportEnabled = false;
+    QString reportOutputDirectory;
     int snLength = 0;
     QVariantMap metadata;
     QVector<DeviceSessionConfig> devices;
@@ -41,6 +46,8 @@ StationConfigResult loadStationConfigFile(const QString& filePath,
 
 QVector<StationConfigDiagnostic> configureDeviceSessions(const StationConfig& config,
                                                          DeviceSessionManager& manager);
+
+FailureHandlingMode failureHandlingMode(const StationConfig& config);
 
 DeviceSessionLifetime deviceSessionLifetimeFromString(const QString& value,
                                                       bool* ok = nullptr);

@@ -223,7 +223,22 @@ void collectLoopWarnings(const QJsonObject& object,
                          const QString& path,
                          QVector<CompileWarning>& warnings)
 {
-    warnUnknownFields(object, path, {"type", "variable", "from", "to", "step"}, warnings);
+    warnUnknownFields(object,
+                      path,
+                      {"type", "variable", "from", "to", "step",
+                       "iterationErrorPolicy", "intervalMs",
+                       "maxIterations", "timeoutMs"},
+                      warnings);
+}
+
+void collectOperatorPromptWarnings(const QJsonObject& object,
+                                   const QString& path,
+                                   QVector<CompileWarning>& warnings)
+{
+    warnUnknownFields(object,
+                      path,
+                      {"mode", "title", "message", "confirmText", "closeOnStep", "timeoutMs"},
+                      warnings);
 }
 
 void collectResourceWarnings(const QJsonObject& object,
@@ -273,6 +288,7 @@ void collectStepWarnings(const QJsonObject& object,
         "timeoutMs",
         "errorPolicy",
         "barrier",
+        "prompt",
         "tags",
     };
 
@@ -317,6 +333,10 @@ void collectStepWarnings(const QJsonObject& object,
 
     if (object.value("loop").isObject()) {
         collectLoopWarnings(object.value("loop").toObject(), path + ".loop", warnings);
+    }
+
+    if (object.value("prompt").isObject()) {
+        collectOperatorPromptWarnings(object.value("prompt").toObject(), path + ".prompt", warnings);
     }
 
     if (object.value("steps").isArray()) {
@@ -402,6 +422,18 @@ StepKind parseStepKindString(const QString& text, bool& ok)
     }
     if (value == "limit" || value == "numericlimit") {
         return StepKind::Limit;
+    }
+    if (value == "break" || value == "breakif") {
+        return StepKind::Break;
+    }
+    if (value == "counter") {
+        return StepKind::Counter;
+    }
+    if (value == "aggregate" || value == "statistics") {
+        return StepKind::Aggregate;
+    }
+    if (value == "operatorprompt" || value == "prompt") {
+        return StepKind::OperatorPrompt;
     }
     if (value == "statement") {
         return StepKind::Statement;
@@ -689,7 +721,7 @@ StepDef SequenceCompiler::parseStep(const QJsonObject& object,
     const auto kindKey = object.contains("kind") ? QString("kind") : QString("type");
     step.kind = parseStepKindString(readString(object, kindKey, path, errors, "noop"), kindOk);
     if (!kindOk) {
-        addError(errors, childPath(path, kindKey), "Unsupported step kind", "Use noop, wait, action, barrier, cleanup, loop, testItem, limit, statement, or sequenceCall");
+        addError(errors, childPath(path, kindKey), "Unsupported step kind", "Use noop, wait, action, barrier, cleanup, loop, testItem, limit, break, counter, aggregate, operatorPrompt, statement, or sequenceCall");
     }
 
     if (object.contains("parameters")) {
@@ -768,6 +800,21 @@ StepDef SequenceCompiler::parseStep(const QJsonObject& object,
                      QString("object, got %1").arg(jsonTypeName(object.value("loop"))));
     } else if (object.value("loop").isObject()) {
         step.loop = parseLoopPolicy(object.value("loop").toObject(), path + ".loop", errors);
+    }
+
+    if (object.contains("prompt") && !object.value("prompt").isObject()) {
+        addTypeError(errors,
+                     childPath(path, "prompt"),
+                     QString("object, got %1").arg(jsonTypeName(object.value("prompt"))));
+    } else if (object.value("prompt").isObject()) {
+        step.prompt = parseOperatorPrompt(object.value("prompt").toObject(),
+                                          path + ".prompt",
+                                          errors);
+    } else if (step.kind == StepKind::OperatorPrompt) {
+        addError(errors,
+                 childPath(path, "prompt"),
+                 "Operator prompt must contain a prompt object",
+                 "Add mode, message, and optional display settings");
     }
 
     if (step.kind == StepKind::Loop || step.kind == StepKind::TestItem) {
@@ -949,22 +996,103 @@ LoopPolicyDef SequenceCompiler::parseLoopPolicy(const QJsonObject& object,
 {
     LoopPolicyDef loop;
     const auto type = readString(object, "type", path, errors, "for");
-    if (normalized(type) != "for") {
-        addError(errors, childPath(path, "type"), "Unsupported loop type", "Use for");
+    const auto normalizedType = normalized(type);
+    if (normalizedType == "for" || normalizedType == "forloop") {
+        loop.type = LoopType::For;
+    } else if (normalizedType == "while" || normalizedType == "whileloop") {
+        loop.type = LoopType::While;
+    } else {
+        addError(errors,
+                 childPath(path, "type"),
+                 "Unsupported loop type",
+                 normalizedType == "condition" || normalizedType == "conditionloop" || normalizedType == "until"
+                     ? "Condition Loop was replaced by While Loop plus Break If; use type 'while' and add a break child"
+                     : "Use for or while");
     }
 
-    loop.variableName = readString(object, "variable", path, errors, "i").trimmed();
-    if (loop.variableName.trimmed().isEmpty()) {
-        addError(errors, childPath(path, "variable"), "Loop variable is required", "Set a non-empty variable name");
+    if (loop.type == LoopType::For) {
+        loop.variableName = readString(object, "variable", path, errors, "i").trimmed();
+        if (loop.variableName.trimmed().isEmpty()) {
+            addError(errors,
+                     childPath(path, "variable"),
+                     "Loop variable is required",
+                     "Set a non-empty variable name");
+        }
+
+        loop.from = readInt(object, "from", path, errors, 0);
+        loop.to = readInt(object, "to", path, errors, 0);
+        loop.step = readInt(object, "step", path, errors, 1);
+        if (loop.step == 0) {
+            addError(errors,
+                     childPath(path, "step"),
+                     "Loop step must not be zero",
+                     "Use a positive or negative integer");
+        }
+        return loop;
     }
 
-    loop.from = readInt(object, "from", path, errors, 0);
-    loop.to = readInt(object, "to", path, errors, 0);
-    loop.step = readInt(object, "step", path, errors, 1);
-    if (loop.step == 0) {
-        addError(errors, childPath(path, "step"), "Loop step must not be zero", "Use a positive or negative integer");
+    const auto iterationErrorPolicy = normalized(
+        readString(object, "iterationErrorPolicy", path, errors, "abortLoop"));
+    if (iterationErrorPolicy == "abortloop" || iterationErrorPolicy == "abort") {
+        loop.iterationErrorPolicy = WhileIterationErrorPolicy::AbortLoop;
+    } else if (iterationErrorPolicy == "continueloop" ||
+               iterationErrorPolicy == "continue") {
+        loop.iterationErrorPolicy = WhileIterationErrorPolicy::ContinueLoop;
+    } else {
+        addError(errors,
+                 childPath(path, "iterationErrorPolicy"),
+                 "Unsupported while loop iteration error policy",
+                 "Use abortLoop or continueLoop");
     }
+
+    loop.intervalMs = readInt(object, "intervalMs", path, errors, 0);
+    loop.maxIterations = readInt(object, "maxIterations", path, errors, 100);
+    loop.timeoutMs = readInt(object, "timeoutMs", path, errors, 60000);
     return loop;
+}
+
+OperatorPromptDef SequenceCompiler::parseOperatorPrompt(const QJsonObject& object,
+                                                        const QString& path,
+                                                        QVector<CompileError>& errors) const
+{
+    OperatorPromptDef prompt;
+    const auto mode = normalized(readString(object, "mode", path, errors, "confirm"));
+    if (mode == "confirm" || mode == "waitforconfirm") {
+        prompt.mode = "confirm";
+    } else if (mode == "notice" || mode == "continue") {
+        prompt.mode = "notice";
+    } else {
+        addError(errors,
+                 childPath(path, "mode"),
+                 "Unsupported operator prompt mode",
+                 "Use confirm or notice");
+    }
+
+    prompt.title = readString(object, "title", path, errors, "Message");
+    prompt.message = readString(object, "message", path, errors).trimmed();
+    prompt.confirmText = readString(object, "confirmText", path, errors, "OK").trimmed();
+    prompt.closeOnStep = readString(object, "closeOnStep", path, errors).trimmed();
+    prompt.timeoutMs = readInt(object, "timeoutMs", path, errors, 60000);
+
+    if (prompt.message.isEmpty()) {
+        addError(errors,
+                 childPath(path, "message"),
+                 "Operator prompt message is required",
+                 "Describe the action the operator must perform");
+    }
+    if (prompt.mode == "confirm" && prompt.confirmText.isEmpty()) {
+        addError(errors,
+                 childPath(path, "confirmText"),
+                 "Confirm button text must not be empty",
+                 "Use OK, Confirm, or another short command");
+    }
+    if (prompt.timeoutMs < 0) {
+        addError(errors,
+                 childPath(path, "timeoutMs"),
+                 "Operator prompt timeout must not be negative",
+                 "Use 0 for no timeout or a positive millisecond value");
+    }
+    return prompt;
 }
 
 ErrorPolicyDef SequenceCompiler::parseErrorPolicy(const QJsonObject& object,

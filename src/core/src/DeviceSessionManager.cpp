@@ -86,7 +86,9 @@ DeviceConnectionState DeviceSessionManager::stateOf(const DeviceId& deviceId) co
     return existing ? existing->state() : DeviceConnectionState::Disconnected;
 }
 
-DeviceSessionOpenResult DeviceSessionManager::openSession(const DeviceId& deviceId)
+DeviceSessionOpenResult DeviceSessionManager::openSession(
+    const DeviceId& deviceId,
+    const ModuleExecutionContext* context)
 {
     DeviceSessionOpenResult result;
 
@@ -112,7 +114,7 @@ DeviceSessionOpenResult DeviceSessionManager::openSession(const DeviceId& device
             publishState(deviceId, DeviceConnectionState::Connected, "healthy session reused");
             return result;
         }
-        existing->disconnect();
+        existing->disconnect(context);
         publishState(deviceId,
                      DeviceConnectionState::Disconnected,
                      healthError.isEmpty() ? "unhealthy session disconnected" : healthError);
@@ -152,7 +154,7 @@ DeviceSessionOpenResult DeviceSessionManager::openSession(const DeviceId& device
 
     publishState(deviceId, DeviceConnectionState::Connecting, "connecting");
     QString connectError;
-    if (!existing->connect(connectError)) {
+    if (!existing->connect(connectError, context)) {
         result.error = makeError(deviceId,
                                  "DeviceConnectFailed",
                                  connectError.isEmpty()
@@ -171,14 +173,16 @@ DeviceSessionOpenResult DeviceSessionManager::openSession(const DeviceId& device
     return result;
 }
 
-DeviceSessionError DeviceSessionManager::closeSession(const DeviceId& deviceId)
+DeviceSessionError DeviceSessionManager::closeSession(
+    const DeviceId& deviceId,
+    const ModuleExecutionContext* context)
 {
     const auto existing = session(deviceId);
     if (!existing) {
         return {};
     }
 
-    existing->disconnect();
+    existing->disconnect(context);
     publishState(deviceId, DeviceConnectionState::Disconnected, "disconnected");
     return {};
 }

@@ -124,6 +124,16 @@ void ExecutionControl::clearDebugSnapshot()
     m_debugSnapshot.reset();
 }
 
+OperatorPromptController& ExecutionControl::operatorPrompts()
+{
+    return m_operatorPrompts;
+}
+
+const OperatorPromptController& ExecutionControl::operatorPrompts() const
+{
+    return m_operatorPrompts;
+}
+
 bool ExecutionControl::enterPausedState()
 {
     auto expected = ExecutionControlState::PauseRequested;

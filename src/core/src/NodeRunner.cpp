@@ -1,7 +1,15 @@
 #include "PicoATE/Core/NodeRunner.h"
 #include "PicoATE/Core/InstrumentAdapterModules.h"
+#include "PicoATE/Core/ExecutionControl.h"
+#include "PicoATE/Core/ExecutionResultStore.h"
 #include "PicoATE/Core/RuntimeVariableResolver.h"
+#include "PicoATE/Core/RuntimeEvent.h"
+#include "PicoATE/Core/StopToken.h"
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QThread>
 
 #include <cmath>
@@ -9,28 +17,6 @@
 namespace PicoATE::Core {
 
 namespace {
-
-NodeResult runtimeVariableErrorResult(const ExecNode& node,
-                                      const QVector<VariableResolutionError>& errors)
-{
-    NodeResult result;
-    result.nodeId = node.id;
-    result.outcome = NodeOutcome::Error;
-    result.errorCode = "RuntimeVariableResolutionError";
-    result.startedAt = QDateTime::currentDateTimeUtc();
-    result.finishedAt = result.startedAt;
-
-    if (errors.isEmpty()) {
-        result.errorMessage = "Runtime variable resolution failed";
-        return result;
-    }
-
-    const auto& first = errors.first();
-    result.errorMessage = first.path.isEmpty()
-        ? first.message
-        : QString("%1 at %2").arg(first.message, first.path);
-    return result;
-}
 
 QString normalizedComparison(QString value)
 {
@@ -70,6 +56,146 @@ bool finiteNumber(const QVariant& value, double& number)
     bool ok = false;
     number = value.toDouble(&ok);
     return ok && std::isfinite(number);
+}
+
+QString logValueText(const QVariant& value)
+{
+    if (!value.isValid() || value.isNull()) {
+        return QStringLiteral("<unset>");
+    }
+    const auto json = QJsonValue::fromVariant(value);
+    if (json.isObject()) {
+        return QString::fromUtf8(QJsonDocument(json.toObject()).toJson(QJsonDocument::Compact));
+    }
+    if (json.isArray()) {
+        return QString::fromUtf8(QJsonDocument(json.toArray()).toJson(QJsonDocument::Compact));
+    }
+    if (json.isBool()) {
+        return json.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    }
+    return value.toString();
+}
+
+void publishLimitLog(const NodeExecutionContext& context, const QString& message)
+{
+    if (!context.logSink) {
+        return;
+    }
+    ModuleLogRecord record;
+    record.timestampUtc = QDateTime::currentDateTimeUtc();
+    record.message = message;
+    context.logSink->publishModuleLog(record);
+}
+
+void applyConfiguredLimits(const ExecNode& node, MeasurementResult& measurement)
+{
+    const auto comparison = normalizedComparison(
+        node.payload.value("comparison", "between").toString());
+    measurement.attributes.insert("comparison", comparison);
+    measurement.attributes.insert(
+        "inclusive", node.payload.value("inclusive", true).toBool());
+
+    QVariant lowerValue;
+    QVariant upperValue;
+    QVariant expectedValue;
+    QVariant toleranceValue;
+    const bool hasLower = limitValue(node, "lower", lowerValue) ||
+                          limitValue(node, "lowerLimit", lowerValue);
+    const bool hasUpper = limitValue(node, "upper", upperValue) ||
+                          limitValue(node, "upperLimit", upperValue);
+    const bool hasExpected = limitValue(node, "expected", expectedValue);
+    const bool hasTolerance = limitValue(node, "tolerance", toleranceValue);
+
+    double lower = 0.0;
+    double upper = 0.0;
+    double expected = 0.0;
+    double tolerance = 0.0;
+    if (hasExpected) {
+        measurement.attributes.insert("expected", expectedValue);
+    }
+    if (hasTolerance) {
+        measurement.attributes.insert("tolerance", toleranceValue);
+    }
+
+    if ((comparison == "between" || comparison == "range") &&
+        hasLower && hasUpper &&
+        finiteNumber(lowerValue, lower) && finiteNumber(upperValue, upper)) {
+        measurement.hasLowerLimit = true;
+        measurement.lowerLimit = lower;
+        measurement.hasUpperLimit = true;
+        measurement.upperLimit = upper;
+        return;
+    }
+    if ((comparison == "between" || comparison == "range") &&
+        hasExpected && hasTolerance &&
+        finiteNumber(expectedValue, expected) && finiteNumber(toleranceValue, tolerance)) {
+        measurement.hasLowerLimit = true;
+        measurement.lowerLimit = expected - tolerance;
+        measurement.hasUpperLimit = true;
+        measurement.upperLimit = expected + tolerance;
+        return;
+    }
+
+    const bool equality = comparison == "==" || comparison == "eq" ||
+        comparison == "equal" || comparison == "!=" || comparison == "ne" ||
+        comparison == "notequal";
+    if (equality && hasExpected && finiteNumber(expectedValue, expected) &&
+        (!hasTolerance || finiteNumber(toleranceValue, tolerance))) {
+        measurement.hasLowerLimit = true;
+        measurement.lowerLimit = expected - tolerance;
+        measurement.hasUpperLimit = true;
+        measurement.upperLimit = expected + tolerance;
+        return;
+    }
+
+    const bool lowerBound = comparison == ">" || comparison == "gt" ||
+        comparison == "greaterthan" || comparison == ">=" || comparison == "ge" ||
+        comparison == "gte" || comparison == "greaterorequal";
+    const bool upperBound = comparison == "<" || comparison == "lt" ||
+        comparison == "lessthan" || comparison == "<=" || comparison == "le" ||
+        comparison == "lte" || comparison == "lessorequal";
+    const auto thresholdValue = hasExpected
+        ? expectedValue
+        : (lowerBound ? lowerValue : upperValue);
+    if ((lowerBound || upperBound) && finiteNumber(thresholdValue, expected)) {
+        measurement.hasLowerLimit = lowerBound;
+        measurement.lowerLimit = expected;
+        measurement.hasUpperLimit = upperBound;
+        measurement.upperLimit = expected;
+    }
+}
+
+NodeResult runtimeVariableErrorResult(const ExecNode& node,
+                                      const QVector<VariableResolutionError>& errors)
+{
+    NodeResult result;
+    result.nodeId = node.id;
+    result.outcome = NodeOutcome::Error;
+    result.errorCode = "RuntimeVariableResolutionError";
+    result.startedAt = QDateTime::currentDateTimeUtc();
+    result.finishedAt = result.startedAt;
+
+    if (errors.isEmpty()) {
+        result.errorMessage = "Runtime variable resolution failed";
+    } else {
+        const auto& first = errors.first();
+        result.errorMessage = first.path.isEmpty()
+            ? first.message
+            : QString("%1 at %2").arg(first.message, first.path);
+    }
+
+    if (node.kind == ExecNodeKind::Limit) {
+        MeasurementResult measurement;
+        measurement.name = node.payload.value(
+            "measurementName", node.displayName).toString();
+        measurement.unit = node.payload.value("unit").toString();
+        measurement.status = MeasurementStatus::Error;
+        measurement.errorCode = result.errorCode;
+        measurement.errorMessage = result.errorMessage;
+        applyConfiguredLimits(node, measurement);
+        result.measurements.push_back(std::move(measurement));
+    }
+    return result;
 }
 
 NodeResult limitErrorResult(const ExecNode& node,
@@ -134,6 +260,10 @@ NodeRunner::NodeRunner()
     registerHandler(std::make_shared<NoopNodeHandler>());
     registerHandler(std::make_shared<WaitNodeHandler>());
     registerHandler(std::make_shared<LimitNodeHandler>());
+    registerHandler(std::make_shared<BreakNodeHandler>());
+    registerHandler(std::make_shared<CounterNodeHandler>());
+    registerHandler(std::make_shared<AggregateNodeHandler>());
+    registerHandler(std::make_shared<OperatorPromptNodeHandler>());
     registerHandler(std::make_shared<DeferredControlNodeHandler>());
     registerHandler(std::make_shared<ActionNodeHandler>(m_modules));
 }
@@ -230,12 +360,121 @@ NodeResult WaitNodeHandler::run(const ExecNode& node, const NodeExecutionContext
     return result;
 }
 
+bool OperatorPromptNodeHandler::canHandle(const ExecNode& node) const
+{
+    return node.kind == ExecNodeKind::OperatorPrompt;
+}
+
+NodeResult OperatorPromptNodeHandler::run(const ExecNode& node,
+                                          const NodeExecutionContext& context)
+{
+    NodeResult result;
+    result.nodeId = node.id;
+    result.startedAt = QDateTime::currentDateTimeUtc();
+
+    if (!context.executionControl || !context.stopToken || !context.runtimeEvents ||
+        !context.runtimeEvents->hasSink()) {
+        result.outcome = NodeOutcome::Error;
+        result.errorCode = "OperatorPromptResponderUnavailable";
+        result.errorMessage = "Operator prompt requires an interactive runtime event responder";
+        result.finishedAt = QDateTime::currentDateTimeUtc();
+        return result;
+    }
+
+    auto& controller = context.executionControl->operatorPrompts();
+    if (!controller.responderAvailable()) {
+        result.outcome = NodeOutcome::Error;
+        result.errorCode = "OperatorPromptResponderUnavailable";
+        result.errorMessage = "No operator prompt responder is available";
+        result.finishedAt = QDateTime::currentDateTimeUtc();
+        return result;
+    }
+
+    const auto mode = operatorPromptModeFromName(node.payload.value("mode", "confirm").toString());
+    const QString instanceId = context.attemptId + ":operator-prompt";
+    if (!controller.registerPrompt(instanceId)) {
+        result.outcome = NodeOutcome::Error;
+        result.errorCode = "OperatorPromptRegistrationFailed";
+        result.errorMessage = "Unable to register the operator prompt";
+        result.finishedAt = QDateTime::currentDateTimeUtc();
+        return result;
+    }
+
+    QVariantMap promptDetails = node.payload;
+    promptDetails.insert("promptInstanceId", instanceId);
+    promptDetails.insert("mode", operatorPromptModeName(mode));
+
+    RuntimeEvent requested;
+    requested.kind = RuntimeEventKind::OperatorPromptRequested;
+    requested.uutId = context.uutId;
+    requested.nodeId = node.id;
+    requested.nodeDisplayName = node.displayName;
+    requested.nodeKind = node.kind;
+    requested.attemptId = context.attemptId;
+    requested.attemptIndex = context.attemptIndex;
+    requested.frameId = context.frameId;
+    requested.message = node.payload.value("message").toString();
+    requested.details = promptDetails;
+    context.runtimeEvents->publish(requested);
+
+    const auto acceptedResponse = mode == OperatorPromptMode::Notice
+        ? OperatorPromptResponse::Shown
+        : OperatorPromptResponse::Confirmed;
+    int timeoutMs = node.payload.value("timeoutMs", 60000).toInt();
+    if (mode == OperatorPromptMode::Notice) {
+        timeoutMs = timeoutMs > 0 ? qMin(timeoutMs, 5000) : 5000;
+    }
+    const auto waitStatus = controller.waitForResponse(instanceId,
+                                                       acceptedResponse,
+                                                       timeoutMs,
+                                                       *context.stopToken);
+    switch (waitStatus) {
+    case OperatorPromptWaitStatus::Accepted:
+        result.outcome = NodeOutcome::Passed;
+        result.outputs = promptDetails;
+        break;
+    case OperatorPromptWaitStatus::Timeout:
+        result.outcome = NodeOutcome::Timeout;
+        result.errorCode = "OperatorPromptTimeout";
+        result.errorMessage = "Operator prompt timed out";
+        break;
+    case OperatorPromptWaitStatus::Cancelled:
+        result.outcome = NodeOutcome::Cancelled;
+        result.errorCode = "OperatorPromptCancelled";
+        result.errorMessage = "Operator prompt was cancelled";
+        break;
+    case OperatorPromptWaitStatus::Unavailable:
+        result.outcome = NodeOutcome::Error;
+        result.errorCode = "OperatorPromptResponderUnavailable";
+        result.errorMessage = "Operator prompt responder became unavailable";
+        break;
+    }
+
+    if (mode == OperatorPromptMode::Confirm || waitStatus != OperatorPromptWaitStatus::Accepted) {
+        RuntimeEvent closed = requested;
+        closed.kind = RuntimeEventKind::OperatorPromptClosed;
+        closed.outcome = result.outcome;
+        closed.message = result.outcome == NodeOutcome::Passed
+            ? QStringLiteral("operator confirmed")
+            : result.errorMessage;
+        closed.details.insert("reason",
+                              result.outcome == NodeOutcome::Passed
+                                  ? QStringLiteral("confirmed")
+                                  : QStringLiteral("cancelled"));
+        context.runtimeEvents->publish(closed);
+    }
+
+    result.finishedAt = QDateTime::currentDateTimeUtc();
+    return result;
+}
+
 bool LimitNodeHandler::canHandle(const ExecNode& node) const
 {
     return node.kind == ExecNodeKind::Limit;
 }
 
-NodeResult LimitNodeHandler::run(const ExecNode& node, const NodeExecutionContext&)
+NodeResult LimitNodeHandler::run(const ExecNode& node,
+                                 const NodeExecutionContext& context)
 {
     QVariant actual;
     if (!limitValue(node, "actual", actual)) {
@@ -256,6 +495,15 @@ NodeResult LimitNodeHandler::run(const ExecNode& node, const NodeExecutionContex
     QVariant toleranceValue;
     double tolerance = 0.0;
     const bool hasTolerance = limitValue(node, "tolerance", toleranceValue);
+    publishLimitLog(
+        context,
+        QStringLiteral("LIMIT_CHECK actual=%1 comparison=%2 expected=%3 lower=%4 upper=%5 tolerance=%6")
+            .arg(logValueText(actual),
+                 comparison,
+                 hasExpected ? logValueText(expectedValue) : QStringLiteral("<unset>"),
+                 hasLower ? logValueText(lowerValue) : QStringLiteral("<unset>"),
+                 hasUpper ? logValueText(upperValue) : QStringLiteral("<unset>"),
+                 hasTolerance ? logValueText(toleranceValue) : QStringLiteral("<unset>")));
     if (hasTolerance) {
         if (!finiteNumber(toleranceValue, tolerance) || tolerance < 0.0) {
             return limitErrorResult(node,
@@ -434,9 +682,21 @@ NodeResult LimitNodeHandler::run(const ExecNode& node, const NodeExecutionContex
                 comparison == "lessorequal")) {
         measurement.hasUpperLimit = true;
         measurement.upperLimit = expected;
-    } else if (numericMeasurement && hasExpected) {
+    } else if (numericMeasurement &&
+               (comparison == "==" || comparison == "eq" || comparison == "equal" ||
+                comparison == "!=" || comparison == "ne" || comparison == "notequal")) {
+        measurement.hasLowerLimit = true;
+        measurement.lowerLimit = expected - tolerance;
+        measurement.hasUpperLimit = true;
+        measurement.upperLimit = expected + tolerance;
         measurement.attributes.insert("expected", expectedValue);
         measurement.attributes.insert("tolerance", tolerance);
+        measurement.attributes.insert("limitsDerived", true);
+    } else if (hasExpected) {
+        measurement.attributes.insert("expected", expectedValue);
+        if (hasTolerance) {
+            measurement.attributes.insert("tolerance", tolerance);
+        }
     }
     if (!passed) {
         result.errorCode = "LimitFailed";
@@ -446,6 +706,182 @@ NodeResult LimitNodeHandler::run(const ExecNode& node, const NodeExecutionContex
         measurement.errorMessage = result.errorMessage;
     }
     result.measurements.push_back(measurement);
+    const auto effectiveLower = measurement.hasLowerLimit
+        ? QString::number(measurement.lowerLimit, 'g', 15)
+        : logValueText(measurement.attributes.value("expected"));
+    const auto effectiveUpper = measurement.hasUpperLimit
+        ? QString::number(measurement.upperLimit, 'g', 15)
+        : logValueText(measurement.attributes.value("expected"));
+    publishLimitLog(
+        context,
+        QStringLiteral("LIMIT_RESULT %1 actual=%2 comparison=%3 lower=%4 upper=%5")
+            .arg(passed ? QStringLiteral("PASS") : QStringLiteral("FAIL"),
+                 logValueText(actual),
+                 comparison,
+                 effectiveLower,
+                 effectiveUpper));
+    return result;
+}
+
+bool BreakNodeHandler::canHandle(const ExecNode& node) const
+{
+    return node.kind == ExecNodeKind::Break;
+}
+
+NodeResult BreakNodeHandler::run(const ExecNode& node,
+                                 const NodeExecutionContext& context)
+{
+    ExecNode predicate = node;
+    predicate.kind = ExecNodeKind::Limit;
+    auto evaluated = LimitNodeHandler().run(predicate, context);
+    if (evaluated.outcome == NodeOutcome::Error ||
+        evaluated.outcome == NodeOutcome::Timeout ||
+        evaluated.outcome == NodeOutcome::Cancelled) {
+        return evaluated;
+    }
+
+    const bool matched = evaluated.outcome == NodeOutcome::Passed;
+    evaluated.outcome = NodeOutcome::Passed;
+    evaluated.errorCode.clear();
+    evaluated.errorMessage.clear();
+    evaluated.measurements.clear();
+    evaluated.outputs.insert("breakRequested", matched);
+    evaluated.outputs.insert("matched", matched);
+    return evaluated;
+}
+
+bool CounterNodeHandler::canHandle(const ExecNode& node) const
+{
+    return node.kind == ExecNodeKind::Counter;
+}
+
+NodeResult CounterNodeHandler::run(const ExecNode& node,
+                                   const NodeExecutionContext& context)
+{
+    NodeResult result;
+    result.nodeId = node.id;
+    result.startedAt = QDateTime::currentDateTimeUtc();
+    result.finishedAt = result.startedAt;
+
+    QVariant conditionValue = true;
+    limitValue(node, "condition", conditionValue);
+    bool condition = false;
+    if (conditionValue.metaType().id() == QMetaType::Bool) {
+        condition = conditionValue.toBool();
+    } else {
+        const auto text = conditionValue.toString().trimmed().toLower();
+        if (text == "true" || text == "yes" || text == "1" || text == "passed") {
+            condition = true;
+        } else if (text == "false" || text == "no" || text == "0" ||
+                   text == "failed" || text.isEmpty()) {
+            condition = false;
+        } else {
+            result.outcome = NodeOutcome::Error;
+            result.errorCode = "CounterConditionNotBoolean";
+            result.errorMessage = "Counter condition must resolve to a boolean value";
+            return result;
+        }
+    }
+
+    double start = 0.0;
+    double increment = 1.0;
+    QVariant configured;
+    if (limitValue(node, "start", configured) && !finiteNumber(configured, start)) {
+        result.outcome = NodeOutcome::Error;
+        result.errorCode = "CounterStartNotNumeric";
+        result.errorMessage = "Counter start must be numeric";
+        return result;
+    }
+    if (limitValue(node, "increment", configured) && !finiteNumber(configured, increment)) {
+        result.outcome = NodeOutcome::Error;
+        result.errorCode = "CounterIncrementNotNumeric";
+        result.errorMessage = "Counter increment must be numeric";
+        return result;
+    }
+
+    const auto mode = node.payload.value("mode", "consecutive").toString()
+                          .trimmed().toLower();
+    if (mode != "consecutive" && mode != "total") {
+        result.outcome = NodeOutcome::Error;
+        result.errorCode = "CounterModeUnsupported";
+        result.errorMessage = "Counter mode must be consecutive or total";
+        return result;
+    }
+
+    double previous = start;
+    const bool firstLoopIteration = context.variables.value("loop.number", 1).toInt() <= 1;
+    if (!firstLoopIteration && context.resultStore) {
+        const auto stored = context.resultStore->latest(context.uutId, context.frameId, node.id);
+        if (stored) {
+            previous = stored->result.outputs.value("value", start).toDouble();
+        }
+    }
+
+    double value = previous;
+    if (condition) {
+        value += increment;
+    } else if (mode == "consecutive") {
+        value = start;
+    }
+
+    result.outcome = NodeOutcome::Passed;
+    result.outputs.insert("value", value);
+    result.outputs.insert("condition", condition);
+    result.outputs.insert("mode", mode);
+    return result;
+}
+
+bool AggregateNodeHandler::canHandle(const ExecNode& node) const
+{
+    return node.kind == ExecNodeKind::Aggregate;
+}
+
+NodeResult AggregateNodeHandler::run(const ExecNode& node,
+                                     const NodeExecutionContext& context)
+{
+    QVariant sample;
+    if (!limitValue(node, "value", sample)) {
+        return limitErrorResult(node, {}, "AggregateValueMissing",
+                                "Aggregate input 'value' is required");
+    }
+    double numeric = 0.0;
+    if (!finiteNumber(sample, numeric)) {
+        return limitErrorResult(node, sample, "AggregateValueNotNumeric",
+                                "Aggregate value must resolve to a finite number");
+    }
+
+    int count = 0;
+    double sum = 0.0;
+    double minimum = numeric;
+    double maximum = numeric;
+    const bool firstLoopIteration = context.variables.value("loop.number", 1).toInt() <= 1;
+    if (!firstLoopIteration && context.resultStore) {
+        const auto stored = context.resultStore->latest(context.uutId, context.frameId, node.id);
+        if (stored) {
+            const auto& outputs = stored->result.outputs;
+            count = outputs.value("count").toInt();
+            sum = outputs.value("sum").toDouble();
+            minimum = outputs.value("minimum", numeric).toDouble();
+            maximum = outputs.value("maximum", numeric).toDouble();
+        }
+    }
+
+    ++count;
+    sum += numeric;
+    minimum = qMin(minimum, numeric);
+    maximum = qMax(maximum, numeric);
+
+    NodeResult result;
+    result.nodeId = node.id;
+    result.outcome = NodeOutcome::Passed;
+    result.startedAt = QDateTime::currentDateTimeUtc();
+    result.finishedAt = result.startedAt;
+    result.outputs.insert("last", numeric);
+    result.outputs.insert("count", count);
+    result.outputs.insert("sum", sum);
+    result.outputs.insert("minimum", minimum);
+    result.outputs.insert("maximum", maximum);
+    result.outputs.insert("average", sum / count);
     return result;
 }
 

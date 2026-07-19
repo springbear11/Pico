@@ -78,14 +78,18 @@ ModuleRuntimeServices::ModuleRuntimeServices(DeviceSessionManager& devices)
 {
 }
 
-DeviceSessionOpenResult ModuleRuntimeServices::openDeviceSession(const DeviceId& deviceId)
+DeviceSessionOpenResult ModuleRuntimeServices::openDeviceSession(
+    const DeviceId& deviceId,
+    const ModuleExecutionContext* context)
 {
-    return m_devices.openSession(deviceId);
+    return m_devices.openSession(deviceId, context);
 }
 
-DeviceSessionError ModuleRuntimeServices::closeDeviceSession(const DeviceId& deviceId)
+DeviceSessionError ModuleRuntimeServices::closeDeviceSession(
+    const DeviceId& deviceId,
+    const ModuleExecutionContext* context)
 {
-    return m_devices.closeSession(deviceId);
+    return m_devices.closeSession(deviceId, context);
 }
 
 std::shared_ptr<IDeviceSession> ModuleRuntimeServices::deviceSession(const DeviceId& deviceId) const
@@ -98,7 +102,7 @@ ModuleResult ModuleRuntimeServices::invokeDevice(const DeviceId& deviceId,
                                                  const QVariantMap& inputs,
                                                  const ModuleExecutionContext& context)
 {
-    const auto open = m_devices.openSession(deviceId);
+    const auto open = m_devices.openSession(deviceId, &context);
     if (!open.ok()) {
         return moduleResultFromDeviceError(open.error);
     }
@@ -299,7 +303,7 @@ ModuleResult LogicalDeviceModule::execute(const ModuleFunction& functionName,
     forwardedInputs.remove("deviceId");
     const auto function = normalizedFunction(functionName);
     if (function == "open" || function == "connect") {
-        const auto opened = context.runtimeServices->openDeviceSession(deviceId);
+        const auto opened = context.runtimeServices->openDeviceSession(deviceId, &context);
         if (!opened.ok()) {
             return moduleResultFromDeviceError(opened.error);
         }
@@ -309,7 +313,7 @@ ModuleResult LogicalDeviceModule::execute(const ModuleFunction& functionName,
         return result;
     }
     if (function == "close" || function == "disconnect") {
-        const auto error = context.runtimeServices->closeDeviceSession(deviceId);
+        const auto error = context.runtimeServices->closeDeviceSession(deviceId, &context);
         if (error.hasError()) {
             return moduleResultFromDeviceError(error);
         }

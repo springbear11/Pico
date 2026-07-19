@@ -130,10 +130,12 @@ ModuleResult ExampleDmmAdapterModule::execute(const ModuleFunction& functionName
     const auto deviceId = deviceIdFromContext(context, "dmm", "DMM1");
     const auto function = normalized(functionName);
     if (function == "connect" || function == "connectdmm") {
-        return fromOpenResult(deviceId, context.runtimeServices->openDeviceSession(deviceId));
+        return fromOpenResult(deviceId,
+                              context.runtimeServices->openDeviceSession(deviceId, &context));
     }
     if (function == "disconnect" || function == "disconnectdmm") {
-        return fromCloseError(deviceId, context.runtimeServices->closeDeviceSession(deviceId));
+        return fromCloseError(deviceId,
+                              context.runtimeServices->closeDeviceSession(deviceId, &context));
     }
     if (function == "configuredcv") {
         return context.runtimeServices->invokeDevice(deviceId, "configureDcv", context.inputs, context);
@@ -155,7 +157,7 @@ ModuleResult ExampleDmmAdapterModule::execute(const ModuleFunction& functionName
         return result;
     }
     if (function == "measuredcv") {
-        auto open = context.runtimeServices->openDeviceSession(deviceId);
+        auto open = context.runtimeServices->openDeviceSession(deviceId, &context);
         if (!open.ok()) {
             return fromOpenResult(deviceId, open);
         }
@@ -203,10 +205,12 @@ ModuleResult ExampleCanAdapterModule::execute(const ModuleFunction& functionName
     const auto deviceId = deviceIdFromContext(context, "can", "CAN1");
     const auto function = normalized(functionName);
     if (function == "connect" || function == "connectcan") {
-        return fromOpenResult(deviceId, context.runtimeServices->openDeviceSession(deviceId));
+        return fromOpenResult(deviceId,
+                              context.runtimeServices->openDeviceSession(deviceId, &context));
     }
     if (function == "disconnect" || function == "disconnectcan") {
-        return fromCloseError(deviceId, context.runtimeServices->closeDeviceSession(deviceId));
+        return fromCloseError(deviceId,
+                              context.runtimeServices->closeDeviceSession(deviceId, &context));
     }
     if (function == "readframe" || function == "readcan") {
         return context.runtimeServices->invokeDevice(deviceId, "readFrame", context.inputs, context);

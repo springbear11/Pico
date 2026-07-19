@@ -67,6 +67,9 @@ public:
     bool saveAs(const QString& filePath, QString* errorMessage = nullptr);
     void clear();
 
+    bool ensureStandardGroups();
+    bool isStandardGroup(const SequenceItemPath& path) const;
+    bool replaceRootObject(QJsonObject root);
     QJsonObject objectAt(const SequenceItemPath& path) const;
     bool canContainSteps(const SequenceItemPath& path) const;
     bool insertStep(const SequenceItemPath& parentPath,

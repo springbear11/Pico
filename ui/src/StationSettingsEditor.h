@@ -6,7 +6,6 @@
 class QAbstractButton;
 class QLabel;
 class QLineEdit;
-class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
 
@@ -44,8 +43,15 @@ private:
     QLineEdit* m_stationNameEdit = nullptr;
     QAbstractButton* m_stopOnFailureSwitch = nullptr;
     QAbstractButton* m_scanDialogSwitch = nullptr;
+    QAbstractButton* m_txtLogSwitch = nullptr;
+    QAbstractButton* m_csvReportSwitch = nullptr;
+    QAbstractButton* m_xlsxReportSwitch = nullptr;
+    QLineEdit* m_reportOutputEdit = nullptr;
+    QPushButton* m_browseReportOutputButton = nullptr;
     QSpinBox* m_snLengthSpin = nullptr;
-    QPlainTextEdit* m_metadataEdit = nullptr;
+    QLineEdit* m_jigNoEdit = nullptr;
+    QLineEdit* m_orderEdit = nullptr;
+    QLineEdit* m_testerEdit = nullptr;
     QLabel* m_errorLabel = nullptr;
     QLabel* m_title = nullptr;
     bool m_editable = true;

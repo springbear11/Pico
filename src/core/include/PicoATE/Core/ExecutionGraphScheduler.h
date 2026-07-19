@@ -2,11 +2,13 @@
 
 #include "PicoATE/Core/BarrierController.h"
 #include "PicoATE/Core/ErrorPolicyEngine.h"
+#include "PicoATE/Core/ExecutionControl.h"
 #include "PicoATE/Core/ExecutionResultStore.h"
 #include "PicoATE/Core/LoopController.h"
 #include "PicoATE/Core/NodeRunner.h"
 #include "PicoATE/Core/ResourceManager.h"
 #include "PicoATE/Core/RuntimeEvent.h"
+#include "PicoATE/Core/StopToken.h"
 
 namespace PicoATE::Core {
 
@@ -33,7 +35,9 @@ public:
                             ErrorPolicyEngine& errorPolicy,
                             NodeRunner& runner,
                             ExecutionResultStore& results,
-                            RuntimeEventEmitter* events = nullptr);
+                            RuntimeEventEmitter* events = nullptr,
+                            ExecutionControl* executionControl = nullptr,
+                            const StopToken* stopToken = nullptr);
 
     SchedulerResult run(UutExecution& uut, const FrameId& frameId = "root");
     SchedulerStepResult pumpOnce(UutExecution& uut, const FrameId& frameId = "root");
@@ -43,6 +47,7 @@ public:
     void applyBarrierReleases(const QVector<UutExecution*>& uuts);
     void activateAllCleanup(UutExecution& uut);
     void skipPendingNonAlwaysRun(UutExecution& uut, const FrameId& frameId = "root");
+    void closeAllOperatorPrompts(const QString& reason);
 
 private:
     QVector<NodeId> findReadyNodes(const UutExecution& uut) const;
@@ -50,6 +55,12 @@ private:
     NodeResult executeNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
     NodeResult executeBarrierNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
     NodeResult executeLoopNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
+    bool isWhileLoopBodyNode(const NodeId& nodeId) const;
+    void handleBreakRequest(UutExecution& uut,
+                            const ExecNode& node,
+                            const NodeResult& result,
+                            const FrameId& frameId);
+    void waitForLoopInterval(int intervalMs) const;
     NodeResult executeTestItemNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
     bool testItemControllerReady(const TestItemRegion& region, const UutExecution& uut) const;
     bool testItemChildMayRun(const TestItemRegion& region, const UutExecution& uut) const;
@@ -62,6 +73,11 @@ private:
                          const NodeId& rootNodeId,
                          const FrameId& frameId,
                          const QString& reason);
+    void resetTestItemForRetry(UutExecution& uut,
+                               const ExecNode& testItemNode,
+                               const FrameId& frameId);
+    void closeOperatorPromptsForTestItemRetry(const UutExecution& uut,
+                                              const NodeId& testItemNodeId);
     bool isNodeOrDescendantOf(const NodeId& nodeId, const NodeId& rootNodeId) const;
     void activateCleanup(UutExecution& uut, const CleanupRegionId& cleanupRegionId);
     void handleNodeFailureForBarriers(UutExecution& uut,
@@ -79,12 +95,32 @@ private:
                           ActivationState state,
                           NodeOutcome outcome = NodeOutcome::Unknown,
                           const QString& message = {},
-                          const LoopIterationContext& loopIteration = {});
+                          const LoopIterationContext& loopIteration = {},
+                          const QString& errorCode = {});
     void publishAttemptEvent(RuntimeEventKind kind,
                              const UutExecution& uut,
                              const ExecNode& node,
                              const NodeAttempt& attempt,
                              const QString& message = {});
+    NodeId operatorPromptCloseTarget(const ExecNode& node) const;
+    void trackOperatorPrompt(const UutExecution& uut,
+                             const ExecNode& node,
+                             const NodeResult& result);
+    void closeOperatorPromptsForNode(const UutExecution& uut,
+                                     const ExecNode& completedNode,
+                                     const NodeResult& result);
+    void publishOperatorPromptClosed(const UutId& uutId,
+                                     const NodeId& sourceNodeId,
+                                     const QString& instanceId,
+                                     const QString& reason,
+                                     const NodeId& closedByNodeId = {});
+
+    struct ActiveOperatorPrompt {
+        QString instanceId;
+        UutId uutId;
+        NodeId sourceNodeId;
+        NodeId closeTargetNodeId;
+    };
 
     const ExecutionPlan& m_plan;
     ResourceManager& m_resources;
@@ -93,11 +129,14 @@ private:
     ErrorPolicyEngine& m_errorPolicy;
     NodeRunner& m_runner;
     ExecutionResultStore& m_results;
+    ExecutionControl* m_executionControl = nullptr;
+    const StopToken* m_stopToken = nullptr;
     RuntimeEventEmitter* m_events = nullptr;
     QSet<UutId> m_cohortUuts;
     QHash<BarrierInstanceId, BarrierReleaseDecision> m_releasedBarriers;
     QHash<NodeId, BarrierInstanceId> m_barrierByNode;
     QHash<BarrierInstanceId, NodeId> m_nodeByBarrier;
+    QVector<ActiveOperatorPrompt> m_activeOperatorPrompts;
 };
 
 } // namespace PicoATE::Core

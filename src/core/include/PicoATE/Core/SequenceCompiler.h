@@ -56,6 +56,9 @@ private:
     LoopPolicyDef parseLoopPolicy(const QJsonObject& object,
                                   const QString& path,
                                   QVector<CompileError>& errors) const;
+    OperatorPromptDef parseOperatorPrompt(const QJsonObject& object,
+                                          const QString& path,
+                                          QVector<CompileError>& errors) const;
     ErrorPolicyDef parseErrorPolicy(const QJsonObject& object,
                                     const QString& path,
                                     QVector<CompileError>& errors) const;

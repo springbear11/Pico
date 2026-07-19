@@ -3,6 +3,7 @@
 #include "IExecutionService.h"
 #include "UiExecutionTypes.h"
 #include "PicoATE/Core/ExecutionDebug.h"
+#include "PicoATE/Core/OperatorPrompt.h"
 
 #include <QObject>
 #include <QThread>
@@ -61,6 +62,8 @@ public slots:
     void stepOver();
     void stop(PicoATE::Core::StopMode mode = PicoATE::Core::StopMode::Graceful);
     void setBreakpoints(QVector<PicoATE::Core::BreakpointSpec> breakpoints);
+    bool respondToOperatorPrompt(const QString& instanceId,
+                                 PicoATE::Core::OperatorPromptResponse response);
     void testDeviceConnection(const QString& deviceId, int timeoutMs = 5000);
 
 signals:

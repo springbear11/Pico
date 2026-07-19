@@ -70,6 +70,10 @@ QString runtimeEventKindName(RuntimeEventKind kind)
         return "BreakpointHit";
     case RuntimeEventKind::DebugStepCompleted:
         return "DebugStepCompleted";
+    case RuntimeEventKind::OperatorPromptRequested:
+        return "OperatorPromptRequested";
+    case RuntimeEventKind::OperatorPromptClosed:
+        return "OperatorPromptClosed";
     case RuntimeEventKind::ModuleLog:
         return "ModuleLog";
     }

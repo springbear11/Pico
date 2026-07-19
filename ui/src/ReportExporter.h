@@ -14,12 +14,16 @@ struct ReportExportResult {
 class ReportExporter
 {
 public:
-    static ReportExportResult saveJson(
+    static ReportExportResult saveText(
         const QString& filePath,
         const PicoATE::Core::ExecutionReport& report);
     static ReportExportResult saveCsv(
         const QString& filePath,
         const PicoATE::Core::ExecutionReport& report);
+    static ReportExportResult saveXlsx(
+        const QString& filePath,
+        const PicoATE::Core::ExecutionReport& report);
+    static QByteArray csvHeader();
 };
 
 } // namespace PicoATE::Ui

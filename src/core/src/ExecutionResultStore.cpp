@@ -103,6 +103,11 @@ std::optional<NodeId> resolveStepReferenceNode(const ExecutionPlan& plan,
         return address;
     }
 
+    const auto childPath = QString("%1.%2").arg(currentNodeId, address);
+    if (plan.node(childPath)) {
+        return childPath;
+    }
+
     const auto parent = plan.structuralParentOf(currentNodeId);
     if (parent) {
         const auto siblingPath = QString("%1.%2").arg(*parent, address);

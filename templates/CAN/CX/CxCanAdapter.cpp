@@ -1,5 +1,7 @@
 #include "CxCanAdapter.h"
 
+#include "PicoATE/Plugin/PluginLog.h"
+
 #include <Windows.h>
 
 #include <algorithm>
@@ -8,8 +10,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <format>
+#include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -170,6 +174,34 @@ std::string fixedString(const char* value, std::size_t size)
     return std::string(value, end);
 }
 
+std::string errorCodeText(std::uint32_t code)
+{
+    if (code == 0) {
+        return "OK";
+    }
+    const std::pair<std::uint32_t, const char*> names[] = {
+        {0x0001, "ERR_CAN_OVERFLOW"}, {0x0002, "ERR_CAN_ERRALARM"},
+        {0x0004, "ERR_CAN_PASSIVE"}, {0x0008, "ERR_CAN_LOSE"},
+        {0x0010, "ERR_CAN_BUSERR"}, {0x0020, "ERR_CAN_REG_FULL"},
+        {0x0040, "ERR_CAN_REG_OVER"}, {0x0080, "ERR_CAN_ACTIVE"},
+        {0x0100, "ERR_DEVICEOPENED"}, {0x0200, "ERR_DEVICEOPEN"},
+        {0x0400, "ERR_DEVICENOTOPEN"}, {0x0800, "ERR_BUFFEROVERFLOW"},
+        {0x1000, "ERR_DEVICENOTEXIST"}, {0x2000, "ERR_LOADKERNELDLL"},
+        {0x4000, "ERR_CMDFAILED"}, {0x8000, "ERR_BUFFERCREATE"},
+    };
+    std::string text;
+    for (const auto& [mask, name] : names) {
+        if ((code & mask) == 0) {
+            continue;
+        }
+        if (!text.empty()) {
+            text += '|';
+        }
+        text += name;
+    }
+    return text.empty() ? "UNKNOWN" : text;
+}
+
 } // namespace
 
 Plugin::Json pluginDescription()
@@ -220,7 +252,7 @@ Plugin::Json pluginDescription()
                 {"description", "Transmit one classic CAN frame"},
                 {"timeoutMs", 2000},
                 {"inputs", Json::array({
-                    {{"key", "id"}, {"name", "CAN ID"}, {"type", "string"},
+                    {{"key", "id"}, {"name", "CAN ID (Std 0x000-0x7FF / Ext 0x00000000-0x1FFFFFFF)"}, {"type", "string"},
                      {"required", true}, {"default", "0x123"}},
                     {{"key", "data"}, {"name", "Frame Data"}, {"type", "hex-bytes"},
                      {"required", true}, {"default", "01 02 03 04"}},
@@ -239,9 +271,9 @@ Plugin::Json pluginDescription()
                 {"description", "Receive one CAN frame with an optional ID filter"},
                 {"timeoutMs", 2500},
                 {"inputs", Json::array({
-                    {{"key", "filterId"}, {"name", "Filter ID"}, {"type", "string"},
+                    {{"key", "filterId"}, {"name", "Filter ID (0x00000000-0x1FFFFFFF)"}, {"type", "string"},
                      {"required", false}, {"default", "0x000"}},
-                    {{"key", "filterMask"}, {"name", "Filter Mask"}, {"type", "string"},
+                    {{"key", "filterMask"}, {"name", "Filter Mask (0=Any, Std Exact=0x7FF, Ext Exact=0x1FFFFFFF)"}, {"type", "string"},
                      {"required", false}, {"default", "0x000"}},
                     {{"key", "timeoutMs"}, {"name", "Receive Timeout"}, {"type", "integer"},
                      {"required", false}, {"default", 1500}, {"minimum", 0},
@@ -288,9 +320,22 @@ public:
     using Receive = std::uint32_t(WINAPI*)(std::uint32_t, std::uint32_t, std::uint32_t,
                                            ControlCanObject*, std::uint32_t, int);
 
+    struct ChannelState {
+        bool opened = false;
+        OpenOptions options;
+    };
+
+    struct DeviceState {
+        int deviceType = 0;
+        int deviceIndex = 0;
+        int channelCount = 0;
+        std::array<ChannelState, 2> channels;
+        std::string description;
+    };
+
     ~Impl()
     {
-        close();
+        closeAll();
         unload();
     }
 
@@ -298,6 +343,9 @@ public:
     bool resolve(Function& function, const char* name, std::string& errorMessage)
     {
         function = reinterpret_cast<Function>(GetProcAddress(library, name));
+        PicoATE_Log("VENDOR CX GetProcAddress symbol={} result={}",
+                    name,
+                    function ? "FOUND" : "MISSING");
         if (function) {
             return true;
         }
@@ -317,12 +365,15 @@ public:
             return OperationResult::failed(
                 "InvalidLibraryPath", "libraryPath is not valid UTF-8");
         }
+        PicoATE_Log("VENDOR CX LoadLibraryW path={}", path.string());
         library = LoadLibraryW(path.c_str());
         if (!library) {
+            PicoATE_Log("VENDOR CX LoadLibraryW result=NULL winError={}", GetLastError());
             return OperationResult::failed(
                 "VendorDllLoadFailed",
                 std::format("Failed to load {}: {}", path.string(), windowsError(GetLastError())));
         }
+        PicoATE_Log("VENDOR CX LoadLibraryW result=OK library=ControlCAN.dll");
 
         std::string errorMessage;
         if (!(resolve(openDevice, "VCI_OpenDevice", errorMessage) &&
@@ -344,34 +395,79 @@ public:
     void unload() noexcept
     {
         if (library) {
+            PicoATE_Log("VENDOR CX FreeLibrary library=ControlCAN.dll");
             FreeLibrary(library);
             library = nullptr;
         }
     }
 
-    void close() noexcept
+    DeviceState* findDevice(int deviceIndex)
     {
-        if (opened && resetCan && closeDevice) {
-            resetCan(options.deviceType, options.deviceIndex, options.channelIndex);
-            closeDevice(options.deviceType, options.deviceIndex);
-        }
-        opened = false;
-        description.clear();
+        const auto it = devices.find(deviceIndex);
+        return it == devices.end() ? nullptr : &it->second;
     }
 
-    std::string errorDetails() const
+    const DeviceState* findDevice(int deviceIndex) const
     {
-        if (!opened || !readErrorInfo) {
+        const auto it = devices.find(deviceIndex);
+        return it == devices.end() ? nullptr : &it->second;
+    }
+
+    static bool anyChannelOpen(const DeviceState& device)
+    {
+        return std::any_of(device.channels.begin(), device.channels.end(),
+                           [](const ChannelState& channel) { return channel.opened; });
+    }
+
+    std::string errorDetails(int deviceType, int deviceIndex, int channelIndex)
+    {
+        if (!readErrorInfo) {
             return {};
         }
         ControlCanErrorInfo info{};
-        if (readErrorInfo(options.deviceType,
-                          options.deviceIndex,
-                          options.channelIndex,
-                          &info) != StatusOk) {
+        PicoATE_Log("VENDOR CX VCI_ReadErrInfo(type={}, device={}, channel={})",
+                    deviceType, deviceIndex, channelIndex);
+        const auto status = readErrorInfo(deviceType, deviceIndex, channelIndex, &info);
+        PicoATE_Log("VENDOR CX VCI_ReadErrInfo return={} errorCode=0x{:X} ({}) passive=[0x{:02X},0x{:02X},0x{:02X}] arbitrationLost=0x{:02X}",
+                    status,
+                    info.errorCode,
+                    errorCodeText(info.errorCode),
+                    info.passiveErrorData[0],
+                    info.passiveErrorData[1],
+                    info.passiveErrorData[2],
+                    info.arbitrationLostData);
+        if (status != StatusOk) {
             return {};
         }
-        return std::format(" (ControlCAN error=0x{:X})", info.errorCode);
+        return std::format(" (ControlCAN error=0x{:X} {})",
+                           info.errorCode,
+                           errorCodeText(info.errorCode));
+    }
+
+    void closeAll() noexcept
+    {
+        try {
+            for (auto& [deviceIndex, device] : devices) {
+                for (int channelIndex = 0; channelIndex < 2; ++channelIndex) {
+                    if (!device.channels[static_cast<std::size_t>(channelIndex)].opened ||
+                        !resetCan) {
+                        continue;
+                    }
+                    PicoATE_Log("VENDOR CX VCI_ResetCAN(type={}, device={}, channel={}) during shutdown",
+                                device.deviceType, deviceIndex, channelIndex);
+                    const auto status = resetCan(device.deviceType, deviceIndex, channelIndex);
+                    PicoATE_Log("VENDOR CX VCI_ResetCAN return={}", status);
+                }
+                if (closeDevice) {
+                    PicoATE_Log("VENDOR CX VCI_CloseDevice(type={}, device={}) during shutdown",
+                                device.deviceType, deviceIndex);
+                    const auto status = closeDevice(device.deviceType, deviceIndex);
+                    PicoATE_Log("VENDOR CX VCI_CloseDevice return={}", status);
+                }
+            }
+            devices.clear();
+        } catch (...) {
+        }
     }
 
     HMODULE library = nullptr;
@@ -385,9 +481,7 @@ public:
     ResetCan resetCan = nullptr;
     Transmit transmit = nullptr;
     Receive receive = nullptr;
-    bool opened = false;
-    OpenOptions options;
-    std::string description;
+    std::map<int, DeviceState> devices;
 };
 
 CxCanAdapter::CxCanAdapter()
@@ -399,9 +493,6 @@ CxCanAdapter::~CxCanAdapter() = default;
 
 OperationResult CxCanAdapter::open(const OpenOptions& options)
 {
-    if (m_impl->opened) {
-        return OperationResult::passed();
-    }
     if (options.canFd) {
         return OperationResult::failed(
             "CanFdNotSupported", "ControlCAN.dll supports classic CAN only; set canFd=false");
@@ -426,94 +517,289 @@ OperationResult CxCanAdapter::open(const OpenOptions& options)
         return loadResult;
     }
 
-    const std::vector<int> deviceTypes = options.deviceType == 0
-        ? std::vector<int>{UsbCan2, UsbCan1}
-        : std::vector<int>{options.deviceType};
     if (options.deviceType != 0 && options.deviceType != UsbCan1 &&
         options.deviceType != UsbCan2) {
-        m_impl->unload();
         return OperationResult::failed(
             "InvalidDeviceType", "deviceType must be 0, 3 (USBCAN-I), or 4 (USBCAN-II)");
     }
 
-    std::string lastError;
-    for (const auto deviceType : deviceTypes) {
-        auto selected = options;
-        selected.deviceType = deviceType;
-        if (m_impl->openDevice(deviceType, selected.deviceIndex, 0) != StatusOk) {
-            continue;
-        }
+    auto* device = m_impl->findDevice(options.deviceIndex);
+    if (!device) {
+        const auto deviceTypes = options.deviceType == 0
+            ? std::vector<int>{UsbCan2, UsbCan1}
+            : std::vector<int>{options.deviceType};
+        std::string lastError;
+        for (const auto deviceType : deviceTypes) {
+            PicoATE_Log("VENDOR CX VCI_OpenDevice(type={}, device={}, reserved=0)",
+                        deviceType, options.deviceIndex);
+            const auto status = m_impl->openDevice(deviceType, options.deviceIndex, 0);
+            PicoATE_Log("VENDOR CX VCI_OpenDevice return={}", status);
+            if (status != StatusOk) {
+                lastError = "ControlCAN VCI_OpenDevice failed";
+                continue;
+            }
 
-        ControlCanInitConfig config{};
-        config.acceptanceCode = 0;
-        config.acceptanceMask = 0xFFFFFFFFU;
-        config.filter = 0;
-        config.timing0 = timing.timing0;
-        config.timing1 = timing.timing1;
-        config.mode = selected.selfTest ? 2 : (selected.listenOnly ? 1 : 0);
-        if (m_impl->initCan(deviceType,
-                            selected.deviceIndex,
-                            selected.channelIndex,
-                            &config) != StatusOk) {
-            lastError = "ControlCAN VCI_InitCAN failed";
-            m_impl->closeDevice(deviceType, selected.deviceIndex);
-            continue;
-        }
-        m_impl->clearBuffer(deviceType, selected.deviceIndex, selected.channelIndex);
-        if (m_impl->startCan(deviceType,
-                             selected.deviceIndex,
-                             selected.channelIndex) != StatusOk) {
-            lastError = "ControlCAN VCI_StartCAN failed";
-            m_impl->closeDevice(deviceType, selected.deviceIndex);
-            continue;
-        }
-
-        m_impl->options = selected;
-        m_impl->opened = true;
-        ControlCanBoardInfo board{};
-        if (m_impl->readBoardInfo(deviceType, selected.deviceIndex, &board) == StatusOk) {
-            m_impl->description = std::format(
-                "CX ControlCAN type={} {} SN={} channels={}",
-                deviceType,
-                fixedString(board.hardwareType, sizeof(board.hardwareType)),
-                fixedString(board.serialNumber, sizeof(board.serialNumber)),
-                static_cast<unsigned>(board.channelCount));
-        } else {
-            m_impl->description = deviceType == UsbCan2
+            Impl::DeviceState state;
+            state.deviceType = deviceType;
+            state.deviceIndex = options.deviceIndex;
+            state.description = deviceType == UsbCan2
                 ? "CX ControlCAN USBCAN-II"
                 : "CX ControlCAN USBCAN-I";
+
+            ControlCanBoardInfo board{};
+            PicoATE_Log("VENDOR CX VCI_ReadBoardInfo(type={}, device={})",
+                        deviceType, options.deviceIndex);
+            const auto boardStatus = m_impl->readBoardInfo(deviceType,
+                                                            options.deviceIndex,
+                                                            &board);
+            PicoATE_Log("VENDOR CX VCI_ReadBoardInfo return={}", boardStatus);
+            if (boardStatus == StatusOk) {
+                state.channelCount = board.channelCount >= '0' && board.channelCount <= '9'
+                    ? board.channelCount - '0'
+                    : board.channelCount;
+                state.description = std::format(
+                    "CX ControlCAN type={} {} SN={} channels={}",
+                    deviceType,
+                    fixedString(board.hardwareType, sizeof(board.hardwareType)),
+                    fixedString(board.serialNumber, sizeof(board.serialNumber)),
+                    state.channelCount);
+                PicoATE_Log("VENDOR CX board hardware={} serial={} channels={}",
+                            fixedString(board.hardwareType, sizeof(board.hardwareType)),
+                            fixedString(board.serialNumber, sizeof(board.serialNumber)),
+                            state.channelCount);
+            }
+            m_impl->devices.emplace(options.deviceIndex, std::move(state));
+            device = m_impl->findDevice(options.deviceIndex);
+            break;
         }
+        if (!device) {
+            return OperationResult::failed(
+                "CanOpenFailed",
+                lastError.empty()
+                    ? std::format("ControlCAN VCI_OpenDevice failed for deviceIndex={}",
+                                  options.deviceIndex)
+                    : lastError);
+        }
+    }
+
+    if (options.deviceType != 0 && options.deviceType != device->deviceType) {
+        return OperationResult::failed(
+            "DeviceTypeConflict",
+            std::format("CX device {} is already open as type {}, requested type {}",
+                        options.deviceIndex, device->deviceType, options.deviceType));
+    }
+    if (device->channelCount > 0 && options.channelIndex >= device->channelCount) {
+        const auto channelCount = device->channelCount;
+        if (!Impl::anyChannelOpen(*device)) {
+            const auto deviceType = device->deviceType;
+            PicoATE_Log("VENDOR CX VCI_CloseDevice(type={}, device={}) after unavailable channel request",
+                        deviceType, options.deviceIndex);
+            const auto status = m_impl->closeDevice(deviceType, options.deviceIndex);
+            PicoATE_Log("VENDOR CX VCI_CloseDevice return={}", status);
+            m_impl->devices.erase(options.deviceIndex);
+        }
+        return OperationResult::failed(
+            "ChannelNotAvailable",
+            std::format("CX device reports {} channel(s); channel {} is unavailable",
+                        channelCount, options.channelIndex));
+    }
+
+    auto& channel = device->channels[static_cast<std::size_t>(options.channelIndex)];
+    if (channel.opened) {
+        if (channel.options.arbitrationBitrate != options.arbitrationBitrate ||
+            channel.options.listenOnly != options.listenOnly ||
+            channel.options.selfTest != options.selfTest) {
+            return OperationResult::failed(
+                "ChannelConfigurationConflict",
+                std::format("CX device {} channel {} is already configured at {} bit/s",
+                            options.deviceIndex,
+                            options.channelIndex,
+                            channel.options.arbitrationBitrate));
+        }
+        PicoATE_Log("VENDOR CX channel already initialized device={} channel={} bitrate={}",
+                    options.deviceIndex,
+                    options.channelIndex,
+                    options.arbitrationBitrate);
         return OperationResult::passed();
     }
 
-    m_impl->unload();
-    return OperationResult::failed(
-        "CanOpenFailed",
-        lastError.empty()
-            ? std::format("ControlCAN VCI_OpenDevice failed for deviceIndex={}",
-                          options.deviceIndex)
-            : lastError);
+    ControlCanInitConfig config{};
+    config.acceptanceCode = 0;
+    config.acceptanceMask = 0xFFFFFFFFU;
+    config.filter = 0;
+    config.timing0 = timing.timing0;
+    config.timing1 = timing.timing1;
+    config.mode = options.selfTest ? 2 : (options.listenOnly ? 1 : 0);
+
+    PicoATE_Log("VENDOR CX VCI_InitCAN(type={}, device={}, channel={}, accCode=0x{:08X}, accMask=0x{:08X}, filter={}, timing0=0x{:02X}, timing1=0x{:02X}, mode={})",
+                device->deviceType,
+                options.deviceIndex,
+                options.channelIndex,
+                config.acceptanceCode,
+                config.acceptanceMask,
+                config.filter,
+                config.timing0,
+                config.timing1,
+                config.mode);
+    const auto initStatus = m_impl->initCan(device->deviceType,
+                                             options.deviceIndex,
+                                             options.channelIndex,
+                                             &config);
+    PicoATE_Log("VENDOR CX VCI_InitCAN return={}", initStatus);
+    if (initStatus != StatusOk) {
+        const auto details = m_impl->errorDetails(device->deviceType,
+                                                  options.deviceIndex,
+                                                  options.channelIndex);
+        if (!Impl::anyChannelOpen(*device)) {
+            PicoATE_Log("VENDOR CX VCI_CloseDevice(type={}, device={}) after InitCAN failure",
+                        device->deviceType, options.deviceIndex);
+            const auto closeStatus = m_impl->closeDevice(device->deviceType,
+                                                         options.deviceIndex);
+            PicoATE_Log("VENDOR CX VCI_CloseDevice return={}", closeStatus);
+            m_impl->devices.erase(options.deviceIndex);
+        }
+        return OperationResult::failed("CanInitFailed",
+                                       "ControlCAN VCI_InitCAN failed" + details);
+    }
+
+    PicoATE_Log("VENDOR CX VCI_ClearBuffer(type={}, device={}, channel={})",
+                device->deviceType, options.deviceIndex, options.channelIndex);
+    const auto clearStatus = m_impl->clearBuffer(device->deviceType,
+                                                  options.deviceIndex,
+                                                  options.channelIndex);
+    PicoATE_Log("VENDOR CX VCI_ClearBuffer return={}", clearStatus);
+    if (clearStatus != StatusOk) {
+        const auto details = m_impl->errorDetails(device->deviceType,
+                                                  options.deviceIndex,
+                                                  options.channelIndex);
+        PicoATE_Log("VENDOR CX VCI_ResetCAN(type={}, device={}, channel={}) after ClearBuffer failure",
+                    device->deviceType, options.deviceIndex, options.channelIndex);
+        const auto resetStatus = m_impl->resetCan(device->deviceType,
+                                                   options.deviceIndex,
+                                                   options.channelIndex);
+        PicoATE_Log("VENDOR CX VCI_ResetCAN return={}", resetStatus);
+        if (!Impl::anyChannelOpen(*device)) {
+            const auto deviceType = device->deviceType;
+            PicoATE_Log("VENDOR CX VCI_CloseDevice(type={}, device={}) after ClearBuffer failure",
+                        deviceType, options.deviceIndex);
+            const auto closeStatus = m_impl->closeDevice(deviceType, options.deviceIndex);
+            PicoATE_Log("VENDOR CX VCI_CloseDevice return={}", closeStatus);
+            m_impl->devices.erase(options.deviceIndex);
+        }
+        return OperationResult::failed("CanClearBufferFailed",
+                                       "ControlCAN VCI_ClearBuffer failed" + details);
+    }
+
+    PicoATE_Log("VENDOR CX VCI_StartCAN(type={}, device={}, channel={})",
+                device->deviceType, options.deviceIndex, options.channelIndex);
+    const auto startStatus = m_impl->startCan(device->deviceType,
+                                               options.deviceIndex,
+                                               options.channelIndex);
+    PicoATE_Log("VENDOR CX VCI_StartCAN return={}", startStatus);
+    if (startStatus != StatusOk) {
+        const auto details = m_impl->errorDetails(device->deviceType,
+                                                  options.deviceIndex,
+                                                  options.channelIndex);
+        PicoATE_Log("VENDOR CX VCI_ResetCAN(type={}, device={}, channel={}) after StartCAN failure",
+                    device->deviceType, options.deviceIndex, options.channelIndex);
+        const auto resetStatus = m_impl->resetCan(device->deviceType,
+                                                   options.deviceIndex,
+                                                   options.channelIndex);
+        PicoATE_Log("VENDOR CX VCI_ResetCAN return={}", resetStatus);
+        if (!Impl::anyChannelOpen(*device)) {
+            const auto deviceType = device->deviceType;
+            PicoATE_Log("VENDOR CX VCI_CloseDevice(type={}, device={}) after StartCAN failure",
+                        deviceType, options.deviceIndex);
+            const auto closeStatus = m_impl->closeDevice(deviceType, options.deviceIndex);
+            PicoATE_Log("VENDOR CX VCI_CloseDevice return={}", closeStatus);
+            m_impl->devices.erase(options.deviceIndex);
+        }
+        return OperationResult::failed("CanStartFailed",
+                                       "ControlCAN VCI_StartCAN failed" + details);
+    }
+
+    channel.opened = true;
+    channel.options = options;
+    channel.options.deviceType = device->deviceType;
+    PicoATE_Log("VENDOR CX channel ready device={} channel={} bitrate={}",
+                options.deviceIndex, options.channelIndex, options.arbitrationBitrate);
+    return OperationResult::passed();
 }
 
-void CxCanAdapter::close() noexcept
+OperationResult CxCanAdapter::close(const OpenOptions& options)
 {
-    m_impl->close();
+    auto* device = m_impl->findDevice(options.deviceIndex);
+    if (!device || options.channelIndex < 0 || options.channelIndex > 1) {
+        PicoATE_Log("VENDOR CX close ignored device={} channel={} state=not-open",
+                    options.deviceIndex, options.channelIndex);
+        return OperationResult::passed();
+    }
+    auto& channel = device->channels[static_cast<std::size_t>(options.channelIndex)];
+    OperationResult result = OperationResult::passed();
+    if (channel.opened) {
+        PicoATE_Log("VENDOR CX VCI_ResetCAN(type={}, device={}, channel={})",
+                    device->deviceType, options.deviceIndex, options.channelIndex);
+        const auto status = m_impl->resetCan(device->deviceType,
+                                              options.deviceIndex,
+                                              options.channelIndex);
+        PicoATE_Log("VENDOR CX VCI_ResetCAN return={}", status);
+        if (status != StatusOk) {
+            result = OperationResult::failed(
+                "CanResetFailed",
+                "ControlCAN VCI_ResetCAN failed" +
+                    m_impl->errorDetails(device->deviceType,
+                                         options.deviceIndex,
+                                         options.channelIndex));
+        }
+        channel.opened = false;
+    }
+
+    if (!Impl::anyChannelOpen(*device)) {
+        const auto deviceType = device->deviceType;
+        PicoATE_Log("VENDOR CX VCI_CloseDevice(type={}, device={})",
+                    deviceType, options.deviceIndex);
+        const auto status = m_impl->closeDevice(deviceType, options.deviceIndex);
+        PicoATE_Log("VENDOR CX VCI_CloseDevice return={}", status);
+        if (status != StatusOk && result.success) {
+            result = OperationResult::failed("CanCloseFailed",
+                                             "ControlCAN VCI_CloseDevice failed");
+        }
+        m_impl->devices.erase(options.deviceIndex);
+    }
+    return result;
 }
 
-bool CxCanAdapter::isOpen() const noexcept
+bool CxCanAdapter::isOpen(const OpenOptions& options) const noexcept
 {
-    return m_impl->opened;
+    const auto* device = m_impl->findDevice(options.deviceIndex);
+    return device && options.channelIndex >= 0 && options.channelIndex < 2 &&
+        device->channels[static_cast<std::size_t>(options.channelIndex)].opened;
 }
 
-std::string CxCanAdapter::deviceDescription() const
+std::string CxCanAdapter::deviceDescription(const OpenOptions& options) const
 {
-    return m_impl->opened ? m_impl->description : "Disconnected";
+    const auto* device = m_impl->findDevice(options.deviceIndex);
+    if (!device || options.channelIndex < 0 || options.channelIndex > 1) {
+        return "Disconnected";
+    }
+    const auto& channel = device->channels[static_cast<std::size_t>(options.channelIndex)];
+    if (!channel.opened) {
+        return "Disconnected";
+    }
+    return std::format("{} device={} channel={} bitrate={}",
+                       device->description,
+                       options.deviceIndex,
+                       options.channelIndex,
+                       channel.options.arbitrationBitrate);
 }
 
-OperationResult CxCanAdapter::transmit(const Frame& frame)
+OperationResult CxCanAdapter::transmit(const OpenOptions& options,
+                                       const Frame& frame)
 {
-    if (!m_impl->opened) {
-        return OperationResult::failed("CanNotOpen", "CAN device is not open");
+    auto* device = m_impl->findDevice(options.deviceIndex);
+    if (!device || options.channelIndex < 0 || options.channelIndex > 1 ||
+        !device->channels[static_cast<std::size_t>(options.channelIndex)].opened) {
+        return OperationResult::failed("CanNotOpen", "CAN channel is not open");
     }
     if (frame.data.size() > 8) {
         return OperationResult::failed(
@@ -526,24 +812,41 @@ OperationResult CxCanAdapter::transmit(const Frame& frame)
     object.extendedFlag = frame.extended ? 1 : 0;
     object.dataLength = static_cast<std::uint8_t>(frame.data.size());
     std::copy(frame.data.begin(), frame.data.end(), object.data);
-    const auto sent = m_impl->transmit(m_impl->options.deviceType,
-                                       m_impl->options.deviceIndex,
-                                       m_impl->options.channelIndex,
+    PicoATE_Log("VENDOR CX VCI_Transmit(type={}, device={}, channel={}, id=0x{:X}, sendType={}, remote={}, extended={}, dlc={})",
+                device->deviceType,
+                options.deviceIndex,
+                options.channelIndex,
+                object.id,
+                object.sendType,
+                object.remoteFlag,
+                object.extendedFlag,
+                object.dataLength);
+    const auto sent = m_impl->transmit(device->deviceType,
+                                       options.deviceIndex,
+                                       options.channelIndex,
                                        &object,
                                        1);
+    PicoATE_Log("VENDOR CX VCI_Transmit return={}", sent);
     if (sent != 1) {
         return OperationResult::failed(
-            "CanTransmitFailed", "ControlCAN VCI_Transmit failed" + m_impl->errorDetails());
+            "CanTransmitFailed",
+            "ControlCAN VCI_Transmit failed" +
+                m_impl->errorDetails(device->deviceType,
+                                     options.deviceIndex,
+                                     options.channelIndex));
     }
     return OperationResult::passed();
 }
 
-ReceiveResult CxCanAdapter::receive(std::uint32_t filterId,
+ReceiveResult CxCanAdapter::receive(const OpenOptions& options,
+                                    std::uint32_t filterId,
                                     std::uint32_t filterMask,
                                     int timeoutMs)
 {
-    if (!m_impl->opened) {
-        return {ReceiveStatus::Error, {}, "CanNotOpen", "CAN device is not open"};
+    auto* device = m_impl->findDevice(options.deviceIndex);
+    if (!device || options.channelIndex < 0 || options.channelIndex > 1 ||
+        !device->channels[static_cast<std::size_t>(options.channelIndex)].opened) {
+        return {ReceiveStatus::Error, {}, "CanNotOpen", "CAN channel is not open"};
     }
     const auto started = std::chrono::steady_clock::now();
     do {
@@ -551,20 +854,38 @@ ReceiveResult CxCanAdapter::receive(std::uint32_t filterId,
             std::chrono::steady_clock::now() - started).count();
         const auto remaining = std::max(0, timeoutMs - static_cast<int>(elapsed));
         ControlCanObject object{};
-        const auto count = m_impl->receive(m_impl->options.deviceType,
-                                           m_impl->options.deviceIndex,
-                                           m_impl->options.channelIndex,
+        PicoATE_Log("VENDOR CX VCI_Receive(type={}, device={}, channel={}, length=1, waitMs={})",
+                    device->deviceType,
+                    options.deviceIndex,
+                    options.channelIndex,
+                    remaining);
+        const auto count = m_impl->receive(device->deviceType,
+                                           options.deviceIndex,
+                                           options.channelIndex,
                                            &object,
                                            1,
                                            remaining);
+        PicoATE_Log("VENDOR CX VCI_Receive return={}", count);
         if (count == ReceiveError) {
             return {ReceiveStatus::Error,
                     {},
                     "CanReceiveFailed",
-                    "ControlCAN VCI_Receive failed" + m_impl->errorDetails()};
+                    "ControlCAN VCI_Receive failed" +
+                        m_impl->errorDetails(device->deviceType,
+                                             options.deviceIndex,
+                                             options.channelIndex)};
         }
         if (count > 0) {
+            PicoATE_Log("VENDOR CX VCI_Receive frame id=0x{:X} remote={} extended={} dlc={} timestamp={} timeFlag={}",
+                        object.id,
+                        object.remoteFlag,
+                        object.extendedFlag,
+                        object.dataLength,
+                        object.timestamp,
+                        object.timeFlag);
             if ((object.id & filterMask) != (filterId & filterMask)) {
+                PicoATE_Log("VENDOR CX VCI_Receive frame filtered id=0x{:X} expected=0x{:X} mask=0x{:X}",
+                            object.id, filterId, filterMask);
                 continue;
             }
             if (object.dataLength > sizeof(object.data)) {
@@ -583,6 +904,10 @@ ReceiveResult CxCanAdapter::receive(std::uint32_t filterId,
                 ? static_cast<std::uint64_t>(object.timestamp) * 100ULL
                 : 0;
             return {ReceiveStatus::Received, std::move(frame), {}, {}};
+        }
+        if (remaining > 0) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(std::min(20, remaining)));
         }
     } while (std::chrono::duration_cast<std::chrono::milliseconds>(
                  std::chrono::steady_clock::now() - started).count() < timeoutMs);
