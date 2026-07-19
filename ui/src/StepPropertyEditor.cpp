@@ -1,5 +1,8 @@
 #include "StepPropertyEditor.h"
 
+#include "OnOffControl.h"
+
+#include <QAbstractButton>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -14,6 +17,8 @@
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QScrollArea>
+#include <QSet>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -22,6 +27,7 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <cmath>
@@ -92,6 +98,32 @@ bool parseArrayText(const QString& text,
         return false;
     }
     array = document.array();
+    return true;
+}
+
+bool parseCanIdentifier(const QJsonValue& value, quint32& result)
+{
+    if (value.isDouble()) {
+        const double number = value.toDouble(-1.0);
+        if (!std::isfinite(number) || number < 0.0 ||
+            number > static_cast<double>(0x1FFFFFFF) || std::floor(number) != number) {
+            return false;
+        }
+        result = static_cast<quint32>(number);
+        return true;
+    }
+    if (!value.isString()) {
+        return false;
+    }
+    const auto text = value.toString().trimmed();
+    bool ok = false;
+    const auto number = text.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive)
+        ? text.mid(2).toULongLong(&ok, 16)
+        : text.toULongLong(&ok, 10);
+    if (!ok || number > 0x1FFFFFFFULL) {
+        return false;
+    }
+    result = static_cast<quint32>(number);
     return true;
 }
 
@@ -299,10 +331,44 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
             &QComboBox::currentIndexChanged,
             this,
             [this] { if (!m_loading) updateLimitRows(); });
+    connect(m_promptModeCombo,
+            &QComboBox::currentIndexChanged,
+            this,
+            [this] { if (!m_loading) updateKindRows(); });
+    connect(m_loopTypeCombo,
+            &QComboBox::currentIndexChanged,
+            this,
+            [this] { if (!m_loading) updateLoopRows(); });
+    const auto rebuildCallEditors = [this] {
+        rebuildDeviceChoices();
+        rebuildPluginInputEditors();
+        updateKindRows();
+    };
     connect(m_moduleIdEdit, &QLineEdit::editingFinished,
-            this, &StepPropertyEditor::rebuildPluginInputEditors);
+            this, rebuildCallEditors);
     connect(m_functionEdit, &QLineEdit::editingFinished,
-            this, &StepPropertyEditor::rebuildPluginInputEditors);
+            this, rebuildCallEditors);
+    connect(m_deviceIdCombo, &QComboBox::currentIndexChanged,
+            this, [this] {
+                if (m_loading) {
+                    return;
+                }
+                QJsonObject inputs;
+                QString ignoredError;
+                if (!parseObjectText(m_inputsEdit->toPlainText(), inputs,
+                                     ignoredError)) {
+                    return;
+                }
+                const auto deviceId = m_deviceIdCombo->currentData().toString();
+                if (deviceId.isEmpty()) {
+                    inputs.remove(QStringLiteral("deviceId"));
+                } else {
+                    inputs.insert(QStringLiteral("deviceId"), deviceId);
+                }
+                m_inputsEdit->setPlainText(objectText(inputs));
+                rebuildPluginInputEditors();
+                updateAdvancedJsonVisibility();
+            });
 
     for (auto* child : findChildren<QWidget*>()) {
         if (qobject_cast<QLineEdit*>(child) ||
@@ -344,6 +410,9 @@ void StepPropertyEditor::observeDraftWidget(QWidget* widget)
         return;
     }
     widget->setProperty("picoateDraftObserved", true);
+    if (widget->property("picoateDisclosure").toBool()) {
+        return;
+    }
     if (auto* edit = qobject_cast<QLineEdit*>(widget)) {
         connect(edit, &QLineEdit::textChanged, this,
                 [this] { markDraftDirty(); });
@@ -355,6 +424,9 @@ void StepPropertyEditor::observeDraftWidget(QWidget* widget)
                 [this] { markDraftDirty(); });
     } else if (auto* check = qobject_cast<QCheckBox*>(widget)) {
         connect(check, &QCheckBox::toggled, this,
+                [this] { markDraftDirty(); });
+    } else if (auto* button = qobject_cast<QAbstractButton*>(widget)) {
+        connect(button, &QAbstractButton::toggled, this,
                 [this] { markDraftDirty(); });
     } else if (auto* spin = qobject_cast<QSpinBox*>(widget)) {
         connect(spin, &QSpinBox::valueChanged, this,
@@ -415,8 +487,22 @@ void StepPropertyEditor::setEditable(bool editable)
     for (auto* combo : m_tabs->findChildren<QComboBox*>()) {
         combo->setEnabled(canEdit && !combo->property("stationInherited").toBool());
     }
+    if (m_deviceIdCombo) {
+        bool hasCompatibleDevice = false;
+        for (int index = 0; index < m_deviceIdCombo->count(); ++index) {
+            hasCompatibleDevice = hasCompatibleDevice ||
+                m_deviceIdCombo->itemData(index).isValid();
+        }
+        m_deviceIdCombo->setEnabled(canEdit && hasCompatibleDevice);
+    }
     for (auto* check : m_tabs->findChildren<QCheckBox*>()) {
         check->setEnabled(canEdit && !check->property("stationInherited").toBool());
+    }
+    for (auto* button : m_tabs->findChildren<QAbstractButton*>()) {
+        if (dynamic_cast<OnOffSwitch*>(button)) {
+            button->setEnabled(
+                canEdit && !button->property("stationInherited").toBool());
+        }
     }
     for (auto* spin : m_tabs->findChildren<QSpinBox*>()) {
         spin->setEnabled(canEdit && !spin->property("stationInherited").toBool());
@@ -427,12 +513,17 @@ void StepPropertyEditor::setEditable(bool editable)
     for (auto* button : m_tabs->findChildren<QToolButton*>()) {
         button->setEnabled(canEdit && !button->property("stationInherited").toBool());
     }
+    if (m_advancedJsonToggle) {
+        m_advancedJsonToggle->setEnabled(hasObject);
+    }
 }
 
 void StepPropertyEditor::setPluginRegistry(QVector<PluginManifest> plugins)
 {
     m_plugins = std::move(plugins);
+    rebuildDeviceChoices();
     rebuildPluginInputEditors();
+    updateAdvancedJsonVisibility();
 }
 
 bool StepPropertyEditor::focusField(const QString& fieldPath)
@@ -467,14 +558,34 @@ bool StepPropertyEditor::focusField(const QString& fieldPath)
     else if (field == "moduleId") { widget = m_moduleIdEdit; tabIndex = 1; }
     else if (field == "function") { widget = m_functionEdit; tabIndex = 1; }
     else if (field == "inputs") {
-        widget = segments.size() > 1 && segments[1] == QStringLiteral("actual")
-            ? static_cast<QWidget*>(m_limitActualEdit)
-            : static_cast<QWidget*>(m_inputsEdit);
+        if (nested == QStringLiteral("actual")) {
+            widget = m_limitActualEdit;
+        } else if (nested == QStringLiteral("condition")) {
+            widget = m_counterConditionEdit;
+        } else if (nested == QStringLiteral("value")) {
+            widget = m_aggregateValueEdit;
+        } else if (nested == QStringLiteral("deviceId")) {
+            widget = m_deviceIdCombo;
+        } else {
+            const auto editor = std::find_if(
+                m_pluginInputEditors.cbegin(), m_pluginInputEditors.cend(),
+                [&](const PluginInputEditor& item) {
+                    return item.definition.key == nested;
+                });
+            if (editor != m_pluginInputEditors.cend()) {
+                widget = editor->widget;
+            } else {
+                m_advancedJsonToggle->setChecked(true);
+                widget = m_inputsEdit;
+            }
+        }
         tabIndex = 1;
     }
     else if (field == "parameters") {
         tabIndex = 1;
-        if (!m_isGroup && m_kindCombo->currentData().toString() == QStringLiteral("limit")) {
+        if (!m_isGroup &&
+            (m_kindCombo->currentData().toString() == QStringLiteral("limit") ||
+             m_kindCombo->currentData().toString() == QStringLiteral("break"))) {
             if (nested == QStringLiteral("comparison")) widget = m_limitComparisonCombo;
             else if (nested == QStringLiteral("expected")) widget = m_limitExpectedEdit;
             else if (nested == QStringLiteral("lower") || nested == QStringLiteral("lowerLimit")) widget = m_limitLowerEdit;
@@ -484,14 +595,40 @@ bool StepPropertyEditor::focusField(const QString& fieldPath)
             else if (nested == QStringLiteral("measurementName")) widget = m_limitMeasurementNameEdit;
             else if (nested == QStringLiteral("unit")) widget = m_limitUnitEdit;
         }
-        if (!widget) widget = m_parametersEdit;
+        if (!widget) {
+            const auto kind = m_kindCombo->currentData().toString();
+            if (kind == QStringLiteral("counter")) {
+                if (nested == QStringLiteral("mode")) widget = m_counterModeCombo;
+                else if (nested == QStringLiteral("start")) widget = m_counterStartSpin;
+                else if (nested == QStringLiteral("increment")) widget = m_counterIncrementSpin;
+            }
+        }
+        if (!widget) {
+            m_advancedJsonToggle->setChecked(true);
+            widget = m_parametersEdit;
+        }
     }
     else if (field == "ms") { widget = m_waitMsSpin; tabIndex = 1; }
+    else if (field == "prompt") {
+        tabIndex = 1;
+        if (nested == "mode") widget = m_promptModeCombo;
+        else if (nested == "title") widget = m_promptTitleEdit;
+        else if (nested == "message") widget = m_promptMessageEdit;
+        else if (nested == "confirmText") widget = m_promptConfirmTextEdit;
+        else if (nested == "closeOnStep") widget = m_promptCloseOnStepCombo;
+        else if (nested == "timeoutMs") widget = m_promptTimeoutSpin;
+        else widget = m_promptMessageEdit;
+    }
     else if (field == "loop") {
         tabIndex = 1;
-        if (nested == "from") widget = m_loopFromSpin;
+        if (nested == "type") widget = m_loopTypeCombo;
+        else if (nested == "from") widget = m_loopFromSpin;
         else if (nested == "to") widget = m_loopToSpin;
         else if (nested == "step") widget = m_loopStepSpin;
+        else if (nested == "intervalMs") widget = m_conditionIntervalSpin;
+        else if (nested == "maxIterations") widget = m_conditionMaxIterationsSpin;
+        else if (nested == "timeoutMs") widget = m_conditionTimeoutSpin;
+        else if (nested == "iterationErrorPolicy") widget = m_conditionIterationErrorCombo;
         else widget = m_loopVariableEdit;
     } else if (field == "barrier") {
         tabIndex = 1;
@@ -516,12 +653,9 @@ bool StepPropertyEditor::focusField(const QString& fieldPath)
         widget = m_timeoutSpin;
         tabIndex = 2;
     } else if (field == "errorPolicy") {
-        tabIndex = 2;
-        if (nested == "onError") widget = m_onErrorCombo;
-        else if (nested == "onTimeout") widget = m_onTimeoutCombo;
-        else if (nested == "cleanupRegionId") widget = m_cleanupRegionEdit;
-        else if (nested == "stopUutOnFailure") widget = m_stopUutCheck;
-        else widget = m_onFailCombo;
+        tabIndex = 1;
+        m_advancedJsonToggle->setChecked(true);
+        widget = m_errorPolicyEdit;
     } else if (field == "resources") {
         widget = m_resourcesEdit;
         tabIndex = 2;
@@ -626,17 +760,18 @@ void StepPropertyEditor::buildDataPage()
     m_functionEdit = new QLineEdit(content);
     m_functionEdit->setObjectName(QStringLiteral("propertyFunctionEdit"));
     m_dataForm->addRow(tr("Function"), m_functionEdit);
-    m_pluginInputsGroup = new QGroupBox(tr("Plugin Parameters"), content);
+    m_deviceIdCombo = new QComboBox(content);
+    m_deviceIdCombo->setObjectName(QStringLiteral("propertyDeviceIdCombo"));
+    m_deviceIdCombo->setToolTip(
+        tr("Station devices that support the selected plugin function"));
+    m_dataForm->addRow(tr("Target device"), m_deviceIdCombo);
+    m_pluginInputsGroup = new QGroupBox(tr("Function Arguments"), content);
     m_pluginInputsGroup->setObjectName(QStringLiteral("pluginInputsGroup"));
     m_pluginInputsForm = new QFormLayout(m_pluginInputsGroup);
     m_pluginInputsForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     m_pluginInputsForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
     m_pluginInputsGroup->hide();
     m_dataForm->addRow(m_pluginInputsGroup);
-    m_inputsEdit = new QPlainTextEdit(content);
-    m_inputsEdit->setObjectName(QStringLiteral("propertyInputsEdit"));
-    m_inputsEdit->setMinimumHeight(100);
-    m_dataForm->addRow(tr("Advanced inputs (JSON)"), m_inputsEdit);
     m_limitActualEdit = new QLineEdit(content);
     m_limitActualEdit->setObjectName(QStringLiteral("propertyLimitActualEdit"));
     m_limitActualEdit->setPlaceholderText(tr("Value or ${step:...outputs...}"));
@@ -687,16 +822,86 @@ void StepPropertyEditor::buildDataPage()
     m_limitUnitEdit = new QLineEdit(content);
     m_limitUnitEdit->setObjectName(QStringLiteral("propertyLimitUnitEdit"));
     m_dataForm->addRow(tr("Unit"), m_limitUnitEdit);
-    m_parametersEdit = new QPlainTextEdit(content);
-    m_parametersEdit->setObjectName(QStringLiteral("propertyParametersEdit"));
-    m_parametersEdit->setMinimumHeight(100);
-    m_dataForm->addRow(tr("Parameters (JSON)"), m_parametersEdit);
 
+    m_counterConditionEdit = new QLineEdit(content);
+    m_counterConditionEdit->setObjectName(QStringLiteral("propertyCounterConditionEdit"));
+    m_counterConditionEdit->setPlaceholderText(tr("Every execution (default)"));
+    m_counterConditionEdit->setToolTip(tr(
+        "Leave empty to count every execution, or choose a boolean Step output with fx."));
+    m_counterConditionField = wrapExpressionEditor(m_counterConditionEdit);
+    if (auto* picker = m_counterConditionField->findChild<QToolButton*>(
+            QStringLiteral("expressionPickerButton"))) {
+        m_counterConditionMenu = picker->menu();
+    }
+    m_dataForm->addRow(tr("Count trigger"), m_counterConditionField);
+    m_counterModeCombo = new QComboBox(content);
+    m_counterModeCombo->setObjectName(QStringLiteral("propertyCounterModeCombo"));
+    m_counterModeCombo->addItem(tr("Consecutive (reset when false)"),
+                                QStringLiteral("consecutive"));
+    m_counterModeCombo->addItem(tr("Total (keep value when false)"),
+                                QStringLiteral("total"));
+    m_dataForm->addRow(tr("Counter mode"), m_counterModeCombo);
+    m_counterStartSpin = new QDoubleSpinBox(content);
+    m_counterStartSpin->setRange(-1.0e12, 1.0e12);
+    m_counterStartSpin->setDecimals(6);
+    m_dataForm->addRow(tr("Start value"), m_counterStartSpin);
+    m_counterIncrementSpin = new QDoubleSpinBox(content);
+    m_counterIncrementSpin->setRange(-1.0e12, 1.0e12);
+    m_counterIncrementSpin->setDecimals(6);
+    m_counterIncrementSpin->setValue(1.0);
+    m_dataForm->addRow(tr("Increment"), m_counterIncrementSpin);
+
+    m_aggregateValueEdit = new QLineEdit(content);
+    m_aggregateValueEdit->setObjectName(QStringLiteral("propertyAggregateValueEdit"));
+    m_aggregateValueEdit->setPlaceholderText(tr("Numeric value or ${step:...outputs...}"));
+    m_aggregateValueField = wrapExpressionEditor(m_aggregateValueEdit);
+    if (auto* picker = m_aggregateValueField->findChild<QToolButton*>(
+            QStringLiteral("expressionPickerButton"))) {
+        m_aggregateValueMenu = picker->menu();
+    }
+    m_dataForm->addRow(tr("Value to aggregate"), m_aggregateValueField);
     m_waitMsSpin = new QSpinBox(content);
     m_waitMsSpin->setRange(0, std::numeric_limits<int>::max());
     m_waitMsSpin->setSuffix(tr(" ms"));
     m_dataForm->addRow(tr("Duration"), m_waitMsSpin);
 
+    m_promptModeCombo = new QComboBox(content);
+    m_promptModeCombo->setObjectName(QStringLiteral("propertyPromptModeCombo"));
+    m_promptModeCombo->addItem(tr("Manual confirmation (default)"),
+                               QStringLiteral("confirm"));
+    m_promptModeCombo->addItem(tr("Conditional confirmation (Step PASS)"),
+                               QStringLiteral("notice"));
+    m_dataForm->addRow(tr("Mode"), m_promptModeCombo);
+    m_promptTitleEdit = new QLineEdit(content);
+    m_promptTitleEdit->setObjectName(QStringLiteral("propertyPromptTitleEdit"));
+    m_dataForm->addRow(tr("Window title"), m_promptTitleEdit);
+    m_promptMessageEdit = new QPlainTextEdit(content);
+    m_promptMessageEdit->setObjectName(QStringLiteral("propertyPromptMessageEdit"));
+    m_promptMessageEdit->setMinimumHeight(90);
+    m_promptMessageEdit->setPlaceholderText(tr("Tell the operator what to do"));
+    m_dataForm->addRow(tr("Message"), m_promptMessageEdit);
+    m_promptConfirmTextEdit = new QLineEdit(content);
+    m_promptConfirmTextEdit->setObjectName(QStringLiteral("propertyPromptConfirmTextEdit"));
+    m_dataForm->addRow(tr("Button text"), m_promptConfirmTextEdit);
+    m_promptCloseOnStepCombo = new QComboBox(content);
+    m_promptCloseOnStepCombo->setObjectName(QStringLiteral("propertyPromptCloseOnStepCombo"));
+    m_promptCloseOnStepCombo->setEditable(true);
+    m_promptCloseOnStepCombo->setInsertPolicy(QComboBox::NoInsert);
+    m_promptCloseOnStepCombo->setToolTip(
+        tr("Select a later enabled step. The prompt closes after that step finishes."));
+    m_dataForm->addRow(tr("Close after step"), m_promptCloseOnStepCombo);
+    m_promptTimeoutSpin = new QSpinBox(content);
+    m_promptTimeoutSpin->setObjectName(QStringLiteral("propertyPromptTimeoutSpin"));
+    m_promptTimeoutSpin->setRange(0, std::numeric_limits<int>::max());
+    m_promptTimeoutSpin->setSuffix(tr(" ms"));
+    m_promptTimeoutSpin->setToolTip(tr("0 means no timeout for confirmation prompts"));
+    m_dataForm->addRow(tr("Response timeout"), m_promptTimeoutSpin);
+
+    m_loopTypeCombo = new QComboBox(content);
+    m_loopTypeCombo->setObjectName(QStringLiteral("propertyLoopTypeCombo"));
+    m_loopTypeCombo->addItem(tr("For Loop"), QStringLiteral("for"));
+    m_loopTypeCombo->addItem(tr("While Loop"), QStringLiteral("while"));
+    m_dataForm->addRow(tr("Loop type"), m_loopTypeCombo);
     m_loopVariableEdit = new QLineEdit(content);
     m_dataForm->addRow(tr("Loop variable"), m_loopVariableEdit);
     m_loopFromSpin = new QSpinBox(content);
@@ -708,6 +913,35 @@ void StepPropertyEditor::buildDataPage()
     m_loopStepSpin = new QSpinBox(content);
     m_loopStepSpin->setRange(std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
     m_dataForm->addRow(tr("Step"), m_loopStepSpin);
+
+    m_conditionIntervalSpin = new QSpinBox(content);
+    m_conditionIntervalSpin->setObjectName(
+        QStringLiteral("propertyConditionIntervalSpin"));
+    m_conditionIntervalSpin->setRange(0, std::numeric_limits<int>::max());
+    m_conditionIntervalSpin->setSuffix(tr(" ms"));
+    m_dataForm->addRow(tr("Delay between iterations"), m_conditionIntervalSpin);
+    m_conditionMaxIterationsSpin = new QSpinBox(content);
+    m_conditionMaxIterationsSpin->setObjectName(
+        QStringLiteral("propertyConditionMaxIterationsSpin"));
+    m_conditionMaxIterationsSpin->setRange(0, std::numeric_limits<int>::max());
+    m_conditionMaxIterationsSpin->setSpecialValueText(tr("Disabled"));
+    m_dataForm->addRow(tr("Maximum iterations"), m_conditionMaxIterationsSpin);
+    m_conditionTimeoutSpin = new QSpinBox(content);
+    m_conditionTimeoutSpin->setObjectName(
+        QStringLiteral("propertyConditionTimeoutSpin"));
+    m_conditionTimeoutSpin->setRange(0, std::numeric_limits<int>::max());
+    m_conditionTimeoutSpin->setSuffix(tr(" ms"));
+    m_conditionTimeoutSpin->setSpecialValueText(tr("Disabled"));
+    m_dataForm->addRow(tr("Overall timeout"), m_conditionTimeoutSpin);
+    m_conditionIterationErrorCombo = new QComboBox(content);
+    m_conditionIterationErrorCombo->setObjectName(
+        QStringLiteral("propertyConditionIterationErrorCombo"));
+    m_conditionIterationErrorCombo->addItem(tr("Abort loop"),
+                                            QStringLiteral("abortLoop"));
+    m_conditionIterationErrorCombo->addItem(tr("Continue next iteration"),
+                                            QStringLiteral("continueLoop"));
+    m_dataForm->addRow(tr("Iteration Error / Timeout"),
+                       m_conditionIterationErrorCombo);
 
     m_barrierNameEdit = new QLineEdit(content);
     m_dataForm->addRow(tr("Barrier name"), m_barrierNameEdit);
@@ -747,6 +981,55 @@ void StepPropertyEditor::buildDataPage()
     m_releaseResourcesCheck = new QCheckBox(content);
     m_dataForm->addRow(tr("Release resources"), m_releaseResourcesCheck);
 
+    m_advancedJsonToggle = new QToolButton(content);
+    m_advancedJsonToggle->setObjectName(
+        QStringLiteral("propertyAdvancedJsonToggle"));
+    m_advancedJsonToggle->setText(tr("Advanced JSON"));
+    m_advancedJsonToggle->setCheckable(true);
+    m_advancedJsonToggle->setArrowType(Qt::RightArrow);
+    m_advancedJsonToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_advancedJsonToggle->setProperty("picoateDisclosure", true);
+    m_advancedJsonToggle->setToolTip(
+        tr("Inspect or edit legacy and unrecognized fields"));
+    m_dataForm->addRow(m_advancedJsonToggle);
+
+    m_advancedJsonContent = new QWidget(content);
+    m_advancedJsonContent->setObjectName(
+        QStringLiteral("propertyAdvancedJsonContent"));
+    m_advancedJsonForm = new QFormLayout(m_advancedJsonContent);
+    m_advancedJsonForm->setContentsMargins(16, 2, 0, 4);
+    m_advancedJsonForm->setFieldGrowthPolicy(
+        QFormLayout::AllNonFixedFieldsGrow);
+    m_advancedJsonForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    m_inputsEdit = new QPlainTextEdit(m_advancedJsonContent);
+    m_inputsEdit->setObjectName(QStringLiteral("propertyInputsEdit"));
+    m_inputsEdit->setMinimumHeight(80);
+    m_inputsEdit->setToolTip(
+        tr("Raw runtime inputs. Prefer the typed fields above."));
+    m_advancedJsonForm->addRow(tr("Inputs"), m_inputsEdit);
+    m_parametersEdit = new QPlainTextEdit(m_advancedJsonContent);
+    m_parametersEdit->setObjectName(QStringLiteral("propertyParametersEdit"));
+    m_parametersEdit->setMinimumHeight(80);
+    m_parametersEdit->setToolTip(
+        tr("Raw Step handler parameters. Usually not needed for plugin functions."));
+    m_advancedJsonForm->addRow(tr("Parameters"), m_parametersEdit);
+    m_errorPolicyEdit = new QPlainTextEdit(m_advancedJsonContent);
+    m_errorPolicyEdit->setObjectName(QStringLiteral("propertyLegacyErrorPolicyEdit"));
+    m_errorPolicyEdit->setMinimumHeight(80);
+    m_errorPolicyEdit->setToolTip(
+        tr("Legacy per-Step policy. Station Failure Handling overrides it at runtime."));
+    m_advancedJsonForm->addRow(tr("Legacy error policy"), m_errorPolicyEdit);
+    m_advancedJsonContent->hide();
+    m_dataForm->addRow(m_advancedJsonContent);
+
+    connect(m_advancedJsonToggle, &QToolButton::toggled,
+            this, [this](bool expanded) {
+                m_advancedJsonToggle->setArrowType(
+                    expanded ? Qt::DownArrow : Qt::RightArrow);
+                m_advancedJsonContent->setVisible(
+                    expanded && !m_advancedJsonToggle->isHidden());
+            });
+
     auto* scroll = new QScrollArea(m_tabs);
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -777,19 +1060,6 @@ void StepPropertyEditor::buildPolicyPage()
     m_timeoutSpin->setSuffix(tr(" ms"));
     m_policyForm->addRow(tr("Timeout"), m_timeoutSpin);
 
-    m_onFailCombo = new QComboBox(content);
-    m_onErrorCombo = new QComboBox(content);
-    m_onTimeoutCombo = new QComboBox(content);
-    for (auto* combo : {m_onFailCombo, m_onErrorCombo, m_onTimeoutCombo}) {
-        addItems(combo, {"Continue", "StopUut", "Retry", "RunCleanup", "Abort"});
-    }
-    m_policyForm->addRow(tr("On fail"), m_onFailCombo);
-    m_policyForm->addRow(tr("On error"), m_onErrorCombo);
-    m_policyForm->addRow(tr("On timeout"), m_onTimeoutCombo);
-    m_cleanupRegionEdit = new QLineEdit(content);
-    m_policyForm->addRow(tr("Cleanup region"), m_cleanupRegionEdit);
-    m_stopUutCheck = new QCheckBox(content);
-    m_policyForm->addRow(tr("Stop UUT on failure"), m_stopUutCheck);
     m_resourcesEdit = new QPlainTextEdit(content);
     m_resourcesEdit->setObjectName(QStringLiteral("propertyResourcesEdit"));
     m_resourcesEdit->setMinimumHeight(140);
@@ -814,6 +1084,8 @@ void StepPropertyEditor::loadCurrentObject()
                : QJsonObject{});
     const bool valid = !m_sourceObject.isEmpty();
     m_isGroup = valid && !m_previewing && m_path.isGroup();
+    const bool standardGroup = m_isGroup && m_document &&
+                               m_document->isStandardGroup(m_path);
     m_titleLabel->setText(m_previewing ? tr("Function Preview")
                                       : tr("Properties"));
     m_emptyLabel->setVisible(!valid);
@@ -831,7 +1103,7 @@ void StepPropertyEditor::loadCurrentObject()
     if (m_isGroup) {
         addItems(m_kindCombo, {"setup", "main", "custom", "cleanup"});
     } else {
-        addItems(m_kindCombo, {"noop", "wait", "action", "limit", "barrier", "cleanup", "loop", "testItem", "statement", "sequenceCall"});
+        addItems(m_kindCombo, {"noop", "wait", "action", "limit", "break", "counter", "aggregate", "operatorPrompt", "barrier", "cleanup", "loop", "testItem", "statement", "sequenceCall"});
     }
     setComboValue(m_kindCombo,
                   m_sourceObject.value("kind").toString(
@@ -846,6 +1118,9 @@ void StepPropertyEditor::loadCurrentObject()
     m_moduleIdEdit->setText(m_sourceObject.value("moduleId").toString());
     m_functionEdit->setText(m_sourceObject.value("function").toString());
     m_inputsEdit->setPlainText(objectText(m_sourceObject.value("inputs").toObject()));
+    m_errorPolicyEdit->setPlainText(
+        objectText(m_sourceObject.value("errorPolicy").toObject()));
+    m_advancedJsonToggle->setChecked(false);
     m_limitActualEdit->setText(
         m_sourceObject.value("inputs").toObject().value("actual").toVariant().toString());
     const auto parameters = m_sourceObject.value("parameters").toObject();
@@ -864,14 +1139,47 @@ void StepPropertyEditor::loadCurrentObject()
     m_limitInclusiveCheck->setChecked(parameters.value(QStringLiteral("inclusive")).toBool(true));
     m_limitMeasurementNameEdit->setText(parameters.value(QStringLiteral("measurementName")).toString());
     m_limitUnitEdit->setText(parameters.value(QStringLiteral("unit")).toString());
+    const auto inputs = m_sourceObject.value("inputs").toObject();
+    const auto counterCondition = inputs.value(QStringLiteral("condition"));
+    m_counterConditionEdit->setText(
+        counterCondition.isUndefined() ||
+                (counterCondition.isBool() && counterCondition.toBool())
+            ? QString()
+            : jsonValueText(counterCondition));
+    setComboValue(m_counterModeCombo,
+                  parameters.value("mode").toString(QStringLiteral("consecutive")));
+    m_counterStartSpin->setValue(parameters.value("start").toDouble(0.0));
+    m_counterIncrementSpin->setValue(parameters.value("increment").toDouble(1.0));
+    m_aggregateValueEdit->setText(jsonValueText(inputs.value("value")));
     m_waitMsSpin->setValue(m_sourceObject.value("ms").toInt(
         m_sourceObject.value("parameters").toObject().value("ms").toInt(0)));
 
+    const auto prompt = m_sourceObject.value("prompt").toObject();
+    setComboValue(m_promptModeCombo,
+                  prompt.value("mode").toString(QStringLiteral("confirm")));
+    m_promptTitleEdit->setText(
+        prompt.value("title").toString(tr("Message")));
+    m_promptMessageEdit->setPlainText(prompt.value("message").toString());
+    m_promptConfirmTextEdit->setText(
+        prompt.value("confirmText").toString(QStringLiteral("OK")));
+    rebuildPromptCloseStepChoices(prompt.value("closeOnStep").toString());
+    m_promptTimeoutSpin->setValue(prompt.value("timeoutMs").toInt(60000));
+
     const auto loop = m_sourceObject.value("loop").toObject();
+    auto loopType = loop.value("type").toString("for");
+    if (loopType.compare(QStringLiteral("condition"), Qt::CaseInsensitive) == 0) {
+        loopType = QStringLiteral("while");
+    }
+    setComboValue(m_loopTypeCombo, loopType);
     m_loopVariableEdit->setText(loop.value("variable").toString("i"));
     m_loopFromSpin->setValue(loop.value("from").toInt(0));
     m_loopToSpin->setValue(loop.value("to").toInt(0));
     m_loopStepSpin->setValue(loop.value("step").toInt(1));
+    m_conditionIntervalSpin->setValue(loop.value("intervalMs").toInt(0));
+    m_conditionMaxIterationsSpin->setValue(loop.value("maxIterations").toInt(100));
+    m_conditionTimeoutSpin->setValue(loop.value("timeoutMs").toInt(60000));
+    setComboValue(m_conditionIterationErrorCombo,
+                  loop.value("iterationErrorPolicy").toString("abortLoop"));
 
     auto barrier = m_sourceObject.value("barrier").toObject();
     if (barrier.isEmpty()) {
@@ -897,17 +1205,16 @@ void StepPropertyEditor::loadCurrentObject()
     const auto timeout = m_sourceObject.value("timeout").toObject();
     m_timeoutSpin->setValue(timeout.value("timeoutMs").toInt(
         m_sourceObject.value("timeoutMs").toInt(0)));
-    const auto errorPolicy = m_sourceObject.value("errorPolicy").toObject();
-    setComboValue(m_onFailCombo, errorPolicy.value("onFail").toString("StopUut"));
-    setComboValue(m_onErrorCombo, errorPolicy.value("onError").toString("StopUut"));
-    setComboValue(m_onTimeoutCombo, errorPolicy.value("onTimeout").toString("StopUut"));
-    m_cleanupRegionEdit->setText(errorPolicy.value("cleanupRegionId").toString());
-    m_stopUutCheck->setChecked(errorPolicy.value("stopUutOnFailure").toBool(true));
     m_resourcesEdit->setPlainText(arrayText(m_sourceObject.value("resources").toArray()));
 
+    rebuildDeviceChoices();
     rebuildPluginInputEditors();
     rebuildExpressionMenu(m_limitExpressionMenu, m_limitActualEdit);
+    rebuildExpressionMenu(m_counterConditionMenu, m_counterConditionEdit);
+    rebuildExpressionMenu(m_aggregateValueMenu, m_aggregateValueEdit);
 
+    setFormRowVisible(m_generalForm, m_idEdit, !standardGroup);
+    setFormRowVisible(m_generalForm, m_kindCombo, !standardGroup);
     setFormRowVisible(m_generalForm, m_keyEdit, !m_isGroup);
     setFormRowVisible(m_generalForm, m_enabledCheck, !m_isGroup);
     setFormRowVisible(m_generalForm, m_alwaysRunCheck, !m_isGroup);
@@ -933,28 +1240,43 @@ void StepPropertyEditor::updateKindRows()
     }
     const auto kind = m_kindCombo->currentData().toString();
     const bool action = kind == "action";
-    const bool inputData = action || kind == "statement" || kind == "sequenceCall";
-    const bool parameters = kind != "barrier" && kind != "loop" &&
-                            kind != "testItem";
+    const bool moduleCall = (action || kind == "cleanup") &&
+                            !m_moduleIdEdit->text().trimmed().isEmpty();
+    const bool logicalDevice = moduleCall &&
+        m_moduleIdEdit->text().trimmed() == QStringLiteral("device");
     const bool loop = kind == "loop";
     const bool barrier = kind == "barrier";
     const bool limit = kind == "limit";
+    const bool breakIf = kind == "break";
+    const bool predicate = limit || breakIf;
+    const bool counter = kind == "counter";
+    const bool aggregate = kind == "aggregate";
+    const bool operatorPrompt = kind == "operatorPrompt";
+    const bool noticePrompt = operatorPrompt &&
+        m_promptModeCombo->currentData().toString() == QStringLiteral("notice");
 
-    setFormRowVisible(m_dataForm, m_moduleIdEdit, action);
-    setFormRowVisible(m_dataForm, m_functionEdit, action);
-    m_pluginInputsGroup->setVisible(action && !m_pluginInputEditors.isEmpty());
-    setFormRowVisible(m_dataForm, m_inputsEdit, inputData);
-    setFormRowVisible(m_dataForm, m_limitActualField, limit);
-    setFormRowVisible(m_dataForm, m_limitComparisonCombo, limit);
+    setFormRowVisible(m_dataForm, m_moduleIdEdit, action || moduleCall);
+    setFormRowVisible(m_dataForm, m_functionEdit, action || moduleCall);
+    setFormRowVisible(m_dataForm, m_deviceIdCombo, logicalDevice);
+    m_pluginInputsGroup->setVisible(moduleCall && !m_pluginInputEditors.isEmpty());
+    setFormRowVisible(m_dataForm, m_limitActualField, predicate);
+    setFormRowVisible(m_dataForm, m_limitComparisonCombo, predicate);
     setFormRowVisible(m_dataForm, m_limitMeasurementNameEdit, limit);
     setFormRowVisible(m_dataForm, m_limitUnitEdit, limit);
-    setFormRowVisible(m_dataForm, m_parametersEdit, parameters && !limit);
+    setFormRowVisible(m_dataForm, m_counterConditionField, counter);
+    setFormRowVisible(m_dataForm, m_counterModeCombo, counter);
+    setFormRowVisible(m_dataForm, m_counterStartSpin, counter);
+    setFormRowVisible(m_dataForm, m_counterIncrementSpin, counter);
+    setFormRowVisible(m_dataForm, m_aggregateValueField, aggregate);
     setFormRowVisible(m_dataForm, m_waitMsSpin, kind == "wait");
-    const std::array<QWidget*, 4> loopFields = {
-        m_loopVariableEdit, m_loopFromSpin, m_loopToSpin, m_loopStepSpin};
-    for (auto* field : loopFields) {
-        setFormRowVisible(m_dataForm, field, loop);
-    }
+    setFormRowVisible(m_dataForm, m_promptModeCombo, operatorPrompt);
+    setFormRowVisible(m_dataForm, m_promptTitleEdit, operatorPrompt);
+    setFormRowVisible(m_dataForm, m_promptMessageEdit, operatorPrompt);
+    setFormRowVisible(m_dataForm, m_promptConfirmTextEdit,
+                      operatorPrompt && !noticePrompt);
+    setFormRowVisible(m_dataForm, m_promptCloseOnStepCombo, noticePrompt);
+    setFormRowVisible(m_dataForm, m_promptTimeoutSpin, operatorPrompt);
+    setFormRowVisible(m_dataForm, m_loopTypeCombo, loop);
     const std::array<QWidget*, 12> barrierFields = {
         m_barrierNameEdit, m_cohortIdEdit, m_expectedUutSpin,
         m_quorumCountSpin, m_quorumRatioSpin, m_arrivalTimeoutSpin,
@@ -964,13 +1286,35 @@ void StepPropertyEditor::updateKindRows()
     for (auto* field : barrierFields) {
         setFormRowVisible(m_dataForm, field, barrier);
     }
+    updateLoopRows();
     updateLimitRows();
+    updateAdvancedJsonVisibility();
+}
+
+void StepPropertyEditor::updateLoopRows()
+{
+    const bool loop = !m_isGroup &&
+        m_kindCombo->currentData().toString() == QStringLiteral("loop");
+    const bool whileLoop = loop &&
+        m_loopTypeCombo->currentData().toString() == QStringLiteral("while");
+    const bool forLoop = loop && !whileLoop;
+
+    setFormRowVisible(m_dataForm, m_loopTypeCombo, loop);
+    setFormRowVisible(m_dataForm, m_loopVariableEdit, forLoop);
+    setFormRowVisible(m_dataForm, m_loopFromSpin, forLoop);
+    setFormRowVisible(m_dataForm, m_loopToSpin, forLoop);
+    setFormRowVisible(m_dataForm, m_loopStepSpin, forLoop);
+    setFormRowVisible(m_dataForm, m_conditionIntervalSpin, whileLoop);
+    setFormRowVisible(m_dataForm, m_conditionMaxIterationsSpin, whileLoop);
+    setFormRowVisible(m_dataForm, m_conditionTimeoutSpin, whileLoop);
+    setFormRowVisible(m_dataForm, m_conditionIterationErrorCombo, whileLoop);
 }
 
 void StepPropertyEditor::updateLimitRows()
 {
-    const bool limit = !m_isGroup &&
-        m_kindCombo->currentData().toString() == QStringLiteral("limit");
+    const auto kind = m_kindCombo->currentData().toString();
+    const bool predicate = !m_isGroup &&
+        (kind == QStringLiteral("limit") || kind == QStringLiteral("break"));
     const auto mode = m_limitComparisonCombo->currentData().toString();
     const bool betweenTolerance = mode == QStringLiteral("betweenTolerance");
     const bool betweenLimits = mode == QStringLiteral("betweenLimits");
@@ -999,25 +1343,190 @@ void StepPropertyEditor::updateLimitRows()
         }
     }
     setFormRowVisible(m_dataForm, m_limitExpectedEdit,
-                      limit && !betweenLimits && !boolean);
-    setFormRowVisible(m_dataForm, m_limitLowerEdit, limit && betweenLimits);
-    setFormRowVisible(m_dataForm, m_limitUpperEdit, limit && betweenLimits);
+                      predicate && !betweenLimits && !boolean);
+    setFormRowVisible(m_dataForm, m_limitLowerEdit, predicate && betweenLimits);
+    setFormRowVisible(m_dataForm, m_limitUpperEdit, predicate && betweenLimits);
     setFormRowVisible(m_dataForm, m_limitToleranceSpin,
-                      limit && (betweenTolerance || equality));
+                      predicate && (betweenTolerance || equality));
     setFormRowVisible(m_dataForm, m_limitInclusiveCheck,
-                      limit && (betweenTolerance || betweenLimits));
+                      predicate && (betweenTolerance || betweenLimits));
+}
+
+void StepPropertyEditor::updateAdvancedJsonVisibility()
+{
+    if (!m_advancedJsonToggle || !m_advancedJsonContent || m_isGroup) {
+        if (m_advancedJsonToggle) {
+            m_advancedJsonToggle->hide();
+        }
+        if (m_advancedJsonContent) {
+            m_advancedJsonContent->hide();
+        }
+        return;
+    }
+
+    QJsonObject inputs;
+    QJsonObject parameters;
+    QJsonObject legacyErrorPolicy;
+    QString ignoredError;
+    parseObjectText(m_inputsEdit->toPlainText(), inputs, ignoredError);
+    parseObjectText(m_parametersEdit->toPlainText(), parameters, ignoredError);
+    parseObjectText(m_errorPolicyEdit->toPlainText(), legacyErrorPolicy, ignoredError);
+
+    const auto kind = m_kindCombo->currentData().toString();
+    const bool moduleCall = (kind == QStringLiteral("action") ||
+                             kind == QStringLiteral("cleanup")) &&
+                            !m_moduleIdEdit->text().trimmed().isEmpty();
+    const bool rawOnlyKind = kind == QStringLiteral("statement") ||
+                             kind == QStringLiteral("sequenceCall");
+
+    QSet<QString> knownInputs;
+    if (kind == QStringLiteral("limit") || kind == QStringLiteral("break")) {
+        knownInputs.insert(QStringLiteral("actual"));
+    } else if (kind == QStringLiteral("counter")) {
+        knownInputs.insert(QStringLiteral("condition"));
+    } else if (kind == QStringLiteral("aggregate")) {
+        knownInputs.insert(QStringLiteral("value"));
+    }
+    if (moduleCall) {
+        knownInputs.insert(QStringLiteral("deviceId"));
+        if (const auto* function = currentPluginFunction()) {
+            for (const auto& input : function->inputs) {
+                knownInputs.insert(input.key);
+            }
+        }
+    }
+
+    QSet<QString> knownParameters;
+    if (kind == QStringLiteral("limit") || kind == QStringLiteral("break")) {
+        knownParameters = {
+            QStringLiteral("comparison"), QStringLiteral("expected"),
+            QStringLiteral("lower"), QStringLiteral("lowerLimit"),
+            QStringLiteral("upper"), QStringLiteral("upperLimit"),
+            QStringLiteral("tolerance"), QStringLiteral("inclusive"),
+            QStringLiteral("measurementName"), QStringLiteral("unit")};
+    } else if (kind == QStringLiteral("counter")) {
+        knownParameters = {QStringLiteral("mode"), QStringLiteral("start"),
+                           QStringLiteral("increment")};
+    } else if (kind == QStringLiteral("wait")) {
+        knownParameters.insert(QStringLiteral("ms"));
+    }
+
+    int extraFieldCount = 0;
+    for (auto iterator = inputs.constBegin(); iterator != inputs.constEnd();
+         ++iterator) {
+        if (!knownInputs.contains(iterator.key())) {
+            ++extraFieldCount;
+        }
+    }
+    for (auto iterator = parameters.constBegin();
+         iterator != parameters.constEnd(); ++iterator) {
+        if (!knownParameters.contains(iterator.key())) {
+            ++extraFieldCount;
+        }
+    }
+
+    const bool genericModuleCall = moduleCall && !currentPluginFunction();
+    const bool showAdvanced = moduleCall || rawOnlyKind ||
+                              extraFieldCount > 0 || !legacyErrorPolicy.isEmpty();
+    const bool showInputs = moduleCall || rawOnlyKind || !inputs.isEmpty();
+    const bool showParameters = rawOnlyKind || genericModuleCall ||
+                                !parameters.isEmpty();
+
+    m_advancedJsonToggle->setText(extraFieldCount > 0
+        ? tr("Advanced JSON (%1 extra)").arg(extraFieldCount)
+        : tr("Advanced JSON"));
+    m_advancedJsonToggle->setVisible(showAdvanced);
+    setFormRowVisible(m_advancedJsonForm, m_inputsEdit,
+                      showAdvanced && showInputs);
+    setFormRowVisible(m_advancedJsonForm, m_parametersEdit,
+                      showAdvanced && showParameters);
+    setFormRowVisible(m_advancedJsonForm, m_errorPolicyEdit,
+                      showAdvanced && !legacyErrorPolicy.isEmpty());
+    m_advancedJsonContent->setVisible(
+        showAdvanced && m_advancedJsonToggle->isChecked());
+    if (!showAdvanced) {
+        m_advancedJsonToggle->setChecked(false);
+    }
+}
+
+void StepPropertyEditor::rebuildDeviceChoices()
+{
+    if (!m_deviceIdCombo) {
+        return;
+    }
+
+    QJsonObject inputs;
+    QString ignoredError;
+    parseObjectText(m_inputsEdit->toPlainText(), inputs, ignoredError);
+    const auto currentDeviceId = inputs.value(
+        QStringLiteral("deviceId")).toString();
+    const auto functionId = m_functionEdit->text().trimmed();
+    const bool logicalDevice = m_moduleIdEdit->text().trimmed() ==
+                               QStringLiteral("device");
+
+    QSignalBlocker blocker(m_deviceIdCombo);
+    m_deviceIdCombo->clear();
+    if (!logicalDevice || functionId.isEmpty()) {
+        return;
+    }
+
+    QStringList compatibleDevices;
+    for (auto iterator = m_pluginByDeviceId.constBegin();
+         iterator != m_pluginByDeviceId.constEnd(); ++iterator) {
+        const auto plugin = std::find_if(
+            m_plugins.cbegin(), m_plugins.cend(),
+            [&](const PluginManifest& manifest) {
+                return manifest.moduleId == iterator.value();
+            });
+        if (plugin == m_plugins.cend()) {
+            continue;
+        }
+        const bool supportsFunction = std::any_of(
+            plugin->functions.cbegin(), plugin->functions.cend(),
+            [&](const PluginFunctionDefinition& function) {
+                return function.id == functionId;
+            });
+        if (supportsFunction) {
+            compatibleDevices.push_back(iterator.key());
+        }
+    }
+    compatibleDevices.removeDuplicates();
+    compatibleDevices.sort(Qt::CaseInsensitive);
+    for (const auto& deviceId : compatibleDevices) {
+        m_deviceIdCombo->addItem(deviceId, deviceId);
+    }
+
+    int selected = m_deviceIdCombo->findData(currentDeviceId);
+    if (!currentDeviceId.isEmpty() && selected < 0) {
+        m_deviceIdCombo->insertItem(
+            0, tr("%1 (Unavailable)").arg(currentDeviceId), currentDeviceId);
+        selected = 0;
+    }
+    if (m_deviceIdCombo->count() == 0) {
+        m_deviceIdCombo->addItem(tr("No compatible Station device"),
+                                 QVariant{});
+        m_deviceIdCombo->setEnabled(false);
+    } else {
+        m_deviceIdCombo->setEnabled(m_editable && !m_previewing);
+        m_deviceIdCombo->setCurrentIndex(selected >= 0 ? selected : 0);
+    }
 }
 
 const PluginFunctionDefinition* StepPropertyEditor::currentPluginFunction() const
 {
     auto moduleId = m_moduleIdEdit->text().trimmed();
     if (moduleId == QStringLiteral("device")) {
-        QJsonObject inputs;
-        QString ignoredError;
-        if (parseObjectText(m_inputsEdit->toPlainText(), inputs, ignoredError)) {
-            moduleId = m_pluginByDeviceId.value(
-                inputs.value(QStringLiteral("deviceId")).toString());
+        auto deviceId = m_deviceIdCombo
+            ? m_deviceIdCombo->currentData().toString() : QString{};
+        if (deviceId.isEmpty()) {
+            QJsonObject inputs;
+            QString ignoredError;
+            if (parseObjectText(m_inputsEdit->toPlainText(), inputs,
+                                ignoredError)) {
+                deviceId = inputs.value(QStringLiteral("deviceId")).toString();
+            }
         }
+        moduleId = m_pluginByDeviceId.value(deviceId);
     }
     const auto functionId = m_functionEdit->text().trimmed();
     for (const auto& plugin : m_plugins) {
@@ -1037,7 +1546,9 @@ void StepPropertyEditor::setDevicePluginBindings(
     QHash<QString, QString> pluginByDeviceId)
 {
     m_pluginByDeviceId = std::move(pluginByDeviceId);
+    rebuildDeviceChoices();
     rebuildPluginInputEditors();
+    updateAdvancedJsonVisibility();
 }
 
 void StepPropertyEditor::setDeviceConfigurations(
@@ -1066,12 +1577,22 @@ void StepPropertyEditor::rebuildPluginInputEditors()
     m_pluginInputEditors.clear();
 
     const auto* function = currentPluginFunction();
-    const bool action = !m_isGroup &&
-        m_kindCombo->currentData().toString() == QStringLiteral("action");
-    if (!function || function->inputs.isEmpty() || !action) {
+    const auto kind = m_kindCombo->currentData().toString();
+    const bool moduleCall = !m_isGroup &&
+        (kind == QStringLiteral("action") ||
+         kind == QStringLiteral("cleanup"));
+    if (!function || function->inputs.isEmpty() || !moduleCall) {
         m_pluginInputsGroup->hide();
         return;
     }
+    const bool canFunction = std::any_of(
+        m_plugins.cbegin(), m_plugins.cend(), [function](const auto& plugin) {
+            return plugin.category.compare(QStringLiteral("CAN"), Qt::CaseInsensitive) == 0 &&
+                   std::any_of(plugin.functions.cbegin(), plugin.functions.cend(),
+                               [function](const auto& candidate) {
+                                   return &candidate == function;
+                               });
+        });
 
     QJsonObject currentInputs;
     QString ignoredError;
@@ -1085,31 +1606,37 @@ void StepPropertyEditor::rebuildPluginInputEditors()
     const auto deviceId = currentInputs.value(QStringLiteral("deviceId")).toString();
     const auto stationInputs = m_deviceConfigurations.value(deviceId);
     m_pluginInputsGroup->setTitle(logicalDeviceConnection
-        ? tr("Connection Parameters - Station Config")
-        : tr("Plugin Parameters - %1").arg(function->name));
+        ? tr("Connection Settings - Station Config")
+        : tr("Arguments - %1").arg(function->name));
 
     for (const auto& definition : function->inputs) {
         QVariant value;
         const auto current = currentInputs.value(definition.key);
-        const bool inheritedFromStation = logicalDeviceConnection && current.isUndefined();
-        if (!current.isUndefined()) {
-            value = current.toVariant();
-        } else if (inheritedFromStation && stationInputs.contains(definition.key)) {
+        const bool inheritedFromStation = logicalDeviceConnection;
+        if (inheritedFromStation && stationInputs.contains(definition.key)) {
             value = stationInputs.value(definition.key).toVariant();
+        } else if (!inheritedFromStation && !current.isUndefined()) {
+            value = current.toVariant();
         } else if (definition.defaultValue.isValid()) {
             value = definition.defaultValue;
         }
 
         QWidget* editor = nullptr;
         if (definition.type == PluginParameterType::Boolean) {
-            auto* check = new QCheckBox(m_pluginInputsGroup);
-            check->setTristate(!definition.required && !definition.defaultValue.isValid());
-            if (!value.isValid() && check->isTristate()) {
-                check->setCheckState(Qt::PartiallyChecked);
+            if (!definition.required && !definition.defaultValue.isValid()) {
+                auto* combo = new QComboBox(m_pluginInputsGroup);
+                combo->addItem(tr("Not set"), QVariant{});
+                combo->addItem(tr("ON"), true);
+                combo->addItem(tr("OFF"), false);
+                const int selected = value.isValid()
+                    ? combo->findData(value.toBool()) : 0;
+                combo->setCurrentIndex(selected >= 0 ? selected : 0);
+                editor = combo;
             } else {
-                check->setChecked(value.toBool());
+                auto* toggle = new OnOffSwitch(m_pluginInputsGroup);
+                toggle->setChecked(value.toBool());
+                editor = toggle;
             }
-            editor = check;
         } else if (definition.type == PluginParameterType::Enumeration) {
             auto* combo = new QComboBox(m_pluginInputsGroup);
             if (!value.isValid()) {
@@ -1130,6 +1657,14 @@ void StepPropertyEditor::rebuildPluginInputEditors()
             }
             if (definition.type == PluginParameterType::HexBytes) {
                 edit->setPlaceholderText(tr("Example: 01 02 03 04"));
+            } else if (canFunction && definition.key == QStringLiteral("id")) {
+                edit->setPlaceholderText(
+                    tr("Standard: 0x000~0x7FF; Extended: 0x00000000~0x1FFFFFFF"));
+            } else if (canFunction && definition.key == QStringLiteral("filterId")) {
+                edit->setPlaceholderText(tr("0x00000000~0x1FFFFFFF"));
+            } else if (canFunction && definition.key == QStringLiteral("filterMask")) {
+                edit->setPlaceholderText(
+                    tr("0x00000000=Any; 0x7FF=Std Exact; 0x1FFFFFFF=Ext Exact"));
             } else if (definition.type == PluginParameterType::Integer ||
                        definition.type == PluginParameterType::Number) {
                 QString hint = definition.type == PluginParameterType::Integer
@@ -1251,6 +1786,63 @@ void StepPropertyEditor::rebuildExpressionMenu(QMenu* menu, QLineEdit* editor)
     }
 }
 
+void StepPropertyEditor::rebuildPromptCloseStepChoices(const QString& selectedPath)
+{
+    if (!m_promptCloseOnStepCombo) {
+        return;
+    }
+    const auto requested = selectedPath.trimmed();
+    m_promptCloseOnStepCombo->clear();
+    m_promptCloseOnStepCombo->addItem(
+        tr("Next enabled step (default)"), QString{});
+
+    const auto candidates = m_document && !m_previewing
+        ? buildFollowingStepReferenceCandidates(m_document->rootObject(), m_path)
+        : QVector<FollowingStepReferenceCandidate>{};
+    for (const auto& candidate : candidates) {
+        const auto label = candidate.stepName.trimmed().isEmpty()
+            ? candidate.stepPath
+            : QStringLiteral("%1 - %2").arg(candidate.stepPath, candidate.stepName);
+        m_promptCloseOnStepCombo->addItem(label, candidate.stepPath);
+        const int index = m_promptCloseOnStepCombo->count() - 1;
+        m_promptCloseOnStepCombo->setItemData(
+            index,
+            candidate.kind.isEmpty()
+                ? tr("Close after this step finishes")
+                : tr("%1 step; close after it finishes").arg(candidate.kind),
+            Qt::ToolTipRole);
+    }
+
+    int selectedIndex = requested.isEmpty()
+        ? 0
+        : m_promptCloseOnStepCombo->findData(requested);
+    if (selectedIndex < 0) {
+        m_promptCloseOnStepCombo->addItem(
+            tr("%1 (not available in the later flow)").arg(requested), requested);
+        selectedIndex = m_promptCloseOnStepCombo->count() - 1;
+        m_promptCloseOnStepCombo->setItemData(
+            selectedIndex,
+            tr("This reference will fail compilation until the target is restored"),
+            Qt::ToolTipRole);
+    }
+    m_promptCloseOnStepCombo->setCurrentIndex(selectedIndex);
+}
+
+QString StepPropertyEditor::selectedPromptCloseStep() const
+{
+    if (!m_promptCloseOnStepCombo) {
+        return {};
+    }
+    const int index = m_promptCloseOnStepCombo->currentIndex();
+    const auto data = m_promptCloseOnStepCombo->currentData();
+    return index >= 0 &&
+           m_promptCloseOnStepCombo->currentText() ==
+               m_promptCloseOnStepCombo->itemText(index) &&
+           data.isValid()
+        ? data.toString().trimmed()
+        : m_promptCloseOnStepCombo->currentText().trimmed();
+}
+
 bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
                                                 QString& errorMessage) const
 {
@@ -1263,19 +1855,12 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
     for (const auto& item : m_pluginInputEditors) {
         const auto& definition = item.definition;
         if (item.inheritedFromStation) {
+            inputs.remove(definition.key);
             continue;
         }
-        if (const auto* check = qobject_cast<const QCheckBox*>(item.widget)) {
-            if (check->isTristate() &&
-                check->checkState() == Qt::PartiallyChecked) {
-                if (definition.required) {
-                    errorMessage = tr("%1 is required").arg(definition.name);
-                    return false;
-                }
-                inputs.remove(definition.key);
-            } else {
-                inputs.insert(definition.key, check->isChecked());
-            }
+        if (const auto* toggle =
+                qobject_cast<const QAbstractButton*>(item.widget)) {
+            inputs.insert(definition.key, toggle->isChecked());
             continue;
         }
         if (const auto* combo = qobject_cast<const QComboBox*>(item.widget)) {
@@ -1348,6 +1933,63 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
             inputs.insert(definition.key, text);
         }
     }
+
+    const auto* function = currentPluginFunction();
+    if (!function) {
+        return true;
+    }
+    const bool canFunction = std::any_of(
+        m_plugins.cbegin(), m_plugins.cend(), [function](const auto& plugin) {
+            return plugin.category.compare(QStringLiteral("CAN"), Qt::CaseInsensitive) == 0 &&
+                   std::any_of(plugin.functions.cbegin(), plugin.functions.cend(),
+                               [function](const auto& candidate) {
+                                   return &candidate == function;
+                               });
+        });
+    if (!canFunction) {
+        return true;
+    }
+    const auto hasInputDefinition = [function](const QString& key) {
+        return std::any_of(function->inputs.cbegin(), function->inputs.cend(),
+                           [&key](const auto& definition) {
+                               return definition.key == key;
+                           });
+    };
+    const auto validateCanValue = [&](const QString& key,
+                                      quint32 maximum,
+                                      const QString& rangeText) {
+        if (!hasInputDefinition(key) || !inputs.contains(key)) {
+            return true;
+        }
+        const auto value = inputs.value(key);
+        if (value.isString() && isExpression(value.toString())) {
+            return true;
+        }
+        quint32 parsed = 0;
+        if (!parseCanIdentifier(value, parsed) || parsed > maximum) {
+            const auto displayName = key == QStringLiteral("id")
+                ? tr("CAN ID")
+                : (key == QStringLiteral("filterId") ? tr("Filter ID")
+                                                       : tr("Filter Mask"));
+            errorMessage = tr("%1 must be in range %2").arg(displayName, rangeText);
+            return false;
+        }
+        return true;
+    };
+
+    const bool extended = inputs.value(QStringLiteral("extended")).toBool(false);
+    if (!validateCanValue(QStringLiteral("id"),
+                          extended ? 0x1FFFFFFF : 0x7FF,
+                          extended ? QStringLiteral("0x00000000~0x1FFFFFFF")
+                                   : QStringLiteral("0x000~0x7FF (Extended Frame is OFF)")) ||
+        !validateCanValue(QStringLiteral("filterId"),
+                          0x1FFFFFFF,
+                          QStringLiteral("0x00000000~0x1FFFFFFF")) ||
+        !validateCanValue(QStringLiteral("filterMask"),
+                          0x1FFFFFFF,
+                          QStringLiteral("0x00000000~0x1FFFFFFF"))) {
+        return false;
+    }
     return true;
 }
 
@@ -1366,11 +2008,21 @@ bool StepPropertyEditor::commitPendingChanges()
 
     QJsonObject inputs;
     QJsonObject parameters;
+    QJsonObject errorPolicy;
     QJsonArray resources;
     QString error;
     if (!m_isGroup && !parseObjectText(m_inputsEdit->toPlainText(), inputs, error)) {
         showError(tr("Inputs: %1").arg(error));
         return false;
+    }
+    if (!m_isGroup &&
+        m_moduleIdEdit->text().trimmed() == QStringLiteral("device")) {
+        const auto deviceId = m_deviceIdCombo->currentData().toString();
+        if (deviceId.isEmpty()) {
+            showError(tr("Select a compatible target device"));
+            return false;
+        }
+        inputs.insert(QStringLiteral("deviceId"), deviceId);
     }
     if (!m_isGroup && !mergePluginInputValues(inputs, error)) {
         showError(error);
@@ -1380,16 +2032,27 @@ bool StepPropertyEditor::commitPendingChanges()
         showError(tr("Parameters: %1").arg(error));
         return false;
     }
+    if (!m_isGroup &&
+        !parseObjectText(m_errorPolicyEdit->toPlainText(), errorPolicy, error)) {
+        showError(tr("Legacy error policy: %1").arg(error));
+        return false;
+    }
     if (!m_isGroup && !parseArrayText(m_resourcesEdit->toPlainText(), resources, error)) {
         showError(tr("Resources: %1").arg(error));
         return false;
     }
 
     auto updated = m_sourceObject;
-    updated.insert("id", m_idEdit->text().trimmed());
+    const bool standardGroup = m_isGroup && m_document &&
+                               m_document->isStandardGroup(m_path);
+    if (!standardGroup) {
+        updated.insert("id", m_idEdit->text().trimmed());
+    }
     insertOrRemove(updated, "name", m_nameEdit->text());
-    updated.insert("kind", m_kindCombo->currentData().toString());
-    updated.remove("type");
+    if (!standardGroup) {
+        updated.insert("kind", m_kindCombo->currentData().toString());
+        updated.remove("type");
+    }
 
     if (!m_isGroup) {
         updated.insert("enabled", m_enabledCheck->isChecked());
@@ -1407,13 +2070,13 @@ bool StepPropertyEditor::commitPendingChanges()
             parameters.remove("ms");
             updated.insert("ms", m_waitMsSpin->value());
         }
-        if (kind == "limit") {
+        if (kind == "limit" || kind == "break") {
             const auto actual = m_limitActualEdit->text().trimmed();
             if (actual.isEmpty()) {
-                inputs.remove("actual");
-            } else {
-                inputs.insert("actual", actual);
+                showError(tr("Value to test is required"));
+                return false;
             }
+            inputs.insert("actual", actual);
             const auto mode = m_limitComparisonCombo->currentData().toString();
             const bool betweenTolerance = mode == QStringLiteral("betweenTolerance");
             const bool betweenLimits = mode == QStringLiteral("betweenLimits");
@@ -1464,14 +2127,66 @@ bool StepPropertyEditor::commitPendingChanges()
             } else {
                 parameters.remove(QStringLiteral("inclusive"));
             }
-            insertOrRemove(parameters, QStringLiteral("measurementName"),
-                           m_limitMeasurementNameEdit->text());
-            insertOrRemove(parameters, QStringLiteral("unit"),
-                           m_limitUnitEdit->text());
+            if (kind == "limit") {
+                insertOrRemove(parameters, QStringLiteral("measurementName"),
+                               m_limitMeasurementNameEdit->text());
+                insertOrRemove(parameters, QStringLiteral("unit"),
+                               m_limitUnitEdit->text());
+            } else {
+                parameters.remove(QStringLiteral("measurementName"));
+                parameters.remove(QStringLiteral("unit"));
+            }
+        }
+        if (kind == "counter") {
+            insertOrRemoveScalar(inputs, QStringLiteral("condition"),
+                                 m_counterConditionEdit->text());
+            parameters.insert(QStringLiteral("mode"),
+                              m_counterModeCombo->currentData().toString());
+            parameters.insert(QStringLiteral("start"), m_counterStartSpin->value());
+            parameters.insert(QStringLiteral("increment"),
+                              m_counterIncrementSpin->value());
+        }
+        if (kind == "aggregate") {
+            if (m_aggregateValueEdit->text().trimmed().isEmpty()) {
+                showError(tr("Aggregate value is required"));
+                return false;
+            }
+            insertOrRemoveScalar(inputs, QStringLiteral("value"),
+                                 m_aggregateValueEdit->text());
+        }
+        if (kind == "operatorPrompt") {
+            const auto message = m_promptMessageEdit->toPlainText().trimmed();
+            if (message.isEmpty()) {
+                showError(tr("Operator prompt message is required"));
+                return false;
+            }
+            const auto mode = m_promptModeCombo->currentData().toString();
+            auto prompt = updated.value("prompt").toObject();
+            prompt.insert("mode", mode);
+            insertOrRemove(prompt, "title", m_promptTitleEdit->text());
+            prompt.insert("message", message);
+            if (mode == QStringLiteral("confirm")) {
+                const auto buttonText = m_promptConfirmTextEdit->text().trimmed();
+                if (buttonText.isEmpty()) {
+                    showError(tr("Confirmation button text is required"));
+                    return false;
+                }
+                prompt.insert("confirmText", buttonText);
+                prompt.remove("closeOnStep");
+            } else {
+                prompt.remove("confirmText");
+                insertOrRemove(prompt, "closeOnStep", selectedPromptCloseStep());
+            }
+            prompt.insert("timeoutMs", m_promptTimeoutSpin->value());
+            updated.insert("prompt", prompt);
+        } else {
+            updated.remove("prompt");
         }
         if (inputs.isEmpty()) updated.remove("inputs"); else updated.insert("inputs", inputs);
         if (parameters.isEmpty()) updated.remove("parameters"); else updated.insert("parameters", parameters);
         if (resources.isEmpty()) updated.remove("resources"); else updated.insert("resources", resources);
+        if (errorPolicy.isEmpty()) updated.remove("errorPolicy");
+        else updated.insert("errorPolicy", errorPolicy);
 
         auto retry = updated.value("retry").toObject();
         retry.insert("maxAttempts", m_maxAttemptsSpin->value());
@@ -1484,21 +2199,27 @@ bool StepPropertyEditor::commitPendingChanges()
         updated.insert("timeout", timeout);
         updated.remove("timeoutMs");
 
-        auto policy = updated.value("errorPolicy").toObject();
-        policy.insert("onFail", m_onFailCombo->currentData().toString());
-        policy.insert("onError", m_onErrorCombo->currentData().toString());
-        policy.insert("onTimeout", m_onTimeoutCombo->currentData().toString());
-        insertOrRemove(policy, "cleanupRegionId", m_cleanupRegionEdit->text());
-        policy.insert("stopUutOnFailure", m_stopUutCheck->isChecked());
-        updated.insert("errorPolicy", policy);
-
         if (kind == "loop") {
-            auto loop = updated.value("loop").toObject();
-            loop.insert("type", "for");
-            loop.insert("variable", m_loopVariableEdit->text().trimmed());
-            loop.insert("from", m_loopFromSpin->value());
-            loop.insert("to", m_loopToSpin->value());
-            loop.insert("step", m_loopStepSpin->value());
+            QJsonObject loop;
+            const auto loopType = m_loopTypeCombo->currentData().toString();
+            loop.insert("type", loopType);
+            if (loopType == QStringLiteral("while")) {
+                if (m_conditionMaxIterationsSpin->value() <= 0 &&
+                    m_conditionTimeoutSpin->value() <= 0) {
+                    showError(tr("While Loop requires Maximum iterations or Overall timeout"));
+                    return false;
+                }
+                loop.insert("intervalMs", m_conditionIntervalSpin->value());
+                loop.insert("maxIterations", m_conditionMaxIterationsSpin->value());
+                loop.insert("timeoutMs", m_conditionTimeoutSpin->value());
+                loop.insert("iterationErrorPolicy",
+                            m_conditionIterationErrorCombo->currentData().toString());
+            } else {
+                loop.insert("variable", m_loopVariableEdit->text().trimmed());
+                loop.insert("from", m_loopFromSpin->value());
+                loop.insert("to", m_loopToSpin->value());
+                loop.insert("step", m_loopStepSpin->value());
+            }
             updated.insert("loop", loop);
         }
         if (kind == "barrier") {

@@ -35,6 +35,10 @@ enum class ExecNodeKind {
     Loop,
     TestItem,
     Limit,
+    Break,
+    Counter,
+    Aggregate,
+    OperatorPrompt,
     Statement,
     SequenceCall
 };
@@ -172,6 +176,24 @@ struct ForLoopSpec {
     int step = 1;
 };
 
+enum class LoopType {
+    For,
+    While
+};
+
+enum class WhileIterationErrorPolicy {
+    AbortLoop,
+    ContinueLoop
+};
+
+struct WhileLoopSpec {
+    WhileIterationErrorPolicy iterationErrorPolicy =
+        WhileIterationErrorPolicy::AbortLoop;
+    int intervalMs = 0;
+    int maxIterations = 100;
+    int timeoutMs = 60000;
+};
+
 struct LoopRegion {
     LoopId id;
     NodeId controllerNodeId;
@@ -179,7 +201,9 @@ struct LoopRegion {
     QVector<NodeId> childNodeIds;
     QVector<NodeId> entryNodes;
     QVector<NodeId> exitNodes;
+    LoopType type = LoopType::For;
     ForLoopSpec forLoop;
+    WhileLoopSpec whileLoop;
 };
 
 struct TestItemRegion {

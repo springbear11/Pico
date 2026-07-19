@@ -1,5 +1,6 @@
 #pragma once
 
+#include "PluginCatalog.h"
 #include "StationDocument.h"
 
 #include <QAbstractTableModel>
@@ -24,6 +25,15 @@ public:
         ColumnCount
     };
 
+    enum Role {
+        DocumentRowRole = Qt::UserRole + 1,
+        DocumentRowsRole,
+        DeviceGroupRole,
+        DeviceTypeRole,
+        DriverIdRole,
+        LogicalBaseIdRole
+    };
+
     explicit StationDeviceModel(StationDocument* document,
                                 QObject* parent = nullptr);
 
@@ -39,7 +49,17 @@ public:
                         Qt::Orientation orientation,
                         int role = Qt::DisplayRole) const override;
 
-    QJsonObject deviceAt(int row) const;
+    void setPluginRegistry(QVector<PluginManifest> plugins);
+    QJsonObject deviceAt(const QModelIndex& index) const;
+    int documentRow(const QModelIndex& index) const;
+    QVector<int> documentRows(const QModelIndex& index) const;
+    QModelIndex indexForDocumentRow(int documentRow) const;
+    bool isDeviceGroup(const QModelIndex& index) const;
+    QString logicalId(const QModelIndex& index) const;
+    QString logicalBaseId(const QModelIndex& index) const;
+    QString generatedLogicalId(const QModelIndex& index,
+                               int documentRow) const;
+    QVector<PluginManifest> pluginsForType(const QString& deviceType) const;
     void markConnectionTesting(const QString& deviceId);
     void setConnectionTestResult(const DeviceConnectionTestResult& result);
     void clearConnectionStatus(const QString& deviceId = {});
@@ -48,7 +68,19 @@ private slots:
     void rebuild();
 
 private:
+    struct DeviceRow {
+        QVector<int> documentRows;
+        QString deviceType;
+        QString baseId;
+    };
+
+    const DeviceRow* rowAt(const QModelIndex& index) const;
+    QString pluginDisplayName(const QString& driverId) const;
+    void rebuildRows();
+
     QPointer<StationDocument> m_document;
+    QVector<PluginManifest> m_plugins;
+    QVector<DeviceRow> m_rows;
     QHash<QString, QString> m_connectionStates;
     QHash<QString, QString> m_connectionDetails;
 };

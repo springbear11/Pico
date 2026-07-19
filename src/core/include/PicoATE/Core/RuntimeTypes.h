@@ -106,6 +106,7 @@ struct NodeActivation {
     NodeId nodeId;
     ActivationState state = ActivationState::Created;
     QVector<NodeAttempt> attempts;
+    int retryAttemptBase = 0;
     VariableSnapshot preNodeSnapshot;
     VariableSnapshot postNodeSnapshot;
     QDateTime createdAt = QDateTime::currentDateTimeUtc();

@@ -19,12 +19,26 @@ QString errorActionName(ErrorAction action)
     return "StopUut";
 }
 
+ErrorPolicyEngine::ErrorPolicyEngine(FailureHandlingMode failureHandling)
+    : m_failureHandling(failureHandling)
+{
+}
+
+FailureHandlingMode ErrorPolicyEngine::failureHandling() const
+{
+    return m_failureHandling;
+}
+
 ErrorDecision ErrorPolicyEngine::decide(const ExecNode& node,
                                         const NodeResult& result,
                                         int completedAttempts) const
 {
     if (result.outcome == NodeOutcome::Passed || result.outcome == NodeOutcome::Skipped) {
         return {ErrorAction::Continue, {}, CleanupReason::NormalCompletion, "node passed"};
+    }
+
+    if (result.outcome == NodeOutcome::Cancelled) {
+        return {ErrorAction::StopUut, {}, CleanupReason::UserStop, "node cancelled"};
     }
 
     if (completedAttempts < node.retry.maxAttempts) {
@@ -41,9 +55,24 @@ ErrorDecision ErrorPolicyEngine::decide(const ExecNode& node,
         configuredAction = node.errorPolicy.onError;
     }
 
+    if (m_failureHandling == FailureHandlingMode::Stop) {
+        configuredAction = ErrorAction::StopUut;
+    } else if (m_failureHandling == FailureHandlingMode::Continue) {
+        configuredAction = ErrorAction::Continue;
+    }
+
     if (configuredAction == ErrorAction::Retry &&
         completedAttempts < node.retry.maxAttempts) {
         return {ErrorAction::Retry, {}, cleanupReason, "retry requested by policy"};
+    }
+
+    if (configuredAction == ErrorAction::Retry) {
+        return {node.errorPolicy.stopUutOnFailure
+                    ? ErrorAction::StopUut
+                    : ErrorAction::Continue,
+                {},
+                cleanupReason,
+                "retry attempts exhausted"};
     }
 
     if (configuredAction == ErrorAction::RunCleanup ||
@@ -57,6 +86,10 @@ ErrorDecision ErrorPolicyEngine::decide(const ExecNode& node,
 
     if (configuredAction == ErrorAction::Continue) {
         return {ErrorAction::Continue, {}, cleanupReason, "continue by policy"};
+    }
+
+    if (m_failureHandling == FailureHandlingMode::Stop) {
+        return {ErrorAction::StopUut, {}, cleanupReason, "stop by station policy"};
     }
 
     return {node.errorPolicy.stopUutOnFailure ? configuredAction : ErrorAction::Continue,

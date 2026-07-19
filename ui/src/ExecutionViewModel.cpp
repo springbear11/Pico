@@ -43,6 +43,8 @@ void ExecutionViewModel::shutdown()
         m_stopToken->requestStop(PicoATE::Core::StopMode::Abort);
     }
     if (m_executionControl) {
+        m_executionControl->operatorPrompts().cancelAll();
+        m_executionControl->operatorPrompts().setResponderAvailable(false);
         m_executionControl->resume();
     }
     if (m_worker) {
@@ -296,13 +298,15 @@ void ExecutionViewModel::startRun(RunRequest request)
     m_stopToken = std::make_shared<PicoATE::Core::StopToken>();
     m_executionControl = std::make_shared<PicoATE::Core::ExecutionControl>();
     m_executionControl->setBreakpoints(m_breakpoints);
+    m_executionControl->operatorPrompts().setResponderAvailable(true);
     m_eventSink->clear();
     m_eventFlushTimer->start();
     m_diagnostics.clear();
     m_report = {};
     clearDebugSnapshot();
     emit diagnosticsChanged();
-    emit reportChanged();
+    // The windows already display the compile-time preview tree. Keep that
+    // stable until the final report arrives; runtime events only update state.
     setState(UiRunState::Starting);
 
     QPointer<ExecutionWorker> worker(m_worker);
@@ -363,6 +367,7 @@ void ExecutionViewModel::stop(PicoATE::Core::StopMode mode)
 
     m_stopToken->requestStop(mode);
     if (m_executionControl) {
+        m_executionControl->operatorPrompts().cancelAll();
         m_executionControl->resume();
     }
     clearDebugSnapshot();
@@ -376,6 +381,14 @@ void ExecutionViewModel::setBreakpoints(
     if (m_executionControl) {
         m_executionControl->setBreakpoints(m_breakpoints);
     }
+}
+
+bool ExecutionViewModel::respondToOperatorPrompt(
+    const QString& instanceId,
+    PicoATE::Core::OperatorPromptResponse response)
+{
+    return m_executionControl &&
+           m_executionControl->operatorPrompts().respond(instanceId, response);
 }
 
 void ExecutionViewModel::testDeviceConnection(const QString& deviceId, int timeoutMs)
@@ -439,6 +452,10 @@ void ExecutionViewModel::handleRunFinished(const RunServiceResult& result)
     flushRuntimeEvents();
     m_eventFlushTimer->stop();
     m_stopToken.reset();
+    if (m_executionControl) {
+        m_executionControl->operatorPrompts().cancelAll();
+        m_executionControl->operatorPrompts().setResponderAvailable(false);
+    }
     m_executionControl.reset();
     m_diagnostics = result.diagnostics;
     m_report = result.report;

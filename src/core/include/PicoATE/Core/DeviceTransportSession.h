@@ -13,8 +13,9 @@ public:
     DeviceId deviceId() const override;
     QString deviceType() const override;
     DeviceConnectionState state() const override;
-    bool connect(QString& errorMessage) override;
-    void disconnect() override;
+    bool connect(QString& errorMessage,
+                 const ModuleExecutionContext* context = nullptr) override;
+    void disconnect(const ModuleExecutionContext* context = nullptr) override;
     QVariantMap metadata() const override;
     bool isHealthy(QString& errorMessage) const override;
 

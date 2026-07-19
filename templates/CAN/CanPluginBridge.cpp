@@ -130,6 +130,30 @@ std::string dataText(const std::vector<std::uint8_t>& data)
     return stream.str();
 }
 
+std::string identifierText(std::uint32_t value, bool extended)
+{
+    std::ostringstream stream;
+    stream << "0x" << std::uppercase << std::hex << std::setfill('0')
+           << std::setw(extended ? 8 : 3) << value;
+    return stream.str();
+}
+
+OpenOptions optionsFromInputs(const Plugin::Json& input)
+{
+    OpenOptions options;
+    options.libraryPath = Plugin::stringValue(input, "libraryPath");
+    options.deviceType = Plugin::numberValue(input, "deviceType", 0);
+    options.deviceIndex = Plugin::numberValue(input, "deviceIndex", 0);
+    options.channelIndex = Plugin::numberValue(input, "channelIndex", 0);
+    options.arbitrationBitrate = Plugin::numberValue(input, "bitrate", 500000);
+    options.dataBitrate = Plugin::numberValue(input, "dataBitrate", 2000000);
+    options.canFd = Plugin::boolValue(input, "canFd", false);
+    options.listenOnly = Plugin::boolValue(input, "listenOnly", false);
+    options.selfTest = Plugin::boolValue(input, "selfTest", false);
+    options.vendorOptions = input;
+    return options;
+}
+
 bool frameFromInputs(const Plugin::Json& object, Frame& frame, std::string& errorMessage)
 {
     const auto id = object.find("id");
@@ -142,6 +166,10 @@ bool frameFromInputs(const Plugin::Json& object, Frame& frame, std::string& erro
         return false;
     }
     frame.extended = Plugin::boolValue(object, "extended", frame.id > 0x7FF);
+    if (!frame.extended && frame.id > 0x7FF) {
+        errorMessage = "standard CAN id must be in range 0x000..0x7FF; enable extended for 0x00000000..0x1FFFFFFF";
+        return false;
+    }
     frame.remote = Plugin::boolValue(object, "remote", false);
     frame.canFd = Plugin::boolValue(object, "canFd", false);
     frame.bitrateSwitch = Plugin::boolValue(object, "bitrateSwitch", false);
@@ -155,11 +183,8 @@ bool frameFromInputs(const Plugin::Json& object, Frame& frame, std::string& erro
 
 Plugin::Json frameToJson(const Frame& frame)
 {
-    std::ostringstream identifier;
-    identifier << "0x" << std::uppercase << std::hex << std::setfill('0')
-               << std::setw(frame.extended ? 8 : 3) << frame.id;
     return {
-        {"id", identifier.str()},
+        {"id", identifierText(frame.id, frame.extended)},
         {"idNumeric", frame.id},
         {"data", frame.data},
         {"dataHex", dataText(frame.data)},
@@ -172,16 +197,30 @@ Plugin::Json frameToJson(const Frame& frame)
     };
 }
 
-Plugin::Json receiveResponse(const Frame& frame)
+Plugin::Json receiveResponse(const Frame& frame,
+                             std::uint32_t filterId,
+                             std::uint32_t filterMask)
 {
     auto outputs = frameToJson(frame);
+    const auto expectedId = identifierText(filterId, filterId > 0x7FF);
+    const auto expectedMask = identifierText(filterMask, filterMask > 0x7FF);
+    const auto expectedFilter = "ID=" + expectedId + " | MASK=" + expectedMask;
+    const auto actual = "ID=" + outputs["id"].get<std::string>() +
+        " | MASK=" + expectedMask +
+        " | DATA=" + dataText(frame.data) +
+        " | DLC=" + std::to_string(frame.data.size());
     const Plugin::Json measurement{
-        {"name", "CAN_RX_DLC"},
-        {"value", frame.data.size()},
-        {"unit", "byte"},
+        {"name", "CAN_RX_FRAME"},
+        {"value", actual},
         {"rawValue", dataText(frame.data)},
         {"status", "Passed"},
         {"frameId", outputs["id"]},
+        {"filterId", expectedId},
+        {"filterMask", expectedMask},
+        {"displayLower", expectedFilter},
+        {"displayUpper", expectedFilter},
+        {"dataHex", outputs["dataHex"]},
+        {"dlc", outputs["dlc"]},
     };
     return Plugin::response("Passed", std::move(outputs), measurement);
 }
@@ -190,20 +229,10 @@ Plugin::Json execute(const Plugin::Json& request)
 {
     const auto function = lower(Plugin::stringValue(request, "function"));
     const auto& input = Plugin::inputs(request);
+    const auto options = optionsFromInputs(input);
     auto& can = adapter();
 
     if (function == "open" || function == "connectcan") {
-        OpenOptions options;
-        options.libraryPath = Plugin::stringValue(input, "libraryPath");
-        options.deviceType = Plugin::numberValue(input, "deviceType", 0);
-        options.deviceIndex = Plugin::numberValue(input, "deviceIndex", 0);
-        options.channelIndex = Plugin::numberValue(input, "channelIndex", 0);
-        options.arbitrationBitrate = Plugin::numberValue(input, "bitrate", 500000);
-        options.dataBitrate = Plugin::numberValue(input, "dataBitrate", 2000000);
-        options.canFd = Plugin::boolValue(input, "canFd", false);
-        options.listenOnly = Plugin::boolValue(input, "listenOnly", false);
-        options.selfTest = Plugin::boolValue(input, "selfTest", false);
-        options.vendorOptions = input;
         PicoATE_Log("CAN_OPEN type={} device={} channel={} bitrate={} mode={}",
                     options.deviceType,
                     options.deviceIndex,
@@ -215,28 +244,36 @@ Plugin::Json execute(const Plugin::Json& request)
             PicoATE_Log("CAN_OPEN failed: {}", result.errorMessage);
             return Plugin::errorResponse(result.errorCode, result.errorMessage);
         }
-        PicoATE_Log("CAN_OPEN passed: {}", can.deviceDescription());
+        PicoATE_Log("CAN_OPEN passed: {}", can.deviceDescription(options));
         return Plugin::response("Passed", {
             {"connected", true},
-            {"device", can.deviceDescription()},
+            {"device", can.deviceDescription(options)},
         });
     }
 
     if (function == "close" || function == "disconnect") {
-        PicoATE_Log("CAN_CLOSE begin");
-        can.close();
-        PicoATE_Log("CAN_CLOSE passed");
+        PicoATE_Log("CAN_CLOSE device={} channel={} begin",
+                    options.deviceIndex,
+                    options.channelIndex);
+        const auto result = can.close(options);
+        if (!result.success) {
+            PicoATE_Log("CAN_CLOSE failed: {}", result.errorMessage);
+            return Plugin::errorResponse(result.errorCode, result.errorMessage);
+        }
+        PicoATE_Log("CAN_CLOSE device={} channel={} passed",
+                    options.deviceIndex,
+                    options.channelIndex);
         return Plugin::response("Passed", {{"connected", false}});
     }
 
     if (function == "status") {
         return Plugin::response("Passed", {
-            {"connected", can.isOpen()},
-            {"device", can.deviceDescription()},
+            {"connected", can.isOpen(options)},
+            {"device", can.deviceDescription(options)},
         });
     }
 
-    if (!can.isOpen()) {
+    if (!can.isOpen(options)) {
         return Plugin::errorResponse("CanNotOpen", "Call open before CAN I/O");
     }
 
@@ -247,7 +284,7 @@ Plugin::Json execute(const Plugin::Json& request)
             return Plugin::errorResponse("InvalidCanFrame", message);
         }
         PicoATE_Log("CAN_SEND id=0x{:X} data={}", frame.id, dataText(frame.data));
-        const auto result = can.transmit(frame);
+        const auto result = can.transmit(options, frame);
         if (!result.success) {
             PicoATE_Log("CAN_SEND failed: {}", result.errorMessage);
             return Plugin::errorResponse(result.errorCode, result.errorMessage);
@@ -270,7 +307,7 @@ Plugin::Json execute(const Plugin::Json& request)
                     filterId,
                     filterMask,
                     timeoutMs);
-        const auto result = can.receive(filterId, filterMask, timeoutMs);
+        const auto result = can.receive(options, filterId, filterMask, timeoutMs);
         if (result.status == ReceiveStatus::Timeout) {
             PicoATE_Log("CAN_RECV timeout");
             return Plugin::response("Timeout", {}, {}, "CanReceiveTimeout", "No matching CAN frame received");
@@ -280,7 +317,7 @@ Plugin::Json execute(const Plugin::Json& request)
             return Plugin::errorResponse(result.errorCode, result.errorMessage);
         }
         PicoATE_Log("CAN_RECV id=0x{:X} data={}", result.frame.id, dataText(result.frame.data));
-        return receiveResponse(result.frame);
+        return receiveResponse(result.frame, filterId, filterMask);
     }
 
     if (function == "requestresponse") {
@@ -294,19 +331,22 @@ Plugin::Json execute(const Plugin::Json& request)
         PicoATE_Log("CAN_REQUEST send id=0x{:X} data={}",
                     transmitFrame.id,
                     dataText(transmitFrame.data));
-        const auto transmitResult = can.transmit(transmitFrame);
+        const auto transmitResult = can.transmit(options, transmitFrame);
         if (!transmitResult.success) {
             return Plugin::errorResponse(transmitResult.errorCode, transmitResult.errorMessage);
         }
         std::uint32_t filterId = transmitFrame.id;
         std::uint32_t filterMask = transmitFrame.extended ? 0x1FFFFFFF : 0x7FF;
-        if (const auto value = input.find("rxId"); value != input.end()) {
-            readUnsigned(*value, filterId);
+        if (const auto value = input.find("rxId"); value != input.end() &&
+            !readUnsigned(*value, filterId)) {
+            return Plugin::errorResponse("InvalidCanFilter", "rxId must be in range 0x00000000..0x1FFFFFFF");
         }
-        if (const auto value = input.find("rxMask"); value != input.end()) {
-            readUnsigned(*value, filterMask);
+        if (const auto value = input.find("rxMask"); value != input.end() &&
+            !readUnsigned(*value, filterMask)) {
+            return Plugin::errorResponse("InvalidCanFilter", "rxMask must be in range 0x00000000..0x1FFFFFFF");
         }
-        const auto result = can.receive(filterId,
+        const auto result = can.receive(options,
+                                        filterId,
                                         filterMask,
                                         Plugin::numberValue(input, "timeoutMs", 1000));
         if (result.status == ReceiveStatus::Timeout) {
@@ -318,7 +358,7 @@ Plugin::Json execute(const Plugin::Json& request)
         PicoATE_Log("CAN_REQUEST receive id=0x{:X} data={}",
                     result.frame.id,
                     dataText(result.frame.data));
-        return receiveResponse(result.frame);
+        return receiveResponse(result.frame, filterId, filterMask);
     }
 
     return Plugin::errorResponse(

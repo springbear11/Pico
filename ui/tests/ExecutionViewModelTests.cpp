@@ -5,6 +5,7 @@
 #include "CoreExecutionService.h"
 #include "ReportExporter.h"
 #include "ReportHistoryStore.h"
+#include "RunArtifactWriter.h"
 #include "PluginCatalog.h"
 #include "PluginFunctionModel.h"
 #include "RunnerModels.h"
@@ -26,6 +27,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
+#include <QFont>
 #include <QJsonDocument>
 #include <QMimeData>
 #include <QSortFilterProxyModel>
@@ -310,6 +312,7 @@ class ExecutionViewModelTests : public QObject
 private slots:
     void sourceSelectionInvalidatesCompiledState();
     void compileAndRunExecuteOffTheUiThread();
+    void runStartDoesNotPublishEmptyReport();
     void compileFailurePublishesDiagnostics();
     void staleCompileResultDoesNotOverwriteNewSource();
     void stopSignalsRunningServiceThroughStopToken();
@@ -330,6 +333,7 @@ private slots:
     void pluginCatalogValidatesStationBindings();
     void pluginFunctionModelBuildsHierarchyAndDropsGeneratedStep();
     void stepOutputExpressionsUsePreviousScopedPluginOutputs();
+    void followingStepReferencesUseExecutionOrderAndScopedPaths();
     void runnerModelsExposeReportHierarchyAndDetails();
     void uutStepModelUsesProductionStateColors();
     void uutStepModelBuildsSingleUutPhaseLayout();
@@ -337,21 +341,26 @@ private slots:
     void viewModelFlushesWorkerEventsInBatches();
     void corePublishesOrderedBarrierLoopRetryAndStopEvents();
     void runtimeEventsUpdateResultAndDeviceModels();
+    void runtimeModelUsesFullPathsForDuplicateChildIds();
     void runtimeLogModelKeepsRecentBoundedLogs();
-    void runtimeTimelineModelKeepsControlEventsAndSkipsLogs();
+    void runtimeTimelineModelMergesControlEventsAndLogs();
     void debugSnapshotModelFlattensRuntimeState();
     void bufferedEventSinkPreservesControlEventsDuringLogFlood();
     void executionReportJsonRoundTripsAndRejectsUnsupportedVersions();
     void reportHistoryPersistsLoadsAndRebuildsIndex();
-    void reportExporterWritesJsonAndCsv();
+    void reportExporterWritesTextAndCsv();
+    void runArtifactWriterStreamsAndClassifiesFiles();
     void testItemReportAndRuntimeEventsPreserveHierarchy();
     void sequenceDocumentPreservesUnknownFieldsAndSnapshots();
+    void sequenceDocumentAddsMissingStandardGroups();
+    void crossLoopSequenceUsesStandardLifecycleGroups();
     void sequenceDocumentReplacesItemAtomically();
     void sequenceDocumentUndoRedoTracksCleanState();
     void sequenceDocumentRelocatesAcrossShiftedParentPaths();
     void sequenceDocumentWrapsContiguousStepsInTestItem();
     void sequenceDocumentBatchEditsSelectedStepsAtomically();
     void sequenceDocumentDuplicatesMixedSelectionAtomically();
+    void sequenceDocumentCopiesTestItemReferencesIntoNewScope();
     void sequenceDocumentDestructionSilencesUndoStack();
     void sequenceDiagnosticPathsResolveNestedFields();
     void sequenceTreeModelBuildsHierarchyAndEditsSteps();
@@ -361,8 +370,9 @@ private slots:
     void stationDocumentPreservesUnknownFieldsAndUndoHistory();
     void defaultStationTemplateProvidesDisabledCommonDeviceSlots();
     void stationDeviceModelEditsAndReordersDevices();
+    void stationDocumentGeneratesTypedIdsAndMovesConfigurations();
     void coreServiceCompilesProvidedSequenceSnapshot();
-    void stationFailurePolicyContinuesOuterItemsButStopsFailedTestItem();
+    void stationFailurePolicyContinuesAllTestItemChildren();
     void coreServiceTestsDeviceConnectionAndFailurePaths();
 };
 
@@ -405,6 +415,27 @@ void ExecutionViewModelTests::compileAndRunExecuteOffTheUiThread()
     QCOMPARE(control->runCalls.load(), 1);
     QVERIFY(control->runThread.load() != QThread::currentThread());
     QCOMPARE(viewModel.report().planId, QStringLiteral("fake-plan"));
+}
+
+void ExecutionViewModelTests::runStartDoesNotPublishEmptyReport()
+{
+    auto control = std::make_shared<FakeServiceControl>();
+    control->releaseRun.store(false);
+    ExecutionViewModel viewModel(fakeService(control));
+    viewModel.setSequencePath(QStringLiteral("sequence.json"));
+    viewModel.compile();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel.state(), UiRunState::Ready, 1000);
+
+    QSignalSpy reportChanged(&viewModel, &ExecutionViewModel::reportChanged);
+    viewModel.run();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel.state(), UiRunState::Running, 1000);
+    QCOMPARE(reportChanged.count(), 0);
+    QVERIFY(viewModel.report().uuts.isEmpty());
+
+    control->releaseRun.store(true);
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel.state(), UiRunState::Completed, 1000);
+    QCOMPARE(reportChanged.count(), 1);
+    QVERIFY(viewModel.report().completed);
 }
 
 void ExecutionViewModelTests::compileFailurePublishesDiagnostics()
@@ -1037,18 +1068,33 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
         projectDir + QStringLiteral(
             "/templates/CAN/GCAN/PicoATE.CAN.GCAN.picoate-plugin.json"));
     QVERIFY(manifest.ok());
+    const auto cxManifest = PluginCatalog::load(
+        projectDir + QStringLiteral(
+            "/templates/CAN/CX/PicoATE.CAN.CX.picoate-plugin.json"));
+    QVERIFY(cxManifest.ok());
 
     PluginFunctionModel functionModel;
     QAbstractItemModelTester functionTester(
         &functionModel, QAbstractItemModelTester::FailureReportingMode::QtTest);
-    functionModel.setPlugins({manifest.manifest});
+    functionModel.setPlugins({manifest.manifest, cxManifest.manifest});
     functionModel.setDeviceBindings({
         {QStringLiteral("plugin.can.gcan"), QStringList{QStringLiteral("CAN1")}}});
+    functionModel.setSelectedDeviceId(QStringLiteral("CAN1"));
     QCOMPARE(functionModel.rowCount(), 2);
     const auto basicSection = functionModel.index(0, 0);
     QCOMPARE(basicSection.data().toString(), QStringLiteral("Basic Functions"));
-    QCOMPARE(functionModel.rowCount(basicSection), 6);
-    const auto limitFunction = functionModel.index(1, 0, basicSection);
+    QCOMPARE(functionModel.rowCount(basicSection), 11);
+    const auto messageBoxFunction = functionModel.index(1, 0, basicSection);
+    QCOMPARE(messageBoxFunction.data().toString(), QStringLiteral("MessageBox"));
+    QCOMPARE(messageBoxFunction.data(PluginFunctionModel::FunctionIdRole).toString(),
+             QStringLiteral("operatorPrompt"));
+    const auto messageBoxTemplate = functionModel.stepTemplate(messageBoxFunction);
+    QCOMPARE(messageBoxTemplate.value(QStringLiteral("name")).toString(),
+             QStringLiteral("MessageBox"));
+    QCOMPARE(messageBoxTemplate.value(QStringLiteral("prompt")).toObject()
+                 .value(QStringLiteral("mode")).toString(),
+             QStringLiteral("confirm"));
+    const auto limitFunction = functionModel.index(2, 0, basicSection);
     QCOMPARE(limitFunction.data(PluginFunctionModel::FunctionIdRole).toString(),
              QStringLiteral("limit"));
     std::unique_ptr<QMimeData> limitMime(functionModel.mimeData({limitFunction}));
@@ -1061,15 +1107,34 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     QCOMPARE(limitTemplate.value(QStringLiteral("parameters")).toObject()
                  .value(QStringLiteral("comparison")).toString(),
              QStringLiteral("between"));
+    const auto whileLoopFunction = functionModel.index(5, 0, basicSection);
+    QCOMPARE(whileLoopFunction.data().toString(), QStringLiteral("While Loop"));
+    const auto whileLoopTemplate = functionModel.stepTemplate(whileLoopFunction);
+    QCOMPARE(whileLoopTemplate.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("loop"));
+    QCOMPARE(whileLoopTemplate.value(QStringLiteral("loop")).toObject()
+                 .value(QStringLiteral("type")).toString(),
+             QStringLiteral("while"));
+    QCOMPARE(functionModel.index(6, 0, basicSection).data().toString(),
+             QStringLiteral("Break If"));
+    const auto counterFunction = functionModel.index(7, 0, basicSection);
+    QCOMPARE(counterFunction.data().toString(),
+             QStringLiteral("Counter"));
+    const auto counterTemplate = functionModel.stepTemplate(counterFunction);
+    QVERIFY(!counterTemplate.value(QStringLiteral("inputs")).toObject()
+                 .contains(QStringLiteral("condition")));
+    QCOMPARE(counterTemplate.value(QStringLiteral("parameters")).toObject()
+                 .value(QStringLiteral("mode")).toString(),
+             QStringLiteral("consecutive"));
+    QCOMPARE(functionModel.index(8, 0, basicSection).data().toString(),
+             QStringLiteral("Aggregate"));
 
     const auto pluginSection = functionModel.index(1, 0);
     QCOMPARE(pluginSection.data().toString(), QStringLiteral("Plugin Functions"));
     const auto category = functionModel.index(0, 0, pluginSection);
     QCOMPARE(category.data().toString(), QStringLiteral("CAN"));
-    const auto plugin = functionModel.index(0, 0, category);
-    QCOMPARE(plugin.data().toString(), QStringLiteral("GCAN USB-CAN"));
-    QCOMPARE(functionModel.rowCount(plugin), 4);
-    const auto openFunction = functionModel.index(0, 0, plugin);
+    QCOMPARE(functionModel.rowCount(category), 4);
+    const auto openFunction = functionModel.index(0, 0, category);
     const auto openStep = functionModel.stepTemplate(openFunction);
     QCOMPARE(openStep.value(QStringLiteral("moduleId")).toString(),
              QStringLiteral("device"));
@@ -1077,7 +1142,7 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     QCOMPARE(openInputs.size(), 1);
     QCOMPARE(openInputs.value(QStringLiteral("deviceId")).toString(),
              QStringLiteral("CAN1"));
-    const auto writeFunction = functionModel.index(1, 0, plugin);
+    const auto writeFunction = functionModel.index(1, 0, category);
     QCOMPARE(writeFunction.data(PluginFunctionModel::FunctionIdRole).toString(),
              QStringLiteral("write"));
     std::unique_ptr<QMimeData> mime(functionModel.mimeData({writeFunction}));
@@ -1128,13 +1193,17 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
 
     functionModel.setDeviceBindings({
         {QStringLiteral("plugin.can.gcan"),
-         QStringList{QStringLiteral("CAN1"), QStringLiteral("CAN2")}}});
+         QStringList{QStringLiteral("CAN1")}},
+        {QStringLiteral("plugin.can.cx"),
+         QStringList{QStringLiteral("CAN2")}}});
+    functionModel.setSelectedDeviceId(QStringLiteral("CAN2"));
     const auto multiPluginSection = functionModel.index(1, 0);
     const auto multiCategory = functionModel.index(0, 0, multiPluginSection);
-    const auto multiPlugin = functionModel.index(0, 0, multiCategory);
-    QCOMPARE(functionModel.rowCount(multiPlugin), 8);
-    const auto can2Write = functionModel.index(5, 0, multiPlugin);
-    QCOMPARE(can2Write.data().toString(), QStringLiteral("Send CAN Frame [CAN2]"));
+    QCOMPARE(functionModel.rowCount(multiCategory), 4);
+    const auto can2Write = functionModel.index(1, 0, multiCategory);
+    QCOMPARE(can2Write.data().toString(), QStringLiteral("Send CAN Frame"));
+    QCOMPARE(can2Write.data(PluginFunctionModel::ModuleIdRole).toString(),
+             QStringLiteral("plugin.can.cx"));
     QCOMPARE(can2Write.data(PluginFunctionModel::DeviceIdRole).toString(),
              QStringLiteral("CAN2"));
     std::unique_ptr<QMimeData> can2Mime(functionModel.mimeData({can2Write}));
@@ -1200,8 +1269,69 @@ void ExecutionViewModelTests::stepOutputExpressionsUsePreviousScopedPluginOutput
                value.contains(QStringLiteral("later"));
     }));
 
+    const auto whileSequence = QJsonDocument::fromJson(R"json({
+      "id":"while-expressions","name":"While Expressions","groups":[
+        {"id":"main","kind":"main","steps":[
+          {"id":"poll","kind":"loop","loop":{"type":"while","maxIterations":10},
+           "steps":[
+             {"id":"01","key":"stats","kind":"aggregate","inputs":{"value":1}},
+             {"id":"02","key":"stable","kind":"counter","inputs":{"condition":true}},
+             {"id":"03","key":"done","kind":"break","inputs":{"actual":1},
+              "limit":{"comparison":"greaterOrEqual","expected":1}}
+           ]}
+        ]}
+      ]
+    })json").object();
+    const auto builtInCandidates = buildStepOutputExpressionCandidates(
+        whileSequence, SequenceItemPath{0, {0, 2}}, {});
+    QStringList builtInExpressions;
+    for (const auto& candidate : builtInCandidates) {
+        builtInExpressions.push_back(candidate.expression);
+    }
+    QVERIFY(builtInExpressions.contains(
+        QStringLiteral("${step:poll.stats.outputs.average}")));
+    QVERIFY(builtInExpressions.contains(
+        QStringLiteral("${step:poll.stable.outputs.value}")));
+
     const auto invalid = buildStepOutputExpressionCandidates(
         sequence, SequenceItemPath{}, {manifest.manifest});
+    QVERIFY(invalid.isEmpty());
+}
+
+void ExecutionViewModelTests::followingStepReferencesUseExecutionOrderAndScopedPaths()
+{
+    const auto sequence = QJsonDocument::fromJson(R"json({
+      "id":"prompt-targets","name":"Prompt Targets","groups":[
+        {"id":"main","kind":"main","steps":[
+          {"id":"010","kind":"testItem","name":"Button Check","steps":[
+            {"id":"01","key":"read","kind":"action","name":"Read Button"},
+            {"id":"02","key":"disabled","kind":"noop","enabled":false}
+          ]},
+          {"id":"020","kind":"noop","name":"Finish Main"}
+        ]},
+        {"id":"setup","kind":"setup","steps":[
+          {"id":"001","kind":"operatorPrompt","name":"Operator Action"}
+        ]},
+        {"id":"cleanup","kind":"cleanup","steps":[
+          {"id":"900","kind":"noop","name":"Close Fixture"}
+        ]}
+      ]
+    })json").object();
+
+    const auto candidates = buildFollowingStepReferenceCandidates(
+        sequence, SequenceItemPath{1, {0}});
+    QStringList paths;
+    for (const auto& candidate : candidates) {
+        paths.push_back(candidate.stepPath);
+    }
+    QCOMPARE(paths, QStringList({QStringLiteral("010"),
+                                 QStringLiteral("010.read"),
+                                 QStringLiteral("020"),
+                                 QStringLiteral("900")}));
+    QCOMPARE(candidates[1].stepName, QStringLiteral("Read Button"));
+
+    const auto invalid = buildFollowingStepReferenceCandidates(
+        sequence, SequenceItemPath{});
     QVERIFY(invalid.isEmpty());
 }
 
@@ -1277,11 +1407,41 @@ void ExecutionViewModelTests::runnerModelsExposeReportHierarchyAndDetails()
     QCOMPARE(resultModel.data(stepIndex.siblingAtColumn(UutStepModel::TimeColumn)).toString(),
              QStringLiteral("1.021 s"));
 
+    PicoATE::Core::MeasurementResult stringLimit;
+    stringLimit.name = QStringLiteral("CAN_ID");
+    stringLimit.value = QStringLiteral("0x199");
+    stringLimit.attributes.insert(QStringLiteral("comparison"), QStringLiteral("equal"));
+    stringLimit.attributes.insert(QStringLiteral("expected"), QStringLiteral("0x199"));
+    report.uuts[0].steps[0].measurements = {stringLimit};
+    resultModel.setReport(report);
+    auto refreshedUut = resultModel.index(0, UutStepModel::NameColumn);
+    auto refreshedStep = resultModel.index(0, UutStepModel::NameColumn, refreshedUut);
+    QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::LowerLimitColumn)).toString(),
+             QStringLiteral("0x199"));
+    QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::UpperLimitColumn)).toString(),
+             QStringLiteral("0x199"));
+
+    stringLimit.value = QStringLiteral("ID=0x199 | MASK=0x7FF | DATA=09 01 03 07 | DLC=4");
+    stringLimit.attributes.insert(QStringLiteral("displayLower"),
+                                  QStringLiteral("ID=0x199 | MASK=0x7FF"));
+    stringLimit.attributes.insert(QStringLiteral("displayUpper"),
+                                  QStringLiteral("ID=0x199 | MASK=0x7FF"));
+    report.uuts[0].steps[0].measurements = {stringLimit};
+    resultModel.setReport(report);
+    refreshedUut = resultModel.index(0, UutStepModel::NameColumn);
+    refreshedStep = resultModel.index(0, UutStepModel::NameColumn, refreshedUut);
+    QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::LowerLimitColumn)).toString(),
+             QStringLiteral("ID=0x199 | MASK=0x7FF"));
+    QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::UpperLimitColumn)).toString(),
+             QStringLiteral("ID=0x199 | MASK=0x7FF"));
+    QVERIFY(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::ActualColumn))
+                .toString().contains(QStringLiteral("DATA=09 01 03 07")));
+
     AttemptModel attemptModel;
     QAbstractItemModelTester attemptTester(
         &attemptModel,
         QAbstractItemModelTester::FailureReportingMode::QtTest);
-    attemptModel.setStep(resultModel.stepAt(stepIndex));
+    attemptModel.setStep(resultModel.stepAt(refreshedStep));
     QCOMPARE(attemptModel.rowCount(), 1);
     QCOMPARE(attemptModel.data(attemptModel.index(0, AttemptModel::LoopColumn)).toString(),
              QStringLiteral("#2 / sampleIndex=1"));
@@ -1689,6 +1849,84 @@ void ExecutionViewModelTests::runtimeEventsUpdateResultAndDeviceModels()
              QStringLiteral("Connected"));
 }
 
+void ExecutionViewModelTests::runtimeModelUsesFullPathsForDuplicateChildIds()
+{
+    using namespace PicoATE::Core;
+
+    StepReport firstChild;
+    firstChild.stepId = QStringLiteral("01");
+    firstChild.nodePath = QStringLiteral("first.01");
+    firstChild.displayName = QStringLiteral("First Child");
+    firstChild.phase = ExecutionPhase::Setup;
+    StepReport firstParent;
+    firstParent.stepId = QStringLiteral("first");
+    firstParent.nodePath = QStringLiteral("first");
+    firstParent.displayName = QStringLiteral("First Parent");
+    firstParent.kind = ExecNodeKind::TestItem;
+    firstParent.phase = ExecutionPhase::Setup;
+    firstParent.children = {firstChild};
+
+    StepReport secondChild = firstChild;
+    secondChild.nodePath = QStringLiteral("second.01");
+    secondChild.displayName = QStringLiteral("Second Child");
+    secondChild.phase = ExecutionPhase::Main;
+    StepReport secondParent = firstParent;
+    secondParent.stepId = QStringLiteral("second");
+    secondParent.nodePath = QStringLiteral("second");
+    secondParent.displayName = QStringLiteral("Second Parent");
+    secondParent.phase = ExecutionPhase::Main;
+    secondParent.children = {secondChild};
+
+    UutReport uut;
+    uut.uutId = QStringLiteral("UUT-1");
+    uut.steps = {firstParent, secondParent};
+    ExecutionReport report;
+    report.planId = QStringLiteral("duplicate-local-ids");
+    report.uuts = {uut};
+
+    UutStepModel model;
+    model.setReport(report);
+    const auto first = model.indexForStep(QStringLiteral("UUT-1"),
+                                          QStringLiteral("first.01"));
+    const auto second = model.indexForStep(QStringLiteral("UUT-1"),
+                                           QStringLiteral("second.01"));
+    QVERIFY(first.isValid());
+    QVERIFY(second.isValid());
+    QCOMPARE(model.data(model.parent(first)).toString(), QStringLiteral("First Parent"));
+    QCOMPARE(model.data(model.parent(second)).toString(), QStringLiteral("Second Parent"));
+
+    RuntimeEvent running;
+    running.kind = RuntimeEventKind::NodeStateChanged;
+    running.uutId = QStringLiteral("UUT-1");
+    running.nodeId = QStringLiteral("second.01");
+    running.nodeLocalId = QStringLiteral("01");
+    running.parentNodeId = QStringLiteral("second");
+    running.nodeDisplayName = QStringLiteral("Second Child");
+    running.activationState = ActivationState::Running;
+    model.applyRuntimeEvents({running});
+
+    const auto updatedFirst = model.stepAt(model.indexForStep(
+        QStringLiteral("UUT-1"), QStringLiteral("first.01")));
+    const auto updatedSecond = model.stepAt(model.indexForStep(
+        QStringLiteral("UUT-1"), QStringLiteral("second.01")));
+    QVERIFY(updatedFirst.has_value());
+    QVERIFY(updatedSecond.has_value());
+    QCOMPARE(updatedFirst->state, ActivationState::Created);
+    QCOMPARE(updatedSecond->state, ActivationState::Running);
+
+    RuntimeEvent breakpoint;
+    breakpoint.kind = RuntimeEventKind::BreakpointHit;
+    breakpoint.uutId = QStringLiteral("UUT-1");
+    breakpoint.nodeId = QStringLiteral("first.01");
+    breakpoint.nodePhase = ExecutionPhase::Main;
+    model.applyRuntimeEvents({breakpoint});
+    const auto afterBreakpoint = model.stepAt(model.indexForStep(
+        QStringLiteral("UUT-1"), QStringLiteral("first.01")));
+    QVERIFY(afterBreakpoint.has_value());
+    QCOMPARE(afterBreakpoint->phase, ExecutionPhase::Setup);
+    QCOMPARE(afterBreakpoint->state, ActivationState::Created);
+}
+
 void ExecutionViewModelTests::runtimeLogModelKeepsRecentBoundedLogs()
 {
     using namespace PicoATE::Core;
@@ -1725,10 +1963,10 @@ void ExecutionViewModelTests::runtimeLogModelKeepsRecentBoundedLogs()
     QCOMPARE(model.droppedRowCount(), quint64(0));
 }
 
-void ExecutionViewModelTests::runtimeTimelineModelKeepsControlEventsAndSkipsLogs()
+void ExecutionViewModelTests::runtimeTimelineModelMergesControlEventsAndLogs()
 {
     using namespace PicoATE::Core;
-    RuntimeTimelineModel model(nullptr, 3);
+    RuntimeTimelineModel model(nullptr, 10);
     QAbstractItemModelTester tester(
         &model,
         QAbstractItemModelTester::FailureReportingMode::QtTest);
@@ -1750,14 +1988,28 @@ void ExecutionViewModelTests::runtimeTimelineModelKeepsControlEventsAndSkipsLogs
     node.activationState = ActivationState::Running;
     events.push_back(node);
 
+    RuntimeEvent started;
+    started.sequenceNumber = 3;
+    started.kind = RuntimeEventKind::AttemptStarted;
+    started.uutId = QStringLiteral("UUT-1");
+    started.nodeId = QStringLiteral("measure");
+    started.nodeDisplayName = QStringLiteral("Measure");
+    started.attemptIndex = 2;
+    started.attemptState = AttemptState::Running;
+    events.push_back(started);
+
     RuntimeEvent log;
-    log.sequenceNumber = 3;
+    log.sequenceNumber = 4;
     log.kind = RuntimeEventKind::ModuleLog;
+    log.uutId = QStringLiteral("UUT-1");
+    log.nodeId = QStringLiteral("measure");
+    log.nodeDisplayName = QStringLiteral("Measure");
+    log.attemptIndex = 2;
     log.message = QStringLiteral("vendor log should not flood timeline");
     events.push_back(log);
 
     RuntimeEvent attempt;
-    attempt.sequenceNumber = 4;
+    attempt.sequenceNumber = 5;
     attempt.kind = RuntimeEventKind::AttemptCompleted;
     attempt.uutId = QStringLiteral("UUT-1");
     attempt.nodeId = QStringLiteral("measure");
@@ -1769,7 +2021,7 @@ void ExecutionViewModelTests::runtimeTimelineModelKeepsControlEventsAndSkipsLogs
     events.push_back(attempt);
 
     RuntimeEvent loop;
-    loop.sequenceNumber = 5;
+    loop.sequenceNumber = 6;
     loop.kind = RuntimeEventKind::LoopIterationStarted;
     loop.uutId = QStringLiteral("UUT-1");
     loop.nodeId = QStringLiteral("loop");
@@ -1780,32 +2032,118 @@ void ExecutionViewModelTests::runtimeTimelineModelKeepsControlEventsAndSkipsLogs
     loop.loopIteration.value = 1;
     events.push_back(loop);
 
+    RuntimeEvent breakCompleted;
+    breakCompleted.sequenceNumber = 7;
+    breakCompleted.kind = RuntimeEventKind::AttemptCompleted;
+    breakCompleted.uutId = QStringLiteral("UUT-1");
+    breakCompleted.nodeId = QStringLiteral("break-if");
+    breakCompleted.nodeDisplayName = QStringLiteral("Break If");
+    breakCompleted.nodeKind = ExecNodeKind::Break;
+    breakCompleted.outcome = NodeOutcome::Passed;
+    breakCompleted.details.insert(QStringLiteral("breakRequested"), false);
+    events.push_back(breakCompleted);
+
     model.applyRuntimeEvents(events);
-    QCOMPARE(model.rowCount(), 3);
-    QCOMPARE(model.droppedRowCount(), quint64(1));
-    QCOMPARE(model.data(model.index(0, RuntimeTimelineModel::EventColumn)).toString(),
-             QString("NodeStateChanged"));
-    QCOMPARE(model.data(model.index(1, RuntimeTimelineModel::StateColumn)).toString(),
-             QString("Failed"));
-    QVERIFY(model.data(model.index(1, RuntimeTimelineModel::DetailColumn))
+    QCOMPARE(model.rowCount(), 8);
+    QCOMPARE(model.droppedRowCount(), quint64(0));
+    QCOMPARE(model.data(model.index(0, RuntimeTimelineModel::MessageColumn)).toString(),
+             QString("SESSION:RUNNING"));
+    QCOMPARE(model.data(model.index(1, RuntimeTimelineModel::MessageColumn)).toString(),
+             QString("------------------------ MEASURE_STEP_START ------------------------"));
+    QCOMPARE(model.data(model.index(2, RuntimeTimelineModel::MessageColumn)).toString(),
+             QString("LOG:vendor log should not flood timeline"));
+    QVERIFY(model.data(model.index(2, RuntimeTimelineModel::MessageColumn), Qt::FontRole)
+                .value<QFont>()
+                .bold());
+    QVERIFY(model.data(model.index(3, RuntimeTimelineModel::MessageColumn))
                 .toString()
-                .contains(QStringLiteral("attempt=2")));
-    QVERIFY(model.data(model.index(1, RuntimeTimelineModel::DetailColumn))
+                .contains(QStringLiteral("RESULT:FAIL")));
+    QCOMPARE(model.data(model.index(4, RuntimeTimelineModel::MessageColumn)).toString(),
+             QString("------------------------ MEASURE_STEP_END ------------------------"));
+    QVERIFY(model.data(model.index(5, RuntimeTimelineModel::MessageColumn))
                 .toString()
-                .contains(QStringLiteral("LimitFail")));
-    QVERIFY(model.data(model.index(2, RuntimeTimelineModel::StateColumn))
+                .contains(QStringLiteral("LOOP:")));
+    QVERIFY(model.data(model.index(6, RuntimeTimelineModel::MessageColumn))
                 .toString()
-                .contains(QStringLiteral("#2")));
+                .contains(QStringLiteral("BREAK:CONDITION NOT MET")));
     QVERIFY(model.eventAt(0).has_value());
-    QCOMPARE(model.eventAt(0)->kind, RuntimeEventKind::NodeStateChanged);
-    QCOMPARE(model.rowForSequenceNumber(2), 0);
-    QCOMPARE(model.rowForSequenceNumber(4), 1);
-    QCOMPARE(model.rowForSequenceNumber(3), -1);
-    QCOMPARE(model.rowForSequenceNumber(1), -1);
+    QCOMPARE(model.eventAt(0)->kind, RuntimeEventKind::SessionStateChanged);
+    QCOMPARE(model.rowForSequenceNumber(1), 0);
+    QCOMPARE(model.rowForSequenceNumber(2), -1);
+    QCOMPARE(model.rowForSequenceNumber(3), 1);
+    QCOMPARE(model.rowForSequenceNumber(4), 2);
+    QCOMPARE(model.rowForSequenceNumber(5), 3);
 
     model.clear();
     QCOMPARE(model.rowCount(), 0);
     QCOMPARE(model.droppedRowCount(), quint64(0));
+
+    RuntimeEvent itemStarted;
+    itemStarted.sequenceNumber = 10;
+    itemStarted.kind = RuntimeEventKind::TestItemStarted;
+    itemStarted.nodeId = QStringLiteral("item");
+    itemStarted.nodeDisplayName = QStringLiteral("CAN Check");
+    itemStarted.nodeKind = ExecNodeKind::TestItem;
+
+    RuntimeEvent childStarted;
+    childStarted.sequenceNumber = 11;
+    childStarted.kind = RuntimeEventKind::AttemptStarted;
+    childStarted.nodeId = QStringLiteral("item/read");
+    childStarted.parentNodeId = QStringLiteral("item");
+    childStarted.nodeDisplayName = QStringLiteral("Read CAN");
+
+    RuntimeEvent device;
+    device.sequenceNumber = 12;
+    device.kind = RuntimeEventKind::DeviceStateChanged;
+    device.deviceId = QStringLiteral("CAN1.CH1");
+    device.deviceState = DeviceConnectionState::Connected;
+    device.message = QStringLiteral("connected");
+
+    RuntimeEvent childLog = childStarted;
+    childLog.sequenceNumber = 13;
+    childLog.kind = RuntimeEventKind::ModuleLog;
+    childLog.message = QStringLiteral("DEBUG:RX 01 02 03");
+
+    RuntimeEvent childCompleted = childStarted;
+    childCompleted.sequenceNumber = 14;
+    childCompleted.kind = RuntimeEventKind::AttemptCompleted;
+    childCompleted.outcome = NodeOutcome::Passed;
+
+    RuntimeEvent itemCompleted = itemStarted;
+    itemCompleted.sequenceNumber = 15;
+    itemCompleted.kind = RuntimeEventKind::TestItemCompleted;
+    itemCompleted.outcome = NodeOutcome::Passed;
+
+    RuntimeEvent syntheticItemAttempt = itemCompleted;
+    syntheticItemAttempt.sequenceNumber = 16;
+    syntheticItemAttempt.kind = RuntimeEventKind::AttemptCompleted;
+
+    model.applyRuntimeEvents(
+        {itemStarted,
+         childStarted,
+         device,
+         childLog,
+         childCompleted,
+         itemCompleted,
+         syntheticItemAttempt});
+    QCOMPARE(model.rowCount(), 8);
+    QCOMPARE(model.data(model.index(0, RuntimeTimelineModel::MessageColumn)).toString(),
+             QString("======================== CAN_CHECK_TESTITEM_START ========================"));
+    QVERIFY(model.data(model.index(1, RuntimeTimelineModel::MessageColumn))
+                .toString()
+                .startsWith(QStringLiteral("    ------------------------ READ_CAN_STEP_START")));
+    QCOMPARE(model.data(model.index(2, RuntimeTimelineModel::MessageColumn)).toString(),
+             QString("    DEVICE:CAN1.CH1 | Connected | connected"));
+    QCOMPARE(model.eventAt(2)->nodeId, QStringLiteral("item/read"));
+    QCOMPARE(model.data(model.index(3, RuntimeTimelineModel::MessageColumn)).toString(),
+             QString("    LOG:RX 01 02 03"));
+    QCOMPARE(model.data(model.index(6, RuntimeTimelineModel::MessageColumn)).toString(),
+             QString("RESULT:PASS"));
+    QCOMPARE(model.data(model.index(7, RuntimeTimelineModel::MessageColumn)).toString(),
+             QString("======================== CAN_CHECK_TESTITEM_END ========================"));
+    QCOMPARE(model.rowForNode({}, QStringLiteral("item")), 0);
+    QCOMPARE(model.rowForNode({}, QStringLiteral("item/read")), 1);
+    QCOMPARE(model.rowForNode({}, QStringLiteral("missing")), -1);
 }
 
 void ExecutionViewModelTests::debugSnapshotModelFlattensRuntimeState()
@@ -2028,20 +2366,25 @@ void ExecutionViewModelTests::reportHistoryPersistsLoadsAndRebuildsIndex()
     QCOMPARE(proxy.rowCount(), 2);
 }
 
-void ExecutionViewModelTests::reportExporterWritesJsonAndCsv()
+void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const auto report = sampleReport();
-    const auto jsonPath = directory.filePath(QStringLiteral("report.json"));
+    const auto textPath = directory.filePath(QStringLiteral("report.txt"));
     const auto csvPath = directory.filePath(QStringLiteral("report.csv"));
+    const auto xlsxPath = directory.filePath(QStringLiteral("report.xlsx"));
 
-    const auto jsonResult = ReportExporter::saveJson(jsonPath, report);
-    QVERIFY2(jsonResult.success, qPrintable(jsonResult.errorMessage));
-    QFile jsonFile(jsonPath);
-    QVERIFY(jsonFile.open(QIODevice::ReadOnly));
-    const auto parsed = PicoATE::Core::parseExecutionReport(jsonFile.readAll());
-    QVERIFY(parsed.ok());
+    const auto textResult = ReportExporter::saveText(textPath, report);
+    QVERIFY2(textResult.success, qPrintable(textResult.errorMessage));
+    QFile textFile(textPath);
+    QVERIFY(textFile.open(QIODevice::ReadOnly));
+    const auto reportText = QString::fromUtf8(textFile.readAll());
+    QVERIFY(reportText.contains(QStringLiteral(
+        "------------------------ 测量,\"输出\"_STEP_START ------------------------")));
+    QVERIFY(reportText.contains(QStringLiteral("RESULT:PASS")));
+    QVERIFY(reportText.contains(QStringLiteral(
+        "------------------------ 测量,\"输出\"_STEP_END ------------------------\r\n")));
 
     const auto csvResult = ReportExporter::saveCsv(csvPath, report);
     QVERIFY2(csvResult.success, qPrintable(csvResult.errorMessage));
@@ -2050,12 +2393,165 @@ void ExecutionViewModelTests::reportExporterWritesJsonAndCsv()
     const auto csv = csvFile.readAll();
     QVERIFY(csv.startsWith("\xEF\xBB\xBF"));
     const auto text = QString::fromUtf8(csv);
-    QVERIFY(text.contains(QStringLiteral("UUT-中文-01")));
     QVERIFY(text.contains(QStringLiteral("\"测量,\"\"输出\"\"\"")));
-    QVERIFY(text.contains(QStringLiteral("\"输出电压,\"\"VOUT\"\"\"")));
     QVERIFY(text.contains(QStringLiteral("\"4.9\"")));
-    QVERIFY(text.contains(QStringLiteral("\"Step Duration Ms\"")));
+    QVERIFY(text.contains(QStringLiteral("\"Actual Value\"")));
+    QVERIFY(text.contains(QStringLiteral("\"Duration Ms\"")));
     QVERIFY(text.contains(QStringLiteral("\"1021\"")));
+
+    auto resolutionErrorReport = sampleReport();
+    auto& errorStep = resolutionErrorReport.uuts.first().steps.first();
+    errorStep.displayName = QStringLiteral("Check GCAN CAN2 Payload");
+    errorStep.outcome = PicoATE::Core::NodeOutcome::Error;
+    errorStep.state = PicoATE::Core::ActivationState::Failed;
+    auto& errorMeasurement = errorStep.measurements.first();
+    errorMeasurement.value = {};
+    errorMeasurement.hasLowerLimit = false;
+    errorMeasurement.hasUpperLimit = false;
+    errorMeasurement.status = PicoATE::Core::MeasurementStatus::Error;
+    errorMeasurement.errorCode = QStringLiteral("RuntimeVariableResolutionError");
+    errorMeasurement.attributes.insert(QStringLiteral("comparison"), QStringLiteral("equal"));
+    errorMeasurement.attributes.insert(
+        QStringLiteral("expected"), QStringLiteral("43 58 31 2D 47 43 41 4E"));
+    const auto errorCsvPath = directory.filePath(QStringLiteral("resolution-error.csv"));
+    const auto errorCsvResult = ReportExporter::saveCsv(errorCsvPath, resolutionErrorReport);
+    QVERIFY2(errorCsvResult.success, qPrintable(errorCsvResult.errorMessage));
+    QFile errorCsv(errorCsvPath);
+    QVERIFY(errorCsv.open(QIODevice::ReadOnly));
+    const auto errorText = QString::fromUtf8(errorCsv.readAll());
+    QVERIFY(errorText.contains(QStringLiteral(
+        "\"Check GCAN CAN2 Payload\",\"RuntimeVariableResolutionError\","
+        "\"43 58 31 2D 47 43 41 4E\",\"43 58 31 2D 47 43 41 4E\",\"\",\"ERROR\"")));
+
+    const auto xlsxResult = ReportExporter::saveXlsx(xlsxPath, report);
+    QVERIFY2(xlsxResult.success, qPrintable(xlsxResult.errorMessage));
+    QFile xlsxFile(xlsxPath);
+    QVERIFY(xlsxFile.open(QIODevice::ReadOnly));
+    const auto xlsx = xlsxFile.readAll();
+    QVERIFY(xlsx.startsWith("PK\x03\x04"));
+    QVERIFY(xlsx.contains("xl/worksheets/sheet1.xml"));
+    QVERIFY(xlsx.contains("xl/styles.xml"));
+    QVERIFY(xlsx.contains("Actual Value"));
+    QVERIFY(xlsx.contains(QStringLiteral("测量,&quot;输出&quot;").toUtf8()));
+
+    auto hierarchyReport = sampleReport();
+    auto firstChild = hierarchyReport.uuts.first().steps.first();
+    firstChild.displayName = QStringLiteral("Read CAN");
+    auto secondChild = firstChild;
+    secondChild.stepId = QStringLiteral("check-can");
+    secondChild.displayName = QStringLiteral("Check CAN");
+    PicoATE::Core::StepReport firstItem;
+    firstItem.stepId = QStringLiteral("can-item");
+    firstItem.displayName = QStringLiteral("CAN Item");
+    firstItem.kind = PicoATE::Core::ExecNodeKind::TestItem;
+    firstItem.outcome = PicoATE::Core::NodeOutcome::Passed;
+    firstItem.children = {firstChild, secondChild};
+    auto secondItem = firstItem;
+    secondItem.stepId = QStringLiteral("next-item");
+    secondItem.displayName = QStringLiteral("Next Item");
+    hierarchyReport.uuts.first().steps = {firstItem, secondItem};
+    const auto hierarchyPath = directory.filePath(QStringLiteral("hierarchy.txt"));
+    const auto hierarchyResult = ReportExporter::saveText(hierarchyPath, hierarchyReport);
+    QVERIFY2(hierarchyResult.success, qPrintable(hierarchyResult.errorMessage));
+    QFile hierarchyFile(hierarchyPath);
+    QVERIFY(hierarchyFile.open(QIODevice::ReadOnly));
+    const auto hierarchyText = QString::fromUtf8(hierarchyFile.readAll());
+    QVERIFY(hierarchyText.contains(QStringLiteral(
+        "    ------------------------ READ_CAN_STEP_END ------------------------\r\n"
+        "    ------------------------ CHECK_CAN_STEP_START ------------------------")));
+    QVERIFY(hierarchyText.contains(QStringLiteral(
+        "======================== CAN_ITEM_TESTITEM_END ========================\r\n\r\n\r\n\r\n"
+        "======================== NEXT_ITEM_TESTITEM_START ========================")));
+}
+
+void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    RunArtifactSettings settings;
+    settings.txtLogEnabled = true;
+    settings.csvReportEnabled = true;
+    settings.xlsxReportEnabled = true;
+    settings.outputDirectory = directory.path();
+    const QDateTime startedAt(
+        QDate(2026, 7, 19), QTime(8, 9, 10, 111));
+
+    RunArtifactWriter writer;
+    const auto begun = writer.begin(settings, QStringLiteral("SN:001"), startedAt);
+    QVERIFY2(begun.success, qPrintable(begun.errorMessage));
+    QCOMPARE(writer.baseName(), QStringLiteral("SN_001"));
+    const auto dateDirectory = directory.filePath(QStringLiteral("20260719"));
+    const auto rootText = QDir(dateDirectory).filePath(QStringLiteral("SN_001.txt"));
+    const auto rootCsv = QDir(dateDirectory).filePath(QStringLiteral("SN_001.csv"));
+    const auto rootXlsx = QDir(dateDirectory).filePath(QStringLiteral("SN_001.xlsx"));
+    QVERIFY(QFileInfo::exists(rootText));
+    QVERIFY(QFileInfo::exists(rootCsv));
+    QVERIFY(!QFileInfo::exists(rootXlsx));
+
+    const QVector<RuntimeLogLine> lines = {
+        {startedAt, QStringLiteral("======================== CAN_CHECK_TESTITEM_START ========================")},
+        {startedAt.addMSecs(1), QStringLiteral("    ------------------------ READ_STEP_START ------------------------")},
+        {startedAt.addMSecs(5), QStringLiteral("LOG:RX 01 02 03")},
+        {startedAt.addMSecs(8), QStringLiteral("    ------------------------ READ_STEP_END ------------------------")},
+        {startedAt.addMSecs(9), QStringLiteral("    ------------------------ LIMIT_STEP_START ------------------------")},
+        {startedAt.addMSecs(10), QStringLiteral("    ------------------------ LIMIT_STEP_END ------------------------")},
+        {startedAt.addMSecs(11), QStringLiteral("RESULT:PASS")},
+        {startedAt.addMSecs(12), QStringLiteral("======================== CAN_CHECK_TESTITEM_END ========================")},
+        {startedAt.addMSecs(20), QStringLiteral("======================== NEXT_ITEM_TESTITEM_START ========================")},
+        {startedAt.addMSecs(21), QStringLiteral("======================== NEXT_ITEM_TESTITEM_END ========================")}};
+    const auto appended = writer.appendLogLines(lines);
+    QVERIFY2(appended.success, qPrintable(appended.errorMessage));
+
+    const auto archived = writer.finalize(sampleReport());
+    QVERIFY2(archived.success, qPrintable(archived.errorMessage));
+    const auto passText = QDir(dateDirectory).filePath(
+        QStringLiteral("PASS/SN_001.txt"));
+    const auto passCsv = QDir(dateDirectory).filePath(
+        QStringLiteral("PASS/SN_001.csv"));
+    const auto passXlsx = QDir(dateDirectory).filePath(
+        QStringLiteral("PASS/SN_001.xlsx"));
+    QVERIFY(!QFileInfo::exists(rootText));
+    QVERIFY(QFileInfo::exists(passText));
+    QVERIFY(QFileInfo::exists(passCsv));
+    QVERIFY(QFileInfo::exists(passXlsx));
+    QFile savedText(passText);
+    QVERIFY(savedText.open(QIODevice::ReadOnly));
+    const auto savedLog = QString::fromUtf8(savedText.readAll());
+    QVERIFY(savedLog.contains(QStringLiteral(
+        "[08:09:10.111] ======================== CAN_CHECK_TESTITEM_START ========================")));
+    QVERIFY(savedLog.contains(QStringLiteral("LOG:RX 01 02 03")));
+    QVERIFY(savedLog.contains(QStringLiteral(
+        "------------------------ READ_STEP_END ------------------------\r\n"
+        "[08:09:10.120]     ------------------------ LIMIT_STEP_START ------------------------")));
+    QVERIFY(savedLog.contains(QStringLiteral(
+        "======================== CAN_CHECK_TESTITEM_END ========================\r\n\r\n\r\n\r\n"
+        "[08:09:10.131] ======================== NEXT_ITEM_TESTITEM_START ========================")));
+
+    auto legacyReport = sampleReport();
+    auto& legacyMeasurement = legacyReport.uuts.first().steps.first().measurements.first();
+    legacyMeasurement.hasLowerLimit = false;
+    legacyMeasurement.hasUpperLimit = false;
+    legacyMeasurement.value = 8.0;
+    legacyMeasurement.attributes.insert(QStringLiteral("comparison"), QStringLiteral("equal"));
+    legacyMeasurement.attributes.insert(QStringLiteral("expected"), 8.0);
+    legacyMeasurement.attributes.insert(QStringLiteral("tolerance"), 0.0);
+    const auto legacyCsvPath = directory.filePath(QStringLiteral("legacy-equal.csv"));
+    const auto legacyExport = ReportExporter::saveCsv(legacyCsvPath, legacyReport);
+    QVERIFY2(legacyExport.success, qPrintable(legacyExport.errorMessage));
+    QFile legacyCsv(legacyCsvPath);
+    QVERIFY(legacyCsv.open(QIODevice::ReadOnly));
+    QVERIFY(QString::fromUtf8(legacyCsv.readAll()).contains(
+        QStringLiteral("\"8\",\"8\",\"8\",\"PASS\"")));
+
+    const auto second = writer.begin(settings, QString(), startedAt.addSecs(1));
+    QVERIFY(second.success);
+    const auto abandonedText = QDir(dateDirectory).filePath(
+        QStringLiteral("20260719_080911_111.txt"));
+    writer.abandon();
+    QVERIFY(QFileInfo::exists(abandonedText));
+    QVERIFY(!QFileInfo::exists(QDir(dateDirectory).filePath(
+        QStringLiteral("FAIL/20260719_080911_111.txt"))));
 }
 
 void ExecutionViewModelTests::testItemReportAndRuntimeEventsPreserveHierarchy()
@@ -2125,9 +2621,9 @@ void ExecutionViewModelTests::testItemReportAndRuntimeEventsPreserveHierarchy()
     QFile csvFile(csvPath);
     QVERIFY(csvFile.open(QIODevice::ReadOnly));
     const auto csvText = QString::fromUtf8(csvFile.readAll());
-    QVERIFY(csvText.contains(QStringLiteral("power-rail-check")));
-    QVERIFY(csvText.contains(QStringLiteral("measure-5v")));
-    QVERIFY(csvText.contains(QStringLiteral("measure-3v3")));
+    QVERIFY(csvText.contains(QStringLiteral("Power Rail Check")));
+    QVERIFY(csvText.contains(QStringLiteral("Measure 5V Rail")));
+    QVERIFY(csvText.contains(QStringLiteral("Measure 3.3V Rail")));
 
     liveModel.setReport(parsed.report);
     const auto finalParent = liveModel.indexForStep(
@@ -2204,6 +2700,108 @@ void ExecutionViewModelTests::sequenceDocumentPreservesUnknownFieldsAndSnapshots
     QVERIFY(!document.load(badPath));
     QCOMPARE(document.rootObject().value("id").toString(), QString("document-sequence"));
     QVERIFY(!document.diagnostics().isEmpty());
+}
+
+void ExecutionViewModelTests::sequenceDocumentAddsMissingStandardGroups()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sourcePath = directory.filePath(QStringLiteral("main-only.json"));
+    QFile source(sourcePath);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write(R"({
+      "id":"main-only","name":"Main Only","groups":[{
+        "id":"main","kind":"main","enabled":false,"steps":[
+          {"id":"001","kind":"noop","name":"Existing Step"}
+        ]
+      }]
+    })");
+    source.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(sourcePath));
+    QVERIFY(!document.isModified());
+    QVERIFY(document.ensureStandardGroups());
+    QVERIFY(document.isModified());
+    QCOMPARE(document.undoStack()->undoText(),
+             QStringLiteral("Normalize Setup/Main/Cleanup Groups"));
+
+    const auto groups = document.rootObject().value(QStringLiteral("groups"))
+                            .toArray();
+    QCOMPARE(groups.size(), 3);
+    QCOMPARE(groups[0].toObject().value(QStringLiteral("kind")).toString(),
+             QStringLiteral("setup"));
+    QCOMPARE(groups[1].toObject().value(QStringLiteral("kind")).toString(),
+             QStringLiteral("main"));
+    QCOMPARE(groups[2].toObject().value(QStringLiteral("kind")).toString(),
+             QStringLiteral("cleanup"));
+    QVERIFY(!groups[1].toObject().contains(QStringLiteral("enabled")));
+    QCOMPARE(groups[1].toObject().value(QStringLiteral("steps")).toArray()
+                 .first().toObject().value(QStringLiteral("name")).toString(),
+             QStringLiteral("Existing Step"));
+    QVERIFY(document.isStandardGroup(SequenceItemPath{0, {}}));
+    QVERIFY(document.isStandardGroup(SequenceItemPath{1, {}}));
+    QVERIFY(document.isStandardGroup(SequenceItemPath{2, {}}));
+    QVERIFY(!document.ensureStandardGroups());
+}
+
+void ExecutionViewModelTests::crossLoopSequenceUsesStandardLifecycleGroups()
+{
+    const auto path = QDir(QString::fromUtf8(PICOATE_UI_TEST_PROJECT_DIR))
+                          .filePath(QStringLiteral(
+                              "templates/CAN/CX/gcan_cx_cross_loop_sequence.json"));
+    QFile file(path);
+    QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.errorString()));
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    QCOMPARE(parseError.error, QJsonParseError::NoError);
+    QVERIFY(document.isObject());
+
+    const auto groups = document.object().value(QStringLiteral("groups")).toArray();
+    QCOMPARE(groups.size(), 3);
+    QCOMPARE(groups[0].toObject().value(QStringLiteral("kind")).toString(),
+             QStringLiteral("setup"));
+    QCOMPARE(groups[1].toObject().value(QStringLiteral("kind")).toString(),
+             QStringLiteral("main"));
+    QCOMPARE(groups[2].toObject().value(QStringLiteral("kind")).toString(),
+             QStringLiteral("cleanup"));
+
+    const auto setupSteps = groups[0].toObject().value(QStringLiteral("steps")).toArray();
+    QCOMPARE(setupSteps.size(), 4);
+    for (const auto& value : setupSteps) {
+        QCOMPARE(value.toObject().value(QStringLiteral("function")).toString(),
+                 QStringLiteral("open"));
+    }
+
+    const auto mainSteps = groups[1].toObject().value(QStringLiteral("steps")).toArray();
+    QCOMPARE(mainSteps.size(), 2);
+    for (const auto& itemValue : mainSteps) {
+        const auto item = itemValue.toObject();
+        QCOMPARE(item.value(QStringLiteral("kind")).toString(),
+                 QStringLiteral("testItem"));
+        const auto childSteps = item.value(QStringLiteral("steps")).toArray();
+        QCOMPARE(childSteps.size(), 6);
+        for (const auto& childValue : childSteps) {
+            const auto function = childValue.toObject()
+                                      .value(QStringLiteral("function")).toString();
+            QVERIFY(function != QStringLiteral("open"));
+            QVERIFY(function != QStringLiteral("close"));
+        }
+    }
+
+    const auto cleanupSteps = groups[2].toObject().value(QStringLiteral("steps")).toArray();
+    QCOMPARE(cleanupSteps.size(), 4);
+    for (const auto& value : cleanupSteps) {
+        QCOMPARE(value.toObject().value(QStringLiteral("function")).toString(),
+                 QStringLiteral("close"));
+        QVERIFY(value.toObject().value(QStringLiteral("alwaysRun")).toBool());
+    }
+
+    PicoATE::Core::SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(document.object());
+    QVERIFY2(compiled.ok(), compiled.errors.isEmpty()
+                                ? "Sequence compilation failed"
+                                : qPrintable(compiled.errors.first().message));
 }
 
 void ExecutionViewModelTests::sequenceTreeModelBuildsHierarchyAndEditsSteps()
@@ -3036,12 +3634,131 @@ void ExecutionViewModelTests::stationDeviceModelEditsAndReordersDevices()
     QVERIFY(document.duplicateDevice(1));
     QCOMPARE(model.rowCount(), 3);
     QCOMPARE(model.data(model.index(2, StationDeviceModel::DeviceIdColumn)).toString(),
-             QString("DEVICE1"));
+             QString("CAN2.CH1"));
     QVERIFY(document.moveDevice(2, -1));
     QCOMPARE(model.data(model.index(1, StationDeviceModel::DeviceIdColumn)).toString(),
-             QString("DEVICE1"));
+             QString("CAN1.CH1"));
     QVERIFY(document.removeDevice(1));
     QCOMPARE(model.rowCount(), 2);
+}
+
+void ExecutionViewModelTests::sequenceDocumentCopiesTestItemReferencesIntoNewScope()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath(QStringLiteral("scoped-copy.json"));
+    QFile source(path);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write(R"json({
+      "id":"scoped-copy","name":"Scoped Copy","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"001","name":"CAN Check","kind":"testItem","steps":[
+            {"id":"01","key":"rx","name":"Read","kind":"noop"},
+            {"id":"02","key":"limit","name":"Limit","kind":"limit",
+             "inputs":{
+               "actual":"${step:001.01.outputs.frame}",
+               "external":"${step:900.outputs.value}",
+               "nested":["${step:001.rx.outputs.id}"]
+             },
+             "parameters":{"comparison":"equal","expected":"OK"}}
+          ]
+        }]
+      }]}
+    )json");
+    source.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(path));
+    const SequenceItemPath sourcePath{0, {0}};
+    const auto clipboard = document.copiedSteps({sourcePath});
+    QCOMPARE(clipboard.size(), 1);
+
+    QVector<SequenceItemPath> pasted;
+    QVERIFY(document.pasteSteps(SequenceItemPath{0, {}}, -1, clipboard, &pasted));
+    QCOMPARE(pasted.size(), 1);
+    auto copiedLimit = document.objectAt(SequenceItemPath{0, {1, 1}})
+                           .value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(copiedLimit.value(QStringLiteral("actual")).toString(),
+             QStringLiteral("${step:002.01.outputs.frame}"));
+    QCOMPARE(copiedLimit.value(QStringLiteral("external")).toString(),
+             QStringLiteral("${step:900.outputs.value}"));
+    QCOMPARE(copiedLimit.value(QStringLiteral("nested")).toArray().first().toString(),
+             QStringLiteral("${step:002.rx.outputs.id}"));
+
+    QVERIFY(document.duplicateStep(sourcePath));
+    copiedLimit = document.objectAt(SequenceItemPath{0, {1, 1}})
+                      .value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(copiedLimit.value(QStringLiteral("actual")).toString(),
+             QStringLiteral("${step:003.01.outputs.frame}"));
+}
+
+void ExecutionViewModelTests::stationDocumentGeneratesTypedIdsAndMovesConfigurations()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sourcePath = directory.filePath(QStringLiteral("typed-station.json"));
+    QFile source(sourcePath);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write(R"({
+        "stationId": "typed-bench",
+        "devices": [
+            {
+                "deviceId": "CAN1",
+                "deviceType": "CAN",
+                "driverId": "",
+                "address": "",
+                "enabled": false,
+                "options": {}
+            },
+            {
+                "deviceId": "CAN2",
+                "deviceType": "CAN",
+                "driverId": "plugin.can.gcan",
+                "pluginPath": "PicoATE.CAN.GCAN.dll",
+                "enabled": true,
+                "options": {"channelIndex": 1}
+            },
+            {
+                "deviceId": "DMM1",
+                "deviceType": "DMM",
+                "driverId": "plugin.dmm.demo",
+                "enabled": true,
+                "options": {}
+            }
+        ]
+    })");
+    source.close();
+
+    StationDocument document;
+    QVERIFY(document.load(sourcePath));
+    QCOMPARE(document.nextDeviceIdForType(QStringLiteral("CAN")),
+             QStringLiteral("CAN3"));
+    QCOMPARE(document.nextDeviceIdForType(QStringLiteral("SERIAL")),
+             QStringLiteral("SERIAL1"));
+    QVERIFY(!document.isLastDeviceOfType(0));
+    QVERIFY(document.isLastDeviceOfType(1));
+    QVERIFY(document.isDeviceSlotEmpty(0));
+    QCOMPARE(document.previousEmptyDeviceRow(1), 0);
+
+    QVERIFY(document.moveDeviceConfiguration(1, 0));
+    QCOMPARE(document.deviceAt(0).value(QStringLiteral("deviceId")).toString(),
+             QStringLiteral("CAN1"));
+    QCOMPARE(document.deviceAt(0).value(QStringLiteral("driverId")).toString(),
+             QStringLiteral("plugin.can.gcan"));
+    QCOMPARE(document.deviceAt(0).value(QStringLiteral("options")).toObject()
+                 .value(QStringLiteral("channelIndex")).toInt(),
+             1);
+    QCOMPARE(document.deviceAt(1).value(QStringLiteral("deviceId")).toString(),
+             QStringLiteral("CAN2"));
+    QVERIFY(document.isDeviceSlotEmpty(1));
+    QVERIFY(!document.deviceAt(1).value(QStringLiteral("enabled")).toBool());
+
+    QVERIFY(document.insertDevice());
+    QCOMPARE(document.deviceAt(3).value(QStringLiteral("deviceId")).toString(),
+             QStringLiteral("PLUGIN1"));
+    QCOMPARE(document.deviceAt(3).value(QStringLiteral("deviceType")).toString(),
+             QStringLiteral("PLUGIN"));
+    QVERIFY(!document.deviceAt(3).value(QStringLiteral("enabled")).toBool());
 }
 
 void ExecutionViewModelTests::coreServiceCompilesProvidedSequenceSnapshot()
@@ -3098,7 +3815,7 @@ void ExecutionViewModelTests::coreServiceCompilesProvidedSequenceSnapshot()
     QCOMPARE(result.nodeCount, 2);
 }
 
-void ExecutionViewModelTests::stationFailurePolicyContinuesOuterItemsButStopsFailedTestItem()
+void ExecutionViewModelTests::stationFailurePolicyContinuesAllTestItemChildren()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -3121,7 +3838,7 @@ void ExecutionViewModelTests::stationFailurePolicyContinuesOuterItemsButStopsFai
                             "inputs": {"actual": 10},
                             "parameters": {"comparison": "equal", "expected": 5}
                         },
-                        {"id": "02", "name": "Must Skip", "kind": "noop"}
+                        {"id": "02", "name": "Must Continue", "kind": "noop"}
                     ]
                 },
                 {"id": "002", "name": "Continue Outer Item", "kind": "noop"}
@@ -3166,7 +3883,7 @@ void ExecutionViewModelTests::stationFailurePolicyContinuesOuterItemsButStopsFai
     QCOMPARE(parent->state, PicoATE::Core::ActivationState::Failed);
     QCOMPARE(parent->children.size(), 2);
     QCOMPARE(parent->children.at(0).state, PicoATE::Core::ActivationState::Failed);
-    QCOMPARE(parent->children.at(1).state, PicoATE::Core::ActivationState::Skipped);
+    QCOMPARE(parent->children.at(1).state, PicoATE::Core::ActivationState::Passed);
     QCOMPARE(next->state, PicoATE::Core::ActivationState::Passed);
 }
 

@@ -10,9 +10,11 @@
     "jigNo": "GCAN1-CX2_GCAN2-CX1"
   },
   "devices": [
-    {
-      "deviceId": "GCAN_CAN1",
+        {
+            "deviceId": "CAN1.CH1",
       "deviceType": "CAN",
+      "physicalDeviceId": "CAN1",
+      "channelId": "CH1",
       "driverId": "plugin.can.gcan",
       "pluginPath": "${PROJECT_DIR}/out/build/vs2022-qt6-all/ui/src/Debug/PicoATE.CAN.GCAN.dll",
       "address": "GCAN:0:0",
@@ -30,8 +32,10 @@
       }
     },
     {
-      "deviceId": "GCAN_CAN2",
+      "deviceId": "CAN1.CH2",
       "deviceType": "CAN",
+      "physicalDeviceId": "CAN1",
+      "channelId": "CH2",
       "driverId": "plugin.can.gcan",
       "pluginPath": "${PROJECT_DIR}/out/build/vs2022-qt6-all/ui/src/Debug/PicoATE.CAN.GCAN.dll",
       "address": "GCAN:0:1",
@@ -48,9 +52,11 @@
         "selfTest": false
       }
     },
-    {
-      "deviceId": "CX_CAN1",
+        {
+            "deviceId": "CAN2.CH1",
       "deviceType": "CAN",
+      "physicalDeviceId": "CAN2",
+      "channelId": "CH1",
       "driverId": "plugin.can.cx",
       "pluginPath": "${PROJECT_DIR}/out/build/vs2022-qt6-all/ui/src/Debug/PicoATE.CAN.CX.dll",
       "address": "CX:0:0",
@@ -61,15 +67,17 @@
         "deviceType": 4,
         "deviceIndex": 0,
         "channelIndex": 0,
-        "bitrate": 500000,
+                "bitrate": 500000,
         "canFd": false,
         "listenOnly": false,
         "selfTest": false
       }
     },
     {
-      "deviceId": "CX_CAN2",
+      "deviceId": "CAN2.CH2",
       "deviceType": "CAN",
+      "physicalDeviceId": "CAN2",
+      "channelId": "CH2",
       "driverId": "plugin.can.cx",
       "pluginPath": "${PROJECT_DIR}/out/build/vs2022-qt6-all/ui/src/Debug/PicoATE.CAN.CX.dll",
       "address": "CX:0:1",

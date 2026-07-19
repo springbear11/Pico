@@ -4,43 +4,47 @@
 #include "StationDocument.h"
 
 #include <QFormLayout>
-#include <QJsonDocument>
+#include <QFileDialog>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
+
+#include <initializer_list>
 
 namespace PicoATE::Ui {
 
 namespace {
 
-QString objectText(const QJsonObject& object)
+QString metadataValue(const QJsonObject& metadata,
+                      std::initializer_list<const char*> keys)
 {
-    return QString::fromUtf8(
-        QJsonDocument(object).toJson(QJsonDocument::Indented)).trimmed();
+    for (const auto* key : keys) {
+        const auto value = metadata.value(QString::fromLatin1(key))
+                               .toString().trimmed();
+        if (!value.isEmpty()) {
+            return value;
+        }
+    }
+    return {};
 }
 
-bool parseObject(const QString& text, QJsonObject& object, QString& error)
+void setMetadataValue(QJsonObject& metadata,
+                      const QString& key,
+                      const QString& value,
+                      std::initializer_list<const char*> aliases)
 {
-    const auto trimmed = text.trimmed();
+    for (const auto* alias : aliases) {
+        metadata.remove(QString::fromLatin1(alias));
+    }
+    const auto trimmed = value.trimmed();
     if (trimmed.isEmpty()) {
-        object = {};
-        return true;
+        metadata.remove(key);
+    } else {
+        metadata.insert(key, trimmed);
     }
-    QJsonParseError parseError;
-    const auto document = QJsonDocument::fromJson(trimmed.toUtf8(), &parseError);
-    if (parseError.error != QJsonParseError::NoError) {
-        error = parseError.errorString();
-        return false;
-    }
-    if (!document.isObject()) {
-        error = QObject::tr("Expected a JSON object");
-        return false;
-    }
-    object = document.object();
-    return true;
 }
 
 } // namespace
@@ -93,14 +97,49 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_snLengthSpin->setSuffix(tr(" chars"));
     m_snLengthSpin->setToolTip(tr("0 means no SN length restriction"));
     form->addRow(tr("SN Length"), m_snLengthSpin);
-    layout->addLayout(form);
 
-    auto* metadataLabel = new QLabel(tr("Metadata (JSON)"), this);
-    layout->addWidget(metadataLabel);
-    m_metadataEdit = new QPlainTextEdit(this);
-    m_metadataEdit->setObjectName(QStringLiteral("stationBasicMetadataEdit"));
-    m_metadataEdit->setMinimumHeight(110);
-    layout->addWidget(m_metadataEdit, 1);
+    m_txtLogSwitch = new OnOffSwitch(this);
+    m_txtLogSwitch->setObjectName(QStringLiteral("stationTxtLogSwitch"));
+    m_txtLogSwitch->setAccessibleName(tr("Enable TXT execution log"));
+    form->addRow(tr("TXT Log"), m_txtLogSwitch);
+
+    m_csvReportSwitch = new OnOffSwitch(this);
+    m_csvReportSwitch->setObjectName(QStringLiteral("stationCsvReportSwitch"));
+    m_csvReportSwitch->setAccessibleName(tr("Enable CSV result report"));
+    form->addRow(tr("CSV Report"), m_csvReportSwitch);
+
+    m_xlsxReportSwitch = new OnOffSwitch(this);
+    m_xlsxReportSwitch->setObjectName(QStringLiteral("stationXlsxReportSwitch"));
+    m_xlsxReportSwitch->setAccessibleName(tr("Enable XLSX result report"));
+    form->addRow(tr("XLSX Report"), m_xlsxReportSwitch);
+
+    auto* outputRow = new QWidget(this);
+    auto* outputLayout = new QHBoxLayout(outputRow);
+    outputLayout->setContentsMargins(0, 0, 0, 0);
+    outputLayout->setSpacing(6);
+    m_reportOutputEdit = new QLineEdit(outputRow);
+    m_reportOutputEdit->setObjectName(QStringLiteral("stationReportOutputEdit"));
+    m_reportOutputEdit->setPlaceholderText(tr("<application>/log"));
+    m_browseReportOutputButton = new QPushButton(tr("Browse"), outputRow);
+    m_browseReportOutputButton->setObjectName(
+        QStringLiteral("stationReportOutputBrowseButton"));
+    outputLayout->addWidget(m_reportOutputEdit, 1);
+    outputLayout->addWidget(m_browseReportOutputButton);
+    form->addRow(tr("Output Folder"), outputRow);
+
+    m_jigNoEdit = new QLineEdit(this);
+    m_jigNoEdit->setObjectName(QStringLiteral("stationJigNoEdit"));
+    m_jigNoEdit->setPlaceholderText(tr("Fixture or jig identifier"));
+    form->addRow(tr("Jig No"), m_jigNoEdit);
+    m_orderEdit = new QLineEdit(this);
+    m_orderEdit->setObjectName(QStringLiteral("stationOrderEdit"));
+    m_orderEdit->setPlaceholderText(tr("Production or work order"));
+    form->addRow(tr("Order"), m_orderEdit);
+    m_testerEdit = new QLineEdit(this);
+    m_testerEdit->setObjectName(QStringLiteral("stationTesterEdit"));
+    m_testerEdit->setPlaceholderText(tr("Tester or operator name"));
+    form->addRow(tr("Tester"), m_testerEdit);
+    layout->addLayout(form);
 
     m_errorLabel = new QLabel(this);
     m_errorLabel->setObjectName(QStringLiteral("stationBasicErrorLabel"));
@@ -108,14 +147,31 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_errorLabel->setStyleSheet(QStringLiteral("color: #b42318;"));
     m_errorLabel->hide();
     layout->addWidget(m_errorLabel);
+    layout->addStretch(1);
 
     const auto markPending = [this] { markPendingChanges(); };
     connect(m_stationIdEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_stationNameEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_stopOnFailureSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_scanDialogSwitch, &QAbstractButton::toggled, this, markPending);
+    connect(m_txtLogSwitch, &QAbstractButton::toggled, this, markPending);
+    connect(m_csvReportSwitch, &QAbstractButton::toggled, this, markPending);
+    connect(m_xlsxReportSwitch, &QAbstractButton::toggled, this, markPending);
+    connect(m_reportOutputEdit, &QLineEdit::textEdited, this, markPending);
+    connect(m_browseReportOutputButton, &QPushButton::clicked, this, [this] {
+        const auto selected = QFileDialog::getExistingDirectory(
+            this,
+            tr("Select Report Output Folder"),
+            m_reportOutputEdit->text().trimmed());
+        if (!selected.isEmpty()) {
+            m_reportOutputEdit->setText(selected);
+            markPendingChanges();
+        }
+    });
     connect(m_snLengthSpin, &QSpinBox::valueChanged, this, markPending);
-    connect(m_metadataEdit, &QPlainTextEdit::textChanged, this, markPending);
+    connect(m_jigNoEdit, &QLineEdit::textEdited, this, markPending);
+    connect(m_orderEdit, &QLineEdit::textEdited, this, markPending);
+    connect(m_testerEdit, &QLineEdit::textEdited, this, markPending);
     if (m_document) {
         connect(m_document, &StationDocument::documentChanged,
                 this, &StationSettingsEditor::reload);
@@ -131,8 +187,15 @@ void StationSettingsEditor::setEditable(bool editable)
                         static_cast<QWidget*>(m_stationNameEdit),
                         static_cast<QWidget*>(m_stopOnFailureSwitch),
                         static_cast<QWidget*>(m_scanDialogSwitch),
+                        static_cast<QWidget*>(m_txtLogSwitch),
+                        static_cast<QWidget*>(m_csvReportSwitch),
+                        static_cast<QWidget*>(m_xlsxReportSwitch),
+                        static_cast<QWidget*>(m_reportOutputEdit),
+                        static_cast<QWidget*>(m_browseReportOutputButton),
                         static_cast<QWidget*>(m_snLengthSpin),
-                        static_cast<QWidget*>(m_metadataEdit)}) {
+                        static_cast<QWidget*>(m_jigNoEdit),
+                        static_cast<QWidget*>(m_orderEdit),
+                        static_cast<QWidget*>(m_testerEdit)}) {
         field->setEnabled(m_editable && valid);
     }
     if (!m_pendingChanges) {
@@ -157,19 +220,28 @@ bool StationSettingsEditor::commitPendingChanges()
         showError(tr("Station ID cannot be empty"));
         return false;
     }
-    QJsonObject metadata;
-    QString parseError;
-    if (!parseObject(m_metadataEdit->toPlainText(), metadata, parseError)) {
-        showError(tr("Metadata: %1").arg(parseError));
-        return false;
-    }
-
     auto root = m_document->rootObject();
+    auto metadata = root.value(QStringLiteral("metadata")).toObject();
+    setMetadataValue(metadata, QStringLiteral("jigNo"), m_jigNoEdit->text(),
+                     {"fixtureId", "fixture"});
+    setMetadataValue(metadata, QStringLiteral("order"), m_orderEdit->text(),
+                     {"orderNumber"});
+    setMetadataValue(metadata, QStringLiteral("tester"), m_testerEdit->text(),
+                     {"operator"});
     root.insert(QStringLiteral("stationId"), m_stationIdEdit->text().trimmed());
     root.remove(QStringLiteral("id"));
     root.insert(QStringLiteral("name"), m_stationNameEdit->text().trimmed());
     root.insert(QStringLiteral("stopOnFailure"), m_stopOnFailureSwitch->isChecked());
     root.insert(QStringLiteral("scanDialogEnabled"), m_scanDialogSwitch->isChecked());
+    root.insert(QStringLiteral("txtLogEnabled"), m_txtLogSwitch->isChecked());
+    root.insert(QStringLiteral("csvReportEnabled"), m_csvReportSwitch->isChecked());
+    root.insert(QStringLiteral("xlsxReportEnabled"), m_xlsxReportSwitch->isChecked());
+    const auto outputDirectory = m_reportOutputEdit->text().trimmed();
+    if (outputDirectory.isEmpty()) {
+        root.remove(QStringLiteral("reportOutputDirectory"));
+    } else {
+        root.insert(QStringLiteral("reportOutputDirectory"), outputDirectory);
+    }
     root.insert(QStringLiteral("snLength"), m_snLengthSpin->value());
     root.insert(QStringLiteral("metadata"), metadata);
     m_document->replaceRootObject(std::move(root));
@@ -196,10 +268,28 @@ bool StationSettingsEditor::focusField(const QString& path)
         field = m_stopOnFailureSwitch;
     } else if (path == QStringLiteral("scanDialogEnabled")) {
         field = m_scanDialogSwitch;
+    } else if (path == QStringLiteral("txtLogEnabled")) {
+        field = m_txtLogSwitch;
+    } else if (path == QStringLiteral("csvReportEnabled")) {
+        field = m_csvReportSwitch;
+    } else if (path == QStringLiteral("xlsxReportEnabled")) {
+        field = m_xlsxReportSwitch;
+    } else if (path == QStringLiteral("reportOutputDirectory")) {
+        field = m_reportOutputEdit;
     } else if (path == QStringLiteral("snLength")) {
         field = m_snLengthSpin;
     } else if (path.startsWith(QStringLiteral("metadata"))) {
-        field = m_metadataEdit;
+        if (path.contains(QStringLiteral("jigNo")) ||
+            path.contains(QStringLiteral("fixture"))) {
+            field = m_jigNoEdit;
+        } else if (path.contains(QStringLiteral("order"))) {
+            field = m_orderEdit;
+        } else if (path.contains(QStringLiteral("tester")) ||
+                   path.contains(QStringLiteral("operator"))) {
+            field = m_testerEdit;
+        } else {
+            field = m_jigNoEdit;
+        }
     }
     if (!field) {
         return false;
@@ -223,17 +313,37 @@ void StationSettingsEditor::reload()
         root.value(QStringLiteral("stopOnFailure")).toBool(true));
     m_scanDialogSwitch->setChecked(
         root.value(QStringLiteral("scanDialogEnabled")).toBool(true));
+    m_txtLogSwitch->setChecked(
+        root.value(QStringLiteral("txtLogEnabled")).toBool(false));
+    m_csvReportSwitch->setChecked(
+        root.value(QStringLiteral("csvReportEnabled")).toBool(false));
+    m_xlsxReportSwitch->setChecked(
+        root.value(QStringLiteral("xlsxReportEnabled")).toBool(false));
+    m_reportOutputEdit->setText(
+        root.value(QStringLiteral("reportOutputDirectory")).toString());
     m_snLengthSpin->setValue(
         qBound(0, root.value(QStringLiteral("snLength")).toInt(0), 256));
-    m_metadataEdit->setPlainText(
-        objectText(root.value(QStringLiteral("metadata")).toObject()));
+    const auto metadata = root.value(QStringLiteral("metadata")).toObject();
+    m_jigNoEdit->setText(metadataValue(
+        metadata, {"jigNo", "fixtureId", "fixture"}));
+    m_orderEdit->setText(metadataValue(
+        metadata, {"order", "orderNumber"}));
+    m_testerEdit->setText(metadataValue(
+        metadata, {"tester", "operator"}));
 
     for (auto* field : {static_cast<QWidget*>(m_stationIdEdit),
                         static_cast<QWidget*>(m_stationNameEdit),
                         static_cast<QWidget*>(m_stopOnFailureSwitch),
                         static_cast<QWidget*>(m_scanDialogSwitch),
+                        static_cast<QWidget*>(m_txtLogSwitch),
+                        static_cast<QWidget*>(m_csvReportSwitch),
+                        static_cast<QWidget*>(m_xlsxReportSwitch),
+                        static_cast<QWidget*>(m_reportOutputEdit),
+                        static_cast<QWidget*>(m_browseReportOutputButton),
                         static_cast<QWidget*>(m_snLengthSpin),
-                        static_cast<QWidget*>(m_metadataEdit)}) {
+                        static_cast<QWidget*>(m_jigNoEdit),
+                        static_cast<QWidget*>(m_orderEdit),
+                        static_cast<QWidget*>(m_testerEdit)}) {
         field->setEnabled(m_editable && valid);
     }
     m_errorLabel->hide();

@@ -87,6 +87,10 @@ QString nodeKindName(ExecNodeKind kind)
     case ExecNodeKind::Loop: return "Loop";
     case ExecNodeKind::TestItem: return "TestItem";
     case ExecNodeKind::Limit: return "Limit";
+    case ExecNodeKind::Break: return "Break";
+    case ExecNodeKind::Counter: return "Counter";
+    case ExecNodeKind::Aggregate: return "Aggregate";
+    case ExecNodeKind::OperatorPrompt: return "OperatorPrompt";
     case ExecNodeKind::Statement: return "Statement";
     case ExecNodeKind::SequenceCall: return "SequenceCall";
     }
@@ -103,6 +107,10 @@ std::optional<ExecNodeKind> nodeKindFromString(const QString& value)
     if (value == "Loop") return ExecNodeKind::Loop;
     if (value == "TestItem") return ExecNodeKind::TestItem;
     if (value == "Limit") return ExecNodeKind::Limit;
+    if (value == "Break") return ExecNodeKind::Break;
+    if (value == "Counter") return ExecNodeKind::Counter;
+    if (value == "Aggregate") return ExecNodeKind::Aggregate;
+    if (value == "OperatorPrompt") return ExecNodeKind::OperatorPrompt;
     if (value == "Statement") return ExecNodeKind::Statement;
     if (value == "SequenceCall") return ExecNodeKind::SequenceCall;
     return std::nullopt;

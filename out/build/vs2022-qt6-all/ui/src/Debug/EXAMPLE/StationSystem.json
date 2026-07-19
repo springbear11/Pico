@@ -1,0 +1,17 @@
+{
+    "csvReportEnabled": false,
+    "devices": [
+    ],
+    "metadata": {
+        "jigNo": "NA",
+        "order": "NA",
+        "tester": "NA"
+    },
+    "name": "NA",
+    "scanDialogEnabled": false,
+    "snLength": 0,
+    "stationId": "GCAN-CX-CROSS-LOOP",
+    "stopOnFailure": false,
+    "txtLogEnabled": false,
+    "xlsxReportEnabled": false
+}

@@ -25,7 +25,9 @@ public:
     explicit ExecutionSession(ExecutionPlan plan,
                               std::shared_ptr<StopToken> stopToken = {},
                               IRuntimeEventSink* eventSink = nullptr,
-                              std::shared_ptr<ExecutionControl> executionControl = {});
+                              std::shared_ptr<ExecutionControl> executionControl = {},
+                              FailureHandlingMode failureHandling =
+                                  FailureHandlingMode::UseNodePolicy);
 
     UutExecution& addUut(const UutId& uutId);
     QVector<UutExecution>& uuts();

@@ -96,6 +96,12 @@ QString nodeKindName(ExecNodeKind kind)
         return "TestItem";
     case ExecNodeKind::Limit:
         return "Limit";
+    case ExecNodeKind::Break:
+        return "Break";
+    case ExecNodeKind::Counter:
+        return "Counter";
+    case ExecNodeKind::Aggregate:
+        return "Aggregate";
     case ExecNodeKind::Statement:
         return "Statement";
     case ExecNodeKind::SequenceCall:
@@ -588,8 +594,11 @@ int runCommand(const QCommandLineParser& parser, const QStringList& positional, 
         printStationSummary(stationRuntime, out);
     }
 
+    const auto failureHandling = stationRuntime.hasStationConfig()
+        ? failureHandlingMode(stationRuntime.stationConfig())
+        : FailureHandlingMode::UseNodePolicy;
     ConsoleRuntimeEventSink consoleEvents(compile.plan, out);
-    ExecutionSession session(compile.plan, {}, &consoleEvents);
+    ExecutionSession session(compile.plan, {}, &consoleEvents, {}, failureHandling);
     if (stationRuntime.hasStationConfig()) {
         registerFakeInstrumentDeviceFactories(session.devices());
         const auto configureErrors = configureDeviceSessions(stationRuntime.stationConfig(), session.devices());

@@ -1,0 +1,26 @@
+{
+    "groups": [
+        {
+            "id": "setup",
+            "kind": "setup",
+            "name": "Setup",
+            "steps": [
+            ]
+        },
+        {
+            "id": "main",
+            "kind": "main",
+            "steps": [
+            ]
+        },
+        {
+            "id": "cleanup",
+            "kind": "cleanup",
+            "steps": [
+            ]
+        }
+    ],
+    "id": "gcan-cx-cross-loop",
+    "name": "GCAN and CX USB-CAN Cross Channel Loop",
+    "version": "1.0.0"
+}

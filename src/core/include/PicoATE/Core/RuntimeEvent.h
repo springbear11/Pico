@@ -28,6 +28,8 @@ enum class RuntimeEventKind {
     DeviceStateChanged,
     BreakpointHit,
     DebugStepCompleted,
+    OperatorPromptRequested,
+    OperatorPromptClosed,
     ModuleLog
 };
 

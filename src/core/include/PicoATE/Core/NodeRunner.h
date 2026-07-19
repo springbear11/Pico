@@ -7,7 +7,10 @@
 
 namespace PicoATE::Core {
 
+class ExecutionControl;
 class ExecutionResultStore;
+class RuntimeEventEmitter;
+class StopToken;
 
 struct NodeExecutionContext {
     UutId uutId;
@@ -19,6 +22,9 @@ struct NodeExecutionContext {
     const ExecutionResultStore* resultStore = nullptr;
     IModuleRuntimeServices* runtimeServices = nullptr;
     IModuleLogSink* logSink = nullptr;
+    ExecutionControl* executionControl = nullptr;
+    const StopToken* stopToken = nullptr;
+    RuntimeEventEmitter* runtimeEvents = nullptr;
 };
 
 class INodeHandler {
@@ -68,6 +74,30 @@ private:
 };
 
 class LimitNodeHandler final : public INodeHandler {
+public:
+    bool canHandle(const ExecNode& node) const override;
+    NodeResult run(const ExecNode& node, const NodeExecutionContext& context) override;
+};
+
+class BreakNodeHandler final : public INodeHandler {
+public:
+    bool canHandle(const ExecNode& node) const override;
+    NodeResult run(const ExecNode& node, const NodeExecutionContext& context) override;
+};
+
+class CounterNodeHandler final : public INodeHandler {
+public:
+    bool canHandle(const ExecNode& node) const override;
+    NodeResult run(const ExecNode& node, const NodeExecutionContext& context) override;
+};
+
+class AggregateNodeHandler final : public INodeHandler {
+public:
+    bool canHandle(const ExecNode& node) const override;
+    NodeResult run(const ExecNode& node, const NodeExecutionContext& context) override;
+};
+
+class OperatorPromptNodeHandler final : public INodeHandler {
 public:
     bool canHandle(const ExecNode& node) const override;
     NodeResult run(const ExecNode& node, const NodeExecutionContext& context) override;

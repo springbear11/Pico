@@ -17,6 +17,10 @@ enum class StepKind {
     Loop,
     TestItem,
     Limit,
+    Break,
+    Counter,
+    Aggregate,
+    OperatorPrompt,
     Statement,
     SequenceCall
 };
@@ -88,12 +92,30 @@ struct BarrierPolicyDef {
 };
 
 struct LoopPolicyDef {
+    LoopType type = LoopType::For;
     QString variableName = "i";
     int from = 0;
     int to = 0;
     int step = 1;
+    WhileIterationErrorPolicy iterationErrorPolicy =
+        WhileIterationErrorPolicy::AbortLoop;
+    int intervalMs = 0;
+    int maxIterations = 100;
+    int timeoutMs = 60000;
 
     ForLoopSpec toRuntimeSpec() const;
+    WhileLoopSpec toRuntimeWhileSpec() const;
+    QVariantMap toPayload() const;
+};
+
+struct OperatorPromptDef {
+    QString mode = "confirm";
+    QString title;
+    QString message;
+    QString confirmText = "OK";
+    QString closeOnStep;
+    int timeoutMs = 60000;
+
     QVariantMap toPayload() const;
 };
 
@@ -112,6 +134,7 @@ struct StepDef {
     ErrorPolicyDef errorPolicy;
     BarrierPolicyDef barrier;
     LoopPolicyDef loop;
+    OperatorPromptDef prompt;
     QVector<StepDef> steps;
     bool enabled = true;
     bool alwaysRun = false;

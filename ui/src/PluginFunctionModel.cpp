@@ -5,6 +5,7 @@
 #include <QMimeData>
 
 #include <algorithm>
+#include <utility>
 
 namespace PicoATE::Ui {
 
@@ -181,6 +182,26 @@ void PluginFunctionModel::setDeviceBindings(
 {
     beginResetModel();
     m_devicesByModuleId = std::move(devicesByModuleId);
+    bool selectedStillExists = false;
+    for (const auto& deviceIds : std::as_const(m_devicesByModuleId)) {
+        selectedStillExists = selectedStillExists ||
+            deviceIds.contains(m_selectedDeviceId, Qt::CaseInsensitive);
+    }
+    if (!selectedStillExists) {
+        m_selectedDeviceId.clear();
+    }
+    rebuild();
+    endResetModel();
+}
+
+void PluginFunctionModel::setSelectedDeviceId(const QString& deviceId)
+{
+    const auto normalized = deviceId.trimmed();
+    if (m_selectedDeviceId == normalized) {
+        return;
+    }
+    beginResetModel();
+    m_selectedDeviceId = normalized;
     rebuild();
     endResetModel();
 }
@@ -188,6 +209,11 @@ void PluginFunctionModel::setDeviceBindings(
 QVector<PluginManifest> PluginFunctionModel::plugins() const
 {
     return m_plugins;
+}
+
+QString PluginFunctionModel::selectedDeviceId() const
+{
+    return m_selectedDeviceId;
 }
 
 QJsonObject PluginFunctionModel::stepTemplate(const QModelIndex& modelIndex) const
@@ -240,6 +266,14 @@ void PluginFunctionModel::rebuild()
     const QVector<QPair<QString, QJsonObject>> basicFunctions = {
         {tr("Wait"), basicStep(tr("Wait"), QStringLiteral("wait"),
                                {{QStringLiteral("ms"), 1000}})},
+        {tr("MessageBox"), basicStep(
+             tr("MessageBox"), QStringLiteral("operatorPrompt"),
+             {{QStringLiteral("prompt"),
+               QJsonObject{{QStringLiteral("mode"), QStringLiteral("confirm")},
+                           {QStringLiteral("title"), QStringLiteral("Message")},
+                           {QStringLiteral("message"), QStringLiteral("Complete the requested action, then click OK.")},
+                           {QStringLiteral("confirmText"), QStringLiteral("OK")},
+                           {QStringLiteral("timeoutMs"), 60000}}}})},
         {tr("Limit Check"), basicStep(
              tr("Limit Check"), QStringLiteral("limit"),
              {{QStringLiteral("inputs"), QJsonObject{{QStringLiteral("actual"), QString()}}},
@@ -260,6 +294,29 @@ void PluginFunctionModel::rebuild()
                            {QStringLiteral("to"), 0},
                            {QStringLiteral("step"), 1}}},
               {QStringLiteral("steps"), QJsonArray{}}})},
+        {tr("While Loop"), basicStep(
+             tr("While Loop"), QStringLiteral("loop"),
+             {{QStringLiteral("loop"),
+               QJsonObject{{QStringLiteral("type"), QStringLiteral("while")},
+                           {QStringLiteral("intervalMs"), 200},
+                           {QStringLiteral("maxIterations"), 100},
+                           {QStringLiteral("timeoutMs"), 60000},
+                           {QStringLiteral("iterationErrorPolicy"), QStringLiteral("abortLoop")}}},
+              {QStringLiteral("steps"), QJsonArray{}}})},
+        {tr("Break If"), basicStep(
+             tr("Break If"), QStringLiteral("break"),
+             {{QStringLiteral("inputs"), QJsonObject{{QStringLiteral("actual"), QString()}}},
+              {QStringLiteral("parameters"),
+               QJsonObject{{QStringLiteral("comparison"), QStringLiteral("isTrue")}}}})},
+         {tr("Counter"), basicStep(
+              tr("Counter"), QStringLiteral("counter"),
+              {{QStringLiteral("parameters"),
+                QJsonObject{{QStringLiteral("mode"), QStringLiteral("consecutive")},
+                            {QStringLiteral("start"), 0},
+                            {QStringLiteral("increment"), 1}}}})},
+        {tr("Aggregate"), basicStep(
+             tr("Aggregate"), QStringLiteral("aggregate"),
+             {{QStringLiteral("inputs"), QJsonObject{{QStringLiteral("value"), QString()}}}})},
         {tr("Barrier"), basicStep(
              tr("Barrier"), QStringLiteral("barrier"),
              {{QStringLiteral("barrier"),
@@ -293,75 +350,64 @@ void PluginFunctionModel::rebuild()
     auto* pluginSectionPointer = pluginSection.get();
     m_root->children.push_back(std::move(pluginSection));
 
-    QVector<int> order(m_plugins.size());
-    for (int index = 0; index < order.size(); ++index) order[index] = index;
-    std::sort(order.begin(), order.end(), [this](int left, int right) {
-        const auto& a = m_plugins[left];
-        const auto& b = m_plugins[right];
-        const int category = a.category.compare(b.category, Qt::CaseInsensitive);
-        return category == 0
-            ? a.name.compare(b.name, Qt::CaseInsensitive) < 0
-            : category < 0;
-    });
-
-    for (const int pluginIndex : order) {
-        const auto& plugin = m_plugins[pluginIndex];
-        Item* categoryItem = nullptr;
-        for (const auto& child : pluginSectionPointer->children) {
-            if (child->text.compare(plugin.category, Qt::CaseInsensitive) == 0) {
-                categoryItem = child.get();
-                break;
-            }
+    QString selectedModuleId;
+    for (auto iterator = m_devicesByModuleId.constBegin();
+         iterator != m_devicesByModuleId.constEnd(); ++iterator) {
+        if (iterator.value().contains(m_selectedDeviceId,
+                                      Qt::CaseInsensitive)) {
+            selectedModuleId = iterator.key();
+            break;
         }
-        if (!categoryItem) {
-            auto category = std::make_unique<Item>();
-            category->kind = ItemKind::Category;
-            category->text = plugin.category;
-            category->tooltip = tr("%1 device plugins").arg(plugin.category);
-            category->parent = pluginSectionPointer;
-            categoryItem = category.get();
-            pluginSectionPointer->children.push_back(std::move(category));
-        }
+    }
 
-        auto pluginItem = std::make_unique<Item>();
-        pluginItem->kind = ItemKind::Plugin;
-        pluginItem->text = plugin.name;
-        auto deviceIds = m_devicesByModuleId.value(plugin.moduleId);
-        deviceIds.removeAll(QString());
-        deviceIds.removeDuplicates();
-        pluginItem->tooltip = deviceIds.isEmpty()
-            ? tr("Bind this plugin to a logical device in Station Editor before dragging functions")
-            : tr("Logical devices: %1\n%2").arg(deviceIds.join(", "), plugin.dllPath);
-        pluginItem->pluginIndex = pluginIndex;
-        pluginItem->parent = categoryItem;
-        auto* pluginPointer = pluginItem.get();
-        categoryItem->children.push_back(std::move(pluginItem));
+    const auto pluginIterator = std::find_if(
+        m_plugins.cbegin(), m_plugins.cend(),
+        [&](const PluginManifest& plugin) {
+            return plugin.moduleId == selectedModuleId;
+        });
+    if (m_selectedDeviceId.isEmpty() || selectedModuleId.isEmpty() ||
+        pluginIterator == m_plugins.cend()) {
+        auto placeholder = std::make_unique<Item>();
+        placeholder->kind = ItemKind::Plugin;
+        placeholder->text = m_selectedDeviceId.isEmpty()
+            ? tr("Select a configured target device")
+            : tr("No plugin available for %1").arg(m_selectedDeviceId);
+        placeholder->tooltip = tr(
+            "Choose a configured Station device before dragging plugin functions");
+        placeholder->parent = pluginSectionPointer;
+        pluginSectionPointer->children.push_back(std::move(placeholder));
+        return;
+    }
 
-        const auto targets = deviceIds.isEmpty() ? QStringList{QString()} : deviceIds;
-        for (const auto& deviceId : targets) {
-            for (int functionIndex = 0;
-                 functionIndex < plugin.functions.size(); ++functionIndex) {
-                const auto& function = plugin.functions[functionIndex];
-                auto functionItem = std::make_unique<Item>();
-                functionItem->kind = ItemKind::Function;
-                functionItem->text = deviceIds.size() > 1
-                    ? tr("%1 [%2]").arg(function.name, deviceId)
-                    : function.name;
-                functionItem->tooltip = function.description.isEmpty()
-                    ? tr("Function: %1").arg(function.id)
-                    : function.description;
-                if (deviceId.isEmpty()) {
-                    functionItem->tooltip += tr("\nNo logical device binding");
-                } else {
-                    functionItem->tooltip += tr("\nDevice: %1").arg(deviceId);
-                }
-                functionItem->pluginIndex = pluginIndex;
-                functionItem->functionIndex = functionIndex;
-                functionItem->deviceId = deviceId;
-                functionItem->parent = pluginPointer;
-                pluginPointer->children.push_back(std::move(functionItem));
-            }
-        }
+    const int pluginIndex = static_cast<int>(std::distance(
+        m_plugins.cbegin(), pluginIterator));
+    const auto& plugin = *pluginIterator;
+    auto category = std::make_unique<Item>();
+    category->kind = ItemKind::Category;
+    category->text = plugin.category;
+    category->tooltip = tr("%1 functions for %2 using %3")
+                            .arg(plugin.category, m_selectedDeviceId,
+                                 plugin.name);
+    category->parent = pluginSectionPointer;
+    auto* categoryPointer = category.get();
+    pluginSectionPointer->children.push_back(std::move(category));
+
+    for (int functionIndex = 0;
+         functionIndex < plugin.functions.size(); ++functionIndex) {
+        const auto& function = plugin.functions[functionIndex];
+        auto functionItem = std::make_unique<Item>();
+        functionItem->kind = ItemKind::Function;
+        functionItem->text = function.name;
+        functionItem->tooltip = function.description.isEmpty()
+            ? tr("Function: %1").arg(function.id)
+            : function.description;
+        functionItem->tooltip += tr("\nTarget: %1\nDriver: %2")
+                                     .arg(m_selectedDeviceId, plugin.name);
+        functionItem->pluginIndex = pluginIndex;
+        functionItem->functionIndex = functionIndex;
+        functionItem->deviceId = m_selectedDeviceId;
+        functionItem->parent = categoryPointer;
+        categoryPointer->children.push_back(std::move(functionItem));
     }
 }
 

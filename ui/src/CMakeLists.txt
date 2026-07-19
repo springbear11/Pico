@@ -16,12 +16,16 @@ add_library(PicoATEUiRuntime STATIC
     ReportExporter.h
     ReportHistoryStore.cpp
     ReportHistoryStore.h
+    RunArtifactWriter.cpp
+    RunArtifactWriter.h
     RunnerModels.cpp
     RunnerModels.h
     SequenceDocument.cpp
     SequenceDocument.h
     SequenceTreeModel.cpp
     SequenceTreeModel.h
+    SimpleXlsxWriter.cpp
+    SimpleXlsxWriter.h
     StationDeviceModel.cpp
     StationDeviceModel.h
     StationDocument.cpp
@@ -59,6 +63,8 @@ set_target_properties(PicoATEUiRuntime
 )
 
 qt_add_executable(PicoATEUi WIN32
+    FlowTargetSelector.cpp
+    FlowTargetSelector.h
     LoginDialog.cpp
     LoginDialog.h
     Main.cpp
@@ -66,6 +72,8 @@ qt_add_executable(PicoATEUi WIN32
     MainWindow.h
     OnOffControl.cpp
     OnOffControl.h
+    OperatorPromptPresenter.cpp
+    OperatorPromptPresenter.h
     ProductionWindow.cpp
     ProductionWindow.h
     ProportionalHeaderView.cpp

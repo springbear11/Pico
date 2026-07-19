@@ -3,8 +3,10 @@
 #include "ProportionalHeaderView.h"
 
 #include "ExecutionViewModel.h"
+#include "OperatorPromptPresenter.h"
 #include "PicoATE/Core/StationConfig.h"
 #include "RunnerModels.h"
+#include "RunArtifactWriter.h"
 #include "ScanDialog.h"
 
 #include <QAction>
@@ -12,12 +14,14 @@
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QFileInfo>
+#include <QFile>
 #include <QFont>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QJsonDocument>
 #include <QProgressBar>
 #include <QSizePolicy>
 #include <QSplitter>
@@ -114,9 +118,11 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
     setWindowTitle(tr("PicoATE TEST"));
     setMinimumSize(960, 620);
     m_viewModel = new ExecutionViewModel(this);
+    m_operatorPromptPresenter = new OperatorPromptPresenter(m_viewModel, this, this);
     m_resultModel = new UutStepModel(this);
     m_resultModel->setSingleUutPhaseLayout(true);
-    m_logModel = new RuntimeLogModel(this);
+    m_logModel = new RuntimeTimelineModel(this);
+    m_runArtifactWriter = std::make_unique<RunArtifactWriter>();
     m_scanDialog = new ScanDialog(this);
     m_scanDialog->setExpectedLength(m_selection.snLength);
     buildUi();
@@ -142,13 +148,17 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
 
 ProductionWindow::~ProductionWindow()
 {
+    m_runArtifactWriter->abandon();
     m_scanDialog->hide();
+    m_operatorPromptPresenter->closeAll();
     m_viewModel->shutdown();
 }
 
 void ProductionWindow::closeEvent(QCloseEvent* event)
 {
+    m_runArtifactWriter->abandon();
     m_scanDialog->hide();
+    m_operatorPromptPresenter->closeAll();
     m_viewModel->shutdown();
     event->accept();
 }
@@ -306,7 +316,7 @@ void ProductionWindow::buildUi()
     auto* logsLayout = new QVBoxLayout(logsArea);
     logsLayout->setContentsMargins(0, 0, 0, 0);
     logsLayout->setSpacing(6);
-    auto* logsTitle = new QLabel(tr("LIVE LOG"), logsArea);
+    auto* logsTitle = new QLabel(tr("EXECUTION LOG"), logsArea);
     logsTitle->setObjectName(QStringLiteral("productionSectionTitle"));
     logsLayout->addWidget(logsTitle);
     m_logView = new QTableView(logsArea);
@@ -314,9 +324,16 @@ void ProductionWindow::buildUi()
     m_logView->setModel(m_logModel);
     m_logView->setAlternatingRowColors(true);
     m_logView->verticalHeader()->setVisible(false);
-    auto* logHeader = new ProportionalHeaderView(m_logView);
-    m_logView->setHorizontalHeader(logHeader);
-    logHeader->setSectionWeights({2, 1, 2, 1, 6});
+    m_logView->setWordWrap(false);
+    m_logView->horizontalHeader()->setSectionResizeMode(
+        RuntimeTimelineModel::TimeColumn, QHeaderView::Interactive);
+    m_logView->horizontalHeader()->setSectionResizeMode(
+        RuntimeTimelineModel::MessageColumn, QHeaderView::Stretch);
+    m_logView->setColumnWidth(RuntimeTimelineModel::TimeColumn, 112);
+    connect(m_resultView,
+            &QTreeView::doubleClicked,
+            this,
+            &ProductionWindow::focusExecutionLogForResult);
     logsLayout->addWidget(m_logView, 1);
     rightSplitter->setStretchFactor(0, 4);
     rightSplitter->setStretchFactor(1, 1);
@@ -507,6 +524,14 @@ void ProductionWindow::updateReport()
     if (report.uuts.isEmpty()) {
         return;
     }
+    if (report.completed && m_runArtifactWriter->active()) {
+        const auto archived = m_runArtifactWriter->finalize(report);
+        if (!archived.success) {
+            statusBar()->showMessage(
+                tr("Report archive failed: %1").arg(archived.errorMessage),
+                10000);
+        }
+    }
     m_resultModel->setReport(report);
     m_resultView->expandAll();
     m_nodeStates.clear();
@@ -542,8 +567,15 @@ void ProductionWindow::updateReport()
 void ProductionWindow::applyRuntimeEvents(
     const QVector<PicoATE::Core::RuntimeEvent>& events)
 {
+    m_operatorPromptPresenter->applyRuntimeEvents(events);
     m_resultModel->applyRuntimeEvents(events);
-    m_logModel->applyRuntimeEvents(events);
+    const auto logLines = m_logModel->applyRuntimeEvents(events);
+    const auto written = m_runArtifactWriter->appendLogLines(logLines);
+    if (!written.success) {
+        statusBar()->showMessage(
+            tr("TXT log write failed: %1").arg(written.errorMessage),
+            10000);
+    }
     m_resultView->expandAll();
     if (m_logModel->rowCount() > 0) {
         m_logView->scrollToBottom();
@@ -562,11 +594,37 @@ void ProductionWindow::applyRuntimeEvents(
             const auto index = m_resultModel->indexForStep(event.uutId, event.nodeId);
             if (index.isValid() && event.activationState == PicoATE::Core::ActivationState::Running) {
                 m_resultView->setCurrentIndex(index);
-                m_resultView->scrollTo(index, QAbstractItemView::PositionAtCenter);
+                m_resultView->scrollTo(index, QAbstractItemView::PositionAtBottom);
             }
         }
     }
     updateProgress();
+}
+
+void ProductionWindow::focusExecutionLogForResult(const QModelIndex& index)
+{
+    const auto step = m_resultModel->stepAt(index);
+    if (!step || !m_logModel || !m_logView) {
+        return;
+    }
+    const auto uut = m_resultModel->uutAt(index);
+    const auto nodeId = step->nodePath.isEmpty() ? step->stepId : step->nodePath;
+    int row = m_logModel->rowForNode(
+        uut ? uut->uutId : m_activeUutId, nodeId);
+    if (row < 0 && nodeId != step->stepId) {
+        row = m_logModel->rowForNode(
+            uut ? uut->uutId : m_activeUutId, step->stepId);
+    }
+    if (row < 0) {
+        statusBar()->showMessage(
+            tr("No execution log is available for %1 yet").arg(step->displayName),
+            3000);
+        return;
+    }
+    const auto logIndex = m_logModel->index(
+        row, RuntimeTimelineModel::MessageColumn);
+    m_logView->setCurrentIndex(logIndex);
+    m_logView->scrollTo(logIndex, QAbstractItemView::PositionAtCenter);
 }
 
 void ProductionWindow::beginRun(const QString& serialNumber)
@@ -581,6 +639,19 @@ void ProductionWindow::beginRun(const QString& serialNumber)
     m_serialLabel->setText(sn);
     resetPreviewForUut(sn);
     m_logModel->clear();
+    QFile stationFile(m_selection.stationPath);
+    QJsonObject stationObject;
+    if (stationFile.open(QIODevice::ReadOnly)) {
+        stationObject = QJsonDocument::fromJson(stationFile.readAll()).object();
+    }
+    const auto artifact = m_runArtifactWriter->begin(
+        runArtifactSettingsFromStation(stationObject, m_selection.stationPath),
+        sn);
+    if (!artifact.success) {
+        statusBar()->showMessage(
+            tr("Cannot create report files: %1").arg(artifact.errorMessage),
+            10000);
+    }
     m_terminalNodes.clear();
     m_nodeStates.clear();
     m_progress->setValue(0);

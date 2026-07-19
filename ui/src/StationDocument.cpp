@@ -9,6 +9,7 @@
 #include <QJsonParseError>
 #include <QSaveFile>
 #include <QSet>
+#include <QRegularExpression>
 #include <QUndoCommand>
 #include <QUndoStack>
 
@@ -21,6 +22,35 @@ namespace {
 QString normalizedAbsolutePath(const QString& path)
 {
     return path.trimmed().isEmpty() ? QString() : QFileInfo(path).absoluteFilePath();
+}
+
+QString normalizedDeviceType(QString deviceType)
+{
+    deviceType = deviceType.trimmed().toUpper();
+    return deviceType.isEmpty() ? QStringLiteral("PLUGIN") : deviceType;
+}
+
+QString deviceId(const QJsonObject& device)
+{
+    return device.value(QStringLiteral("deviceId")).toString(
+        device.value(QStringLiteral("id")).toString()).trimmed();
+}
+
+QString deviceType(const QJsonObject& device)
+{
+    return normalizedDeviceType(
+        device.value(QStringLiteral("deviceType")).toString(
+            device.value(QStringLiteral("type")).toString()));
+}
+
+int generatedDeviceNumber(const QString& id, const QString& type)
+{
+    const QRegularExpression expression(
+        QStringLiteral("^%1(\\d+)$")
+            .arg(QRegularExpression::escape(normalizedDeviceType(type))),
+        QRegularExpression::CaseInsensitiveOption);
+    const auto match = expression.match(id.trimmed());
+    return match.hasMatch() ? match.captured(1).toInt() : -1;
 }
 
 } // namespace
@@ -221,12 +251,13 @@ bool StationDocument::insertDevice(int row, QJsonObject device)
         return false;
     }
     if (device.isEmpty()) {
-        device.insert("deviceId", nextDeviceId());
-        device.insert("deviceType", "Generic");
+        const auto type = QStringLiteral("PLUGIN");
+        device.insert("deviceId", nextDeviceIdForType(type));
+        device.insert("deviceType", type);
         device.insert("driverId", "");
         device.insert("address", "");
         device.insert("lifetime", "Station");
-        device.insert("enabled", true);
+        device.insert("enabled", false);
         device.insert("options", QJsonObject{});
     }
 
@@ -256,7 +287,7 @@ bool StationDocument::duplicateDevice(int row)
     if (copy.isEmpty()) {
         return false;
     }
-    copy.insert("deviceId", nextDeviceId());
+    copy.insert("deviceId", nextDeviceIdForType(deviceType(copy)));
     copy.remove("id");
     return insertDevice(row + 1, std::move(copy));
 }
@@ -276,6 +307,38 @@ bool StationDocument::moveDevice(int row, int offset)
     devices.insert(target, value);
     root.insert("devices", devices);
     return commitRoot(std::move(root), tr("Move Device"));
+}
+
+bool StationDocument::moveDeviceConfiguration(int sourceRow, int targetRow)
+{
+    auto source = deviceAt(sourceRow);
+    auto target = deviceAt(targetRow);
+    if (source.isEmpty() || target.isEmpty() || sourceRow == targetRow ||
+        deviceType(source) != deviceType(target) || !isDeviceSlotEmpty(targetRow)) {
+        return false;
+    }
+
+    const auto targetId = deviceId(target);
+    target = source;
+    target.insert(QStringLiteral("deviceId"), targetId);
+    target.remove(QStringLiteral("id"));
+
+    QJsonObject cleared;
+    cleared.insert(QStringLiteral("deviceId"), deviceId(source));
+    cleared.insert(QStringLiteral("deviceType"), deviceType(source));
+    cleared.insert(QStringLiteral("driverId"), QString());
+    cleared.insert(QStringLiteral("address"), QString());
+    cleared.insert(QStringLiteral("timeoutMs"), 30000);
+    cleared.insert(QStringLiteral("lifetime"), QStringLiteral("Station"));
+    cleared.insert(QStringLiteral("enabled"), false);
+    cleared.insert(QStringLiteral("options"), QJsonObject{});
+
+    auto root = m_root;
+    auto devices = root.value(QStringLiteral("devices")).toArray();
+    devices[targetRow] = target;
+    devices[sourceRow] = cleared;
+    root.insert(QStringLiteral("devices"), devices);
+    return commitRoot(std::move(root), tr("Move Device Configuration"));
 }
 
 bool StationDocument::setDeviceValue(int row,
@@ -323,20 +386,104 @@ void StationDocument::applyCommandRoot(QJsonObject root)
     emit documentChanged();
 }
 
-QString StationDocument::nextDeviceId() const
+QString StationDocument::nextDeviceIdForType(const QString& requestedType,
+                                             int excludedRow) const
 {
+    const auto type = normalizedDeviceType(requestedType);
     QSet<QString> ids;
-    for (const auto& value : m_root.value("devices").toArray()) {
-        const auto object = value.toObject();
-        ids.insert(object.value("deviceId").toString(
-            object.value("id").toString()).trimmed().toUpper());
+    const auto devices = m_root.value(QStringLiteral("devices")).toArray();
+    for (int row = 0; row < devices.size(); ++row) {
+        if (row == excludedRow) {
+            continue;
+        }
+        const auto id = deviceId(devices[row].toObject()).toUpper();
+        ids.insert(id);
+        const int separator = id.indexOf(QStringLiteral(".CH"));
+        if (separator > 0) {
+            ids.insert(id.left(separator));
+        }
     }
     for (int index = 1; ; ++index) {
-        const auto candidate = QString("DEVICE%1").arg(index);
+        const auto candidate = QStringLiteral("%1%2").arg(type).arg(index);
         if (!ids.contains(candidate)) {
             return candidate;
         }
     }
+}
+
+bool StationDocument::isLastDeviceOfType(int row) const
+{
+    const auto selected = deviceAt(row);
+    if (selected.isEmpty()) {
+        return false;
+    }
+    const auto selectedType = deviceType(selected);
+    const int selectedNumber = generatedDeviceNumber(deviceId(selected), selectedType);
+    const auto devices = m_root.value(QStringLiteral("devices")).toArray();
+    for (int candidateRow = 0; candidateRow < devices.size(); ++candidateRow) {
+        if (candidateRow == row) {
+            continue;
+        }
+        const auto candidate = devices[candidateRow].toObject();
+        if (deviceType(candidate) != selectedType) {
+            continue;
+        }
+        const int candidateNumber = generatedDeviceNumber(
+            deviceId(candidate), selectedType);
+        if ((selectedNumber >= 0 && candidateNumber > selectedNumber) ||
+            (selectedNumber < 0 && candidateRow > row)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool StationDocument::isDeviceSlotEmpty(int row) const
+{
+    const auto device = deviceAt(row);
+    if (device.isEmpty()) {
+        return false;
+    }
+    return device.value(QStringLiteral("driverId")).toString(
+               device.value(QStringLiteral("driver")).toString()).trimmed().isEmpty() &&
+           device.value(QStringLiteral("pluginPath")).toString().trimmed().isEmpty() &&
+           device.value(QStringLiteral("address")).toString(
+               device.value(QStringLiteral("visaAddress")).toString()).trimmed().isEmpty() &&
+           device.value(QStringLiteral("options")).toObject().isEmpty();
+}
+
+int StationDocument::previousEmptyDeviceRow(int row) const
+{
+    const auto selected = deviceAt(row);
+    if (selected.isEmpty()) {
+        return -1;
+    }
+    const auto selectedType = deviceType(selected);
+    const int selectedNumber = generatedDeviceNumber(deviceId(selected), selectedType);
+    if (selectedNumber < 1) {
+        return -1;
+    }
+
+    int bestRow = -1;
+    int bestNumber = -1;
+    const auto devices = m_root.value(QStringLiteral("devices")).toArray();
+    for (int candidateRow = 0; candidateRow < devices.size(); ++candidateRow) {
+        if (candidateRow == row || !isDeviceSlotEmpty(candidateRow)) {
+            continue;
+        }
+        const auto candidate = devices[candidateRow].toObject();
+        if (deviceType(candidate) != selectedType) {
+            continue;
+        }
+        const int candidateNumber = generatedDeviceNumber(
+            deviceId(candidate), selectedType);
+        if (candidateNumber > 0 && candidateNumber < selectedNumber &&
+            (bestNumber < 0 || candidateNumber < bestNumber)) {
+            bestNumber = candidateNumber;
+            bestRow = candidateRow;
+        }
+    }
+    return bestRow;
 }
 
 void StationDocument::acceptRoot(QJsonObject root, QString filePath)

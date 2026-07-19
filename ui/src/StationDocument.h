@@ -52,8 +52,14 @@ public:
     bool removeDevice(int row);
     bool duplicateDevice(int row);
     bool moveDevice(int row, int offset);
+    bool moveDeviceConfiguration(int sourceRow, int targetRow);
     bool setDeviceValue(int row, const QString& key, const QJsonValue& value);
     bool replaceDevice(int row, QJsonObject device);
+    QString nextDeviceIdForType(const QString& deviceType,
+                                int excludedRow = -1) const;
+    bool isLastDeviceOfType(int row) const;
+    bool isDeviceSlotEmpty(int row) const;
+    int previousEmptyDeviceRow(int row) const;
 
 signals:
     void documentChanged();
@@ -66,7 +72,6 @@ private:
 
     bool commitRoot(QJsonObject root, const QString& commandText);
     void applyCommandRoot(QJsonObject root);
-    QString nextDeviceId() const;
     void acceptRoot(QJsonObject root, QString filePath);
     void setModified(bool modified);
     void validate();

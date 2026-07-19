@@ -2,16 +2,18 @@
 
 #include "PluginCatalog.h"
 
+#include <QHash>
 #include <QPointer>
 #include <QWidget>
 
 class QAbstractButton;
 class QCheckBox;
 class QComboBox;
+class QFormLayout;
+class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
-class QPushButton;
 class QSpinBox;
 class QTabWidget;
 
@@ -28,6 +30,7 @@ public:
                                    QWidget* parent = nullptr);
 
     void setCurrentDevice(int row);
+    void setCurrentDevices(QVector<int> rows, QString logicalBaseId = {});
     void setEditable(bool editable);
     void setStationPageVisible(bool visible);
     void setPluginRegistry(QVector<PluginManifest> plugins);
@@ -43,15 +46,33 @@ signals:
     void pendingChangesChanged(bool pending);
 
 private:
+    struct OptionEditor {
+        PluginParameterDefinition definition;
+        QWidget* widget = nullptr;
+        int channelIndex = -1;
+    };
+
     void buildStationPage();
     void buildDevicePage();
     void reload();
     void loadStation();
     void loadDevice();
+    void reloadPluginChoices(const QString& selectedModuleId = {});
+    void rebuildChannelSwitches();
+    void rebuildOptionEditors();
+    void updateLogicalIdPreview();
+    void updateAddressPresentation();
     void showStationError(const QString& message);
     void showDeviceError(const QString& message);
     bool commitStation();
     bool commitDevice();
+    bool collectOptionValues(QJsonObject& sharedOptions,
+                             QHash<int, QJsonObject>& channelOptions,
+                             QString& errorMessage) const;
+    const PluginManifest* selectedPlugin() const;
+    const PluginFunctionDefinition* connectionFunction(
+        const PluginManifest& plugin) const;
+    QString effectiveBaseId() const;
     void markPendingChanges();
     void setPendingChanges(bool pending);
 
@@ -64,16 +85,24 @@ private:
     QPlainTextEdit* m_metadataEdit = nullptr;
     QLabel* m_stationError = nullptr;
     QLineEdit* m_deviceIdEdit = nullptr;
-    QLineEdit* m_deviceTypeEdit = nullptr;
-    QLineEdit* m_driverIdEdit = nullptr;
+    QComboBox* m_deviceTypeCombo = nullptr;
     QComboBox* m_pluginCombo = nullptr;
+    QLabel* m_addressLabel = nullptr;
     QLineEdit* m_addressEdit = nullptr;
     QSpinBox* m_timeoutSpin = nullptr;
     QComboBox* m_lifetimeCombo = nullptr;
-    QAbstractButton* m_enabledCheck = nullptr;
-    QPlainTextEdit* m_optionsEdit = nullptr;
+    QLabel* m_channelsLabel = nullptr;
+    QWidget* m_channelsWidget = nullptr;
+    QGroupBox* m_optionsGroup = nullptr;
+    QFormLayout* m_optionsForm = nullptr;
+    QLabel* m_optionsHint = nullptr;
     QLabel* m_deviceError = nullptr;
-    int m_currentRow = -1;
+    QVector<int> m_currentRows;
+    QString m_logicalBaseId;
+    QString m_loadedDeviceType;
+    QString m_loadedDriverId;
+    QVector<QAbstractButton*> m_channelSwitches;
+    QVector<OptionEditor> m_optionEditors;
     bool m_editable = true;
     bool m_loading = false;
     bool m_pendingChanges = false;

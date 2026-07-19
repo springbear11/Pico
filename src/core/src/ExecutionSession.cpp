@@ -246,7 +246,8 @@ bool stepReportHasError(const StepReport& step)
 ExecutionSession::ExecutionSession(ExecutionPlan plan,
                                    std::shared_ptr<StopToken> stopToken,
                                    IRuntimeEventSink* eventSink,
-                                   std::shared_ptr<ExecutionControl> executionControl)
+                                   std::shared_ptr<ExecutionControl> executionControl,
+                                   FailureHandlingMode failureHandling)
     : m_plan(std::move(plan))
     , m_results(m_plan)
     , m_events(m_plan.id, eventSink)
@@ -255,11 +256,21 @@ ExecutionSession::ExecutionSession(ExecutionPlan plan,
                              ? std::move(executionControl)
                              : std::make_shared<ExecutionControl>())
     , m_runtimeServices(m_devices)
+    , m_errorPolicy(failureHandling)
 {
     m_devices.setRuntimeEventEmitter(&m_events);
     m_runner.setRuntimeServices(&m_runtimeServices);
     m_scheduler = std::make_unique<ExecutionGraphScheduler>(
-        m_plan, m_resources, m_barriers, m_loops, m_errorPolicy, m_runner, m_results, &m_events);
+        m_plan,
+        m_resources,
+        m_barriers,
+        m_loops,
+        m_errorPolicy,
+        m_runner,
+        m_results,
+        &m_events,
+        m_executionControl.get(),
+        m_stopToken.get());
 }
 
 UutExecution& ExecutionSession::addUut(const UutId& uutId)
@@ -312,6 +323,7 @@ bool ExecutionSession::registerModule(std::shared_ptr<IModule> module)
 void ExecutionSession::requestStop(StopMode mode)
 {
     m_stopToken->requestStop(mode);
+    m_executionControl->operatorPrompts().cancelAll();
     m_executionControl->resume();
 }
 
@@ -418,6 +430,9 @@ ExecutionSessionResult ExecutionSession::run()
     }
 
     result.state = m_state;
+    m_scheduler->closeAllOperatorPrompts(
+        m_stopToken->isStopRequested() ? QStringLiteral("session-stopped")
+                                       : QStringLiteral("session-finished"));
     publishCompletedUuts();
     publishSessionState("session finished");
     return result;

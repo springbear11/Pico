@@ -4,9 +4,11 @@
 #include "PicoATE/Core/ExecutionDebug.h"
 #include "PicoATE/Core/RuntimeEvent.h"
 #include "ReportHistoryStore.h"
+#include "RunArtifactWriter.h"
 
 #include <QAbstractItemModel>
 #include <QAbstractTableModel>
+#include <QHash>
 
 #include <optional>
 #include <memory>
@@ -293,13 +295,8 @@ class RuntimeTimelineModel final : public QAbstractTableModel
 
 public:
     enum Column {
-        SequenceColumn,
         TimeColumn,
-        EventColumn,
-        UutColumn,
-        StepColumn,
-        StateColumn,
-        DetailColumn,
+        MessageColumn,
         ColumnCount
     };
 
@@ -313,15 +310,39 @@ public:
                         Qt::Orientation orientation,
                         int role = Qt::DisplayRole) const override;
 
-    void applyRuntimeEvents(const QVector<PicoATE::Core::RuntimeEvent>& events);
+    QVector<RuntimeLogLine> applyRuntimeEvents(
+        const QVector<PicoATE::Core::RuntimeEvent>& events);
     void clear();
     std::optional<PicoATE::Core::RuntimeEvent> eventAt(int row) const;
     int rowForSequenceNumber(quint64 sequenceNumber) const;
+    int rowForNode(const PicoATE::Core::UutId& uutId,
+                   const PicoATE::Core::NodeId& nodeId) const;
     quint64 droppedRowCount() const;
 
 private:
+    enum class LineStyle {
+        Flow,
+        Banner,
+        Log,
+        Warning,
+        Passed,
+        Failed
+    };
+
+    struct Row {
+        PicoATE::Core::RuntimeEvent event;
+        QDateTime timestampUtc;
+        QString message;
+        LineStyle style = LineStyle::Flow;
+    };
+
+    void appendEventRows(const PicoATE::Core::RuntimeEvent& event);
+    int indentationFor(const PicoATE::Core::RuntimeEvent& event) const;
+
     const int m_maximumRows;
-    QVector<PicoATE::Core::RuntimeEvent> m_events;
+    QVector<Row> m_rows;
+    QHash<PicoATE::Core::NodeId, PicoATE::Core::NodeId> m_parentNodes;
+    QVector<QPair<PicoATE::Core::UutId, PicoATE::Core::NodeId>> m_activeAttempts;
     quint64 m_droppedRows = 0;
 };
 

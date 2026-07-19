@@ -1,0 +1,19 @@
+{
+  "dll": "${PROJECT_DIR}/out/build/vs2022-qt6-all/ui/src/Debug/PicoATE.CAN.GCAN.dll",
+  "symbol": "PicoATE_Execute",
+  "bufferSize": 65536,
+  "dllTimeoutMs": 5000,
+  "metadata": {
+    "name": "PicoATE CAN GCAN Plugin",
+    "vendor": "Shenyang Guangcheng Technology",
+    "workspace": "PicoATE.Plugins.sln"
+  },
+  "diagnostics": {
+    "vendorStdio": "strict",
+    "maximumBufferedLogs": 1024,
+    "maximumMessageCharacters": 4096,
+    "maximumBatchRecords": 64,
+    "maximumBatchBytes": 16384,
+    "batchFlushMs": 20
+  }
+}

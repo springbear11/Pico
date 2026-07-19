@@ -115,14 +115,48 @@ ForLoopSpec LoopPolicyDef::toRuntimeSpec() const
     return spec;
 }
 
+WhileLoopSpec LoopPolicyDef::toRuntimeWhileSpec() const
+{
+    WhileLoopSpec spec;
+    spec.iterationErrorPolicy = iterationErrorPolicy;
+    spec.intervalMs = intervalMs;
+    spec.maxIterations = maxIterations;
+    spec.timeoutMs = timeoutMs;
+    return spec;
+}
+
 QVariantMap LoopPolicyDef::toPayload() const
 {
     QVariantMap payload;
-    payload.insert("type", "for");
-    payload.insert("variable", variableName);
-    payload.insert("from", from);
-    payload.insert("to", to);
-    payload.insert("step", step);
+    if (type == LoopType::For) {
+        payload.insert("type", "for");
+        payload.insert("variable", variableName);
+        payload.insert("from", from);
+        payload.insert("to", to);
+        payload.insert("step", step);
+        return payload;
+    }
+
+    payload.insert("type", "while");
+    payload.insert("iterationErrorPolicy",
+                   iterationErrorPolicy == WhileIterationErrorPolicy::ContinueLoop
+                       ? "continueLoop"
+                       : "abortLoop");
+    payload.insert("intervalMs", intervalMs);
+    payload.insert("maxIterations", maxIterations);
+    payload.insert("timeoutMs", timeoutMs);
+    return payload;
+}
+
+QVariantMap OperatorPromptDef::toPayload() const
+{
+    QVariantMap payload;
+    payload.insert("mode", mode);
+    payload.insert("title", title);
+    payload.insert("message", message);
+    payload.insert("confirmText", confirmText);
+    payload.insert("closeOnStep", closeOnStep);
+    payload.insert("timeoutMs", timeoutMs);
     return payload;
 }
 
@@ -237,6 +271,14 @@ ExecNodeKind toExecNodeKind(StepKind kind)
         return ExecNodeKind::TestItem;
     case StepKind::Limit:
         return ExecNodeKind::Limit;
+    case StepKind::Break:
+        return ExecNodeKind::Break;
+    case StepKind::Counter:
+        return ExecNodeKind::Counter;
+    case StepKind::Aggregate:
+        return ExecNodeKind::Aggregate;
+    case StepKind::OperatorPrompt:
+        return ExecNodeKind::OperatorPrompt;
     case StepKind::Statement:
         return ExecNodeKind::Statement;
     case StepKind::SequenceCall:
@@ -295,6 +337,14 @@ QString stepKindName(StepKind kind)
         return "TestItem";
     case StepKind::Limit:
         return "Limit";
+    case StepKind::Break:
+        return "Break";
+    case StepKind::Counter:
+        return "Counter";
+    case StepKind::Aggregate:
+        return "Aggregate";
+    case StepKind::OperatorPrompt:
+        return "OperatorPrompt";
     case StepKind::Statement:
         return "Statement";
     case StepKind::SequenceCall:

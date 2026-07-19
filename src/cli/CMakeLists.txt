@@ -101,6 +101,11 @@ add_test(
 )
 
 add_test(
+    NAME PicoATECliWhileLoopExample
+    COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/while_loop_sequence.json" --uuts 1
+)
+
+add_test(
     NAME PicoATECliTestItemExample
     COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/test_item_sequence.json" --uuts 1
 )

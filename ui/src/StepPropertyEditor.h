@@ -18,6 +18,7 @@ class QMenu;
 class QPlainTextEdit;
 class QSpinBox;
 class QTabWidget;
+class QToolButton;
 
 namespace PicoATE::Ui {
 
@@ -52,12 +53,17 @@ private:
     void loadCurrentObject();
     void updateKindRows();
     void updateLimitRows();
+    void updateLoopRows();
+    void updateAdvancedJsonVisibility();
+    void rebuildDeviceChoices();
     void rebuildPluginInputEditors();
     void observeDraftWidget(QWidget* widget);
     void markDraftDirty();
     void setDraftDirty(bool dirty);
     QWidget* wrapExpressionEditor(QLineEdit* editor);
     void rebuildExpressionMenu(QMenu* menu, QLineEdit* editor);
+    void rebuildPromptCloseStepChoices(const QString& selectedPath);
+    QString selectedPromptCloseStep() const;
     const PluginFunctionDefinition* currentPluginFunction() const;
     bool mergePluginInputValues(QJsonObject& inputs, QString& errorMessage) const;
     void showError(const QString& message);
@@ -101,8 +107,12 @@ private:
     QFormLayout* m_dataForm = nullptr;
     QLineEdit* m_moduleIdEdit = nullptr;
     QLineEdit* m_functionEdit = nullptr;
+    QComboBox* m_deviceIdCombo = nullptr;
     QGroupBox* m_pluginInputsGroup = nullptr;
     QFormLayout* m_pluginInputsForm = nullptr;
+    QToolButton* m_advancedJsonToggle = nullptr;
+    QWidget* m_advancedJsonContent = nullptr;
+    QFormLayout* m_advancedJsonForm = nullptr;
     QPlainTextEdit* m_inputsEdit = nullptr;
     QLineEdit* m_limitActualEdit = nullptr;
     QWidget* m_limitActualField = nullptr;
@@ -115,12 +125,33 @@ private:
     QCheckBox* m_limitInclusiveCheck = nullptr;
     QLineEdit* m_limitMeasurementNameEdit = nullptr;
     QLineEdit* m_limitUnitEdit = nullptr;
+    QLineEdit* m_counterConditionEdit = nullptr;
+    QWidget* m_counterConditionField = nullptr;
+    QMenu* m_counterConditionMenu = nullptr;
+    QComboBox* m_counterModeCombo = nullptr;
+    QDoubleSpinBox* m_counterStartSpin = nullptr;
+    QDoubleSpinBox* m_counterIncrementSpin = nullptr;
+    QLineEdit* m_aggregateValueEdit = nullptr;
+    QWidget* m_aggregateValueField = nullptr;
+    QMenu* m_aggregateValueMenu = nullptr;
     QPlainTextEdit* m_parametersEdit = nullptr;
+    QPlainTextEdit* m_errorPolicyEdit = nullptr;
     QSpinBox* m_waitMsSpin = nullptr;
+    QComboBox* m_promptModeCombo = nullptr;
+    QLineEdit* m_promptTitleEdit = nullptr;
+    QPlainTextEdit* m_promptMessageEdit = nullptr;
+    QLineEdit* m_promptConfirmTextEdit = nullptr;
+    QComboBox* m_promptCloseOnStepCombo = nullptr;
+    QSpinBox* m_promptTimeoutSpin = nullptr;
     QLineEdit* m_loopVariableEdit = nullptr;
+    QComboBox* m_loopTypeCombo = nullptr;
     QSpinBox* m_loopFromSpin = nullptr;
     QSpinBox* m_loopToSpin = nullptr;
     QSpinBox* m_loopStepSpin = nullptr;
+    QSpinBox* m_conditionIntervalSpin = nullptr;
+    QSpinBox* m_conditionMaxIterationsSpin = nullptr;
+    QSpinBox* m_conditionTimeoutSpin = nullptr;
+    QComboBox* m_conditionIterationErrorCombo = nullptr;
     QLineEdit* m_barrierNameEdit = nullptr;
     QLineEdit* m_cohortIdEdit = nullptr;
     QSpinBox* m_expectedUutSpin = nullptr;
@@ -139,11 +170,6 @@ private:
     QSpinBox* m_retryDelaySpin = nullptr;
     QLineEdit* m_retryWhenEdit = nullptr;
     QSpinBox* m_timeoutSpin = nullptr;
-    QComboBox* m_onFailCombo = nullptr;
-    QComboBox* m_onErrorCombo = nullptr;
-    QComboBox* m_onTimeoutCombo = nullptr;
-    QLineEdit* m_cleanupRegionEdit = nullptr;
-    QCheckBox* m_stopUutCheck = nullptr;
     QPlainTextEdit* m_resourcesEdit = nullptr;
 };
 

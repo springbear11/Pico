@@ -1,13 +1,16 @@
 #include "MainWindow.h"
 
 #include "ExecutionViewModel.h"
+#include "FlowTargetSelector.h"
 #include "OnOffControl.h"
+#include "OperatorPromptPresenter.h"
 #include "PluginCatalog.h"
 #include "PluginFunctionModel.h"
 #include "ProportionalHeaderView.h"
 #include "ReportExporter.h"
 #include "ReportHistoryStore.h"
 #include "RunnerModels.h"
+#include "RunArtifactWriter.h"
 #include "ScanDialog.h"
 #include "SequenceDocument.h"
 #include "SequenceTreeModel.h"
@@ -19,6 +22,7 @@
 
 #include <QAction>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -46,6 +50,7 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QProgressBar>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QScreen>
 #include <QScrollBar>
@@ -81,14 +86,17 @@ constexpr int MaxRecentFiles = 8;
 const QString StationDiagnosticPrefix = QStringLiteral("Station: ");
 
 void collectDeviceStepReferences(const QJsonArray& steps,
-                                 QHash<QString, QStringList>& references)
+                                 QHash<QString, QStringList>& references,
+                                 bool enabledOnly = true)
 {
     for (const auto& value : steps) {
         const auto step = value.toObject();
-        if (step.isEmpty() || !step.value(QStringLiteral("enabled")).toBool(true)) {
+        if (step.isEmpty()) {
             continue;
         }
-        if (step.value(QStringLiteral("moduleId")).toString() ==
+        const bool enabled = step.value(QStringLiteral("enabled")).toBool(true);
+        if ((!enabledOnly || enabled) &&
+            step.value(QStringLiteral("moduleId")).toString() ==
             QStringLiteral("device")) {
             const auto deviceId = step.value(QStringLiteral("inputs"))
                                       .toObject()
@@ -101,9 +109,60 @@ void collectDeviceStepReferences(const QJsonArray& steps,
                 references[deviceId].push_back(stepName);
             }
         }
-        collectDeviceStepReferences(step.value(QStringLiteral("steps")).toArray(),
-                                    references);
+        if (!enabledOnly || enabled) {
+            collectDeviceStepReferences(step.value(QStringLiteral("steps")).toArray(),
+                                        references,
+                                        enabledOnly);
+        }
     }
+}
+
+QJsonArray replaceDeviceStepReferences(const QJsonArray& steps,
+                                       const QString& sourceDeviceId,
+                                       const QString& targetDeviceId,
+                                       bool& changed)
+{
+    QJsonArray result;
+    for (const auto& value : steps) {
+        auto step = value.toObject();
+        if (step.isEmpty()) {
+            result.push_back(value);
+            continue;
+        }
+        if (step.value(QStringLiteral("moduleId")).toString() ==
+            QStringLiteral("device")) {
+            auto inputs = step.value(QStringLiteral("inputs")).toObject();
+            if (inputs.value(QStringLiteral("deviceId")).toString().trimmed() ==
+                sourceDeviceId) {
+                inputs.insert(QStringLiteral("deviceId"), targetDeviceId);
+                step.insert(QStringLiteral("inputs"), inputs);
+                changed = true;
+            }
+        }
+        if (step.value(QStringLiteral("steps")).isArray()) {
+            step.insert(
+                QStringLiteral("steps"),
+                replaceDeviceStepReferences(
+                    step.value(QStringLiteral("steps")).toArray(),
+                    sourceDeviceId,
+                    targetDeviceId,
+                    changed));
+        }
+        result.push_back(step);
+    }
+    return result;
+}
+
+QString stationDeviceId(const QJsonObject& device)
+{
+    return device.value(QStringLiteral("deviceId")).toString(
+        device.value(QStringLiteral("id")).toString()).trimmed();
+}
+
+QString stationDeviceType(const QJsonObject& device)
+{
+    return device.value(QStringLiteral("deviceType")).toString(
+        device.value(QStringLiteral("type")).toString()).trimmed().toUpper();
 }
 
 void installProportionalHeader(QTableView* view, QVector<int> weights)
@@ -287,6 +346,7 @@ MainWindow::MainWindow(QWidget* parent)
     setMinimumSize(900, 600);
 
     m_viewModel = new ExecutionViewModel(this);
+    m_operatorPromptPresenter = new OperatorPromptPresenter(m_viewModel, this, this);
     m_sequenceDocument = new SequenceDocument(this);
     m_sequenceTreeModel = new SequenceTreeModel(m_sequenceDocument, this);
     m_pluginFunctionModel = new PluginFunctionModel(this);
@@ -298,11 +358,11 @@ MainWindow::MainWindow(QWidget* parent)
     m_deviceStatusModel = new DeviceStatusModel(this);
     m_historyModel = new HistoryModel(this);
     m_historyStore = std::make_unique<ReportHistoryStore>();
+    m_runArtifactWriter = std::make_unique<RunArtifactWriter>();
     m_uutStepModel = new UutStepModel(this);
     m_uutStepModel->setSingleUutPhaseLayout(true);
     m_attemptModel = new AttemptModel(this);
     m_measurementModel = new MeasurementModel(this);
-    m_runtimeLogModel = new RuntimeLogModel(this);
     m_runtimeTimelineModel = new RuntimeTimelineModel(this);
     m_debugSnapshotModel = new DebugSnapshotModel(this);
     m_scanDialog = new ScanDialog(this);
@@ -349,7 +409,6 @@ MainWindow::MainWindow(QWidget* parent)
             this,
             [this](UiRunState state) {
                 if (state == UiRunState::Starting) {
-                    m_runtimeLogModel->clear();
                     m_runtimeTimelineModel->clear();
                     m_sequenceTreeModel->setCurrentDebugNodePath({});
                 }
@@ -580,8 +639,11 @@ MainWindow::MainWindow(QWidget* parent)
                 if (m_handlingStationSelection) {
                     return;
                 }
-                const int previousRow = m_stationPropertyEditor->currentDeviceRow();
-                const int currentRow = current.isValid() ? current.row() : -1;
+                const int previousRow =
+                    m_stationPropertyEditor->currentDeviceRow();
+                const int currentRow = current.isValid()
+                    ? m_stationDeviceModel->documentRow(current)
+                    : -1;
                 if (currentRow < 0 && previousRow >= 0 &&
                     previousRow < m_stationDocument->deviceCount()) {
                     return;
@@ -591,7 +653,7 @@ MainWindow::MainWindow(QWidget* parent)
                     m_handlingStationSelection = true;
                     if (!resolvePendingStationDeviceChanges()) {
                         const auto previousIndex =
-                            m_stationDeviceModel->index(previousRow, 0);
+                            m_stationDeviceModel->indexForDocumentRow(previousRow);
                         if (previousIndex.isValid()) {
                             m_stationDeviceView->setCurrentIndex(previousIndex);
                         }
@@ -600,8 +662,10 @@ MainWindow::MainWindow(QWidget* parent)
                     }
                     m_handlingStationSelection = false;
                 }
-                m_selectedStationDeviceRow = current.isValid() ? current.row() : -1;
-                m_stationPropertyEditor->setCurrentDevice(m_selectedStationDeviceRow);
+                m_selectedStationDeviceRow = currentRow;
+                m_stationPropertyEditor->setCurrentDevices(
+                    m_stationDeviceModel->documentRows(current),
+                    m_stationDeviceModel->logicalBaseId(current));
                 updateCommandState();
             });
     connect(m_stationDiagnosticView, &QTableView::clicked,
@@ -616,6 +680,10 @@ MainWindow::MainWindow(QWidget* parent)
             &QItemSelectionModel::currentChanged,
             this,
             [this](const QModelIndex& current) { updateStepDetails(current); });
+    connect(m_resultView,
+            &QTreeView::doubleClicked,
+            this,
+            &MainWindow::focusExecutionLogForResult);
     connect(m_attemptView->selectionModel(),
             &QItemSelectionModel::currentChanged,
             this,
@@ -629,6 +697,7 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow()
 {
+    m_runArtifactWriter->abandon();
     beginShutdown();
 }
 
@@ -637,6 +706,9 @@ bool MainWindow::openSequenceFile(const QString& filePath)
     m_loadingSequenceFile = true;
     m_expandSequenceTreeOnNextUpdate = true;
     const bool loaded = m_sequenceDocument->load(filePath);
+    if (loaded) {
+        m_sequenceDocument->ensureStandardGroups();
+    }
     m_loadingSequenceFile = false;
     if (!loaded) {
         m_expandSequenceTreeOnNextUpdate = false;
@@ -646,6 +718,7 @@ bool MainWindow::openSequenceFile(const QString& filePath)
     m_sequenceTreeModel->clearBreakpoints();
     m_sequenceTreeModel->setCurrentDebugNodePath({});
     m_selectedSequencePath = {};
+    applyStationLogicalIdMigrations();
     synchronizeSequenceSnapshot();
     updateSequenceEditor();
     if (m_adminSequenceLabel) {
@@ -667,6 +740,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
 {
     if (maybeSaveSequence() && maybeSaveStation()) {
         saveUiSettings();
+        m_runArtifactWriter->abandon();
         beginShutdown();
         event->accept();
     } else {
@@ -715,6 +789,8 @@ bool MainWindow::openStationFile(const QString& filePath)
         updateStationEditor();
         return false;
     }
+    normalizeStationLogicalIds();
+    applyStationLogicalIdMigrations();
     m_selectedStationDeviceRow = m_stationDocument->deviceCount() > 0 ? 0 : -1;
     synchronizeStationSnapshot();
     updateStationEditor();
@@ -729,6 +805,10 @@ void MainWindow::beginShutdown()
         return;
     }
     m_shuttingDown = true;
+
+    if (m_operatorPromptPresenter) {
+        m_operatorPromptPresenter->closeAll();
+    }
 
     // Undo-stack and worker callbacks may otherwise re-enter this window while
     // its child objects are being destroyed.
@@ -1357,8 +1437,17 @@ void MainWindow::runScannedUut(const QString& serialNumber)
     m_adminSerialLabel->setText(sn);
     m_currentAdminRunCounted = false;
     m_adminTerminalNodes.clear();
-    m_runtimeLogModel->clear();
     m_runtimeTimelineModel->clear();
+    const auto artifact = m_runArtifactWriter->begin(
+        runArtifactSettingsFromStation(
+            m_stationDocument ? m_stationDocument->rootObject() : QJsonObject{},
+            m_stationDocument ? m_stationDocument->filePath() : QString()),
+        sn);
+    if (!artifact.success) {
+        statusBar()->showMessage(
+            tr("Cannot create report files: %1").arg(artifact.errorMessage),
+            10000);
+    }
     auto preview = m_adminPreviewReport;
     preview.completed = false;
     preview.hasError = false;
@@ -1476,6 +1565,9 @@ void MainWindow::loadPluginRegistry()
         if (m_stationPropertyEditor) {
             m_stationPropertyEditor->setPluginRegistry({});
         }
+        if (m_stationDeviceModel) {
+            m_stationDeviceModel->setPluginRegistry({});
+        }
         updatePluginDeviceBindings();
         updateStationEditor();
         return;
@@ -1485,6 +1577,9 @@ void MainWindow::loadPluginRegistry()
     m_stepPropertyEditor->setPluginRegistry(registry.plugins);
     if (m_stationPropertyEditor) {
         m_stationPropertyEditor->setPluginRegistry(registry.plugins);
+    }
+    if (m_stationDeviceModel) {
+        m_stationDeviceModel->setPluginRegistry(registry.plugins);
     }
     updatePluginDeviceBindings();
     updateStationEditor();
@@ -1507,6 +1602,9 @@ void MainWindow::updatePluginDeviceBindings()
     QHash<QString, QStringList> devicesByModuleId;
     QHash<QString, QString> pluginByDeviceId;
     QHash<QString, QJsonObject> deviceConfigurations;
+    QVector<FlowTargetDevice> flowDevices;
+    QHash<QString, int> flowDeviceById;
+    const auto plugins = m_pluginFunctionModel->plugins();
     const auto devices = m_stationDocument->rootObject()
                              .value(QStringLiteral("devices")).toArray();
     for (const auto& value : devices) {
@@ -1518,11 +1616,70 @@ void MainWindow::updatePluginDeviceBindings()
             device.value(QStringLiteral("id")).toString());
         const auto moduleId = device.value(QStringLiteral("driverId")).toString(
             device.value(QStringLiteral("driver")).toString());
-        if (deviceId.isEmpty() || moduleId.isEmpty()) {
+        if (deviceId.isEmpty()) {
             continue;
         }
-        devicesByModuleId[moduleId].push_back(deviceId);
-        pluginByDeviceId.insert(deviceId, moduleId);
+
+        const auto deviceType = device.value(QStringLiteral("deviceType"))
+                                    .toString(device.value(QStringLiteral("type"))
+                                                  .toString(QStringLiteral("PLUGIN")))
+                                    .trimmed().toUpper();
+        QString baseId = deviceId;
+        QString channelName;
+        if (deviceType == QStringLiteral("CAN")) {
+            static const QRegularExpression channelPattern(
+                QStringLiteral(R"(^(.+)\.CH(\d+)$)"),
+                QRegularExpression::CaseInsensitiveOption);
+            const auto match = channelPattern.match(deviceId);
+            if (match.hasMatch()) {
+                baseId = match.captured(1);
+                channelName = QStringLiteral("CH%1").arg(match.captured(2));
+            }
+        }
+
+        int flowIndex = flowDeviceById.value(baseId, -1);
+        if (flowIndex < 0) {
+            FlowTargetDevice flowDevice;
+            flowDevice.logicalId = baseId;
+            flowDevice.deviceType = deviceType;
+            flowDevice.moduleId = moduleId;
+            const auto plugin = std::find_if(
+                plugins.cbegin(), plugins.cend(),
+                [&](const PluginManifest& manifest) {
+                    return manifest.moduleId == moduleId;
+                });
+            if (plugin != plugins.cend()) {
+                flowDevice.driverName = plugin->name;
+                flowDevice.configured = true;
+            }
+            flowIndex = flowDevices.size();
+            flowDeviceById.insert(baseId, flowIndex);
+            flowDevices.push_back(std::move(flowDevice));
+        }
+        auto& flowDevice = flowDevices[flowIndex];
+        if (!flowDevice.targetIds.contains(deviceId)) {
+            const int channelIndex = device.value(QStringLiteral("options"))
+                                         .toObject()
+                                         .value(QStringLiteral("channelIndex"))
+                                         .toInt(flowDevice.targetIds.size());
+            int insertAt = flowDevice.targetIds.size();
+            for (int index = 0; index < flowDevice.channelNames.size(); ++index) {
+                const auto existing = flowDevice.channelNames[index]
+                                          .mid(2).toInt();
+                if (!channelName.isEmpty() && channelIndex + 1 < existing) {
+                    insertAt = index;
+                    break;
+                }
+            }
+            flowDevice.targetIds.insert(insertAt, deviceId);
+            flowDevice.channelNames.insert(
+                insertAt, channelName.isEmpty() ? deviceId : channelName);
+        }
+
+        if (!moduleId.isEmpty()) {
+            devicesByModuleId[moduleId].push_back(deviceId);
+            pluginByDeviceId.insert(deviceId, moduleId);
+        }
         auto effectiveInputs = device.value(QStringLiteral("options")).toObject();
         effectiveInputs.insert(QStringLiteral("deviceId"), deviceId);
         effectiveInputs.insert(QStringLiteral("deviceType"),
@@ -1532,6 +1689,11 @@ void MainWindow::updatePluginDeviceBindings()
         deviceConfigurations.insert(deviceId, effectiveInputs);
     }
     m_pluginFunctionModel->setDeviceBindings(std::move(devicesByModuleId));
+    if (m_flowTargetSelector) {
+        m_flowTargetSelector->setDevices(std::move(flowDevices));
+        m_pluginFunctionModel->setSelectedDeviceId(
+            m_flowTargetSelector->currentTargetId());
+    }
     m_stepPropertyEditor->setDevicePluginBindings(std::move(pluginByDeviceId));
     m_stepPropertyEditor->setDeviceConfigurations(std::move(deviceConfigurations));
 }
@@ -1550,30 +1712,218 @@ void MainWindow::addStationDevice()
 
 void MainWindow::deleteStationDevice()
 {
-    if (m_selectedStationDeviceRow < 0 || !resolvePendingStationChanges()) {
+    if (!m_stationDeviceView || !m_stationDeviceView->currentIndex().isValid() ||
+        !resolvePendingStationChanges()) {
         return;
     }
-    const int deletedRow = m_selectedStationDeviceRow;
-    m_selectedStationDeviceRow = qMin(
-        deletedRow, m_stationDocument->deviceCount() - 2);
-    m_stationDocument->removeDevice(deletedRow);
+    const auto selected = m_stationDeviceView->currentIndex()
+                              .siblingAtColumn(0);
+    const auto rows = m_stationDeviceModel->documentRows(selected);
+    if (rows.isEmpty()) {
+        return;
+    }
+    const auto device = m_stationDocument->deviceAt(rows.front());
+    const auto deviceType = stationDeviceType(device);
+    const auto logicalId = m_stationDeviceModel->logicalId(selected);
+    for (int rootRow = selected.row() + 1;
+         rootRow < m_stationDeviceModel->rowCount(); ++rootRow) {
+        const auto later = m_stationDeviceModel->index(rootRow, 0);
+        const auto laterDevice = m_stationDeviceModel->deviceAt(later);
+        if (stationDeviceType(laterDevice) == deviceType) {
+            QMessageBox::information(
+                this,
+                tr("Cannot Delete Device"),
+                tr("%1 is not the last %2 device. Device IDs must remain continuous.")
+                    .arg(logicalId, deviceType));
+            return;
+        }
+    }
+
+    QHash<QString, QStringList> references;
+    if (m_sequenceDocument && !m_sequenceDocument->isEmpty()) {
+        const auto groups = m_sequenceDocument->rootObject()
+                                .value(QStringLiteral("groups")).toArray();
+        for (const auto& groupValue : groups) {
+            collectDeviceStepReferences(
+                groupValue.toObject().value(QStringLiteral("steps")).toArray(),
+                references,
+                false);
+        }
+    }
+    QStringList stepNames;
+    QStringList referencedIds;
+    for (const int row : rows) {
+        const auto id = stationDeviceId(m_stationDocument->deviceAt(row));
+        const auto names = references.value(id);
+        if (!names.isEmpty()) {
+            referencedIds.push_back(id);
+            stepNames.append(names);
+        }
+    }
+    stepNames.removeDuplicates();
+    if (!stepNames.isEmpty()) {
+        QMessageBox::warning(
+            this,
+            tr("Device Is Still Used"),
+            tr("%1 cannot be deleted because the Flow still references it:\n\n%2\n\n"
+               "Change or remove these device references first.")
+                .arg(referencedIds.join(QStringLiteral(", ")),
+                     stepNames.join(QStringLiteral("\n"))));
+        return;
+    }
+
+    auto root = m_stationDocument->rootObject();
+    auto devices = root.value(QStringLiteral("devices")).toArray();
+    auto sortedRows = rows;
+    std::sort(sortedRows.begin(), sortedRows.end(), std::greater<int>());
+    for (const int row : sortedRows) {
+        devices.removeAt(row);
+    }
+    root.insert(QStringLiteral("devices"), devices);
+    m_selectedStationDeviceRow = devices.isEmpty()
+        ? -1
+        : qMin(rows.front(), devices.size() - 1);
+    m_stationDocument->replaceRootObject(std::move(root));
 }
 
 void MainWindow::duplicateStationDevice()
 {
-    if (m_selectedStationDeviceRow < 0 || !resolvePendingStationChanges()) {
+    if (!m_stationDeviceView || !m_stationDeviceView->currentIndex().isValid() ||
+        !resolvePendingStationChanges()) {
+        return;
+    }
+    const auto selected = m_stationDeviceView->currentIndex()
+                              .siblingAtColumn(0);
+    const auto rows = m_stationDeviceModel->documentRows(selected);
+    if (rows.isEmpty()) {
+        return;
+    }
+    auto root = m_stationDocument->rootObject();
+    auto devices = root.value(QStringLiteral("devices")).toArray();
+    const int insertionRow = *std::max_element(rows.cbegin(), rows.cend()) + 1;
+    const auto type = stationDeviceType(m_stationDocument->deviceAt(rows.front()));
+    int typeCount = 0;
+    for (int modelRow = 0; modelRow < m_stationDeviceModel->rowCount();
+         ++modelRow) {
+        const auto candidate = m_stationDeviceModel->index(modelRow, 0);
+        if (stationDeviceType(m_stationDeviceModel->deviceAt(candidate)) == type) {
+            ++typeCount;
+        }
+    }
+    const auto baseId = QStringLiteral("%1%2").arg(type).arg(typeCount + 1);
+    int offset = 0;
+    for (const int sourceRow : rows) {
+        auto copy = m_stationDocument->deviceAt(sourceRow);
+        const int channel = copy.value(QStringLiteral("options"))
+                                .toObject()
+                                .value(QStringLiteral("channelIndex"))
+                                .toInt();
+        copy.insert(QStringLiteral("deviceId"),
+                    type == QStringLiteral("CAN")
+                        ? QStringLiteral("%1.CH%2").arg(baseId).arg(channel + 1)
+                        : baseId);
+        copy.remove(QStringLiteral("id"));
+        devices.insert(insertionRow + offset, copy);
+        ++offset;
+    }
+    root.insert(QStringLiteral("devices"), devices);
+    m_selectedStationDeviceRow = insertionRow;
+    m_stationDocument->replaceRootObject(std::move(root));
+}
+
+void MainWindow::fillPreviousStationDeviceSlot()
+{
+    const auto selected = m_stationDeviceView
+        ? m_stationDeviceView->currentIndex().siblingAtColumn(0)
+        : QModelIndex{};
+    if (!selected.isValid() ||
+        m_selectedStationDeviceRow < 0 ||
+        !resolvePendingStationChanges()) {
         return;
     }
     const int sourceRow = m_selectedStationDeviceRow;
-    m_selectedStationDeviceRow = sourceRow + 1;
-    if (!m_stationDocument->duplicateDevice(sourceRow)) {
-        m_selectedStationDeviceRow = sourceRow;
+    const int targetRow = m_stationDocument->previousEmptyDeviceRow(sourceRow);
+    if (targetRow < 0) {
+        QMessageBox::information(
+            this,
+            tr("No Earlier Empty Slot"),
+            tr("The selected device has no earlier empty logical ID of the same type."));
+        return;
     }
+
+    const auto sourceId = stationDeviceId(m_stationDocument->deviceAt(sourceRow));
+    const auto targetId = stationDeviceId(m_stationDocument->deviceAt(targetRow));
+    QHash<QString, QStringList> references;
+    if (m_sequenceDocument && !m_sequenceDocument->isEmpty()) {
+        const auto groups = m_sequenceDocument->rootObject()
+                                .value(QStringLiteral("groups")).toArray();
+        for (const auto& groupValue : groups) {
+            collectDeviceStepReferences(
+                groupValue.toObject().value(QStringLiteral("steps")).toArray(),
+                references,
+                false);
+        }
+    }
+
+    const bool hasReferences = !references.value(sourceId).isEmpty();
+    if (hasReferences) {
+        const auto choice = QMessageBox::question(
+            this,
+            tr("Update Flow References"),
+            tr("Move the configuration from %1 to %2 and update every Flow "
+               "reference from %1 to %2?")
+                .arg(sourceId, targetId),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Yes);
+        if (choice != QMessageBox::Yes) {
+            return;
+        }
+    }
+
+    if (!m_stationDocument->moveDeviceConfiguration(sourceRow, targetRow)) {
+        QMessageBox::warning(
+            this,
+            tr("Move Failed"),
+            tr("Unable to move the selected configuration into %1.").arg(targetId));
+        return;
+    }
+
+    if (hasReferences && m_sequenceDocument && !m_sequenceDocument->isEmpty()) {
+        auto root = m_sequenceDocument->rootObject();
+        auto groups = root.value(QStringLiteral("groups")).toArray();
+        bool changed = false;
+        for (int groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+            auto group = groups[groupIndex].toObject();
+            group.insert(
+                QStringLiteral("steps"),
+                replaceDeviceStepReferences(
+                    group.value(QStringLiteral("steps")).toArray(),
+                    sourceId,
+                    targetId,
+                    changed));
+            groups[groupIndex] = group;
+        }
+        if (changed) {
+            root.insert(QStringLiteral("groups"), groups);
+            m_sequenceDocument->replaceRootObject(std::move(root));
+        }
+    }
+
+    statusBar()->showMessage(
+        tr("Moved device configuration from %1 to %2; %1 is now an empty slot")
+            .arg(sourceId, targetId),
+        8000);
+    updateStationEditor();
+    updateSequenceEditor();
 }
 
 void MainWindow::moveStationDevice(int offset)
 {
-    if (m_selectedStationDeviceRow < 0 || offset == 0 ||
+    const auto selected = m_stationDeviceView
+        ? m_stationDeviceView->currentIndex().siblingAtColumn(0)
+        : QModelIndex{};
+    if (!selected.isValid() ||
+        m_selectedStationDeviceRow < 0 || offset == 0 ||
         !resolvePendingStationChanges()) {
         return;
     }
@@ -1607,9 +1957,18 @@ void MainWindow::testSelectedStationDevice()
         !resolvePendingStationChanges()) {
         return;
     }
-    const int row = m_stationDeviceView && m_stationDeviceView->currentIndex().isValid()
-        ? m_stationDeviceView->currentIndex().row()
-        : m_selectedStationDeviceRow;
+    const auto selected = m_stationDeviceView
+        ? m_stationDeviceView->currentIndex().siblingAtColumn(0)
+        : QModelIndex{};
+    const auto rows = m_stationDeviceModel->documentRows(selected);
+    int row = -1;
+    for (const int candidate : rows) {
+        if (m_stationDocument->deviceAt(candidate)
+                .value(QStringLiteral("enabled")).toBool(true)) {
+            row = candidate;
+            break;
+        }
+    }
     const auto device = m_stationDocument->deviceAt(row);
     if (device.isEmpty() || !device.value("enabled").toBool(true)) {
         return;
@@ -1732,15 +2091,100 @@ void MainWindow::updateStationEditor()
         m_selectedStationDeviceRow = qBound(0, m_selectedStationDeviceRow, count - 1);
     }
     if (m_stationDeviceView && m_selectedStationDeviceRow >= 0) {
-        const auto index = m_stationDeviceModel->index(m_selectedStationDeviceRow, 0);
-        m_stationDeviceView->setCurrentIndex(index);
-        m_stationDeviceView->scrollTo(index);
+        const auto index =
+            m_stationDeviceModel->indexForDocumentRow(m_selectedStationDeviceRow);
+        if (index.isValid()) {
+            m_stationDeviceView->setCurrentIndex(index);
+            m_stationDeviceView->scrollTo(index);
+        }
     }
     if (m_stationPropertyEditor) {
-        m_stationPropertyEditor->setCurrentDevice(m_selectedStationDeviceRow);
+        const auto index = m_stationDeviceModel->indexForDocumentRow(
+            m_selectedStationDeviceRow);
+        m_stationPropertyEditor->setCurrentDevices(
+            m_stationDeviceModel->documentRows(index),
+            m_stationDeviceModel->logicalBaseId(index));
     }
     updateWindowTitle();
     updateCommandState();
+}
+
+void MainWindow::normalizeStationLogicalIds()
+{
+    if (!m_stationDocument || m_stationDocument->isEmpty() ||
+        !m_stationDeviceModel) {
+        return;
+    }
+    auto root = m_stationDocument->rootObject();
+    auto devices = root.value(QStringLiteral("devices")).toArray();
+    QHash<QString, QString> migrations;
+    bool changed = false;
+    for (int row = 0; row < m_stationDeviceModel->rowCount(); ++row) {
+        const auto index = m_stationDeviceModel->index(row, 0);
+        for (const int documentRow :
+             m_stationDeviceModel->documentRows(index)) {
+            if (documentRow < 0 || documentRow >= devices.size()) {
+                continue;
+            }
+            auto device = devices[documentRow].toObject();
+            const auto oldId = stationDeviceId(device);
+            const auto newId = m_stationDeviceModel->generatedLogicalId(
+                index, documentRow);
+            if (newId.isEmpty() || oldId == newId) {
+                continue;
+            }
+            device.insert(QStringLiteral("deviceId"), newId);
+            device.remove(QStringLiteral("id"));
+            devices[documentRow] = device;
+            if (!oldId.isEmpty()) {
+                migrations.insert(oldId, newId);
+            }
+            changed = true;
+        }
+    }
+    if (!changed) {
+        return;
+    }
+    root.insert(QStringLiteral("devices"), devices);
+    for (auto iterator = migrations.cbegin(); iterator != migrations.cend();
+         ++iterator) {
+        m_pendingStationLogicalIdMigrations.insert(
+            iterator.key(), iterator.value());
+    }
+    m_stationDocument->replaceRootObject(std::move(root));
+    statusBar()->showMessage(
+        tr("Logical device IDs were generated automatically. Save Station Config to keep them."),
+        8000);
+}
+
+void MainWindow::applyStationLogicalIdMigrations()
+{
+    if (m_pendingStationLogicalIdMigrations.isEmpty() ||
+        !m_sequenceDocument || m_sequenceDocument->isEmpty()) {
+        return;
+    }
+    auto root = m_sequenceDocument->rootObject();
+    auto groups = root.value(QStringLiteral("groups")).toArray();
+    bool changed = false;
+    for (int groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+        auto group = groups[groupIndex].toObject();
+        auto steps = group.value(QStringLiteral("steps")).toArray();
+        for (auto iterator = m_pendingStationLogicalIdMigrations.cbegin();
+             iterator != m_pendingStationLogicalIdMigrations.cend(); ++iterator) {
+            steps = replaceDeviceStepReferences(
+                steps, iterator.key(), iterator.value(), changed);
+        }
+        group.insert(QStringLiteral("steps"), steps);
+        groups[groupIndex] = group;
+    }
+    if (changed) {
+        root.insert(QStringLiteral("groups"), groups);
+        m_sequenceDocument->replaceRootObject(std::move(root));
+        statusBar()->showMessage(
+            tr("Flow device references were updated to the generated Logical IDs."),
+            8000);
+    }
+    m_pendingStationLogicalIdMigrations.clear();
 }
 
 QVector<UiDiagnostic> MainWindow::stationPluginDiagnostics() const
@@ -1934,13 +2378,16 @@ void MainWindow::focusStationDiagnosticValue(const UiDiagnostic& diagnostic)
     const auto match = devicePath.match(diagnostic.path);
     if (match.hasMatch()) {
         const int row = match.captured(1).toInt();
-        if (row >= 0 && row < m_stationDeviceModel->rowCount()) {
+        if (row >= 0 && row < m_stationDocument->deviceCount()) {
             m_selectedStationDeviceRow = row;
-            const auto deviceIndex = m_stationDeviceModel->index(row, 0);
+            const auto deviceIndex =
+                m_stationDeviceModel->indexForDocumentRow(row);
             m_stationDeviceView->setCurrentIndex(deviceIndex);
             m_stationDeviceView->scrollTo(deviceIndex,
                                           QAbstractItemView::PositionAtCenter);
-            m_stationPropertyEditor->setCurrentDevice(row);
+            m_stationPropertyEditor->setCurrentDevices(
+                m_stationDeviceModel->documentRows(deviceIndex),
+                m_stationDeviceModel->logicalBaseId(deviceIndex));
         }
     }
     m_workspaceTabs->setCurrentWidget(m_stationEditorPage);
@@ -2142,8 +2589,19 @@ void MainWindow::buildActions()
             this, [this] { duplicateStationDevice(); });
     m_deleteDeviceAction = new QAction(
         style()->standardIcon(QStyle::SP_TrashIcon), tr("Delete Device"), this);
+    m_deleteDeviceAction->setObjectName(QStringLiteral("deleteDeviceAction"));
     connect(m_deleteDeviceAction, &QAction::triggered,
             this, [this] { deleteStationDevice(); });
+    m_fillPreviousDeviceSlotAction = new QAction(
+        style()->standardIcon(QStyle::SP_ArrowBack),
+        tr("Fill Previous Empty ID"),
+        this);
+    m_fillPreviousDeviceSlotAction->setObjectName(
+        QStringLiteral("fillPreviousDeviceSlotAction"));
+    m_fillPreviousDeviceSlotAction->setToolTip(
+        tr("Move this configuration into the earliest empty logical ID of the same type"));
+    connect(m_fillPreviousDeviceSlotAction, &QAction::triggered,
+            this, [this] { fillPreviousStationDeviceSlot(); });
     m_moveDeviceUpAction = new QAction(
         style()->standardIcon(QStyle::SP_ArrowUp), tr("Move Device Up"), this);
     connect(m_moveDeviceUpAction, &QAction::triggered,
@@ -2360,6 +2818,13 @@ void MainWindow::buildLayout()
     auto* sequenceWorkArea = new QSplitter(Qt::Horizontal);
     sequenceWorkArea->setObjectName(QStringLiteral("sequenceWorkSplitter"));
     sequenceWorkArea->setChildrenCollapsible(false);
+    auto* functionPanel = new QWidget(sequenceWorkArea);
+    functionPanel->setObjectName(QStringLiteral("flowFunctionPanel"));
+    auto* functionPanelLayout = new QVBoxLayout(functionPanel);
+    functionPanelLayout->setContentsMargins(0, 0, 0, 0);
+    functionPanelLayout->setSpacing(0);
+    m_flowTargetSelector = new FlowTargetSelector(functionPanel);
+    functionPanelLayout->addWidget(m_flowTargetSelector);
     m_pluginFunctionView = new QTreeView;
     m_pluginFunctionView->setObjectName(QStringLiteral("pluginFunctionView"));
     m_pluginFunctionView->setModel(m_pluginFunctionModel);
@@ -2372,10 +2837,23 @@ void MainWindow::buildLayout()
     m_pluginFunctionView->setDefaultDropAction(Qt::CopyAction);
     m_pluginFunctionView->setItemDelegateForColumn(
         0, new DragHandleDelegate(m_pluginFunctionView));
-    m_pluginFunctionView->setMinimumWidth(190);
-    m_pluginFunctionView->setMaximumWidth(360);
     polishReadableTreeView(m_pluginFunctionView);
     m_pluginFunctionView->header()->setStretchLastSection(true);
+    functionPanelLayout->addWidget(m_pluginFunctionView, 1);
+    functionPanel->setMinimumWidth(230);
+    functionPanel->setMaximumWidth(390);
+    connect(m_flowTargetSelector, &FlowTargetSelector::targetChanged,
+            this, [this](const QString& targetId) {
+                m_pluginFunctionModel->setSelectedDeviceId(targetId);
+                if (m_pluginFunctionView) {
+                    m_pluginFunctionView->expandAll();
+                    m_pluginFunctionView->resizeColumnToContents(0);
+                }
+                if (!targetId.isEmpty()) {
+                    statusBar()->showMessage(
+                        tr("Flow target selected: %1").arg(targetId), 3000);
+                }
+            });
     m_sequenceTreeView = new QTreeView;
     m_sequenceTreeView->setObjectName(QStringLiteral("sequenceTreeView"));
     m_sequenceTreeView->setModel(m_sequenceTreeModel);
@@ -2405,7 +2883,7 @@ void MainWindow::buildLayout()
     installProportionalHeader(m_sequenceTreeView, {4, 2, 2, 1, 1});
 
     m_stepPropertyEditor = new StepPropertyEditor(m_sequenceDocument);
-    sequenceWorkArea->addWidget(m_pluginFunctionView);
+    sequenceWorkArea->addWidget(functionPanel);
     sequenceWorkArea->addWidget(m_sequenceTreeView);
     sequenceWorkArea->addWidget(m_stepPropertyEditor);
     sequenceWorkArea->setStretchFactor(0, 1);
@@ -2446,6 +2924,7 @@ void MainWindow::buildLayout()
     stationToolbar->addSeparator();
     stationToolbar->addAction(m_addDeviceAction);
     stationToolbar->addAction(m_duplicateDeviceAction);
+    stationToolbar->addAction(m_fillPreviousDeviceSlotAction);
     stationToolbar->addAction(m_deleteDeviceAction);
     stationToolbar->addSeparator();
     stationToolbar->addAction(m_moveDeviceUpAction);
@@ -2484,18 +2963,22 @@ void MainWindow::buildLayout()
     deviceTitle->setFont(deviceTitleFont);
     deviceLayout->addWidget(deviceTitle);
 
-    m_stationDeviceView = new QTableView(devicePane);
+    m_stationDeviceView = new QTreeView(devicePane);
     m_stationDeviceView->setObjectName(QStringLiteral("stationDeviceView"));
     m_stationDeviceView->setModel(m_stationDeviceModel);
+    m_stationDeviceView->setRootIsDecorated(false);
+    m_stationDeviceView->setItemsExpandable(false);
+    m_stationDeviceView->setIndentation(0);
+    m_stationDeviceView->setExpandsOnDoubleClick(false);
+    m_stationDeviceView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_stationDeviceView->setUniformRowHeights(true);
     m_stationDeviceView->setAlternatingRowColors(true);
     m_stationDeviceView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_stationDeviceView->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_stationDeviceView->verticalHeader()->setVisible(false);
-    installProportionalHeader(m_stationDeviceView, {2, 2, 3, 4, 2, 2, 2});
+    installProportionalHeader(m_stationDeviceView, {3, 2, 4, 4, 3, 2, 2});
     m_stationDeviceView->setItemDelegateForColumn(
         StationDeviceModel::EnabledColumn,
         new OnOffItemDelegate(m_stationDeviceView));
-    m_stationDeviceView->verticalHeader()->setDefaultSectionSize(34);
     m_stationDeviceView->setMinimumWidth(360);
     deviceLayout->addWidget(m_stationDeviceView, 1);
 
@@ -2640,21 +3123,17 @@ void MainWindow::buildLayout()
     m_runtimeTimelineView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_runtimeTimelineView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_runtimeTimelineView->verticalHeader()->setVisible(false);
-    installProportionalHeader(m_runtimeTimelineView, {1, 2, 2, 1, 2, 1, 5});
-    details->addTab(m_runtimeTimelineView, tr("Timeline"));
+    m_runtimeTimelineView->setWordWrap(false);
+    m_runtimeTimelineView->horizontalHeader()->setSectionResizeMode(
+        RuntimeTimelineModel::TimeColumn, QHeaderView::Interactive);
+    m_runtimeTimelineView->horizontalHeader()->setSectionResizeMode(
+        RuntimeTimelineModel::MessageColumn, QHeaderView::Stretch);
+    m_runtimeTimelineView->setColumnWidth(RuntimeTimelineModel::TimeColumn, 112);
+    details->addTab(m_runtimeTimelineView, tr("Execution Log"));
     connect(m_runtimeTimelineView,
             &QTableView::clicked,
             this,
             &MainWindow::selectTimelineEvent);
-
-    m_runtimeLogView = new QTableView(details);
-    m_runtimeLogView->setModel(m_runtimeLogModel);
-    m_runtimeLogView->setAlternatingRowColors(true);
-    m_runtimeLogView->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_runtimeLogView->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_runtimeLogView->verticalHeader()->setVisible(false);
-    installProportionalHeader(m_runtimeLogView, {2, 1, 2, 1, 6});
-    details->addTab(m_runtimeLogView, tr("Logs"));
 
     m_debugSnapshotView = new QTableView(details);
     m_debugSnapshotView->setModel(m_debugSnapshotModel);
@@ -2686,16 +3165,20 @@ void MainWindow::buildLayout()
     historyCommands->addWidget(m_historyFilter, 1);
     auto* openHistory = new QPushButton(
         style()->standardIcon(QStyle::SP_DialogOpenButton), tr("Open"), historyPage);
-    auto* exportJson = new QPushButton(
-        style()->standardIcon(QStyle::SP_DialogSaveButton), tr("JSON"), historyPage);
+    auto* exportText = new QPushButton(
+        style()->standardIcon(QStyle::SP_DialogSaveButton), tr("TXT"), historyPage);
     auto* exportCsv = new QPushButton(
         style()->standardIcon(QStyle::SP_DialogSaveButton), tr("CSV"), historyPage);
+    auto* exportXlsx = new QPushButton(
+        style()->standardIcon(QStyle::SP_DialogSaveButton), tr("XLSX"), historyPage);
     openHistory->setToolTip(tr("Open selected report"));
-    exportJson->setToolTip(tr("Export selected report as JSON"));
+    exportText->setToolTip(tr("Export selected report as TXT"));
     exportCsv->setToolTip(tr("Export selected report as CSV"));
+    exportXlsx->setToolTip(tr("Export selected report as XLSX"));
     historyCommands->addWidget(openHistory);
-    historyCommands->addWidget(exportJson);
+    historyCommands->addWidget(exportText);
     historyCommands->addWidget(exportCsv);
+    historyCommands->addWidget(exportXlsx);
     historyLayout->addLayout(historyCommands);
 
     m_historyProxy = new QSortFilterProxyModel(this);
@@ -2718,8 +3201,15 @@ void MainWindow::buildLayout()
             m_historyProxy,
             &QSortFilterProxyModel::setFilterFixedString);
     connect(openHistory, &QPushButton::clicked, this, [this] { loadSelectedHistory(); });
-    connect(exportJson, &QPushButton::clicked, this, [this] { exportSelectedHistory(false); });
-    connect(exportCsv, &QPushButton::clicked, this, [this] { exportSelectedHistory(true); });
+    connect(exportText, &QPushButton::clicked, this, [this] {
+        exportSelectedHistory(HistoryExportFormat::Text);
+    });
+    connect(exportCsv, &QPushButton::clicked, this, [this] {
+        exportSelectedHistory(HistoryExportFormat::Csv);
+    });
+    connect(exportXlsx, &QPushButton::clicked, this, [this] {
+        exportSelectedHistory(HistoryExportFormat::Xlsx);
+    });
     connect(m_historyView, &QTableView::doubleClicked, this, [this] { loadSelectedHistory(); });
 
     m_diagnosticView = new QTableView(details);
@@ -2964,11 +3454,16 @@ void MainWindow::updateCommandState()
     }
 
     const bool hasStation = m_stationDocument && !m_stationDocument->isEmpty();
-    const int stationRow = m_stationDeviceView && m_stationDeviceView->currentIndex().isValid()
-        ? m_stationDeviceView->currentIndex().row()
+    const auto stationIndex = m_stationDeviceView
+        ? m_stationDeviceView->currentIndex().siblingAtColumn(0)
+        : QModelIndex{};
+    const int stationRow = stationIndex.isValid()
+        ? m_stationDeviceModel->documentRow(stationIndex)
         : m_selectedStationDeviceRow;
     const bool hasDevice = hasStation && stationRow >= 0 &&
                            stationRow < m_stationDocument->deviceCount();
+    const bool groupedCan = stationIndex.isValid() &&
+                            m_stationDeviceModel->isDeviceGroup(stationIndex);
     m_saveStationAction->setEnabled(
         canChangeSources && hasStation && stationHasChanges);
     m_saveStationAsAction->setEnabled(canChangeSources && hasStation);
@@ -2977,16 +3472,25 @@ void MainWindow::updateCommandState()
     m_stationRedoAction->setEnabled(
         canChangeSources && m_stationDocument->undoStack()->canRedo());
     m_addDeviceAction->setEnabled(canChangeSources && hasStation);
-    m_deleteDeviceAction->setEnabled(canChangeSources && hasDevice);
-    m_duplicateDeviceAction->setEnabled(canChangeSources && hasDevice);
-    m_moveDeviceUpAction->setEnabled(canChangeSources && hasDevice && stationRow > 0);
+    m_deleteDeviceAction->setEnabled(
+        canChangeSources && hasDevice);
+    m_duplicateDeviceAction->setEnabled(
+        canChangeSources && hasDevice);
+    m_fillPreviousDeviceSlotAction->setEnabled(
+        canChangeSources && hasDevice && !groupedCan &&
+        m_stationDocument->previousEmptyDeviceRow(stationRow) >= 0 &&
+        !m_stationDocument->isDeviceSlotEmpty(stationRow));
+    m_moveDeviceUpAction->setEnabled(
+        canChangeSources && hasDevice && !groupedCan && stationRow > 0);
     m_moveDeviceDownAction->setEnabled(
-        canChangeSources && hasDevice && stationRow + 1 < m_stationDocument->deviceCount());
-    const auto selectedDevice = hasDevice
-        ? m_stationDocument->deviceAt(stationRow)
-        : QJsonObject{};
-    const bool enabledDevice = !selectedDevice.isEmpty() &&
-                               selectedDevice.value("enabled").toBool(true);
+        canChangeSources && hasDevice && !groupedCan &&
+        stationRow + 1 < m_stationDocument->deviceCount());
+    bool enabledDevice = false;
+    for (const int row : m_stationDeviceModel->documentRows(stationIndex)) {
+        enabledDevice = enabledDevice ||
+            m_stationDocument->deviceAt(row)
+                .value(QStringLiteral("enabled")).toBool(true);
+    }
     m_testDeviceConnectionAction->setEnabled(
         m_viewModel->canTestDeviceConnection() && enabledDevice);
     if (m_connectionTimeoutMs) {
@@ -3129,6 +3633,14 @@ void MainWindow::updateReport()
             statusBar()->showMessage(tr("Failed to save report: %1").arg(saved.errorMessage));
         }
     }
+    if (report.completed && m_runArtifactWriter->active()) {
+        const auto archived = m_runArtifactWriter->finalize(report);
+        if (!archived.success) {
+            statusBar()->showMessage(
+                tr("Report archive failed: %1").arg(archived.errorMessage),
+                10000);
+        }
+    }
     if (report.completed && !m_currentAdminRunCounted) {
         if (report.state == PicoATE::Core::ExecutionState::Completed) {
             ++m_adminPassedUnits;
@@ -3149,6 +3661,18 @@ void MainWindow::updateDebugSnapshot()
 
 void MainWindow::displayReport(const PicoATE::Core::ExecutionReport& report)
 {
+    PicoATE::Core::UutId selectedUutId;
+    PicoATE::Core::NodeId selectedStepId;
+    const auto current = m_resultView->currentIndex();
+    if (const auto selectedUut = m_uutStepModel->uutAt(current)) {
+        selectedUutId = selectedUut->uutId;
+    }
+    if (const auto selectedStep = m_uutStepModel->stepAt(current)) {
+        selectedStepId = selectedStep->nodePath.isEmpty()
+            ? selectedStep->stepId
+            : selectedStep->nodePath;
+    }
+
     m_uutStepModel->setReport(report);
     if (report.planId.isEmpty() && report.uuts.isEmpty()) {
         m_deviceStatusModel->clear();
@@ -3156,12 +3680,22 @@ void MainWindow::displayReport(const PicoATE::Core::ExecutionReport& report)
     m_attemptModel->setStep(std::nullopt);
     m_measurementModel->setMeasurements({});
     m_resultView->expandAll();
-    selectInitialResult();
+    const auto restored = m_uutStepModel->indexForStep(selectedUutId,
+                                                        selectedStepId);
+    if (restored.isValid()) {
+        m_resultView->setCurrentIndex(restored);
+        m_resultView->scrollTo(restored,
+                               QAbstractItemView::PositionAtCenter);
+        updateStepDetails(restored);
+    } else {
+        selectInitialResult();
+    }
 }
 
 void MainWindow::applyRuntimeEvents(
     const QVector<PicoATE::Core::RuntimeEvent>& events)
 {
+    m_operatorPromptPresenter->applyRuntimeEvents(events);
     PicoATE::Core::UutId selectedUutId;
     PicoATE::Core::NodeId selectedStepId;
     const auto current = m_resultView->currentIndex();
@@ -3171,18 +3705,22 @@ void MainWindow::applyRuntimeEvents(
         selectedUutId = selectedUut->uutId;
     }
     if (selectedStep) {
-        selectedStepId = selectedStep->stepId;
+        selectedStepId = selectedStep->nodePath.isEmpty()
+            ? selectedStep->stepId
+            : selectedStep->nodePath;
     }
 
     m_uutStepModel->applyRuntimeEvents(events);
     m_deviceStatusModel->applyRuntimeEvents(events);
-    m_runtimeTimelineModel->applyRuntimeEvents(events);
-    m_runtimeLogModel->applyRuntimeEvents(events);
+    const auto logLines = m_runtimeTimelineModel->applyRuntimeEvents(events);
+    const auto written = m_runArtifactWriter->appendLogLines(logLines);
+    if (!written.success) {
+        statusBar()->showMessage(
+            tr("TXT log write failed: %1").arg(written.errorMessage),
+            10000);
+    }
     if (m_runtimeTimelineView->model()->rowCount() > 0) {
         m_runtimeTimelineView->scrollToBottom();
-    }
-    if (m_runtimeLogView->model()->rowCount() > 0) {
-        m_runtimeLogView->scrollToBottom();
     }
     m_resultView->expandAll();
 
@@ -3199,6 +3737,17 @@ void MainWindow::applyRuntimeEvents(
     for (const auto& event : events) {
         if (!event.nodeId.isEmpty() && adminIsTerminalActivation(event.activationState)) {
             m_adminTerminalNodes.insert(event.nodeId);
+        }
+        if (!event.uutId.isEmpty() && !event.nodeId.isEmpty() &&
+            event.activationState == PicoATE::Core::ActivationState::Running) {
+            const auto index = m_uutStepModel->indexForStep(event.uutId,
+                                                             event.nodeId);
+            if (index.isValid()) {
+                m_resultView->setCurrentIndex(index);
+                m_resultView->scrollTo(
+                    index, QAbstractItemView::PositionAtBottom);
+                updateStepDetails(index);
+            }
         }
         if (event.kind == PicoATE::Core::RuntimeEventKind::BreakpointHit ||
             event.kind == PicoATE::Core::RuntimeEventKind::DebugStepCompleted) {
@@ -3254,7 +3803,8 @@ void MainWindow::selectTimelineSequence(quint64 sequenceNumber)
     if (row < 0) {
         return;
     }
-    const auto index = m_runtimeTimelineModel->index(row, RuntimeTimelineModel::EventColumn);
+    const auto index = m_runtimeTimelineModel->index(
+        row, RuntimeTimelineModel::MessageColumn);
     m_runtimeTimelineView->setCurrentIndex(index);
     m_runtimeTimelineView->scrollTo(index, QAbstractItemView::PositionAtCenter);
 }
@@ -3272,6 +3822,36 @@ void MainWindow::selectTimelineEvent(const QModelIndex& index)
     selectRuntimeEvent(*event);
 }
 
+void MainWindow::focusExecutionLogForResult(const QModelIndex& index)
+{
+    const auto step = m_uutStepModel->stepAt(index);
+    if (!step || !m_runtimeTimelineModel || !m_runtimeTimelineView) {
+        return;
+    }
+    const auto uut = m_uutStepModel->uutAt(index);
+    const auto nodeId = step->nodePath.isEmpty() ? step->stepId : step->nodePath;
+    int row = m_runtimeTimelineModel->rowForNode(
+        uut ? uut->uutId : PicoATE::Core::UutId{}, nodeId);
+    if (row < 0 && nodeId != step->stepId) {
+        row = m_runtimeTimelineModel->rowForNode(
+            uut ? uut->uutId : PicoATE::Core::UutId{}, step->stepId);
+    }
+    if (row < 0) {
+        statusBar()->showMessage(
+            tr("No execution log is available for %1 yet").arg(step->displayName),
+            3000);
+        return;
+    }
+    if (auto* details = findChild<QTabWidget*>(QStringLiteral("runDetailsTabs"))) {
+        details->setCurrentWidget(m_runtimeTimelineView);
+    }
+    const auto logIndex = m_runtimeTimelineModel->index(
+        row, RuntimeTimelineModel::MessageColumn);
+    m_runtimeTimelineView->setCurrentIndex(logIndex);
+    m_runtimeTimelineView->scrollTo(
+        logIndex, QAbstractItemView::PositionAtCenter);
+}
+
 void MainWindow::focusDebugNode(const PicoATE::Core::RuntimeEvent& event)
 {
     if (event.nodeId.isEmpty() || !m_sequenceTreeModel || !m_sequenceTreeView) {
@@ -3280,6 +3860,15 @@ void MainWindow::focusDebugNode(const PicoATE::Core::RuntimeEvent& event)
 
     selectTimelineSequence(event.sequenceNumber);
     selectRuntimeEvent(event);
+
+    if (!event.uutId.isEmpty() && m_resultView) {
+        const auto resultIndex =
+            m_uutStepModel->indexForStep(event.uutId, event.nodeId);
+        if (resultIndex.isValid()) {
+            m_resultView->scrollTo(
+                resultIndex, QAbstractItemView::PositionAtBottom);
+        }
+    }
 
     const auto index = m_sequenceTreeModel->indexForNodePath(event.nodeId);
     if (!index.isValid()) {
@@ -3369,7 +3958,7 @@ void MainWindow::loadSelectedHistory()
     statusBar()->showMessage(tr("Loaded report %1").arg(entry->id));
 }
 
-void MainWindow::exportSelectedHistory(bool csv)
+void MainWindow::exportSelectedHistory(HistoryExportFormat format)
 {
     const auto entry = selectedHistoryEntry();
     if (!entry) {
@@ -3381,18 +3970,25 @@ void MainWindow::exportSelectedHistory(bool csv)
         statusBar()->showMessage(tr("Failed to load selected report"));
         return;
     }
-    const auto suffix = csv ? QStringLiteral("csv") : QStringLiteral("json");
+    const bool csv = format == HistoryExportFormat::Csv;
+    const bool xlsx = format == HistoryExportFormat::Xlsx;
+    const auto suffix = xlsx
+        ? QStringLiteral("xlsx")
+        : (csv ? QStringLiteral("csv") : QStringLiteral("txt"));
     const auto path = QFileDialog::getSaveFileName(
         this,
-        csv ? tr("Export CSV Report") : tr("Export JSON Report"),
+        xlsx ? tr("Export XLSX Report")
+             : (csv ? tr("Export CSV Report") : tr("Export TXT Report")),
         entry->id + '.' + suffix,
-        csv ? tr("CSV Report (*.csv)") : tr("JSON Report (*.json)"));
+        xlsx ? tr("Excel Workbook (*.xlsx)")
+             : (csv ? tr("CSV Report (*.csv)") : tr("TXT Report (*.txt)")));
     if (path.isEmpty()) {
         return;
     }
-    const auto result = csv
-        ? ReportExporter::saveCsv(path, loaded.report)
-        : ReportExporter::saveJson(path, loaded.report);
+    const auto result = xlsx
+        ? ReportExporter::saveXlsx(path, loaded.report)
+        : (csv ? ReportExporter::saveCsv(path, loaded.report)
+               : ReportExporter::saveText(path, loaded.report));
     statusBar()->showMessage(result.success
                                  ? tr("Report exported")
                                  : tr("Export failed: %1").arg(result.errorMessage));

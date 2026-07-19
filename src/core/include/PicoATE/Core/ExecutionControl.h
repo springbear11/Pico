@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PicoATE/Core/ExecutionDebug.h"
+#include "PicoATE/Core/OperatorPrompt.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -40,6 +41,9 @@ public:
     std::optional<ExecutionDebugSnapshot> debugSnapshot() const;
     void clearDebugSnapshot();
 
+    OperatorPromptController& operatorPrompts();
+    const OperatorPromptController& operatorPrompts() const;
+
     // Called only by the execution thread at a node boundary.
     bool enterPausedState();
     DebugStepMode takeStepMode();
@@ -54,6 +58,7 @@ private:
     QVector<BreakpointSpec> m_breakpoints;
     std::optional<ExecutionDebugSnapshot> m_debugSnapshot;
     DebugStepMode m_stepMode = DebugStepMode::None;
+    OperatorPromptController m_operatorPrompts;
 };
 
 } // namespace PicoATE::Core

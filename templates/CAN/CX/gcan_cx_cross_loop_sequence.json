@@ -4,11 +4,90 @@
   "version": "1.0.0",
   "groups": [
     {
+      "id": "setup",
+      "name": "Setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "001",
+          "key": "open-gcan1",
+          "name": "Open GCAN CAN1",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "open",
+          "inputs": {
+            "deviceId": "CAN1.CH1"
+          },
+          "errorPolicy": {
+            "onFail": "RunCleanup",
+            "onError": "RunCleanup",
+            "onTimeout": "RunCleanup",
+            "stopUutOnFailure": true
+          },
+          "enabled": true
+        },
+        {
+          "id": "002",
+          "key": "open-cx2",
+          "name": "Open CX CAN2",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "open",
+          "inputs": {
+            "deviceId": "CAN2.CH2"
+          },
+          "errorPolicy": {
+            "onFail": "RunCleanup",
+            "onError": "RunCleanup",
+            "onTimeout": "RunCleanup",
+            "stopUutOnFailure": true
+          },
+          "enabled": true
+        },
+        {
+          "id": "003",
+          "key": "open-cx1",
+          "name": "Open CX CAN1",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "open",
+          "inputs": {
+            "deviceId": "CAN2.CH1"
+          },
+          "errorPolicy": {
+            "onFail": "RunCleanup",
+            "onError": "RunCleanup",
+            "onTimeout": "RunCleanup",
+            "stopUutOnFailure": true
+          },
+          "enabled": true
+        },
+        {
+          "id": "004",
+          "key": "open-gcan2",
+          "name": "Open GCAN CAN2",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "open",
+          "inputs": {
+            "deviceId": "CAN1.CH2"
+          },
+          "errorPolicy": {
+            "onFail": "RunCleanup",
+            "onError": "RunCleanup",
+            "onTimeout": "RunCleanup",
+            "stopUutOnFailure": true
+          },
+          "enabled": true
+        }
+      ]
+    },
+    {
       "id": "main",
       "kind": "main",
       "steps": [
         {
-          "id": "001",
+          "id": "005",
           "key": "gcan1-to-cx2",
           "name": "GCAN CAN1 -> CX CAN2",
           "kind": "testItem",
@@ -21,44 +100,26 @@
           "steps": [
             {
               "id": "01",
-              "key": "open-gcan1",
-              "name": "Open GCAN CAN1",
-              "kind": "action",
-              "moduleId": "device",
-              "function": "open",
-              "inputs": {"deviceId": "GCAN_CAN1"}
-            },
-            {
-              "id": "02",
-              "key": "open-cx2",
-              "name": "Open CX CAN2",
-              "kind": "action",
-              "moduleId": "device",
-              "function": "open",
-              "inputs": {"deviceId": "CX_CAN2"}
-            },
-            {
-              "id": "03",
               "key": "gcan-tx-a",
               "name": "GCAN CAN1 Send 0x321",
               "kind": "action",
               "moduleId": "device",
               "function": "write",
               "inputs": {
-                "deviceId": "GCAN_CAN1",
+                "deviceId": "CAN1.CH1",
                 "id": "0x321",
                 "data": "47 43 41 4E 2D 43 58 32"
               }
             },
             {
-              "id": "04",
+              "id": "02",
               "key": "bus-delay-a",
               "name": "Wait 100 ms",
               "kind": "wait",
               "ms": 100
             },
             {
-              "id": "05",
+              "id": "03",
               "key": "cx-rx-a",
               "name": "CX CAN2 Receive 0x321",
               "kind": "action",
@@ -66,18 +127,20 @@
               "function": "read",
               "timeoutMs": 3000,
               "inputs": {
-                "deviceId": "CX_CAN2",
+                "deviceId": "CAN2.CH2",
                 "filterId": "0x321",
                 "filterMask": "0x7FF",
                 "timeoutMs": 2000
               }
             },
             {
-              "id": "06",
+              "id": "04",
               "key": "cx-id-a",
               "name": "Check CX CAN2 Frame ID",
               "kind": "limit",
-              "inputs": {"actual": "${step:cx-rx-a.outputs.idNumeric}"},
+              "inputs": {
+                "actual": "${step:cx-rx-a.outputs.idNumeric}"
+              },
               "parameters": {
                 "comparison": "equal",
                 "expected": 801,
@@ -85,11 +148,13 @@
               }
             },
             {
-              "id": "07",
+              "id": "05",
               "key": "cx-dlc-a",
               "name": "Check CX CAN2 DLC",
               "kind": "limit",
-              "inputs": {"actual": "${step:cx-rx-a.outputs.dlc}"},
+              "inputs": {
+                "actual": "${step:cx-rx-a.outputs.dlc}"
+              },
               "parameters": {
                 "comparison": "equal",
                 "expected": 8,
@@ -98,39 +163,23 @@
               }
             },
             {
-              "id": "08",
+              "id": "06",
               "key": "cx-data-a",
               "name": "Check CX CAN2 Payload",
               "kind": "limit",
-              "inputs": {"actual": "${step:cx-rx-a.outputs.dataHex}"},
+              "inputs": {
+                "actual": "${step:cx-rx-a.outputs.dataHex}"
+              },
               "parameters": {
                 "comparison": "equal",
                 "expected": "47 43 41 4E 2D 43 58 32",
                 "measurementName": "GCAN1_TO_CX2_DATA"
               }
-            },
-            {
-              "id": "09",
-              "key": "close-cx2",
-              "name": "Close CX CAN2",
-              "kind": "action",
-              "moduleId": "device",
-              "function": "close",
-              "inputs": {"deviceId": "CX_CAN2"}
-            },
-            {
-              "id": "10",
-              "key": "close-gcan1",
-              "name": "Close GCAN CAN1",
-              "kind": "action",
-              "moduleId": "device",
-              "function": "close",
-              "inputs": {"deviceId": "GCAN_CAN1"}
             }
           ]
         },
         {
-          "id": "002",
+          "id": "006",
           "key": "cx1-to-gcan2",
           "name": "CX CAN1 -> GCAN CAN2",
           "kind": "testItem",
@@ -143,44 +192,26 @@
           "steps": [
             {
               "id": "01",
-              "key": "open-cx1",
-              "name": "Open CX CAN1",
-              "kind": "action",
-              "moduleId": "device",
-              "function": "open",
-              "inputs": {"deviceId": "CX_CAN1"}
-            },
-            {
-              "id": "02",
-              "key": "open-gcan2",
-              "name": "Open GCAN CAN2",
-              "kind": "action",
-              "moduleId": "device",
-              "function": "open",
-              "inputs": {"deviceId": "GCAN_CAN2"}
-            },
-            {
-              "id": "03",
               "key": "cx-tx-b",
               "name": "CX CAN1 Send 0x456",
               "kind": "action",
               "moduleId": "device",
               "function": "write",
               "inputs": {
-                "deviceId": "CX_CAN1",
+                "deviceId": "CAN2.CH1",
                 "id": "0x456",
                 "data": "43 58 31 2D 47 43 41 4E"
               }
             },
             {
-              "id": "04",
+              "id": "02",
               "key": "bus-delay-b",
               "name": "Wait 100 ms",
               "kind": "wait",
               "ms": 100
             },
             {
-              "id": "05",
+              "id": "03",
               "key": "gcan-rx-b",
               "name": "GCAN CAN2 Receive 0x456",
               "kind": "action",
@@ -188,18 +219,20 @@
               "function": "read",
               "timeoutMs": 3000,
               "inputs": {
-                "deviceId": "GCAN_CAN2",
+                "deviceId": "CAN1.CH2",
                 "filterId": "0x456",
                 "filterMask": "0x7FF",
                 "timeoutMs": 2000
               }
             },
             {
-              "id": "06",
+              "id": "04",
               "key": "gcan-id-b",
               "name": "Check GCAN CAN2 Frame ID",
               "kind": "limit",
-              "inputs": {"actual": "${step:gcan-rx-b.outputs.idNumeric}"},
+              "inputs": {
+                "actual": "${step:gcan-rx-b.outputs.idNumeric}"
+              },
               "parameters": {
                 "comparison": "equal",
                 "expected": 1110,
@@ -207,11 +240,13 @@
               }
             },
             {
-              "id": "07",
+              "id": "05",
               "key": "gcan-dlc-b",
               "name": "Check GCAN CAN2 DLC",
               "kind": "limit",
-              "inputs": {"actual": "${step:gcan-rx-b.outputs.dlc}"},
+              "inputs": {
+                "actual": "${step:gcan-rx-b.outputs.dlc}"
+              },
               "parameters": {
                 "comparison": "equal",
                 "expected": 8,
@@ -220,34 +255,18 @@
               }
             },
             {
-              "id": "08",
+              "id": "06",
               "key": "gcan-data-b",
               "name": "Check GCAN CAN2 Payload",
               "kind": "limit",
-              "inputs": {"actual": "${step:gcan-rx-b.outputs.dataHex}"},
+              "inputs": {
+                "actual": "${step:gcan-rx-b.outputs.dataHex}"
+              },
               "parameters": {
                 "comparison": "equal",
                 "expected": "43 58 31 2D 47 43 41 4E",
                 "measurementName": "CX1_TO_GCAN2_DATA"
               }
-            },
-            {
-              "id": "09",
-              "key": "close-gcan2",
-              "name": "Close GCAN CAN2",
-              "kind": "action",
-              "moduleId": "device",
-              "function": "close",
-              "inputs": {"deviceId": "GCAN_CAN2"}
-            },
-            {
-              "id": "10",
-              "key": "close-cx1",
-              "name": "Close CX CAN1",
-              "kind": "action",
-              "moduleId": "device",
-              "function": "close",
-              "inputs": {"deviceId": "CX_CAN1"}
             }
           ]
         }
@@ -258,36 +277,52 @@
       "kind": "cleanup",
       "steps": [
         {
-          "id": "cleanup-gcan1",
+          "id": "007",
           "name": "Ensure GCAN CAN1 Closed",
           "kind": "cleanup",
           "moduleId": "device",
           "function": "close",
-          "inputs": {"deviceId": "GCAN_CAN1"}
+          "inputs": {
+            "deviceId": "CAN1.CH1"
+          },
+          "enabled": true,
+          "alwaysRun": true
         },
         {
-          "id": "cleanup-gcan2",
+          "id": "008",
           "name": "Ensure GCAN CAN2 Closed",
           "kind": "cleanup",
           "moduleId": "device",
           "function": "close",
-          "inputs": {"deviceId": "GCAN_CAN2"}
+          "inputs": {
+            "deviceId": "CAN1.CH2"
+          },
+          "enabled": true,
+          "alwaysRun": true
         },
         {
-          "id": "cleanup-cx1",
+          "id": "009",
           "name": "Ensure CX CAN1 Closed",
           "kind": "cleanup",
           "moduleId": "device",
           "function": "close",
-          "inputs": {"deviceId": "CX_CAN1"}
+          "inputs": {
+            "deviceId": "CAN2.CH1"
+          },
+          "enabled": true,
+          "alwaysRun": true
         },
         {
-          "id": "cleanup-cx2",
+          "id": "010",
           "name": "Ensure CX CAN2 Closed",
           "kind": "cleanup",
           "moduleId": "device",
           "function": "close",
-          "inputs": {"deviceId": "CX_CAN2"}
+          "inputs": {
+            "deviceId": "CAN2.CH2"
+          },
+          "enabled": true,
+          "alwaysRun": true
         }
       ]
     }

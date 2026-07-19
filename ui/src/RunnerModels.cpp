@@ -125,6 +125,10 @@ QString execNodeKindName(PicoATE::Core::ExecNodeKind kind)
     case ExecNodeKind::Loop: return QStringLiteral("Loop");
     case ExecNodeKind::TestItem: return QStringLiteral("TestItem");
     case ExecNodeKind::Limit: return QStringLiteral("Limit");
+    case ExecNodeKind::Break: return QStringLiteral("Break If");
+    case ExecNodeKind::Counter: return QStringLiteral("Counter");
+    case ExecNodeKind::Aggregate: return QStringLiteral("Aggregate");
+    case ExecNodeKind::OperatorPrompt: return QStringLiteral("MessageBox");
     case ExecNodeKind::Statement: return QStringLiteral("Statement");
     case ExecNodeKind::SequenceCall: return QStringLiteral("SequenceCall");
     }
@@ -265,6 +269,10 @@ QString eventStateText(const PicoATE::Core::RuntimeEvent& event)
         return PicoATE::Core::deviceConnectionStateName(event.deviceState);
     case RuntimeEventKind::BreakpointHit:
         return QStringLiteral("Paused");
+    case RuntimeEventKind::OperatorPromptRequested:
+        return QStringLiteral("Waiting for operator");
+    case RuntimeEventKind::OperatorPromptClosed:
+        return QStringLiteral("Closed");
     case RuntimeEventKind::UutRegistered:
     case RuntimeEventKind::ModuleLog:
         return {};
@@ -283,11 +291,57 @@ QString eventStepText(const PicoATE::Core::RuntimeEvent& event)
     return event.nodeId;
 }
 
+QString eventTypeText(const PicoATE::Core::RuntimeEvent& event)
+{
+    using PicoATE::Core::NodeOutcome;
+    using PicoATE::Core::RuntimeEventKind;
+    switch (event.kind) {
+    case RuntimeEventKind::ModuleLog:
+        return QStringLiteral("LOG");
+    case RuntimeEventKind::AttemptStarted:
+        return QStringLiteral("START");
+    case RuntimeEventKind::AttemptCompleted:
+        switch (event.outcome) {
+        case NodeOutcome::Passed: return QStringLiteral("PASS");
+        case NodeOutcome::Failed: return QStringLiteral("FAIL");
+        case NodeOutcome::Error: return QStringLiteral("ERROR");
+        case NodeOutcome::Timeout: return QStringLiteral("TIMEOUT");
+        case NodeOutcome::Cancelled: return QStringLiteral("CANCELLED");
+        case NodeOutcome::Skipped: return QStringLiteral("SKIPPED");
+        case NodeOutcome::Unknown: return QStringLiteral("COMPLETE");
+        }
+        break;
+    case RuntimeEventKind::RetryScheduled:
+        return QStringLiteral("RETRY");
+    case RuntimeEventKind::LoopIterationStarted:
+    case RuntimeEventKind::LoopCompleted:
+        return QStringLiteral("LOOP");
+    case RuntimeEventKind::BreakpointHit:
+    case RuntimeEventKind::DebugStepCompleted:
+        return QStringLiteral("DEBUG");
+    case RuntimeEventKind::DeviceStateChanged:
+        return QStringLiteral("DEVICE");
+    case RuntimeEventKind::OperatorPromptRequested:
+    case RuntimeEventKind::OperatorPromptClosed:
+        return QStringLiteral("PROMPT");
+    default:
+        return QStringLiteral("FLOW");
+    }
+    return QStringLiteral("FLOW");
+}
+
 QString eventDetailText(const PicoATE::Core::RuntimeEvent& event)
 {
     QStringList parts;
     if (!event.message.isEmpty()) {
         parts.push_back(event.message);
+    }
+    if (event.kind == PicoATE::Core::RuntimeEventKind::ModuleLog) {
+        const auto dropped = event.details.value(QStringLiteral("droppedBefore")).toULongLong();
+        if (dropped > 0) {
+            parts.push_back(QStringLiteral("%1 earlier log record(s) dropped").arg(dropped));
+        }
+        return parts.join(QStringLiteral(" | "));
     }
     if (event.attemptIndex > 0) {
         parts.push_back(QStringLiteral("attempt=%1").arg(event.attemptIndex));
@@ -371,6 +425,52 @@ QString measurementValueText(const PicoATE::Core::MeasurementResult& measurement
     return measurement.unit.isEmpty() ? value : QStringLiteral("%1 %2").arg(value, measurement.unit);
 }
 
+QString inferredLimitText(const PicoATE::Core::MeasurementResult& measurement,
+                          bool lower)
+{
+    const auto displayKey = lower ? QStringLiteral("displayLower")
+                                  : QStringLiteral("displayUpper");
+    const auto display = measurement.attributes.value(displayKey);
+    if (display.isValid() && !display.isNull()) {
+        return variantText(display);
+    }
+    if (lower && measurement.hasLowerLimit) {
+        return QString::number(measurement.lowerLimit, 'g', 12);
+    }
+    if (!lower && measurement.hasUpperLimit) {
+        return QString::number(measurement.upperLimit, 'g', 12);
+    }
+
+    auto comparison = measurement.attributes
+                          .value(QStringLiteral("comparison")).toString()
+                          .trimmed().toLower();
+    comparison.remove(QLatin1Char('-'));
+    comparison.remove(QLatin1Char('_'));
+    comparison.remove(QLatin1Char(' '));
+    const bool equality = comparison == QStringLiteral("==") ||
+        comparison == QStringLiteral("eq") || comparison == QStringLiteral("equal") ||
+        comparison == QStringLiteral("!=") || comparison == QStringLiteral("ne") ||
+        comparison == QStringLiteral("notequal");
+    const bool lowerBound = comparison == QStringLiteral(">") ||
+        comparison == QStringLiteral(">=") || comparison == QStringLiteral("gt") ||
+        comparison == QStringLiteral("ge") || comparison == QStringLiteral("gte") ||
+        comparison == QStringLiteral("greaterthan") ||
+        comparison == QStringLiteral("greaterorequal");
+    const bool upperBound = comparison == QStringLiteral("<") ||
+        comparison == QStringLiteral("<=") || comparison == QStringLiteral("lt") ||
+        comparison == QStringLiteral("le") || comparison == QStringLiteral("lte") ||
+        comparison == QStringLiteral("lessthan") ||
+        comparison == QStringLiteral("lessorequal");
+    if ((!equality && lower && !lowerBound) ||
+        (!equality && !lower && !upperBound)) {
+        return QStringLiteral("-");
+    }
+    const auto expected = measurement.attributes.value(QStringLiteral("expected"));
+    return expected.isValid() && !expected.isNull()
+        ? variantText(expected)
+        : QStringLiteral("-");
+}
+
 template <typename Formatter>
 QString joinedMeasurementText(
     const QVector<PicoATE::Core::MeasurementResult>& measurements,
@@ -394,16 +494,12 @@ QString joinedMeasurementText(
 
 QString lowerLimitText(const PicoATE::Core::MeasurementResult& measurement)
 {
-    return measurement.hasLowerLimit
-        ? QString::number(measurement.lowerLimit, 'g', 12)
-        : QStringLiteral("-");
+    return inferredLimitText(measurement, true);
 }
 
 QString upperLimitText(const PicoATE::Core::MeasurementResult& measurement)
 {
-    return measurement.hasUpperLimit
-        ? QString::number(measurement.upperLimit, 'g', 12)
-        : QStringLiteral("-");
+    return inferredLimitText(measurement, false);
 }
 
 QString stepErrorCode(const PicoATE::Core::StepReport& step)
@@ -800,6 +896,27 @@ void UutStepModel::applyRuntimeEvents(
             continue;
         }
 
+        const bool updatesStep = [&event] {
+            switch (event.kind) {
+            case PicoATE::Core::RuntimeEventKind::NodeStateChanged:
+            case PicoATE::Core::RuntimeEventKind::BarrierWaiting:
+            case PicoATE::Core::RuntimeEventKind::BarrierReleased:
+            case PicoATE::Core::RuntimeEventKind::CleanupActivated:
+            case PicoATE::Core::RuntimeEventKind::LoopIterationStarted:
+            case PicoATE::Core::RuntimeEventKind::LoopCompleted:
+            case PicoATE::Core::RuntimeEventKind::TestItemStarted:
+            case PicoATE::Core::RuntimeEventKind::TestItemCompleted:
+            case PicoATE::Core::RuntimeEventKind::AttemptStarted:
+            case PicoATE::Core::RuntimeEventKind::AttemptCompleted:
+                return true;
+            default:
+                return false;
+            }
+        }();
+        if (!updatesStep) {
+            continue;
+        }
+
         auto& step = ensureStep(uut, event);
         if (event.details.contains("durationMs")) {
             step.durationMs = event.details.value("durationMs").toLongLong();
@@ -924,11 +1041,11 @@ PicoATE::Core::StepReport& UutStepModel::ensureStep(
     PicoATE::Core::UutReport& uut,
     const PicoATE::Core::RuntimeEvent& event)
 {
-    const auto findStep = [](QVector<PicoATE::Core::StepReport>& steps,
-                             const PicoATE::Core::NodeId& id,
-                             const auto& self) -> PicoATE::Core::StepReport* {
+    const auto findStepByPath = [](QVector<PicoATE::Core::StepReport>& steps,
+                                   const PicoATE::Core::NodeId& id,
+                                   const auto& self) -> PicoATE::Core::StepReport* {
         for (auto& step : steps) {
-            if (step.nodePath == id || step.stepId == id) {
+            if (step.nodePath == id) {
                 return &step;
             }
             if (auto* child = self(step.children, id, self)) {
@@ -937,9 +1054,29 @@ PicoATE::Core::StepReport& UutStepModel::ensureStep(
         }
         return nullptr;
     };
-    auto* existing = findStep(uut.steps, event.nodeId, findStep);
+    const auto findLegacyStep = [](QVector<PicoATE::Core::StepReport>& steps,
+                                   const PicoATE::Core::NodeId& id,
+                                   const auto& self) -> PicoATE::Core::StepReport* {
+        for (auto& step : steps) {
+            if (step.nodePath.isEmpty() && step.stepId == id) {
+                return &step;
+            }
+            if (auto* child = self(step.children, id, self)) {
+                return child;
+            }
+        }
+        return nullptr;
+    };
+    const auto findStep = [&](QVector<PicoATE::Core::StepReport>& steps,
+                              const PicoATE::Core::NodeId& id) {
+        if (auto* exact = findStepByPath(steps, id, findStepByPath)) {
+            return exact;
+        }
+        return findLegacyStep(steps, id, findLegacyStep);
+    };
+    auto* existing = findStep(uut.steps, event.nodeId);
     if (!event.parentNodeId.isEmpty()) {
-        auto* parent = findStep(uut.steps, event.parentNodeId, findStep);
+        auto* parent = findStep(uut.steps, event.parentNodeId);
         if (!parent) {
             PicoATE::Core::StepReport createdParent;
             createdParent.stepId = event.parentNodeId.section('.', -1);
@@ -951,7 +1088,7 @@ PicoATE::Core::StepReport& UutStepModel::ensureStep(
             parent = &uut.steps.last();
         }
         parent->phase = event.nodePhase;
-        auto* child = findStep(parent->children, event.nodeId, findStep);
+        auto* child = findStep(parent->children, event.nodeId);
         if (!child) {
             PicoATE::Core::StepReport created;
             created.stepId = event.nodeLocalId.isEmpty() ? event.nodeId : event.nodeLocalId;
@@ -1082,16 +1219,23 @@ UutStepModel::ModelItem* UutStepModel::findModelItem(
     const PicoATE::Core::UutId& uutId,
     const PicoATE::Core::NodeId& stepId) const
 {
+    ModelItem* legacyMatch = nullptr;
     for (const auto& item : m_modelItems) {
         if (!item->step || item->uutIndex < 0 || item->uutIndex >= m_report.uuts.size()) {
             continue;
         }
-        if (m_report.uuts[item->uutIndex].uutId == uutId &&
-            (item->step->nodePath == stepId || item->step->stepId == stepId)) {
+        if (m_report.uuts[item->uutIndex].uutId != uutId) {
+            continue;
+        }
+        if (item->step->nodePath == stepId) {
             return item.get();
         }
+        if (!legacyMatch && item->step->nodePath.isEmpty() &&
+            item->step->stepId == stepId) {
+            legacyMatch = item.get();
+        }
     }
-    return nullptr;
+    return legacyMatch;
 }
 
 DeviceStatusModel::DeviceStatusModel(QObject* parent)
@@ -1574,7 +1718,7 @@ RuntimeTimelineModel::RuntimeTimelineModel(QObject* parent, int maximumRows)
 
 int RuntimeTimelineModel::rowCount(const QModelIndex& parent) const
 {
-    return parent.isValid() ? 0 : m_events.size();
+    return parent.isValid() ? 0 : m_rows.size();
 }
 
 int RuntimeTimelineModel::columnCount(const QModelIndex&) const
@@ -1584,24 +1728,37 @@ int RuntimeTimelineModel::columnCount(const QModelIndex&) const
 
 QVariant RuntimeTimelineModel::data(const QModelIndex& index, int role) const
 {
-    if (!index.isValid() || index.row() < 0 || index.row() >= m_events.size()) {
+    if (!index.isValid() || index.row() < 0 || index.row() >= m_rows.size()) {
         return {};
     }
 
-    const auto& event = m_events[index.row()];
+    const auto& row = m_rows[index.row()];
     if (role == Qt::ToolTipRole) {
-        return eventDetailText(event);
+        return row.message;
     }
-    if (role == Qt::ForegroundRole && index.column() == StateColumn) {
-        switch (event.outcome) {
-        case PicoATE::Core::NodeOutcome::Passed:
-        case PicoATE::Core::NodeOutcome::Failed:
-        case PicoATE::Core::NodeOutcome::Error:
-        case PicoATE::Core::NodeOutcome::Timeout:
-        case PicoATE::Core::NodeOutcome::Cancelled:
-        case PicoATE::Core::NodeOutcome::Skipped:
-            return outcomeBrush(event.outcome);
-        case PicoATE::Core::NodeOutcome::Unknown:
+    if (role == Qt::TextAlignmentRole) {
+        return index.column() == TimeColumn
+            ? QVariant::fromValue(Qt::AlignCenter)
+            : QVariant::fromValue(Qt::AlignLeft | Qt::AlignVCenter);
+    }
+    if (role == Qt::FontRole) {
+        QFont font;
+        font.setBold(true);
+        return font;
+    }
+    if (role == Qt::ForegroundRole && index.column() == MessageColumn) {
+        switch (row.style) {
+        case LineStyle::Banner:
+            return QBrush(QColor(QStringLiteral("#355f78")));
+        case LineStyle::Log:
+            return QBrush(QColor(QStringLiteral("#334a5a")));
+        case LineStyle::Warning:
+            return QBrush(QColor(QStringLiteral("#a56600")));
+        case LineStyle::Passed:
+            return QBrush(QColor(QStringLiteral("#27844b")));
+        case LineStyle::Failed:
+            return QBrush(QColor(QStringLiteral("#b43a3a")));
+        case LineStyle::Flow:
             break;
         }
     }
@@ -1610,22 +1767,12 @@ QVariant RuntimeTimelineModel::data(const QModelIndex& index, int role) const
     }
 
     switch (index.column()) {
-    case SequenceColumn:
-        return event.sequenceNumber > 0 ? QVariant::fromValue(event.sequenceNumber) : QVariant{};
     case TimeColumn:
-        return event.timestampUtc.isValid()
-            ? event.timestampUtc.toLocalTime().toString("HH:mm:ss.zzz")
+        return row.timestampUtc.isValid()
+            ? row.timestampUtc.toLocalTime().toString("HH:mm:ss.zzz")
             : QVariant{};
-    case EventColumn:
-        return PicoATE::Core::runtimeEventKindName(event.kind);
-    case UutColumn:
-        return event.uutId;
-    case StepColumn:
-        return eventStepText(event);
-    case StateColumn:
-        return eventStateText(event);
-    case DetailColumn:
-        return eventDetailText(event);
+    case MessageColumn:
+        return row.message;
     default:
         return {};
     }
@@ -1640,62 +1787,311 @@ QVariant RuntimeTimelineModel::headerData(int section,
     }
 
     switch (section) {
-    case SequenceColumn:
-        return tr("#");
     case TimeColumn:
         return tr("Time");
-    case EventColumn:
-        return tr("Event");
-    case UutColumn:
-        return tr("UUT");
-    case StepColumn:
-        return tr("Step");
-    case StateColumn:
-        return tr("State / Outcome");
-    case DetailColumn:
-        return tr("Detail");
+    case MessageColumn:
+        return tr("Message");
     default:
         return {};
     }
 }
 
-void RuntimeTimelineModel::applyRuntimeEvents(
-    const QVector<PicoATE::Core::RuntimeEvent>& events)
+int RuntimeTimelineModel::indentationFor(
+    const PicoATE::Core::RuntimeEvent& event) const
 {
-    QVector<PicoATE::Core::RuntimeEvent> incoming;
-    for (const auto& event : events) {
-        if (event.kind != PicoATE::Core::RuntimeEventKind::ModuleLog) {
-            incoming.push_back(event);
+    int depth = 0;
+    auto parent = event.parentNodeId;
+    QSet<PicoATE::Core::NodeId> visited;
+    while (!parent.isEmpty() && !visited.contains(parent)) {
+        visited.insert(parent);
+        ++depth;
+        parent = m_parentNodes.value(parent);
+    }
+    return depth;
+}
+
+void RuntimeTimelineModel::appendEventRows(
+    const PicoATE::Core::RuntimeEvent& event)
+{
+    using PicoATE::Core::ActivationState;
+    using PicoATE::Core::NodeOutcome;
+    using PicoATE::Core::RuntimeEventKind;
+
+    if (!event.nodeId.isEmpty() && !event.parentNodeId.isEmpty()) {
+        m_parentNodes.insert(event.nodeId, event.parentNodeId);
+    }
+
+    if (event.kind == RuntimeEventKind::AttemptStarted && !event.nodeId.isEmpty()) {
+        m_activeAttempts.push_back(qMakePair(event.uutId, event.nodeId));
+    }
+
+    auto displayedEvent = event;
+    if (event.kind == RuntimeEventKind::DeviceStateChanged &&
+        event.nodeId.isEmpty() && !m_activeAttempts.isEmpty()) {
+        const auto& active = m_activeAttempts.constLast();
+        displayedEvent.uutId = active.first;
+        displayedEvent.nodeId = active.second;
+        displayedEvent.parentNodeId = m_parentNodes.value(active.second);
+    }
+
+    QDateTime timestamp = event.timestampUtc;
+    if (event.kind == RuntimeEventKind::ModuleLog) {
+        const auto sourceTimestamp =
+            event.details.value(QStringLiteral("sourceTimestampUtc")).toDateTime();
+        if (sourceTimestamp.isValid()) {
+            timestamp = sourceTimestamp;
         }
     }
-    if (incoming.isEmpty()) {
-        return;
+
+    const auto indentation = QString(indentationFor(displayedEvent) * 4,
+                                     QLatin1Char(' '));
+    const auto append = [this, &displayedEvent, &timestamp, &indentation](
+                            QString message, LineStyle style) {
+        message = message.trimmed();
+        if (!message.isEmpty()) {
+            m_rows.push_back(Row{displayedEvent,
+                                 timestamp,
+                                 indentation + message,
+                                 style});
+        }
+    };
+    const auto nameToken = [&event] {
+        auto name = eventStepText(event).trimmed();
+        if (name.isEmpty()) {
+            name = QStringLiteral("UNNAMED");
+        }
+        name.replace(QLatin1Char(' '), QLatin1Char('_'));
+        return name.toUpper();
+    };
+    const auto resultText = [&event] {
+        switch (event.outcome) {
+        case NodeOutcome::Passed: return QStringLiteral("PASS");
+        case NodeOutcome::Failed: return QStringLiteral("FAIL");
+        case NodeOutcome::Error: return QStringLiteral("ERROR");
+        case NodeOutcome::Timeout: return QStringLiteral("TIMEOUT");
+        case NodeOutcome::Cancelled: return QStringLiteral("CANCELLED");
+        case NodeOutcome::Skipped: return QStringLiteral("SKIPPED");
+        case NodeOutcome::Unknown: return QStringLiteral("UNKNOWN");
+        }
+        return QStringLiteral("UNKNOWN");
+    };
+    const auto resultStyle = [&event] {
+        return event.outcome == NodeOutcome::Passed
+            ? LineStyle::Passed
+            : LineStyle::Failed;
+    };
+
+    switch (event.kind) {
+    case RuntimeEventKind::AttemptStarted:
+        append(QStringLiteral("------------------------ %1_STEP_START ------------------------")
+                   .arg(nameToken()),
+               LineStyle::Banner);
+        break;
+    case RuntimeEventKind::AttemptCompleted: {
+        if (event.nodeKind == PicoATE::Core::ExecNodeKind::TestItem) {
+            break;
+        }
+        QString result = QStringLiteral("RESULT:%1").arg(resultText());
+        if (event.nodeKind == PicoATE::Core::ExecNodeKind::Break &&
+            event.details.contains(QStringLiteral("breakRequested"))) {
+            result += event.details.value(QStringLiteral("breakRequested")).toBool()
+                ? QStringLiteral(" | BREAK:CONDITION MET")
+                : QStringLiteral(" | BREAK:CONDITION NOT MET");
+        }
+        if (!event.errorCode.isEmpty()) {
+            result += QStringLiteral(" | ERROR:%1").arg(event.errorCode);
+        }
+        if (!event.message.trimmed().isEmpty()) {
+            result += QStringLiteral(" | %1").arg(event.message.trimmed());
+        }
+        append(result, resultStyle());
+        append(QStringLiteral("------------------------ %1_STEP_END ------------------------")
+                   .arg(nameToken()),
+               LineStyle::Banner);
+        break;
+    }
+    case RuntimeEventKind::TestItemStarted:
+        append(QStringLiteral("======================== %1_TESTITEM_START ========================")
+                   .arg(nameToken()),
+               LineStyle::Banner);
+        break;
+    case RuntimeEventKind::TestItemCompleted:
+    {
+        QString result = QStringLiteral("RESULT:%1").arg(resultText());
+        if (!event.errorCode.isEmpty()) {
+            result += QStringLiteral(" | ERROR:%1").arg(event.errorCode);
+        }
+        if (!event.message.trimmed().isEmpty()) {
+            result += QStringLiteral(" | %1").arg(event.message.trimmed());
+        }
+        append(result, resultStyle());
+        append(QStringLiteral("======================== %1_TESTITEM_END ========================")
+                   .arg(nameToken()),
+               LineStyle::Banner);
+        break;
+    }
+    case RuntimeEventKind::ModuleLog: {
+        auto message = event.message.trimmed();
+        for (const auto& prefix : {QStringLiteral("DEBUG:"),
+                                   QStringLiteral("INFO:")}) {
+            if (message.startsWith(prefix, Qt::CaseInsensitive)) {
+                message = QStringLiteral("LOG:") + message.mid(prefix.size()).trimmed();
+                break;
+            }
+        }
+        const QStringList recognizedPrefixes = {
+            QStringLiteral("LOG:"), QStringLiteral("WARN:"),
+            QStringLiteral("WARNING:"), QStringLiteral("ERROR:"),
+            QStringLiteral("RESULT:")};
+        const bool hasPrefix = std::any_of(
+            recognizedPrefixes.cbegin(), recognizedPrefixes.cend(),
+            [&message](const QString& prefix) {
+                return message.startsWith(prefix, Qt::CaseInsensitive);
+            });
+        if (!hasPrefix) {
+            message.prepend(QStringLiteral("LOG:"));
+        }
+        const auto style = message.startsWith(QStringLiteral("ERROR:"), Qt::CaseInsensitive)
+            ? LineStyle::Failed
+            : (message.startsWith(QStringLiteral("WARN"), Qt::CaseInsensitive)
+                   ? LineStyle::Warning
+                   : LineStyle::Log);
+        append(message, style);
+        const auto dropped =
+            event.details.value(QStringLiteral("droppedBefore")).toULongLong();
+        if (dropped > 0) {
+            append(QStringLiteral("WARN:%1 earlier log record(s) dropped").arg(dropped),
+                   LineStyle::Warning);
+        }
+        break;
+    }
+    case RuntimeEventKind::RetryScheduled:
+        append(QStringLiteral("RETRY:%1").arg(event.message), LineStyle::Warning);
+        break;
+    case RuntimeEventKind::LoopIterationStarted:
+        if (event.loopIteration.iterationNumber <= 1) {
+            append(QStringLiteral("======================== %1_LOOP_START ========================")
+                       .arg(nameToken()),
+                   LineStyle::Banner);
+        }
+        append(QStringLiteral("LOOP:%1").arg(
+                   loopIterationDescription(event.loopIteration)),
+               LineStyle::Flow);
+        break;
+    case RuntimeEventKind::LoopCompleted:
+        append(QStringLiteral("LOOP_RESULT:%1").arg(resultText()), resultStyle());
+        append(QStringLiteral("======================== %1_LOOP_END ========================")
+                   .arg(nameToken()),
+               LineStyle::Banner);
+        break;
+    case RuntimeEventKind::BarrierWaiting:
+        append(QStringLiteral("BARRIER:WAITING"), LineStyle::Flow);
+        break;
+    case RuntimeEventKind::BarrierReleased:
+        append(QStringLiteral("BARRIER:RELEASED"), LineStyle::Flow);
+        break;
+    case RuntimeEventKind::CleanupActivated:
+        append(QStringLiteral("CLEANUP:%1").arg(nameToken()), LineStyle::Flow);
+        break;
+    case RuntimeEventKind::DeviceStateChanged:
+        append(QStringLiteral("DEVICE:%1 | %2 | %3")
+                   .arg(event.deviceId,
+                        PicoATE::Core::deviceConnectionStateName(event.deviceState),
+                        event.message),
+               event.deviceState == PicoATE::Core::DeviceConnectionState::Error
+                   ? LineStyle::Failed
+                   : LineStyle::Flow);
+        break;
+    case RuntimeEventKind::BreakpointHit:
+        append(QStringLiteral("LOG:BREAKPOINT | %1").arg(eventStepText(event)),
+               LineStyle::Log);
+        break;
+    case RuntimeEventKind::DebugStepCompleted:
+        append(QStringLiteral("LOG:PAUSED AFTER | %1").arg(eventStepText(event)),
+               LineStyle::Log);
+        break;
+    case RuntimeEventKind::OperatorPromptRequested:
+        append(QStringLiteral("PROMPT:OPEN | %1").arg(event.message),
+               LineStyle::Warning);
+        break;
+    case RuntimeEventKind::OperatorPromptClosed:
+        append(QStringLiteral("PROMPT:CLOSED | %1").arg(event.message),
+               LineStyle::Flow);
+        break;
+    case RuntimeEventKind::NodeStateChanged:
+        if (event.activationState == ActivationState::Skipped ||
+            event.activationState == ActivationState::Cancelled) {
+            append(QStringLiteral("RESULT:%1 | %2")
+                       .arg(activationStateName(event.activationState).toUpper(),
+                            eventStepText(event)),
+                   LineStyle::Warning);
+        }
+        break;
+    case RuntimeEventKind::SessionStateChanged:
+        append(QStringLiteral("SESSION:%1").arg(
+                   executionStateName(event.executionState).toUpper()),
+               LineStyle::Flow);
+        break;
+    case RuntimeEventKind::UutCompleted:
+        append(QStringLiteral("RUN_RESULT:%1").arg(resultText()), resultStyle());
+        break;
+    case RuntimeEventKind::UutRegistered:
+        break;
+    }
+
+    if (event.kind == RuntimeEventKind::AttemptCompleted && !event.nodeId.isEmpty()) {
+        for (int index = m_activeAttempts.size() - 1; index >= 0; --index) {
+            if (m_activeAttempts[index].first == event.uutId &&
+                m_activeAttempts[index].second == event.nodeId) {
+                m_activeAttempts.removeAt(index);
+                break;
+            }
+        }
+    }
+}
+
+QVector<RuntimeLogLine> RuntimeTimelineModel::applyRuntimeEvents(
+    const QVector<PicoATE::Core::RuntimeEvent>& events)
+{
+    if (events.isEmpty()) {
+        return {};
     }
 
     beginResetModel();
-    m_events += incoming;
-    if (m_events.size() > m_maximumRows) {
-        const int removeCount = m_events.size() - m_maximumRows;
-        m_events.remove(0, removeCount);
+    const int firstNewRow = m_rows.size();
+    for (const auto& event : events) {
+        appendEventRows(event);
+    }
+    QVector<RuntimeLogLine> newLines;
+    newLines.reserve(m_rows.size() - firstNewRow);
+    for (int row = firstNewRow; row < m_rows.size(); ++row) {
+        newLines.push_back({m_rows[row].timestampUtc, m_rows[row].message});
+    }
+    if (m_rows.size() > m_maximumRows) {
+        const int removeCount = m_rows.size() - m_maximumRows;
+        m_rows.remove(0, removeCount);
         m_droppedRows += static_cast<quint64>(removeCount);
     }
     endResetModel();
+    return newLines;
 }
 
 void RuntimeTimelineModel::clear()
 {
     beginResetModel();
-    m_events.clear();
+    m_rows.clear();
+    m_parentNodes.clear();
+    m_activeAttempts.clear();
     m_droppedRows = 0;
     endResetModel();
 }
 
 std::optional<PicoATE::Core::RuntimeEvent> RuntimeTimelineModel::eventAt(int row) const
 {
-    if (row < 0 || row >= m_events.size()) {
+    if (row < 0 || row >= m_rows.size()) {
         return std::nullopt;
     }
-    return m_events[row];
+    return m_rows[row].event;
 }
 
 int RuntimeTimelineModel::rowForSequenceNumber(quint64 sequenceNumber) const
@@ -1703,8 +2099,33 @@ int RuntimeTimelineModel::rowForSequenceNumber(quint64 sequenceNumber) const
     if (sequenceNumber == 0) {
         return -1;
     }
-    for (int row = 0; row < m_events.size(); ++row) {
-        if (m_events[row].sequenceNumber == sequenceNumber) {
+    for (int row = 0; row < m_rows.size(); ++row) {
+        if (m_rows[row].event.sequenceNumber == sequenceNumber) {
+            return row;
+        }
+    }
+    return -1;
+}
+
+int RuntimeTimelineModel::rowForNode(
+    const PicoATE::Core::UutId& uutId,
+    const PicoATE::Core::NodeId& nodeId) const
+{
+    if (nodeId.isEmpty()) {
+        return -1;
+    }
+    const auto uutMatches = [&uutId](const PicoATE::Core::RuntimeEvent& event) {
+        return uutId.isEmpty() || event.uutId.isEmpty() || event.uutId == uutId;
+    };
+    for (int row = 0; row < m_rows.size(); ++row) {
+        const auto& event = m_rows[row].event;
+        if (uutMatches(event) && event.nodeId == nodeId) {
+            return row;
+        }
+    }
+    for (int row = 0; row < m_rows.size(); ++row) {
+        const auto& event = m_rows[row].event;
+        if (uutMatches(event) && event.nodeLocalId == nodeId) {
             return row;
         }
     }

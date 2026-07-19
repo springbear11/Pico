@@ -1,0 +1,140 @@
+{
+    "groups": [
+        {
+            "id": "setup",
+            "kind": "setup",
+            "steps": [
+                {
+                    "errorPolicy": {
+                        "onError": "RunCleanup",
+                        "onFail": "RunCleanup",
+                        "onTimeout": "RunCleanup"
+                    },
+                    "function": "open",
+                    "id": "can-open",
+                    "inputs": {
+                        "bitrate": 500000,
+                        "canFd": false,
+                        "channelIndex": 0,
+                        "deviceIndex": 0,
+                        "deviceType": 0,
+                        "selfTest": true
+                    },
+                    "kind": "action",
+                    "moduleId": "plugin.can.gcan",
+                    "name": "Open GCAN Plugin"
+                }
+            ]
+        },
+        {
+            "id": "main",
+            "kind": "main",
+            "steps": [
+                {
+                    "alwaysRun": false,
+                    "checkpointAfter": false,
+                    "checkpointBefore": false,
+                    "enabled": true,
+                    "errorPolicy": {
+                        "onError": "StopUut",
+                        "onFail": "StopUut",
+                        "onTimeout": "StopUut",
+                        "stopUutOnFailure": true
+                    },
+                    "id": "001",
+                    "kind": "testItem",
+                    "name": "GCAN Send Delay Receive",
+                    "resultRecording": true,
+                    "retry": {
+                        "delayMs": 0,
+                        "maxAttempts": 1
+                    },
+                    "steps": [
+                        {
+                            "function": "write",
+                            "id": "01",
+                            "inputs": {
+                                "data": "01 02 03 04 05 06 07 08",
+                                "id": "0x123"
+                            },
+                            "key": "tx",
+                            "kind": "action",
+                            "moduleId": "plugin.can.gcan",
+                            "name": "Transmit Frame"
+                        },
+                        {
+                            "id": "02",
+                            "key": "delay",
+                            "kind": "wait",
+                            "ms": 1000,
+                            "name": "Wait For Receive"
+                        },
+                        {
+                            "function": "read",
+                            "id": "03",
+                            "inputs": {
+                                "filterId": "0x123",
+                                "filterMask": "0x7FF",
+                                "timeoutMs": 1500
+                            },
+                            "key": "rx",
+                            "kind": "action",
+                            "moduleId": "plugin.can.gcan",
+                            "name": "Receive Echo Frame",
+                            "timeoutMs": 2500
+                        },
+                        {
+                            "id": "04",
+                            "inputs": {
+                                "actual": "${step:rx.outputs.dlc}"
+                            },
+                            "key": "dlc-limit",
+                            "kind": "limit",
+                            "name": "Validate Echo DLC",
+                            "parameters": {
+                                "comparison": "between",
+                                "expected": 8,
+                                "measurementName": "GCAN_ECHO_DLC",
+                                "tolerance": 0,
+                                "unit": "byte"
+                            }
+                        }
+                    ],
+                    "timeout": {
+                        "timeoutMs": 0
+                    }
+                }
+            ]
+        },
+        {
+            "id": "cleanup",
+            "kind": "cleanup",
+            "steps": [
+                {
+                    "function": "close",
+                    "id": "can-close",
+                    "kind": "cleanup",
+                    "moduleId": "plugin.can.gcan",
+                    "name": "Close GCAN Plugin"
+                }
+            ]
+        }
+    ],
+    "id": "gcan-plugin-self-test",
+    "moduleBindings": [
+        {
+            "arguments": [
+                "--manifest",
+                "${PROJECT_DIR}/out/build/vs2022-qt6-all/ui/src/Debug/gcan_hardware_manifest.json",
+                "--project-dir",
+                "${PROJECT_DIR}"
+            ],
+            "moduleId": "plugin.can.gcan",
+            "program": "${PROJECT_DIR}/out/build/vs2022-qt6-all/ui/src/Debug/PicoATE.NativeHost.exe",
+            "timeoutMs": 6000,
+            "transport": "persistent-qprocess"
+        }
+    ],
+    "name": "GCAN Plugin Hardware Closed Loop",
+    "version": "0.2.0"
+}

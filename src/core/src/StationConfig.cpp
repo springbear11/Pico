@@ -259,6 +259,17 @@ StationConfigResult parseStationConfigJson(const QJsonObject& object,
         object, "stopOnFailure", result, "stopOnFailure", true);
     result.config.scanDialogEnabled = readBool(
         object, "scanDialogEnabled", result, "scanDialogEnabled", true);
+    result.config.txtLogEnabled = readBool(
+        object, "txtLogEnabled", result, "txtLogEnabled", false);
+    result.config.csvReportEnabled = readBool(
+        object, "csvReportEnabled", result, "csvReportEnabled", false);
+    result.config.xlsxReportEnabled = readBool(
+        object, "xlsxReportEnabled", result, "xlsxReportEnabled", false);
+    result.config.reportOutputDirectory = readString(
+        object,
+        "reportOutputDirectory",
+        result,
+        "reportOutputDirectory");
     result.config.snLength = readInt(object, "snLength", result, "snLength", 0);
     if (result.config.snLength < 0 || result.config.snLength > 256) {
         addError(result,
@@ -270,6 +281,11 @@ StationConfigResult parseStationConfigJson(const QJsonObject& object,
 
     result.config.stationId = resolveStringField(result.config.stationId, resolver, result, "stationId");
     result.config.name = resolveStringField(result.config.name, resolver, result, "name");
+    result.config.reportOutputDirectory = resolveStringField(
+        result.config.reportOutputDirectory,
+        resolver,
+        result,
+        "reportOutputDirectory");
     result.config.metadata = resolveMapField(result.config.metadata, resolver, result, "metadata");
 
     if (!object.contains("devices")) {
@@ -357,7 +373,7 @@ StationConfigResult loadStationConfigFile(const QString& filePath,
 }
 
 QVector<StationConfigDiagnostic> configureDeviceSessions(const StationConfig& config,
-                                                         DeviceSessionManager& manager)
+                                                          DeviceSessionManager& manager)
 {
     QVector<StationConfigDiagnostic> errors;
     for (int i = 0; i < config.devices.size(); ++i) {
@@ -394,6 +410,13 @@ DeviceSessionLifetime deviceSessionLifetimeFromString(const QString& value, bool
         *ok = false;
     }
     return DeviceSessionLifetime::Station;
+}
+
+FailureHandlingMode failureHandlingMode(const StationConfig& config)
+{
+    return config.stopOnFailure
+        ? FailureHandlingMode::Stop
+        : FailureHandlingMode::Continue;
 }
 
 } // namespace PicoATE::Core

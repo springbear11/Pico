@@ -70,11 +70,12 @@ DeviceConnectionState TransportDeviceSession::state() const
     return m_state;
 }
 
-bool TransportDeviceSession::connect(QString& errorMessage)
+bool TransportDeviceSession::connect(QString& errorMessage,
+                                     const ModuleExecutionContext* context)
 {
     m_state = DeviceConnectionState::Connecting;
-    ModuleExecutionContext context;
-    const auto result = callHost("open", {}, context);
+    const ModuleExecutionContext emptyContext;
+    const auto result = callHost("open", {}, context ? *context : emptyContext);
     if (result.outcome != ModuleOutcome::Passed) {
         m_state = DeviceConnectionState::Error;
         errorMessage = result.errorMessage.isEmpty() ? result.errorCode : result.errorMessage;
@@ -86,10 +87,10 @@ bool TransportDeviceSession::connect(QString& errorMessage)
     return true;
 }
 
-void TransportDeviceSession::disconnect()
+void TransportDeviceSession::disconnect(const ModuleExecutionContext* context)
 {
-    ModuleExecutionContext context;
-    callHost("close", {}, context);
+    const ModuleExecutionContext emptyContext;
+    callHost("close", {}, context ? *context : emptyContext);
     m_state = DeviceConnectionState::Disconnected;
 }
 
