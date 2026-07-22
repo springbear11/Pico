@@ -71,7 +71,6 @@ struct PluginManifest {
     QString sourcePath;
     QString dllPath;
     int abiVersion = 0;
-    QString pluginId;
     QString moduleId;
     QString name;
     QString category;
@@ -109,11 +108,9 @@ class PluginCatalog final
 public:
     static PluginManifestResult parse(const QByteArray& json,
                                       const QString& sourcePath = {});
-    static PluginManifestResult load(const QString& filePath);
     static PluginManifestResult parseDescription(const QByteArray& json,
                                                  const QString& dllPath,
                                                  int abiVersion);
-    static QStringList discoverManifestFiles(const QString& rootDirectory);
     static QStringList discoverPluginFiles(const QString& rootDirectory);
     static bool nativeHostSupportsDescribe(const QString& nativeHostProgram,
                                            int timeoutMs = 3000,

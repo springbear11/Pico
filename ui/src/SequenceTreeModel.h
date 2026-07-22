@@ -4,6 +4,8 @@
 #include "PicoATE/Core/ExecutionDebug.h"
 
 #include <QAbstractItemModel>
+#include <QColor>
+#include <QHash>
 #include <QPointer>
 #include <QSet>
 
@@ -25,6 +27,7 @@ public:
         IdColumn,
         BreakpointColumn,
         EnabledColumn,
+        InspectionColumn,
         ColumnCount
     };
 
@@ -80,6 +83,9 @@ public:
     void setBreakpointNodePaths(QSet<QString> nodePaths);
     void clearBreakpoints();
     void setCurrentDebugNodePath(const QString& nodePath);
+    int setInspectionField(QString fieldPath);
+    QString inspectionField() const;
+    int inspectionMatchCount() const;
 
 signals:
     void itemMoved(const PicoATE::Ui::SequenceItemPath& from,
@@ -113,11 +119,15 @@ private:
     QModelIndex findIndexForNodePath(const Item& parent,
                                      const QString& nodePath) const;
     void emitRowChanged(const QString& nodePath);
+    void rebuildInspectionColors();
 
     QPointer<SequenceDocument> m_document;
     std::unique_ptr<Item> m_root;
     QSet<QString> m_breakpointNodePaths;
     QString m_currentDebugNodePath;
+    QString m_inspectionField;
+    QHash<QString, QColor> m_inspectionColors;
+    int m_inspectionMatchCount = 0;
 };
 
 } // namespace PicoATE::Ui

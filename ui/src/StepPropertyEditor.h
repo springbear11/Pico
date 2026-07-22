@@ -57,6 +57,7 @@ private:
     void updateAdvancedJsonVisibility();
     void rebuildDeviceChoices();
     void rebuildPluginInputEditors();
+    void refreshCanIdentifierHints();
     void observeDraftWidget(QWidget* widget);
     void markDraftDirty();
     void setDraftDirty(bool dirty);

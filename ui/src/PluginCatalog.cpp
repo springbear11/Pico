@@ -61,6 +61,7 @@ QJsonObject registryEntry(const PluginManifest& plugin,
                           const QString& registryDirectory)
 {
     QJsonObject entry;
+    entry.insert(QStringLiteral("moduleId"), plugin.moduleId);
     entry.insert(QStringLiteral("dll"),
                  QDir(registryDirectory).relativeFilePath(plugin.dllPath));
     entry.insert(QStringLiteral("abiVersion"), plugin.abiVersion);
@@ -269,24 +270,7 @@ PluginManifestResult PluginCatalog::parse(const QByteArray& json,
 
     const auto root = document.object();
     result.manifest.description = root;
-    const bool legacyManifest = root.contains(QStringLiteral("schema"));
-    if (legacyManifest) {
-        if (root.value(QStringLiteral("schema")).toString() != QStringLiteral("picoate.plugin")) {
-            addError(result.errors, QStringLiteral("schema"),
-                     QStringLiteral("Expected picoate.plugin"));
-        }
-        if (root.value(QStringLiteral("schemaVersion")).toInt(-1) != 1) {
-            addError(result.errors, QStringLiteral("schemaVersion"),
-                     QStringLiteral("Only schemaVersion 1 is supported"));
-        }
-        result.manifest.pluginId = requiredString(
-            root, QStringLiteral("pluginId"), {}, result.errors);
-        result.manifest.moduleId = requiredString(
-            root, QStringLiteral("moduleId"), {}, result.errors);
-    } else {
-        result.manifest.moduleId = moduleIdFromDllPath(sourcePath);
-        result.manifest.pluginId = result.manifest.moduleId;
-    }
+    result.manifest.moduleId = moduleIdFromDllPath(sourcePath);
     result.manifest.name = requiredString(root, QStringLiteral("name"), {}, result.errors);
     result.manifest.category = requiredString(root, QStringLiteral("category"), {}, result.errors);
     result.manifest.vendor = root.value(QStringLiteral("vendor")).toString().trimmed();
@@ -329,34 +313,6 @@ PluginManifestResult PluginCatalog::parseDescription(const QByteArray& json,
                  QStringLiteral("abiVersion"),
                  QStringLiteral("Unsupported plugin ABI version: %1").arg(abiVersion));
     }
-    return result;
-}
-
-PluginManifestResult PluginCatalog::load(const QString& filePath)
-{
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        PluginManifestResult result;
-        result.manifest.sourcePath = QFileInfo(filePath).absoluteFilePath();
-        addError(result.errors, QStringLiteral("$"), file.errorString());
-        return result;
-    }
-    return parse(file.readAll(), QFileInfo(filePath).absoluteFilePath());
-}
-
-QStringList PluginCatalog::discoverManifestFiles(const QString& rootDirectory)
-{
-    QStringList result;
-    QDirIterator iterator(rootDirectory,
-                          {QStringLiteral("*.picoate-plugin.json")},
-                          QDir::Files,
-                          QDirIterator::Subdirectories);
-    while (iterator.hasNext()) {
-        result.push_back(QFileInfo(iterator.next()).absoluteFilePath());
-    }
-    std::sort(result.begin(), result.end(), [](const QString& left, const QString& right) {
-        return left.compare(right, Qt::CaseInsensitive) < 0;
-    });
     return result;
 }
 
@@ -553,6 +509,8 @@ PluginRegistryResult PluginCatalog::loadRegistry(const QString& filePath)
             continue;
         }
         const auto entry = entries[index].toObject();
+        const auto moduleId = entry.value(QStringLiteral("moduleId"))
+                                  .toString().trimmed();
         const auto dllValue = entry.value(QStringLiteral("dll"));
         if (!dllValue.isString() || dllValue.toString().trimmed().isEmpty()) {
             addError(result.errors, path + QStringLiteral(".dll"),
@@ -571,6 +529,9 @@ PluginRegistryResult PluginCatalog::loadRegistry(const QString& filePath)
                 .toJson(QJsonDocument::Compact),
             dllPath,
             entry.value(QStringLiteral("abiVersion")).toInt(-1));
+        if (!moduleId.isEmpty()) {
+            parsed.manifest.moduleId = moduleId;
+        }
         if (!parsed.ok()) {
             for (auto error : parsed.errors) {
                 error.path = path + QLatin1Char('.') + error.path;
@@ -589,17 +550,9 @@ QVector<PluginBindingDiagnostic> PluginCatalog::validateStationBindings(
     const QString& stationFilePath,
     const QString& projectDir)
 {
+    Q_UNUSED(stationFilePath)
+    Q_UNUSED(projectDir)
     QVector<PluginBindingDiagnostic> result;
-    PicoATE::Core::VariableResolverOptions options;
-    options.sequenceFilePath = stationFilePath;
-    options.projectDir = projectDir;
-    const PicoATE::Core::VariableResolver resolver(options);
-    struct DriverBinding {
-        QString deviceId;
-        QString resolvedPath;
-    };
-    QHash<QString, DriverBinding> bindingByDriver;
-
     const auto devices = station.value(QStringLiteral("devices")).toArray();
     for (int index = 0; index < devices.size(); ++index) {
         const auto device = devices[index].toObject();
@@ -609,8 +562,6 @@ QVector<PluginBindingDiagnostic> PluginCatalog::validateStationBindings(
         const auto basePath = QStringLiteral("devices[%1]").arg(index);
         const auto driverId = device.value(QStringLiteral("driverId")).toString(
             device.value(QStringLiteral("driver")).toString()).trimmed();
-        const auto deviceId = device.value(QStringLiteral("deviceId")).toString(
-            device.value(QStringLiteral("id")).toString()).trimmed();
         if (driverId.isEmpty()) {
             continue;
         }
@@ -618,68 +569,20 @@ QVector<PluginBindingDiagnostic> PluginCatalog::validateStationBindings(
             plugins.cbegin(), plugins.cend(), [&driverId](const PluginManifest& item) {
                 return item.moduleId == driverId;
             });
-        const auto sourcePath = device.value(QStringLiteral("pluginPath"))
-                                    .toString().trimmed();
-        if (sourcePath.isEmpty()) {
-            if (plugin != plugins.cend()) {
-                result.push_back({basePath + QStringLiteral(".pluginPath"),
-                                  QStringLiteral("Plugin DLL path is not configured for %1")
-                                      .arg(driverId),
-                                  QStringLiteral("Select the plugin model again or set pluginPath"),
-                                  false});
-            }
-            continue;
-        }
-
-        QVector<PicoATE::Core::VariableResolutionError> resolutionErrors;
-        auto resolvedPath = resolver.resolveString(
-            sourcePath, resolutionErrors, basePath + QStringLiteral(".pluginPath"));
-        for (const auto& error : resolutionErrors) {
-            result.push_back({error.path, error.message, error.suggestion, false});
-        }
-        if (!resolutionErrors.isEmpty()) {
-            continue;
-        }
-        if (QFileInfo(resolvedPath).isRelative()) {
-            resolvedPath = QFileInfo(QFileInfo(stationFilePath).absoluteDir()
-                                         .filePath(resolvedPath)).absoluteFilePath();
-        } else {
-            resolvedPath = QFileInfo(resolvedPath).absoluteFilePath();
-        }
-        if (!QFileInfo::exists(resolvedPath)) {
-            result.push_back({basePath + QStringLiteral(".pluginPath"),
-                              QStringLiteral("Plugin DLL does not exist: %1").arg(resolvedPath),
-                              QStringLiteral("Rescan plugins or correct the Station binding"),
-                              false});
-        }
         if (plugin == plugins.cend()) {
             result.push_back({basePath + QStringLiteral(".driverId"),
-                              QStringLiteral("Plugin description is not in PluginRegistry: %1")
+                              QStringLiteral("Driver is not in plugins/PluginRegistry.json: %1")
                                   .arg(driverId),
-                              QStringLiteral("Run Scan Plugins to refresh function descriptions"),
-                              true});
-        }
-        const auto previous = bindingByDriver.value(driverId);
-        if (!previous.resolvedPath.isEmpty() &&
-            QFileInfo(previous.resolvedPath).canonicalFilePath() !=
-                QFileInfo(resolvedPath).canonicalFilePath()) {
-            result.push_back({basePath + QStringLiteral(".pluginPath"),
-                              QStringLiteral(
-                                  "Driver '%1' uses different DLL files: %2 -> %3; %4 -> %5")
-                                  .arg(driverId,
-                                       previous.deviceId.isEmpty()
-                                           ? QStringLiteral("previous device")
-                                           : previous.deviceId,
-                                       QDir::toNativeSeparators(previous.resolvedPath),
-                                       deviceId.isEmpty()
-                                           ? QStringLiteral("current device")
-                                           : deviceId,
-                                       QDir::toNativeSeparators(resolvedPath)),
-                              QStringLiteral(
-                                  "Choose the same Plugin / Model for these devices, apply the device settings, and save Station Config"),
+                              QStringLiteral("Copy the DLL into plugins and run Scan Plugins"),
                               false});
-        } else if (previous.resolvedPath.isEmpty()) {
-            bindingByDriver.insert(driverId, {deviceId, resolvedPath});
+            continue;
+        }
+        if (!QFileInfo::exists(plugin->dllPath)) {
+            result.push_back({basePath + QStringLiteral(".driverId"),
+                              QStringLiteral("Plugin DLL does not exist: %1")
+                                  .arg(plugin->dllPath),
+                              QStringLiteral("Copy the DLL into plugins and run Scan Plugins"),
+                              false});
         }
     }
     return result;

@@ -29,6 +29,126 @@ UiDiagnostic error(QString path, QString message, QString suggestion = {})
             std::move(suggestion)};
 }
 
+int outcomeSeverity(PicoATE::Core::NodeOutcome outcome)
+{
+    using PicoATE::Core::NodeOutcome;
+    switch (outcome) {
+    case NodeOutcome::Error: return 6;
+    case NodeOutcome::Timeout: return 5;
+    case NodeOutcome::Failed: return 4;
+    case NodeOutcome::Cancelled: return 3;
+    case NodeOutcome::Skipped: return 2;
+    case NodeOutcome::Passed: return 1;
+    case NodeOutcome::Unknown: return 0;
+    }
+    return 0;
+}
+
+void mergeStepReport(PicoATE::Core::StepReport& target,
+                     const PicoATE::Core::StepReport& source)
+{
+    target.wasError = target.wasError || source.wasError;
+    if (outcomeSeverity(source.outcome) > outcomeSeverity(target.outcome)) {
+        target.outcome = source.outcome;
+        target.state = PicoATE::Core::outcomeToActivationState(source.outcome);
+    }
+    if (source.durationMs >= 0) {
+        target.durationMs = qMax<qint64>(0, target.durationMs) + source.durationMs;
+    }
+    target.measurements += source.measurements;
+    for (auto attempt : source.attempts) {
+        attempt.index = target.attempts.size() + 1;
+        target.attempts.push_back(std::move(attempt));
+    }
+    for (const auto& sourceChild : source.children) {
+        const auto iterator = std::find_if(
+            target.children.begin(), target.children.end(),
+            [&](const PicoATE::Core::StepReport& child) {
+                return child.nodePath == sourceChild.nodePath;
+            });
+        if (iterator == target.children.end()) {
+            target.children.push_back(sourceChild);
+        } else {
+            mergeStepReport(*iterator, sourceChild);
+        }
+    }
+}
+
+void mergeExecutionReport(PicoATE::Core::ExecutionReport& target,
+                          const PicoATE::Core::ExecutionReport& source)
+{
+    if (target.uuts.isEmpty()) {
+        target = source;
+        return;
+    }
+    target.completed = target.completed && source.completed;
+    target.hasError = target.hasError || source.hasError;
+    target.state = source.state;
+    for (const auto& sourceUut : source.uuts) {
+        const auto uutIterator = std::find_if(
+            target.uuts.begin(), target.uuts.end(),
+            [&](const PicoATE::Core::UutReport& uut) {
+                return uut.uutId == sourceUut.uutId;
+            });
+        if (uutIterator == target.uuts.end()) {
+            target.uuts.push_back(sourceUut);
+            continue;
+        }
+        uutIterator->hasError = uutIterator->hasError || sourceUut.hasError;
+        for (const auto& sourceStep : sourceUut.steps) {
+            const auto stepIterator = std::find_if(
+                uutIterator->steps.begin(), uutIterator->steps.end(),
+                [&](const PicoATE::Core::StepReport& step) {
+                    return step.nodePath == sourceStep.nodePath;
+                });
+            if (stepIterator == uutIterator->steps.end()) {
+                uutIterator->steps.push_back(sourceStep);
+            } else {
+                mergeStepReport(*stepIterator, sourceStep);
+            }
+        }
+    }
+    if (target.completed) {
+        target.state = target.hasError
+            ? PicoATE::Core::ExecutionState::CompletedWithError
+            : PicoATE::Core::ExecutionState::Completed;
+    }
+}
+
+QString pluginRegistryPath(const QJsonObject& stationObject,
+                           const QString& stationPath)
+{
+    auto value = stationObject.value(QStringLiteral("pluginRegistry"))
+                     .toString(QStringLiteral("plugins/PluginRegistry.json"))
+                     .trimmed();
+    if (QFileInfo(value).isAbsolute()) {
+        return QFileInfo(value).absoluteFilePath();
+    }
+    return QFileInfo(QFileInfo(stationPath).absoluteDir().absoluteFilePath(value))
+        .absoluteFilePath();
+}
+
+class RunEventSequencer final : public PicoATE::Core::IRuntimeEventSink
+{
+public:
+    explicit RunEventSequencer(PicoATE::Core::IRuntimeEventSink* target)
+        : m_target(target)
+    {
+    }
+
+    void publish(const PicoATE::Core::RuntimeEvent& source) override
+    {
+        if (!m_target) return;
+        auto event = source;
+        event.sequenceNumber = m_nextSequence++;
+        m_target->publish(event);
+    }
+
+private:
+    PicoATE::Core::IRuntimeEventSink* m_target = nullptr;
+    quint64 m_nextSequence = 1;
+};
+
 } // namespace
 
 CoreExecutionService::CoreExecutionService(QString projectDir)
@@ -97,9 +217,8 @@ CompileServiceResult CoreExecutionService::compile(const CompileRequest& request
         }
         artifact.station = stationResult.config;
         artifact.stationPath = QFileInfo(request.stationPath).absoluteFilePath();
-        const auto registryPath = QDir(QCoreApplication::applicationDirPath())
-                                      .absoluteFilePath(
-                                          QStringLiteral("PluginRegistry.json"));
+        const auto registryPath = pluginRegistryPath(stationObject,
+                                                     request.stationPath);
         const auto registry = PluginCatalog::loadRegistry(registryPath);
         const auto pluginDiagnostics = PluginCatalog::validateStationBindings(
             stationObject,
@@ -176,59 +295,6 @@ RunServiceResult CoreExecutionService::run(
         return result;
     }
 
-    const auto failureHandling = m_compiled->station
-        ? PicoATE::Core::failureHandlingMode(*m_compiled->station)
-        : PicoATE::Core::FailureHandlingMode::UseNodePolicy;
-    PicoATE::Core::ExecutionSession session(
-        m_compiled->plan,
-        stopToken,
-        eventSink,
-        executionControl,
-        failureHandling);
-    if (m_compiled->station) {
-        const auto stationErrors = PicoATE::Core::configureDeviceSessions(
-            *m_compiled->station,
-            session.devices());
-        for (const auto& diagnostic : stationErrors) {
-            result.diagnostics.push_back(
-                error(diagnostic.path, diagnostic.message, diagnostic.suggestion));
-        }
-        if (!stationErrors.isEmpty()) {
-            return result;
-        }
-    }
-
-    PicoATE::Core::ModuleBindingRegistrationOptions bindingOptions;
-    bindingOptions.sequenceFilePath = m_compiled->sequencePath;
-    bindingOptions.projectDir = m_projectDir;
-    const auto bindingResult = PicoATE::Core::registerConfiguredModules(
-        session,
-        m_compiled->sequence,
-        bindingOptions);
-    for (const auto& diagnostic : bindingResult.errors) {
-        result.diagnostics.push_back(
-            error(diagnostic.moduleId, diagnostic.message, diagnostic.suggestion));
-    }
-    if (!bindingResult.ok()) {
-        return result;
-    }
-
-    if (m_compiled->station) {
-        PicoATE::Core::StationPluginRegistrationOptions pluginOptions;
-        pluginOptions.stationFilePath = m_compiled->stationPath;
-        pluginOptions.projectDir = m_projectDir;
-        pluginOptions.nativeHostProgram = nativeHostProgram();
-        const auto pluginResult = PicoATE::Core::registerStationPluginModules(
-            session, *m_compiled->station, pluginOptions);
-        for (const auto& diagnostic : pluginResult.errors) {
-            result.diagnostics.push_back(
-                error(diagnostic.moduleId, diagnostic.message, diagnostic.suggestion));
-        }
-        if (!pluginResult.ok()) {
-            return result;
-        }
-    }
-
     QVector<RunRequest::UutInput> uutInputs = request.uuts;
     if (uutInputs.isEmpty()) {
         const QString prefix = request.uutPrefix.trimmed().isEmpty()
@@ -242,7 +308,7 @@ RunServiceResult CoreExecutionService::run(
     }
 
     QSet<PicoATE::Core::UutId> registeredUuts;
-    for (auto input : uutInputs) {
+    for (auto& input : uutInputs) {
         input.uutId = input.uutId.trimmed();
         if (input.uutId.isEmpty()) {
             result.diagnostics.push_back(error("uuts", "UUT ID cannot be empty"));
@@ -255,6 +321,70 @@ RunServiceResult CoreExecutionService::run(
         }
         registeredUuts.insert(input.uutId);
 
+    }
+
+    const auto failureHandling = m_compiled->station
+        ? PicoATE::Core::failureHandlingMode(*m_compiled->station)
+        : PicoATE::Core::FailureHandlingMode::UseNodePolicy;
+    const int loopCount = m_compiled->station &&
+                          m_compiled->station->loopTestEnabled
+        ? m_compiled->station->loopTestCount
+        : 1;
+
+    RunEventSequencer eventSequencer(eventSink);
+    for (int loopIndex = 0; loopIndex < loopCount; ++loopIndex) {
+        if (stopToken && stopToken->isStopRequested()) {
+            break;
+        }
+        PicoATE::Core::ExecutionSession session(
+            m_compiled->plan,
+            stopToken,
+            eventSink ? &eventSequencer : nullptr,
+            executionControl,
+            failureHandling);
+        if (m_compiled->station) {
+            const auto stationErrors = PicoATE::Core::configureDeviceSessions(
+                *m_compiled->station, session.devices());
+            for (const auto& diagnostic : stationErrors) {
+                result.diagnostics.push_back(
+                    error(diagnostic.path, diagnostic.message, diagnostic.suggestion));
+            }
+            if (!stationErrors.isEmpty()) {
+                return result;
+            }
+        }
+
+        PicoATE::Core::ModuleBindingRegistrationOptions bindingOptions;
+        bindingOptions.sequenceFilePath = m_compiled->sequencePath;
+        bindingOptions.projectDir = m_projectDir;
+        const auto bindingResult = PicoATE::Core::registerConfiguredModules(
+            session, m_compiled->sequence, bindingOptions);
+        for (const auto& diagnostic : bindingResult.errors) {
+            result.diagnostics.push_back(
+                error(diagnostic.moduleId, diagnostic.message, diagnostic.suggestion));
+        }
+        if (!bindingResult.ok()) {
+            return result;
+        }
+
+        if (m_compiled->station) {
+            PicoATE::Core::StationPluginRegistrationOptions pluginOptions;
+            pluginOptions.stationFilePath = m_compiled->stationPath;
+            pluginOptions.projectDir = m_projectDir;
+            pluginOptions.nativeHostProgram = nativeHostProgram();
+            const auto pluginResult = PicoATE::Core::registerStationPluginModules(
+                session, *m_compiled->station, pluginOptions);
+            for (const auto& diagnostic : pluginResult.errors) {
+                result.diagnostics.push_back(
+                    error(diagnostic.moduleId, diagnostic.message,
+                          diagnostic.suggestion));
+            }
+            if (!pluginResult.ok()) {
+                return result;
+            }
+        }
+
+        for (const auto& input : uutInputs) {
         auto uutVariables = input.variables;
         auto uutNamespace = uutVariables.value(QStringLiteral("uut")).toMap();
         uutNamespace.insert(QStringLiteral("id"), input.uutId);
@@ -265,11 +395,12 @@ RunServiceResult CoreExecutionService::run(
 
         auto& uut = session.addUut(input.uutId);
         uut.variables = std::move(uutVariables);
-    }
+        }
 
-    result.executed = true;
-    session.run();
-    result.report = session.report();
+        result.executed = true;
+        session.run();
+        mergeExecutionReport(result.report, session.report());
+    }
     result.stopRequested = stopToken && stopToken->isStopRequested();
     return result;
 }

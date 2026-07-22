@@ -90,6 +90,19 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_scanDialogSwitch->setAccessibleName(tr("Enable scan dialog"));
     form->addRow(tr("Scan Dialog"), m_scanDialogSwitch);
 
+    m_loopTestSwitch = new OnOffSwitch(this);
+    m_loopTestSwitch->setObjectName(QStringLiteral("stationLoopTestSwitch"));
+    m_loopTestSwitch->setAccessibleName(tr("Enable repeated sequence testing"));
+    form->addRow(tr("Loop Test"), m_loopTestSwitch);
+
+    m_loopTestCountSpin = new QSpinBox(this);
+    m_loopTestCountSpin->setObjectName(QStringLiteral("stationLoopTestCountSpin"));
+    m_loopTestCountSpin->setRange(1, 100000);
+    m_loopTestCountSpin->setSuffix(tr(" runs"));
+    m_loopTestCountSpin->setToolTip(
+        tr("Run the complete sequence this many times after one Run command"));
+    form->addRow(tr("Loop Count"), m_loopTestCountSpin);
+
     m_snLengthSpin = new QSpinBox(this);
     m_snLengthSpin->setObjectName(QStringLiteral("stationSnLengthSpin"));
     m_snLengthSpin->setRange(0, 256);
@@ -154,6 +167,12 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     connect(m_stationNameEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_stopOnFailureSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_scanDialogSwitch, &QAbstractButton::toggled, this, markPending);
+    connect(m_loopTestSwitch, &QAbstractButton::toggled, this, [this] {
+        m_loopTestCountSpin->setEnabled(
+            m_editable && m_loopTestSwitch->isChecked());
+        markPendingChanges();
+    });
+    connect(m_loopTestCountSpin, &QSpinBox::valueChanged, this, markPending);
     connect(m_txtLogSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_csvReportSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_xlsxReportSwitch, &QAbstractButton::toggled, this, markPending);
@@ -187,6 +206,8 @@ void StationSettingsEditor::setEditable(bool editable)
                         static_cast<QWidget*>(m_stationNameEdit),
                         static_cast<QWidget*>(m_stopOnFailureSwitch),
                         static_cast<QWidget*>(m_scanDialogSwitch),
+                        static_cast<QWidget*>(m_loopTestSwitch),
+                        static_cast<QWidget*>(m_loopTestCountSpin),
                         static_cast<QWidget*>(m_txtLogSwitch),
                         static_cast<QWidget*>(m_csvReportSwitch),
                         static_cast<QWidget*>(m_xlsxReportSwitch),
@@ -233,6 +254,10 @@ bool StationSettingsEditor::commitPendingChanges()
     root.insert(QStringLiteral("name"), m_stationNameEdit->text().trimmed());
     root.insert(QStringLiteral("stopOnFailure"), m_stopOnFailureSwitch->isChecked());
     root.insert(QStringLiteral("scanDialogEnabled"), m_scanDialogSwitch->isChecked());
+    root.insert(QStringLiteral("loopTestEnabled"), m_loopTestSwitch->isChecked());
+    root.insert(QStringLiteral("loopTestCount"), m_loopTestCountSpin->value());
+    root.insert(QStringLiteral("pluginRegistry"),
+                QStringLiteral("plugins/PluginRegistry.json"));
     root.insert(QStringLiteral("txtLogEnabled"), m_txtLogSwitch->isChecked());
     root.insert(QStringLiteral("csvReportEnabled"), m_csvReportSwitch->isChecked());
     root.insert(QStringLiteral("xlsxReportEnabled"), m_xlsxReportSwitch->isChecked());
@@ -268,6 +293,10 @@ bool StationSettingsEditor::focusField(const QString& path)
         field = m_stopOnFailureSwitch;
     } else if (path == QStringLiteral("scanDialogEnabled")) {
         field = m_scanDialogSwitch;
+    } else if (path == QStringLiteral("loopTestEnabled")) {
+        field = m_loopTestSwitch;
+    } else if (path == QStringLiteral("loopTestCount")) {
+        field = m_loopTestCountSpin;
     } else if (path == QStringLiteral("txtLogEnabled")) {
         field = m_txtLogSwitch;
     } else if (path == QStringLiteral("csvReportEnabled")) {
@@ -313,6 +342,10 @@ void StationSettingsEditor::reload()
         root.value(QStringLiteral("stopOnFailure")).toBool(true));
     m_scanDialogSwitch->setChecked(
         root.value(QStringLiteral("scanDialogEnabled")).toBool(true));
+    m_loopTestSwitch->setChecked(
+        root.value(QStringLiteral("loopTestEnabled")).toBool(false));
+    m_loopTestCountSpin->setValue(qBound(
+        1, root.value(QStringLiteral("loopTestCount")).toInt(1), 100000));
     m_txtLogSwitch->setChecked(
         root.value(QStringLiteral("txtLogEnabled")).toBool(false));
     m_csvReportSwitch->setChecked(
@@ -335,6 +368,8 @@ void StationSettingsEditor::reload()
                         static_cast<QWidget*>(m_stationNameEdit),
                         static_cast<QWidget*>(m_stopOnFailureSwitch),
                         static_cast<QWidget*>(m_scanDialogSwitch),
+                        static_cast<QWidget*>(m_loopTestSwitch),
+                        static_cast<QWidget*>(m_loopTestCountSpin),
                         static_cast<QWidget*>(m_txtLogSwitch),
                         static_cast<QWidget*>(m_csvReportSwitch),
                         static_cast<QWidget*>(m_xlsxReportSwitch),
@@ -346,6 +381,8 @@ void StationSettingsEditor::reload()
                         static_cast<QWidget*>(m_testerEdit)}) {
         field->setEnabled(m_editable && valid);
     }
+    m_loopTestCountSpin->setEnabled(
+        m_editable && valid && m_loopTestSwitch->isChecked());
     m_errorLabel->hide();
     m_loading = false;
 }

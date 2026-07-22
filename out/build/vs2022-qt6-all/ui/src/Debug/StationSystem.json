@@ -15,7 +15,6 @@
                 "listenOnly": false,
                 "selfTest": false
             },
-            "pluginPath": "D:/Work/PicoATE/templates/bin/Debug/PicoATE.CAN.GCAN.dll",
             "timeoutMs": 30000
         },
         {
@@ -32,7 +31,6 @@
                 "listenOnly": false,
                 "selfTest": false
             },
-            "pluginPath": "D:/Work/PicoATE/templates/bin/Debug/PicoATE.CAN.GCAN.dll",
             "timeoutMs": 30000
         },
         {
@@ -49,7 +47,6 @@
                 "listenOnly": false,
                 "selfTest": false
             },
-            "pluginPath": "D:/Work/PicoATE/templates/bin/Debug/PicoATE.CAN.CX.dll",
             "timeoutMs": 30000
         },
         {
@@ -66,7 +63,6 @@
                 "listenOnly": false,
                 "selfTest": false
             },
-            "pluginPath": "D:/Work/PicoATE/templates/bin/Debug/PicoATE.CAN.CX.dll",
             "timeoutMs": 30000
         }
     ],
@@ -76,6 +72,7 @@
         "tester": "NA"
     },
     "name": "NA",
+    "pluginRegistry": "plugins/PluginRegistry.json",
     "scanDialogEnabled": false,
     "snLength": 0,
     "stationId": "NA",

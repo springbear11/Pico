@@ -6,7 +6,13 @@
 #include "PicoATE/Core/VariableResolver.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonParseError>
+#include <QRegularExpression>
+#include <QSet>
 #include <utility>
 
 namespace PicoATE::Core {
@@ -65,6 +71,115 @@ void addResolutionErrors(ModuleBindingRegistrationResult& result,
         }
         addError(result, moduleId, message, error.suggestion);
     }
+}
+
+QString moduleIdFromDllPath(const QString& filePath)
+{
+    auto name = QFileInfo(filePath).completeBaseName().trimmed().toLower();
+    if (name.startsWith(QStringLiteral("picoate."))) {
+        name.remove(0, QStringLiteral("picoate.").size());
+    }
+    name.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")),
+                 QStringLiteral("."));
+    while (name.startsWith('.')) name.remove(0, 1);
+    while (name.endsWith('.')) name.chop(1);
+    return name.isEmpty() ? QString() : QStringLiteral("plugin.") + name;
+}
+
+struct RegistryPlugin {
+    QString moduleId;
+    QString dllPath;
+};
+
+QVector<RegistryPlugin> loadPluginRegistry(
+    const StationConfig& station,
+    const StationPluginRegistrationOptions& options,
+    ModuleBindingRegistrationResult& result)
+{
+    VariableResolverOptions resolverOptions;
+    resolverOptions.sequenceFilePath = options.stationFilePath;
+    resolverOptions.projectDir = options.projectDir;
+    resolverOptions.variables = options.variables;
+    const VariableResolver resolver(resolverOptions);
+
+    QVector<VariableResolutionError> resolutionErrors;
+    auto registryPath = resolver.resolveString(
+        station.pluginRegistryPath,
+        resolutionErrors,
+        QStringLiteral("pluginRegistry"));
+    if (!resolutionErrors.isEmpty()) {
+        addResolutionErrors(result, QStringLiteral("plugins"), resolutionErrors);
+        return {};
+    }
+    registryPath = resolveProgramPath(registryPath, resolver);
+
+    QFile file(registryPath);
+    if (!QFileInfo::exists(registryPath)) {
+        return {};
+    }
+    if (!file.open(QIODevice::ReadOnly)) {
+        addError(result,
+                 QStringLiteral("plugins"),
+                 QStringLiteral("Plugin registry cannot be opened: %1")
+                     .arg(registryPath),
+                 QStringLiteral("Run Scan Plugins or correct Station pluginRegistry"));
+        return {};
+    }
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        addError(result,
+                 QStringLiteral("plugins"),
+                 QStringLiteral("Plugin registry JSON is invalid: %1")
+                     .arg(parseError.errorString()),
+                 QStringLiteral("Run Scan Plugins again"));
+        return {};
+    }
+    const auto entries = document.object().value(QStringLiteral("plugins"));
+    if (!entries.isArray()) {
+        addError(result,
+                 QStringLiteral("plugins"),
+                 QStringLiteral("Plugin registry must contain a plugins array"));
+        return {};
+    }
+
+    QVector<RegistryPlugin> plugins;
+    QSet<QString> moduleIds;
+    const auto registryDirectory = QFileInfo(registryPath).absoluteDir();
+    for (int index = 0; index < entries.toArray().size(); ++index) {
+        const auto entry = entries.toArray()[index].toObject();
+        const auto dllValue = entry.value(QStringLiteral("dll")).toString().trimmed();
+        auto moduleId = entry.value(QStringLiteral("moduleId")).toString().trimmed();
+        if (dllValue.isEmpty()) {
+            addError(result,
+                     QStringLiteral("plugins[%1]").arg(index),
+                     QStringLiteral("Plugin registry entry has no DLL path"));
+            continue;
+        }
+        const auto dllPath = QFileInfo(
+            registryDirectory.absoluteFilePath(dllValue)).absoluteFilePath();
+        if (moduleId.isEmpty()) {
+            moduleId = moduleIdFromDllPath(dllPath);
+        }
+        if (moduleId.isEmpty() || moduleIds.contains(moduleId)) {
+            addError(result,
+                     QStringLiteral("plugins[%1]").arg(index),
+                     moduleId.isEmpty()
+                         ? QStringLiteral("Plugin moduleId is empty")
+                         : QStringLiteral("Duplicate plugin moduleId: %1").arg(moduleId));
+            continue;
+        }
+        if (!QFileInfo::exists(dllPath)) {
+            addError(result,
+                     moduleId,
+                     QStringLiteral("Plugin DLL does not exist: %1").arg(dllPath),
+                     QStringLiteral("Copy the DLL into plugins and run Scan Plugins"));
+            continue;
+        }
+        moduleIds.insert(moduleId);
+        plugins.push_back({moduleId, dllPath});
+    }
+    return plugins;
 }
 
 } // namespace
@@ -151,60 +266,47 @@ ModuleBindingRegistrationResult registerStationPluginModules(
     }
     result.registeredModuleIds.push_back(QStringLiteral("device"));
 
-    VariableResolverOptions resolverOptions;
-    resolverOptions.sequenceFilePath = options.stationFilePath;
-    resolverOptions.projectDir = options.projectDir;
-    resolverOptions.variables = options.variables;
-    const VariableResolver resolver(resolverOptions);
+    const auto plugins = loadPluginRegistry(station, options, result);
+    if (!plugins.isEmpty() &&
+        (options.nativeHostProgram.trimmed().isEmpty() ||
+         !QFileInfo::exists(options.nativeHostProgram))) {
+        addError(result,
+                 QStringLiteral("plugins"),
+                 QStringLiteral("PicoATE.NativeHost.exe was not found"),
+                 QStringLiteral("Deploy NativeHost beside the application"));
+        return result;
+    }
 
-    QHash<DeviceDriverId, QString> registeredPluginPaths;
-    for (int index = 0; index < station.devices.size(); ++index) {
-        const auto& device = station.devices[index];
-        if (device.pluginPath.trimmed().isEmpty()) {
-            continue;
-        }
-
-        QVector<VariableResolutionError> resolutionErrors;
-        const auto path = QStringLiteral("devices[%1].pluginPath").arg(index);
-        const auto pluginPath = resolveProgramPath(
-            resolver.resolveString(device.pluginPath, resolutionErrors, path),
-            resolver);
-        if (!resolutionErrors.isEmpty()) {
-            addResolutionErrors(result, device.driverId, resolutionErrors);
-            continue;
-        }
-        if (!QFileInfo::exists(pluginPath)) {
-            addError(result,
-                     device.driverId,
-                     QStringLiteral("Plugin DLL does not exist: %1").arg(pluginPath),
-                     QStringLiteral("Rescan plugins or update the Station plugin binding"));
-            continue;
-        }
-        if (options.nativeHostProgram.trimmed().isEmpty() ||
-            !QFileInfo::exists(options.nativeHostProgram)) {
-            addError(result,
-                     device.driverId,
-                     QStringLiteral("PicoATE.NativeHost.exe was not found"),
-                     QStringLiteral("Deploy NativeHost beside the application"));
-            continue;
-        }
-
-        const auto existing = registeredPluginPaths.constFind(device.driverId);
-        if (existing != registeredPluginPaths.constEnd()) {
-            if (QFileInfo(existing.value()).absoluteFilePath() !=
-                QFileInfo(pluginPath).absoluteFilePath()) {
-                addError(result,
-                         device.driverId,
-                         QStringLiteral("Driver id is bound to multiple plugin DLLs"),
-                         QStringLiteral("Use one concrete plugin per driverId"));
-            }
-            continue;
-        }
-
+    QHash<DeviceDriverId, std::shared_ptr<IModuleTransport>> transports;
+    for (const auto& plugin : plugins) {
         auto transport = std::make_shared<PersistentQProcessTransport>(
             QFileInfo(options.nativeHostProgram).absoluteFilePath(),
-            QStringList{QStringLiteral("--dll"), pluginPath,
+            QStringList{QStringLiteral("--dll"), plugin.dllPath,
                         QStringLiteral("--vendor-stdio"), QStringLiteral("discard")});
+        transports.insert(plugin.moduleId, transport);
+        if (session.hasModule(plugin.moduleId)) {
+            continue;
+        }
+        if (!session.registerModule(std::make_shared<TransportModuleAdapter>(
+                plugin.moduleId, transport, 30000))) {
+            addError(result,
+                     plugin.moduleId,
+                     QStringLiteral("Failed to register plugin module"),
+                     QStringLiteral("Remove a duplicate module binding"));
+            continue;
+        }
+        result.registeredModuleIds.push_back(plugin.moduleId);
+    }
+
+    QSet<DeviceDriverId> registeredDrivers;
+    for (const auto& device : station.devices) {
+        if (registeredDrivers.contains(device.driverId)) {
+            continue;
+        }
+        const auto transport = transports.value(device.driverId);
+        if (!transport) {
+            continue;
+        }
         if (!session.devices().registerFactory(
                 std::make_shared<TransportDeviceSessionFactory>(
                     device.driverId, transport, device.timeoutMs))) {
@@ -213,8 +315,7 @@ ModuleBindingRegistrationResult registerStationPluginModules(
                      QStringLiteral("Failed to register Station plugin driver"));
             continue;
         }
-        registeredPluginPaths.insert(device.driverId, pluginPath);
-        result.registeredModuleIds.push_back(device.driverId);
+        registeredDrivers.insert(device.driverId);
     }
     return result;
 }

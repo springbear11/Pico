@@ -43,6 +43,63 @@ using namespace PicoATE::Ui;
 
 namespace {
 
+PluginManifestResult canPluginFixture(const QString& model)
+{
+    const bool cx = model.compare(QStringLiteral("CX"),
+                                  Qt::CaseInsensitive) == 0;
+    const QByteArray description = cx ? QByteArray(R"json({
+      "name":"CX USB-CAN","category":"CAN","functions":[
+        {"id":"open","name":"Open CAN","timeoutMs":5000,"inputs":[
+          {"key":"deviceType","name":"Device Type","type":"enum","default":4,
+           "options":[{"label":"Auto","value":0},{"label":"USBCAN-II","value":4}]},
+          {"key":"deviceIndex","name":"Device Index","type":"integer","default":0},
+          {"key":"channelIndex","name":"Channel","type":"integer","default":0},
+          {"key":"bitrate","name":"Bitrate","type":"enum","default":500000,
+           "options":[{"label":"500 kbit/s","value":500000}]}
+        ],"outputs":[{"key":"connected","name":"Connected","type":"boolean"}]},
+        {"id":"write","name":"Send CAN Frame","inputs":[
+          {"key":"id","name":"CAN ID","type":"string","required":true,"default":"0x123"},
+          {"key":"data","name":"Frame Data","type":"hex-bytes","required":true,"default":"01 02 03 04"}
+        ],"outputs":[{"key":"transmitted","name":"Transmitted","type":"boolean"}]},
+        {"id":"read","name":"Read CAN Frame","inputs":[
+          {"key":"filterId","name":"Filter ID","type":"string","default":"0x000"}
+        ],"outputs":[{"key":"id","name":"CAN ID","type":"string"},
+                      {"key":"dataHex","name":"Frame Data","type":"hex-bytes"},
+                      {"key":"dlc","name":"Data Length","type":"integer"}]},
+        {"id":"close","name":"Close CAN","stepKind":"cleanup",
+         "outputs":[{"key":"connected","name":"Connected","type":"boolean"}]}
+      ]})json") : QByteArray(R"json({
+      "name":"GCAN USB-CAN","category":"CAN","functions":[
+        {"id":"open","name":"Open CAN","timeoutMs":5000,"inputs":[
+          {"key":"deviceType","name":"Device Type","type":"integer","default":0},
+          {"key":"deviceIndex","name":"Device Index","type":"integer","default":0},
+          {"key":"channelIndex","name":"Channel","type":"integer","default":0},
+          {"key":"bitrate","name":"Bitrate","type":"enum","default":500000,
+           "options":[{"label":"125 kbit/s","value":125000},
+                      {"label":"250 kbit/s","value":250000},
+                      {"label":"500 kbit/s","value":500000},
+                      {"label":"1 Mbit/s","value":1000000}]},
+          {"key":"canFd","name":"CAN FD","type":"boolean","default":false},
+          {"key":"selfTest","name":"Self Test","type":"boolean","default":false}
+        ],"outputs":[{"key":"opened","name":"Opened","type":"boolean"}],
+         "stepTemplate":{"errorPolicy":{"onFail":"RunCleanup","onError":"RunCleanup","onTimeout":"RunCleanup"}}},
+        {"id":"write","name":"Send CAN Frame","inputs":[
+          {"key":"id","name":"CAN ID","type":"string","required":true,"default":"0x123"},
+          {"key":"data","name":"Frame Data","type":"hex-bytes","required":true,"default":"01 02 03 04"}
+        ],"outputs":[{"key":"sent","name":"Sent Frames","type":"integer"}]},
+        {"id":"read","name":"Read CAN Frame","inputs":[
+          {"key":"filterId","name":"Filter ID","type":"string","default":"0x000"}
+        ],"outputs":[{"key":"id","name":"CAN ID","type":"string"},
+                      {"key":"data","name":"Frame Data","type":"hex-bytes"},
+                      {"key":"dlc","name":"Data Length","type":"integer"}]},
+        {"id":"close","name":"Close CAN","stepKind":"cleanup",
+         "outputs":[{"key":"closed","name":"Closed","type":"boolean"}]}
+      ]})json");
+    const auto dllName = cx ? QStringLiteral("PicoATE.CAN.CX.dll")
+                            : QStringLiteral("PicoATE.CAN.GCAN.dll");
+    return PluginCatalog::parseDescription(description, dllName, 1);
+}
+
 struct FakeServiceControl {
     std::atomic<int> compileCalls{0};
     std::atomic<int> runCalls{0};
@@ -371,7 +428,9 @@ private slots:
     void defaultStationTemplateProvidesDisabledCommonDeviceSlots();
     void stationDeviceModelEditsAndReordersDevices();
     void stationDocumentGeneratesTypedIdsAndMovesConfigurations();
+    void sequenceTreeModelInspectsJsonFieldsWithoutChangingDocument();
     void coreServiceCompilesProvidedSequenceSnapshot();
+    void coreServiceRepeatsWholeSequenceForLoopTest();
     void stationFailurePolicyContinuesAllTestItemChildren();
     void coreServiceTestsDeviceConnectionAndFailurePaths();
 };
@@ -804,15 +863,11 @@ void ExecutionViewModelTests::startupSupportDiscoversSequencesAndValidatesDailyP
 
 void ExecutionViewModelTests::pluginCatalogParsesGcanManifestAndCreatesSteps()
 {
-    const QString projectDir = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR);
-    const auto manifestPath = projectDir
-        + QStringLiteral("/templates/CAN/GCAN/PicoATE.CAN.GCAN.picoate-plugin.json");
-    const auto result = PluginCatalog::load(manifestPath);
+    const auto result = canPluginFixture(QStringLiteral("GCAN"));
     QVERIFY2(result.ok(),
              qPrintable(result.errors.isEmpty() ? QStringLiteral("Manifest parse failed")
                                                 : result.errors.first().path + QStringLiteral(": ")
                                                       + result.errors.first().message));
-    QCOMPARE(result.manifest.pluginId, QStringLiteral("picoate.can.gcan"));
     QCOMPARE(result.manifest.moduleId, QStringLiteral("plugin.can.gcan"));
     QCOMPARE(result.manifest.category, QStringLiteral("CAN"));
     QCOMPARE(result.manifest.functions.size(), 4);
@@ -854,18 +909,11 @@ void ExecutionViewModelTests::pluginCatalogParsesGcanManifestAndCreatesSteps()
                  .value(QStringLiteral("onFail")).toString(),
              QStringLiteral("RunCleanup"));
 
-    const auto discovered = PluginCatalog::discoverManifestFiles(
-        projectDir + QStringLiteral("/templates"));
-    QVERIFY(discovered.contains(QFileInfo(manifestPath).absoluteFilePath()));
 }
 
 void ExecutionViewModelTests::pluginCatalogRejectsDuplicateAndInvalidDefinitions()
 {
     const QByteArray json = R"({
-      "schema": "picoate.plugin",
-      "schemaVersion": 1,
-      "pluginId": "broken",
-      "moduleId": "plugin.broken",
       "name": "Broken",
       "category": "CAN",
       "functions": [
@@ -1007,8 +1055,7 @@ void ExecutionViewModelTests::pluginCatalogValidatesStationBindings()
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const auto firstDll = directory.filePath(QStringLiteral("first.dll"));
-    const auto secondDll = directory.filePath(QStringLiteral("second.dll"));
-    for (const auto& path : {firstDll, secondDll}) {
+    for (const auto& path : {firstDll}) {
         QFile file(path);
         QVERIFY(file.open(QIODevice::WriteOnly));
         file.write("test");
@@ -1019,15 +1066,9 @@ void ExecutionViewModelTests::pluginCatalogValidatesStationBindings()
     plugin.dllPath = firstDll;
     const auto station = QJsonDocument::fromJson(R"json({
       "devices": [
-        {"deviceId":"CAN1","driverId":"plugin.can.gcan",
-         "pluginPath":"${PROJECT_DIR}/first.dll","enabled":true},
-        {"deviceId":"CAN2","driverId":"plugin.can.gcan","enabled":true},
-        {"deviceId":"CAN3","driverId":"plugin.unknown",
-         "pluginPath":"${PROJECT_DIR}/first.dll","enabled":true},
-        {"deviceId":"CAN4","driverId":"plugin.can.gcan",
-         "pluginPath":"${PROJECT_DIR}/second.dll","enabled":true},
-        {"deviceId":"CAN5","driverId":"plugin.missing",
-         "pluginPath":"${PROJECT_DIR}/missing.dll","enabled":true}
+        {"deviceId":"CAN1","driverId":"plugin.can.gcan","enabled":true},
+        {"deviceId":"CAN2","driverId":"plugin.unknown","enabled":true},
+        {"deviceId":"CAN3","driverId":"plugin.ignored","enabled":false}
       ]
     })json").object();
 
@@ -1036,41 +1077,18 @@ void ExecutionViewModelTests::pluginCatalogValidatesStationBindings()
         {plugin},
         directory.filePath(QStringLiteral("StationSystem.json")),
         directory.path());
-    const auto hasDiagnostic = [&diagnostics](const QString& path,
-                                               bool warning) {
-        return std::any_of(diagnostics.cbegin(), diagnostics.cend(),
-                           [&](const PluginBindingDiagnostic& diagnostic) {
-                               return diagnostic.path == path &&
-                                      diagnostic.warning == warning;
-                           });
-    };
-    QVERIFY(hasDiagnostic(QStringLiteral("devices[1].pluginPath"), false));
-    QVERIFY(hasDiagnostic(QStringLiteral("devices[2].driverId"), true));
-    QVERIFY(hasDiagnostic(QStringLiteral("devices[3].pluginPath"), false));
-    QVERIFY(hasDiagnostic(QStringLiteral("devices[4].pluginPath"), false));
-    const auto conflict = std::find_if(
-        diagnostics.cbegin(), diagnostics.cend(),
-        [](const PluginBindingDiagnostic& diagnostic) {
-            return diagnostic.path == QStringLiteral("devices[3].pluginPath");
-        });
-    QVERIFY(conflict != diagnostics.cend());
-    QVERIFY(conflict->message.contains(QStringLiteral("plugin.can.gcan")));
-    QVERIFY(conflict->message.contains(QStringLiteral("CAN1")));
-    QVERIFY(conflict->message.contains(QStringLiteral("CAN4")));
-    QVERIFY(conflict->message.contains(QDir::toNativeSeparators(firstDll)));
-    QVERIFY(conflict->message.contains(QDir::toNativeSeparators(secondDll)));
+    QCOMPARE(diagnostics.size(), 1);
+    QCOMPARE(diagnostics.first().path, QStringLiteral("devices[1].driverId"));
+    QVERIFY(diagnostics.first().message.contains(QStringLiteral("plugin.unknown")));
+    QVERIFY(diagnostics.first().message.contains(QStringLiteral("PluginRegistry.json")));
 }
 
 void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGeneratedStep()
 {
     const auto projectDir = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR);
-    const auto manifest = PluginCatalog::load(
-        projectDir + QStringLiteral(
-            "/templates/CAN/GCAN/PicoATE.CAN.GCAN.picoate-plugin.json"));
+    const auto manifest = canPluginFixture(QStringLiteral("GCAN"));
     QVERIFY(manifest.ok());
-    const auto cxManifest = PluginCatalog::load(
-        projectDir + QStringLiteral(
-            "/templates/CAN/CX/PicoATE.CAN.CX.picoate-plugin.json"));
+    const auto cxManifest = canPluginFixture(QStringLiteral("CX"));
     QVERIFY(cxManifest.ok());
 
     PluginFunctionModel functionModel;
@@ -1214,6 +1232,17 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
                  .value(QStringLiteral("deviceId")).toString(),
              QStringLiteral("CAN2"));
 
+    functionModel.setSelectedDeviceId({});
+    const auto directCategory = functionModel.index(
+        0, 0, functionModel.index(1, 0));
+    const auto directGcanWrite = functionModel.index(
+        1, 0, directCategory);
+    const auto directStep = functionModel.stepTemplate(directGcanWrite);
+    QCOMPARE(directStep.value(QStringLiteral("moduleId")).toString(),
+             QStringLiteral("plugin.can.gcan"));
+    QVERIFY(!directStep.value(QStringLiteral("inputs")).toObject()
+                 .contains(QStringLiteral("deviceId")));
+
     document.undoStack()->undo();
     document.undoStack()->undo();
     QCOMPARE(sequenceModel.rowCount(sequenceModel.index(0, 0)), previousCount);
@@ -1222,9 +1251,7 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
 void ExecutionViewModelTests::stepOutputExpressionsUsePreviousScopedPluginOutputs()
 {
     const auto projectDir = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR);
-    const auto manifest = PluginCatalog::load(
-        projectDir + QStringLiteral(
-            "/templates/CAN/GCAN/PicoATE.CAN.GCAN.picoate-plugin.json"));
+    const auto manifest = canPluginFixture(QStringLiteral("GCAN"));
     QVERIFY(manifest.ok());
 
     const auto sequence = QJsonDocument::fromJson(R"json({
@@ -3978,6 +4005,119 @@ void ExecutionViewModelTests::coreServiceTestsDeviceConnectionAndFailurePaths()
         request, std::make_shared<PicoATE::Core::StopToken>());
     QCOMPARE(crashed.outcome, DeviceConnectionTestOutcome::Failed);
     QVERIFY(!crashed.errorMessage.isEmpty());
+}
+
+void ExecutionViewModelTests::sequenceTreeModelInspectsJsonFieldsWithoutChangingDocument()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath(QStringLiteral("inspect.json"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"json({
+      "id":"inspect","name":"Inspect","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"001","name":"Read","kind":"action",
+          "inputs":{"deviceId":"CAN2.CH2"},
+          "parameters":{"comparison":"equal"}
+        },{
+          "id":"002","name":"Read Again","kind":"action",
+          "inputs":{"deviceId":"CAN2.CH2"}
+        },{
+          "id":"003","name":"Read Other","kind":"action",
+          "inputs":{"deviceId":"CAN1.CH1"}
+        }]
+      }]
+    })json");
+    file.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(path));
+    SequenceTreeModel model(&document);
+    const auto group = model.index(0, SequenceTreeModel::NameColumn);
+    const auto stepValue = [&] {
+        return model.index(0, SequenceTreeModel::InspectionColumn, group);
+    };
+
+    QCOMPARE(model.setInspectionField(QStringLiteral("deviceId")), 3);
+    QCOMPARE(stepValue().data().toString(), QStringLiteral("CAN2.CH2"));
+    QCOMPARE(model.headerData(SequenceTreeModel::InspectionColumn,
+                              Qt::Horizontal).toString(),
+             QStringLiteral("Key: deviceId"));
+    QVERIFY(stepValue().data(Qt::BackgroundRole).isValid());
+    const auto sameValue = model.index(
+        1, SequenceTreeModel::InspectionColumn, group);
+    const auto differentValue = model.index(
+        2, SequenceTreeModel::InspectionColumn, group);
+    QCOMPARE(stepValue().data(Qt::BackgroundRole),
+             sameValue.data(Qt::BackgroundRole));
+    QVERIFY(stepValue().data(Qt::BackgroundRole) !=
+            differentValue.data(Qt::BackgroundRole));
+
+    QCOMPARE(model.setInspectionField(QStringLiteral("parameters.comparison")), 1);
+    QCOMPARE(stepValue().data().toString(), QStringLiteral("equal"));
+    QCOMPARE(model.setInspectionField(QStringLiteral("missingField")), 0);
+    QVERIFY(!document.isModified());
+}
+
+void ExecutionViewModelTests::coreServiceRepeatsWholeSequenceForLoopTest()
+{
+    struct CollectingSink final : PicoATE::Core::IRuntimeEventSink {
+        QVector<PicoATE::Core::RuntimeEvent> events;
+        void publish(const PicoATE::Core::RuntimeEvent& event) override
+        {
+            events.push_back(event);
+        }
+    } sink;
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QByteArray sequence = R"json({
+      "id":"loop-test","name":"Loop Test","groups":[
+        {"id":"setup","kind":"setup","steps":[]},
+        {"id":"main","kind":"main","steps":[
+          {"id":"001","name":"One Pass","kind":"noop"}
+        ]},
+        {"id":"cleanup","kind":"cleanup","steps":[]}
+      ]
+    })json";
+    const QByteArray station = R"json({
+      "stationId":"loop-station",
+      "loopTestEnabled":true,
+      "loopTestCount":3,
+      "devices":[]
+    })json";
+
+    CoreExecutionService service(directory.path());
+    CompileRequest compileRequest;
+    compileRequest.sequencePath = directory.filePath(QStringLiteral("sequence.json"));
+    compileRequest.sequenceJson = sequence;
+    compileRequest.stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    compileRequest.stationJson = station;
+    const auto compiled = service.compile(compileRequest);
+    QVERIFY2(compiled.success,
+             qPrintable(compiled.diagnostics.isEmpty()
+                 ? QStringLiteral("compile failed")
+                 : compiled.diagnostics.first().message));
+
+    RunRequest runRequest;
+    runRequest.uutCount = 1;
+    const auto result = service.run(
+        runRequest, std::make_shared<PicoATE::Core::StopToken>(), &sink);
+    QVERIFY(result.executed);
+    QVERIFY(result.report.completed);
+    QCOMPARE(result.report.uuts.size(), 1);
+    QCOMPARE(result.report.uuts.first().steps.size(), 1);
+    QCOMPARE(result.report.uuts.first().steps.first().attempts.size(), 3);
+    for (int index = 0; index < result.report.uuts.first().steps.first().attempts.size();
+         ++index) {
+        QCOMPARE(result.report.uuts.first().steps.first().attempts[index].index,
+                 index + 1);
+    }
+    for (int index = 1; index < sink.events.size(); ++index) {
+        QVERIFY(sink.events[index - 1].sequenceNumber <
+                sink.events[index].sequenceNumber);
+    }
 }
 QTEST_GUILESS_MAIN(ExecutionViewModelTests)
 #include "ExecutionViewModelTests.moc"

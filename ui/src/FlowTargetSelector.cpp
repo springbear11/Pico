@@ -144,16 +144,6 @@ void FlowTargetSelector::setDevices(QVector<FlowTargetDevice> devices)
         m_currentDeviceId.clear();
         m_currentTargetId.clear();
     }
-    if (m_currentDeviceId.isEmpty()) {
-        const auto firstConfigured = std::find_if(
-            m_devices.cbegin(), m_devices.cend(),
-            [](const FlowTargetDevice& device) { return device.configured; });
-        if (firstConfigured != m_devices.cend()) {
-            m_currentDeviceId = firstConfigured->logicalId;
-        } else if (!m_devices.isEmpty()) {
-            m_currentDeviceId = m_devices.first().logicalId;
-        }
-    }
     selectDevice(m_currentDeviceId, previousTarget);
 }
 
@@ -232,6 +222,19 @@ void FlowTargetSelector::selectDevice(const QString& logicalId,
     }
 }
 
+void FlowTargetSelector::toggleDevice(const QString& logicalId)
+{
+    if (m_currentDeviceId.compare(logicalId, Qt::CaseInsensitive) == 0) {
+        selectDevice({});
+        return;
+    }
+    const auto* device = deviceById(logicalId);
+    selectDevice(logicalId,
+                 device && !device->targetIds.isEmpty()
+                     ? device->targetIds.first()
+                     : QString{});
+}
+
 void FlowTargetSelector::rebuildShortcuts()
 {
     clearLayout(m_shortcutLayout);
@@ -253,7 +256,7 @@ void FlowTargetSelector::rebuildShortcuts()
             : tr("%1 has no configured driver").arg(device->logicalId));
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         connect(button, &QToolButton::clicked, this,
-                [this, id = device->logicalId] { selectDevice(id); });
+                [this, id = device->logicalId] { toggleDevice(id); });
         m_shortcutLayout->addWidget(button, 1);
     }
 
@@ -334,7 +337,7 @@ void FlowTargetSelector::rebuildMoreMenu()
         action->setChecked(device.logicalId == m_currentDeviceId);
         action->setEnabled(device.configured);
         connect(action, &QAction::triggered, this,
-                [this, id = device.logicalId] { selectDevice(id); });
+                [this, id = device.logicalId] { toggleDevice(id); });
         deviceActions.push_back(action);
     }
     connect(search, &QLineEdit::textChanged, menu,

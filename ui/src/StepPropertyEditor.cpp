@@ -1658,13 +1658,11 @@ void StepPropertyEditor::rebuildPluginInputEditors()
             if (definition.type == PluginParameterType::HexBytes) {
                 edit->setPlaceholderText(tr("Example: 01 02 03 04"));
             } else if (canFunction && definition.key == QStringLiteral("id")) {
-                edit->setPlaceholderText(
-                    tr("Standard: 0x000~0x7FF; Extended: 0x00000000~0x1FFFFFFF"));
+                edit->setPlaceholderText(tr("0x000-0x7FF"));
             } else if (canFunction && definition.key == QStringLiteral("filterId")) {
-                edit->setPlaceholderText(tr("0x00000000~0x1FFFFFFF"));
+                edit->setPlaceholderText(tr("0x000-0x7FF"));
             } else if (canFunction && definition.key == QStringLiteral("filterMask")) {
-                edit->setPlaceholderText(
-                    tr("0x00000000=Any; 0x7FF=Std Exact; 0x1FFFFFFF=Ext Exact"));
+                edit->setPlaceholderText(tr("0x000=Any; 0x7FF=Exact"));
             } else if (definition.type == PluginParameterType::Integer ||
                        definition.type == PluginParameterType::Number) {
                 QString hint = definition.type == PluginParameterType::Integer
@@ -1700,9 +1698,19 @@ void StepPropertyEditor::rebuildPluginInputEditors()
             tooltip += tr("Unit: %1").arg(definition.unit);
         }
         editor->setToolTip(tooltip);
+        QString displayName = definition.name;
+        if (canFunction) {
+            if (definition.key == QStringLiteral("id")) {
+                displayName = tr("CAN ID");
+            } else if (definition.key == QStringLiteral("filterId")) {
+                displayName = tr("Filter ID");
+            } else if (definition.key == QStringLiteral("filterMask")) {
+                displayName = tr("Filter Mask");
+            }
+        }
         auto label = definition.required
-            ? tr("%1 *").arg(definition.name)
-            : definition.name;
+            ? tr("%1 *").arg(displayName)
+            : displayName;
         if (inheritedFromStation) {
             label += tr(" (Station)");
         } else if (logicalDeviceConnection) {
@@ -1722,7 +1730,55 @@ void StepPropertyEditor::rebuildPluginInputEditors()
         m_pluginInputEditors.push_back({definition, editor, inheritedFromStation});
         observeDraftWidget(editor);
     }
+    if (canFunction) {
+        for (const auto& item : std::as_const(m_pluginInputEditors)) {
+            if (item.definition.key != QStringLiteral("extended")) {
+                continue;
+            }
+            if (auto* button = qobject_cast<QAbstractButton*>(item.widget)) {
+                connect(button, &QAbstractButton::toggled, this,
+                        [this] { refreshCanIdentifierHints(); });
+            } else if (auto* combo = qobject_cast<QComboBox*>(item.widget)) {
+                connect(combo, &QComboBox::currentIndexChanged, this,
+                        [this] { refreshCanIdentifierHints(); });
+            }
+        }
+        refreshCanIdentifierHints();
+    }
     m_pluginInputsGroup->show();
+}
+
+void StepPropertyEditor::refreshCanIdentifierHints()
+{
+    bool extended = false;
+    for (const auto& item : std::as_const(m_pluginInputEditors)) {
+        if (item.definition.key != QStringLiteral("extended")) {
+            continue;
+        }
+        if (const auto* button = qobject_cast<const QAbstractButton*>(item.widget)) {
+            extended = button->isChecked();
+        } else if (const auto* combo = qobject_cast<const QComboBox*>(item.widget)) {
+            extended = combo->currentData().toBool();
+        }
+        break;
+    }
+
+    for (const auto& item : std::as_const(m_pluginInputEditors)) {
+        auto* edit = qobject_cast<QLineEdit*>(item.widget);
+        if (!edit) {
+            continue;
+        }
+        if (item.definition.key == QStringLiteral("id") ||
+            item.definition.key == QStringLiteral("filterId")) {
+            edit->setPlaceholderText(
+                extended ? tr("0x00000000-0x1FFFFFFF")
+                         : tr("0x000-0x7FF"));
+        } else if (item.definition.key == QStringLiteral("filterMask")) {
+            edit->setPlaceholderText(
+                extended ? tr("0x00000000=Any; 0x1FFFFFFF=Exact")
+                         : tr("0x000=Any; 0x7FF=Exact"));
+        }
+    }
 }
 
 QWidget* StepPropertyEditor::wrapExpressionEditor(QLineEdit* editor)
@@ -1983,11 +2039,13 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
                           extended ? QStringLiteral("0x00000000~0x1FFFFFFF")
                                    : QStringLiteral("0x000~0x7FF (Extended Frame is OFF)")) ||
         !validateCanValue(QStringLiteral("filterId"),
-                          0x1FFFFFFF,
-                          QStringLiteral("0x00000000~0x1FFFFFFF")) ||
+                          extended ? 0x1FFFFFFF : 0x7FF,
+                          extended ? QStringLiteral("0x00000000~0x1FFFFFFF")
+                                   : QStringLiteral("0x000~0x7FF (Extended Frame is OFF)")) ||
         !validateCanValue(QStringLiteral("filterMask"),
-                          0x1FFFFFFF,
-                          QStringLiteral("0x00000000~0x1FFFFFFF"))) {
+                          extended ? 0x1FFFFFFF : 0x7FF,
+                          extended ? QStringLiteral("0x00000000~0x1FFFFFFF")
+                                   : QStringLiteral("0x000~0x7FF (Extended Frame is OFF)"))) {
         return false;
     }
     return true;

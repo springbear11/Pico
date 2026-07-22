@@ -43,6 +43,8 @@ private:
     QLineEdit* m_stationNameEdit = nullptr;
     QAbstractButton* m_stopOnFailureSwitch = nullptr;
     QAbstractButton* m_scanDialogSwitch = nullptr;
+    QAbstractButton* m_loopTestSwitch = nullptr;
+    QSpinBox* m_loopTestCountSpin = nullptr;
     QAbstractButton* m_txtLogSwitch = nullptr;
     QAbstractButton* m_csvReportSwitch = nullptr;
     QAbstractButton* m_xlsxReportSwitch = nullptr;

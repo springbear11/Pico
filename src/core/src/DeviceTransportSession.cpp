@@ -99,7 +99,6 @@ QVariantMap TransportDeviceSession::metadata() const
     auto metadata = m_config.options;
     metadata.insert("address", m_config.address);
     metadata.insert("driverId", m_config.driverId);
-    metadata.insert("pluginPath", m_config.pluginPath);
     metadata.insert("lifetime", deviceSessionLifetimeName(m_config.lifetime));
     return metadata;
 }

@@ -22,6 +22,11 @@ void ProportionalHeaderView::setSectionWeights(QVector<int> weights)
     QTimer::singleShot(0, this, [this] { redistribute(); });
 }
 
+void ProportionalHeaderView::redistributeSections()
+{
+    redistribute();
+}
+
 void ProportionalHeaderView::resizeEvent(QResizeEvent* event)
 {
     QHeaderView::resizeEvent(event);

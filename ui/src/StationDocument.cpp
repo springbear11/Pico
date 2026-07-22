@@ -446,7 +446,6 @@ bool StationDocument::isDeviceSlotEmpty(int row) const
     }
     return device.value(QStringLiteral("driverId")).toString(
                device.value(QStringLiteral("driver")).toString()).trimmed().isEmpty() &&
-           device.value(QStringLiteral("pluginPath")).toString().trimmed().isEmpty() &&
            device.value(QStringLiteral("address")).toString(
                device.value(QStringLiteral("visaAddress")).toString()).trimmed().isEmpty() &&
            device.value(QStringLiteral("options")).toObject().isEmpty();
@@ -488,6 +487,32 @@ int StationDocument::previousEmptyDeviceRow(int row) const
 
 void StationDocument::acceptRoot(QJsonObject root, QString filePath)
 {
+    if (!root.contains(QStringLiteral("pluginRegistry"))) {
+        root.insert(QStringLiteral("pluginRegistry"),
+                    QStringLiteral("plugins/PluginRegistry.json"));
+    }
+    auto devices = root.value(QStringLiteral("devices")).toArray();
+    for (int index = 0; index < devices.size(); ++index) {
+        if (!devices[index].isObject()) {
+            continue;
+        }
+        auto device = devices[index].toObject();
+        device.remove(QStringLiteral("pluginPath"));
+        auto options = device.value(QStringLiteral("options")).toObject();
+        if (device.value(QStringLiteral("address")).toString().isEmpty()) {
+            const auto optionAddress = options.value(QStringLiteral("address"))
+                                           .toString(options.value(
+                                               QStringLiteral("visaAddress")).toString());
+            if (!optionAddress.isEmpty()) {
+                device.insert(QStringLiteral("address"), optionAddress);
+            }
+        }
+        options.remove(QStringLiteral("address"));
+        options.remove(QStringLiteral("visaAddress"));
+        device.insert(QStringLiteral("options"), options);
+        devices[index] = device;
+    }
+    root.insert(QStringLiteral("devices"), devices);
     const bool pathChanged = m_filePath != filePath;
     m_undoStack->clear();
     m_root = std::move(root);

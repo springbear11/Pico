@@ -368,7 +368,7 @@ MainWindow::MainWindow(QWidget* parent)
     m_scanDialog = new ScanDialog(this);
     buildActions();
     buildLayout();
-    loadPluginRegistry();
+    scanPlugins(false);
     restoreUiSettings();
     refreshHistory();
 
@@ -674,8 +674,54 @@ MainWindow::MainWindow(QWidget* parent)
             this, [this] { updateCommandState(); });
     connect(m_stationDocument->undoStack(), &QUndoStack::canRedoChanged,
             this, [this] { updateCommandState(); });
+    m_previousWorkspaceTabIndex = m_workspaceTabs->currentIndex();
     connect(m_workspaceTabs, &QTabWidget::currentChanged,
-            this, [this] { updateCommandState(); });
+            this, [this](int currentIndex) {
+                if (m_handlingWorkspaceTabChange) {
+                    return;
+                }
+                const int previousIndex = m_previousWorkspaceTabIndex;
+                const int flowIndex = m_workspaceTabs->indexOf(m_flowEditorPage);
+                const bool leavingFlow = previousIndex == flowIndex &&
+                                         currentIndex != flowIndex;
+                if (leavingFlow && m_sequenceDocument) {
+                    const auto returnToFlow = [this, previousIndex] {
+                        m_handlingWorkspaceTabChange = true;
+                        m_workspaceTabs->setCurrentIndex(previousIndex);
+                        m_handlingWorkspaceTabChange = false;
+                        m_previousWorkspaceTabIndex = previousIndex;
+                        updateCommandState();
+                    };
+                    if (!resolvePendingStepChanges()) {
+                        returnToFlow();
+                        return;
+                    }
+                    if (m_sequenceDocument->isModified()) {
+                        QMessageBox prompt(
+                            QMessageBox::Question,
+                            tr("Unsaved Flow Draft"),
+                            tr("The Flow draft has changes. Save them to %1 before leaving?")
+                                .arg(m_sequenceDocument->displayName()),
+                            QMessageBox::NoButton,
+                            this);
+                        auto* saveButton = prompt.addButton(QMessageBox::Save);
+                        auto* keepDraftButton = prompt.addButton(
+                            tr("Keep Draft"), QMessageBox::AcceptRole);
+                        auto* cancelButton = prompt.addButton(QMessageBox::Cancel);
+                        prompt.setDefaultButton(
+                            qobject_cast<QPushButton*>(saveButton));
+                        prompt.exec();
+                        if (prompt.clickedButton() == cancelButton ||
+                            (prompt.clickedButton() == saveButton && !saveSequence())) {
+                            returnToFlow();
+                            return;
+                        }
+                        Q_UNUSED(keepDraftButton);
+                    }
+                }
+                m_previousWorkspaceTabIndex = currentIndex;
+                updateCommandState();
+            });
     connect(m_resultView->selectionModel(),
             &QItemSelectionModel::currentChanged,
             this,
@@ -750,6 +796,16 @@ void MainWindow::closeEvent(QCloseEvent* event)
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event)
 {
+    if (watched == m_flowFieldSearch && event->type() == QEvent::KeyPress) {
+        const auto* keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Escape) {
+            m_flowFieldSearch->clear();
+            m_flowFieldSearch->parentWidget()->hide();
+            m_sequenceTreeModel->setInspectionField({});
+            m_sequenceTreeView->setFocus();
+            return true;
+        }
+    }
     const bool sequenceTreeEvent = m_sequenceTreeView &&
         (watched == m_sequenceTreeView ||
          watched == m_sequenceTreeView->viewport());
@@ -872,16 +928,6 @@ bool MainWindow::confirmAndSaveSequence()
         return true;
     }
 
-    const auto choice = QMessageBox::question(
-        this,
-        tr("Save Sequence"),
-        tr("Save the current changes to %1?")
-            .arg(m_sequenceDocument->displayName()),
-        QMessageBox::Save | QMessageBox::Cancel,
-        QMessageBox::Save);
-    if (choice != QMessageBox::Save) {
-        return false;
-    }
     if (hasPendingStep && !m_stepPropertyEditor->commitPendingChanges()) {
         return false;
     }
@@ -894,23 +940,7 @@ bool MainWindow::resolvePendingStepChanges()
         return true;
     }
 
-    const auto choice = QMessageBox::warning(
-        this,
-        tr("Unsaved Step Changes"),
-        tr("The current Step has unsaved changes."),
-        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
-        QMessageBox::Save);
-    if (choice == QMessageBox::Cancel) {
-        return false;
-    }
-    if (choice == QMessageBox::Discard) {
-        m_stepPropertyEditor->discardPendingChanges();
-        return true;
-    }
-    if (!m_stepPropertyEditor->commitPendingChanges()) {
-        return false;
-    }
-    return saveSequence();
+    return m_stepPropertyEditor->commitPendingChanges();
 }
 
 bool MainWindow::saveSequence()
@@ -1480,22 +1510,27 @@ void MainWindow::showScanDialog()
     m_scanDialog->showForNextScan();
 }
 
-void MainWindow::scanPlugins()
+void MainWindow::scanPlugins(bool interactive)
 {
     const auto applicationDirectory = QCoreApplication::applicationDirPath();
-    const auto pluginDirectory = firstExistingPath({
-        QDir(applicationDirectory).absoluteFilePath(QStringLiteral("plugin")),
-        QDir(applicationDirectory).absoluteFilePath(QStringLiteral("plugins")),
-#if defined(PICOATE_PROJECT_DIR)
-        QDir(QStringLiteral(PICOATE_PROJECT_DIR))
-            .absoluteFilePath(QStringLiteral("templates/bin/Debug")),
-#endif
-    });
-    if (pluginDirectory.isEmpty()) {
-        QMessageBox::warning(
-            this,
-            tr("Scan Plugins"),
-            tr("No plugin directory was found. Create a 'plugin' directory next to PicoATE.UI.exe."));
+    const auto pluginDirectory = QDir(applicationDirectory).absoluteFilePath(
+        QStringLiteral("plugins"));
+    if (!QDir().mkpath(pluginDirectory)) {
+        const auto message = tr(
+            "Could not create the 'plugins' directory next to PicoATE.UI.exe.");
+        if (interactive) {
+            QMessageBox::warning(this, tr("Scan Plugins"), message);
+        }
+        return;
+    }
+
+    if (PluginCatalog::discoverPluginFiles(pluginDirectory).isEmpty()) {
+        loadPluginRegistry();
+        if (interactive) {
+            statusBar()->showMessage(
+                tr("No PicoATE plugin DLL was found in the plugins directory"),
+                7000);
+        }
         return;
     }
 
@@ -1506,14 +1541,14 @@ void MainWindow::scanPlugins()
             QStringLiteral("../../../src/nativehost/Debug/PicoATE.NativeHost.exe")),
     });
     if (nativeHost.isEmpty()) {
-        QMessageBox::critical(
-            this,
-            tr("Scan Plugins"),
-            tr("No compatible PicoATE.NativeHost.exe was found. Rebuild or redeploy the UI so the Host supports --describe. Plugin DLLs are never loaded directly in the UI process."));
+        const auto message = tr("No compatible PicoATE.NativeHost.exe was found. Rebuild or redeploy the UI so the Host supports --describe. Plugin DLLs are never loaded directly in the UI process.");
+        if (interactive) {
+            QMessageBox::critical(this, tr("Scan Plugins"), message);
+        }
         return;
     }
 
-    const auto registryPath = QDir(applicationDirectory).absoluteFilePath(
+    const auto registryPath = QDir(pluginDirectory).absoluteFilePath(
         QStringLiteral("PluginRegistry.json"));
     statusBar()->showMessage(tr("Scanning plugins..."));
     const auto result = PluginCatalog::scanPlugins(
@@ -1521,14 +1556,18 @@ void MainWindow::scanPlugins()
 
     if (result.ok()) {
         loadPluginRegistry();
-        QMessageBox::information(
-            this,
-            tr("Scan Plugins"),
-            tr("Found %1 plugin DLL(s), loaded %2 plugin(s), and updated:\n%3")
-                .arg(result.discoveredDllCount)
-                .arg(result.plugins.size())
-                .arg(registryPath));
-        statusBar()->showMessage(tr("Plugin registry updated"), 5000);
+        if (interactive) {
+            QMessageBox::information(
+                this,
+                tr("Scan Plugins"),
+                tr("Found %1 plugin DLL(s), loaded %2 plugin(s), and updated:\n%3")
+                    .arg(result.discoveredDllCount)
+                    .arg(result.plugins.size())
+                    .arg(registryPath));
+        }
+        if (interactive) {
+            statusBar()->showMessage(tr("Plugin registry updated"), 5000);
+        }
         return;
     }
 
@@ -1542,14 +1581,18 @@ void MainWindow::scanPlugins()
         const auto& error = result.errors[index];
         details.push_back(tr("%1: %2").arg(error.path, error.message));
     }
-    QMessageBox::warning(
-        this,
-        tr("Scan Plugins"),
-        tr("Found %1 DLL(s) and loaded %2 plugin(s).\n%3")
-            .arg(result.discoveredDllCount)
-            .arg(result.plugins.size())
-            .arg(details.join(QLatin1Char('\n'))));
-    statusBar()->showMessage(tr("Plugin scan completed with errors"), 7000);
+    if (interactive) {
+        QMessageBox::warning(
+            this,
+            tr("Scan Plugins"),
+            tr("Found %1 DLL(s) and loaded %2 plugin(s).\n%3")
+                .arg(result.discoveredDllCount)
+                .arg(result.plugins.size())
+                .arg(details.join(QLatin1Char('\n'))));
+    }
+    if (interactive) {
+        statusBar()->showMessage(tr("Plugin scan completed with errors"), 7000);
+    }
 }
 
 void MainWindow::loadPluginRegistry()
@@ -1558,7 +1601,7 @@ void MainWindow::loadPluginRegistry()
         return;
     }
     const auto registryPath = QDir(QCoreApplication::applicationDirPath())
-        .absoluteFilePath(QStringLiteral("PluginRegistry.json"));
+        .absoluteFilePath(QStringLiteral("plugins/PluginRegistry.json"));
     if (!QFileInfo::exists(registryPath)) {
         m_pluginFunctionModel->setPlugins({});
         m_stepPropertyEditor->setPluginRegistry({});
@@ -1703,9 +1746,7 @@ void MainWindow::addStationDevice()
     if (!resolvePendingStationChanges()) {
         return;
     }
-    const int row = m_selectedStationDeviceRow < 0
-        ? m_stationDocument->deviceCount()
-        : m_selectedStationDeviceRow + 1;
+    const int row = m_stationDocument->deviceCount();
     m_selectedStationDeviceRow = row;
     m_stationDocument->insertDevice(row);
 }
@@ -2510,6 +2551,20 @@ void MainWindow::buildActions()
     connect(m_pasteStepAction, &QAction::triggered,
             this, &MainWindow::pasteSequenceSteps);
 
+    m_findFlowFieldAction = new QAction(tr("Inspect Field"), this);
+    m_findFlowFieldAction->setObjectName(QStringLiteral("findFlowFieldAction"));
+    m_findFlowFieldAction->setShortcut(QKeySequence::Find);
+    m_findFlowFieldAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    m_findFlowFieldAction->setToolTip(
+        tr("Show one JSON field beside every flow item (Ctrl+F)"));
+    connect(m_findFlowFieldAction, &QAction::triggered, this, [this] {
+        if (!m_flowFieldSearch) return;
+        m_flowFieldSearch->parentWidget()->show();
+        m_flowFieldSearch->show();
+        m_flowFieldSearch->setFocus();
+        m_flowFieldSearch->selectAll();
+    });
+
     m_wrapTestItemAction = new QAction(
         style()->standardIcon(QStyle::SP_DirIcon), tr("Wrap in TestItem"), this);
     m_wrapTestItemAction->setObjectName(QStringLiteral("wrapTestItemAction"));
@@ -2691,7 +2746,7 @@ void MainWindow::buildActions()
     m_scanPluginsAction->setToolTip(
         tr("Scan the plugin directory and rebuild PluginRegistry.json"));
     connect(m_scanPluginsAction, &QAction::triggered,
-            this, &MainWindow::scanPlugins);
+            this, [this] { scanPlugins(true); });
 
     m_resetLayoutAction = new QAction(tr("Reset Layout"), this);
     m_resetLayoutAction->setObjectName(QStringLiteral("resetLayoutAction"));
@@ -2785,6 +2840,7 @@ void MainWindow::buildLayout()
 
     m_flowEditorPage = new QWidget(m_workspaceTabs);
     auto* sequenceEditorPage = m_flowEditorPage;
+    sequenceEditorPage->addAction(m_findFlowFieldAction);
     sequenceEditorPage->setObjectName(QStringLiteral("sequenceEditorPage"));
     auto* sequenceEditorLayout = new QVBoxLayout(sequenceEditorPage);
     sequenceEditorLayout->setContentsMargins(0, 0, 0, 0);
@@ -2878,13 +2934,79 @@ void MainWindow::buildLayout()
     treeSizePolicy.setHorizontalPolicy(QSizePolicy::Ignored);
     m_sequenceTreeView->setSizePolicy(treeSizePolicy);
     m_sequenceTreeView->setMinimumWidth(320);
-    m_sequenceTreeView->setMaximumWidth(720);
     polishReadableTreeView(m_sequenceTreeView);
-    installProportionalHeader(m_sequenceTreeView, {4, 2, 2, 1, 1});
+    installProportionalHeader(m_sequenceTreeView, {5, 2, 2, 1, 1, 2});
+
+    auto* sequenceTreePanel = new QWidget(sequenceWorkArea);
+    auto* sequenceTreeLayout = new QVBoxLayout(sequenceTreePanel);
+    sequenceTreeLayout->setContentsMargins(0, 0, 0, 0);
+    sequenceTreeLayout->setSpacing(0);
+    auto* flowFieldSearchRow = new QWidget(sequenceTreePanel);
+    flowFieldSearchRow->setObjectName(QStringLiteral("flowFieldSearchRow"));
+    auto* flowFieldSearchLayout = new QHBoxLayout(flowFieldSearchRow);
+    flowFieldSearchLayout->setContentsMargins(0, 0, 0, 4);
+    flowFieldSearchLayout->setSpacing(0);
+    flowFieldSearchLayout->addStretch();
+    m_flowFieldSearch = new QLineEdit(sequenceTreePanel);
+    m_flowFieldSearch->setObjectName(QStringLiteral("flowFieldSearch"));
+    m_flowFieldSearch->setPlaceholderText(
+        tr("Inspect key, e.g. deviceId"));
+    m_flowFieldSearch->setClearButtonEnabled(true);
+    m_flowFieldSearch->setFixedHeight(32);
+    m_flowFieldSearch->setMaximumWidth(360);
+    m_flowFieldSearch->setMinimumWidth(240);
+    m_flowFieldSearch->setStyleSheet(QStringLiteral(
+        "QLineEdit#flowFieldSearch {"
+        " background: #eef7fd;"
+        " border: 1px solid #a9cce3;"
+        " border-top: 0;"
+        " border-bottom-left-radius: 8px;"
+        " border-bottom-right-radius: 8px;"
+        " padding: 4px 28px 5px 12px;"
+        " color: #253746;"
+        " selection-background-color: #b9dcf2;"
+        "}"
+        "QLineEdit#flowFieldSearch:focus {"
+        " border-color: #6faed3;"
+        " background: #f7fbfe;"
+        "}"));
+    m_flowFieldSearch->hide();
+    m_flowFieldSearch->installEventFilter(this);
+    flowFieldSearchLayout->addWidget(m_flowFieldSearch, 1);
+    flowFieldSearchLayout->addStretch();
+    flowFieldSearchRow->hide();
+    connect(m_flowFieldSearch, &QLineEdit::returnPressed, this, [this] {
+        const auto field = m_flowFieldSearch->text().trimmed();
+        const int matches = m_sequenceTreeModel->setInspectionField(field);
+        if (auto* header = dynamic_cast<ProportionalHeaderView*>(
+                m_sequenceTreeView->header())) {
+            header->redistributeSections();
+        }
+        m_sequenceTreeView->doItemsLayout();
+        m_sequenceTreeView->viewport()->update();
+        if (!field.isEmpty() && matches > 0) {
+            statusBar()->showMessage(
+                tr("Found '%1' on %2 flow item(s)").arg(field).arg(matches),
+                5000);
+        } else if (!field.isEmpty()) {
+            statusBar()->showMessage(
+                tr("Field '%1' was not found in any flow item").arg(field),
+                7000);
+        }
+    });
+    connect(m_flowFieldSearch, &QLineEdit::textChanged, this,
+            [this](const QString& text) {
+                if (!text.trimmed().isEmpty()) {
+                    return;
+                }
+                m_sequenceTreeModel->setInspectionField({});
+            });
+    sequenceTreeLayout->addWidget(flowFieldSearchRow);
+    sequenceTreeLayout->addWidget(m_sequenceTreeView, 1);
 
     m_stepPropertyEditor = new StepPropertyEditor(m_sequenceDocument);
     sequenceWorkArea->addWidget(functionPanel);
-    sequenceWorkArea->addWidget(m_sequenceTreeView);
+    sequenceWorkArea->addWidget(sequenceTreePanel);
     sequenceWorkArea->addWidget(m_stepPropertyEditor);
     sequenceWorkArea->setStretchFactor(0, 1);
     sequenceWorkArea->setStretchFactor(1, 3);

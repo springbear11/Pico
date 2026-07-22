@@ -1603,11 +1603,24 @@ void CoreTests::stationPluginBindingRunsLogicalDeviceThroughNativeHost()
 
     StationConfig station;
     station.stationId = QStringLiteral("station-1");
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto registryPath = directory.filePath(
+        QStringLiteral("plugins/PluginRegistry.json"));
+    QVERIFY(QDir().mkpath(QFileInfo(registryPath).absolutePath()));
+    QFile registryFile(registryPath);
+    QVERIFY(registryFile.open(QIODevice::WriteOnly));
+    registryFile.write(QJsonDocument(QJsonObject{
+        {QStringLiteral("plugins"), QJsonArray{QJsonObject{
+             {QStringLiteral("moduleId"), QStringLiteral("plugin.test.dll")},
+             {QStringLiteral("dll"), dll}}}}})
+                           .toJson(QJsonDocument::Compact));
+    registryFile.close();
+    station.pluginRegistryPath = QStringLiteral("plugins/PluginRegistry.json");
     DeviceSessionConfig device;
     device.deviceId = QStringLiteral("CAN1");
     device.deviceType = QStringLiteral("CAN");
     device.driverId = QStringLiteral("plugin.test.dll");
-    device.pluginPath = dll;
     device.lifetime = DeviceSessionLifetime::Run;
     station.devices.push_back(device);
     QVERIFY(configureDeviceSessions(station, session.devices()).isEmpty());
@@ -1615,6 +1628,7 @@ void CoreTests::stationPluginBindingRunsLogicalDeviceThroughNativeHost()
     StationPluginRegistrationOptions options;
     options.nativeHostProgram = host;
     options.projectDir = projectRootPath();
+    options.stationFilePath = directory.filePath(QStringLiteral("StationSystem.json"));
     const auto registration = registerStationPluginModules(session, station, options);
     QVERIFY(registration.ok());
     QVERIFY(registration.registeredModuleIds.contains(QStringLiteral("device")));

@@ -1,0 +1,443 @@
+{
+    "plugins": [
+        {
+            "abiVersion": 1,
+            "description": {
+                "category": "CAN",
+                "functions": [
+                    {
+                        "description": "Open and initialize a CX ControlCAN channel",
+                        "id": "open",
+                        "inputs": [
+                            {
+                                "default": 4,
+                                "key": "deviceType",
+                                "name": "Device Type",
+                                "options": [
+                                    {
+                                        "label": "Auto",
+                                        "value": 0
+                                    },
+                                    {
+                                        "label": "USBCAN-I",
+                                        "value": 3
+                                    },
+                                    {
+                                        "label": "USBCAN-II / CANalyst-II",
+                                        "value": 4
+                                    }
+                                ],
+                                "required": false,
+                                "type": "enum"
+                            },
+                            {
+                                "default": 0,
+                                "key": "deviceIndex",
+                                "minimum": 0,
+                                "name": "Device Index",
+                                "required": false,
+                                "type": "integer"
+                            },
+                            {
+                                "default": 0,
+                                "key": "channelIndex",
+                                "maximum": 1,
+                                "minimum": 0,
+                                "name": "Channel",
+                                "required": false,
+                                "type": "integer"
+                            },
+                            {
+                                "default": 500000,
+                                "key": "bitrate",
+                                "name": "Bitrate",
+                                "options": [
+                                    {
+                                        "label": "125 kbit/s",
+                                        "value": 125000
+                                    },
+                                    {
+                                        "label": "250 kbit/s",
+                                        "value": 250000
+                                    },
+                                    {
+                                        "label": "500 kbit/s",
+                                        "value": 500000
+                                    },
+                                    {
+                                        "label": "1 Mbit/s",
+                                        "value": 1000000
+                                    }
+                                ],
+                                "required": false,
+                                "type": "enum"
+                            },
+                            {
+                                "default": false,
+                                "key": "listenOnly",
+                                "name": "Listen Only",
+                                "required": false,
+                                "type": "boolean"
+                            },
+                            {
+                                "default": false,
+                                "key": "selfTest",
+                                "name": "Self Test",
+                                "required": false,
+                                "type": "boolean"
+                            }
+                        ],
+                        "name": "Open CAN",
+                        "outputs": [
+                            {
+                                "key": "connected",
+                                "name": "Connected",
+                                "type": "boolean"
+                            },
+                            {
+                                "key": "device",
+                                "name": "Device",
+                                "type": "string"
+                            }
+                        ],
+                        "timeoutMs": 5000
+                    },
+                    {
+                        "description": "Transmit one classic CAN frame",
+                        "id": "write",
+                        "inputs": [
+                            {
+                                "default": "0x123",
+                                "key": "id",
+                                "name": "CAN ID (Std 0x000-0x7FF / Ext 0x00000000-0x1FFFFFFF)",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "default": "01 02 03 04",
+                                "key": "data",
+                                "name": "Frame Data",
+                                "required": true,
+                                "type": "hex-bytes"
+                            },
+                            {
+                                "default": false,
+                                "key": "extended",
+                                "name": "Extended Frame",
+                                "required": false,
+                                "type": "boolean"
+                            },
+                            {
+                                "default": false,
+                                "key": "remote",
+                                "name": "Remote Frame",
+                                "required": false,
+                                "type": "boolean"
+                            }
+                        ],
+                        "name": "Send CAN Frame",
+                        "outputs": [
+                            {
+                                "key": "transmitted",
+                                "name": "Transmitted",
+                                "type": "boolean"
+                            }
+                        ],
+                        "timeoutMs": 2000
+                    },
+                    {
+                        "description": "Receive one CAN frame with an optional ID filter",
+                        "id": "read",
+                        "inputs": [
+                            {
+                                "default": "0x000",
+                                "key": "filterId",
+                                "name": "Filter ID (0x00000000-0x1FFFFFFF)",
+                                "required": false,
+                                "type": "string"
+                            },
+                            {
+                                "default": "0x000",
+                                "key": "filterMask",
+                                "name": "Filter Mask (0=Any, Std Exact=0x7FF, Ext Exact=0x1FFFFFFF)",
+                                "required": false,
+                                "type": "string"
+                            },
+                            {
+                                "default": 1500,
+                                "key": "timeoutMs",
+                                "maximum": 60000,
+                                "minimum": 0,
+                                "name": "Receive Timeout",
+                                "required": false,
+                                "type": "integer",
+                                "unit": "ms"
+                            }
+                        ],
+                        "name": "Read CAN Frame",
+                        "outputs": [
+                            {
+                                "key": "id",
+                                "name": "CAN ID",
+                                "type": "string"
+                            },
+                            {
+                                "key": "idNumeric",
+                                "name": "CAN ID Numeric",
+                                "type": "integer"
+                            },
+                            {
+                                "key": "dataHex",
+                                "name": "Frame Data",
+                                "type": "hex-bytes"
+                            },
+                            {
+                                "key": "dlc",
+                                "name": "Data Length",
+                                "type": "integer",
+                                "unit": "byte"
+                            }
+                        ],
+                        "timeoutMs": 2500
+                    },
+                    {
+                        "description": "Close the active CX CAN channel",
+                        "id": "close",
+                        "inputs": [
+                        ],
+                        "name": "Close CAN",
+                        "outputs": [
+                            {
+                                "key": "connected",
+                                "name": "Connected",
+                                "type": "boolean"
+                            }
+                        ],
+                        "stepKind": "cleanup",
+                        "timeoutMs": 3000
+                    }
+                ],
+                "name": "CX USB-CAN"
+            },
+            "dll": "PicoATE.CAN.CX.dll",
+            "moduleId": "plugin.can.cx"
+        },
+        {
+            "abiVersion": 1,
+            "description": {
+                "category": "CAN",
+                "functions": [
+                    {
+                        "description": "Open and initialize a GCAN channel",
+                        "id": "open",
+                        "inputs": [
+                            {
+                                "default": 0,
+                                "key": "deviceType",
+                                "name": "Device Type",
+                                "options": [
+                                    {
+                                        "label": "Auto",
+                                        "value": 0
+                                    },
+                                    {
+                                        "label": "USBCAN-I",
+                                        "value": 3
+                                    },
+                                    {
+                                        "label": "USBCAN-II",
+                                        "value": 4
+                                    }
+                                ],
+                                "required": false,
+                                "type": "enum"
+                            },
+                            {
+                                "default": 0,
+                                "key": "deviceIndex",
+                                "minimum": 0,
+                                "name": "Device Index",
+                                "required": false,
+                                "type": "integer"
+                            },
+                            {
+                                "default": 0,
+                                "key": "channelIndex",
+                                "maximum": 1,
+                                "minimum": 0,
+                                "name": "Channel",
+                                "required": false,
+                                "type": "integer"
+                            },
+                            {
+                                "default": 500000,
+                                "key": "bitrate",
+                                "name": "Bitrate",
+                                "options": [
+                                    {
+                                        "label": "125 kbit/s",
+                                        "value": 125000
+                                    },
+                                    {
+                                        "label": "250 kbit/s",
+                                        "value": 250000
+                                    },
+                                    {
+                                        "label": "500 kbit/s",
+                                        "value": 500000
+                                    },
+                                    {
+                                        "label": "1 Mbit/s",
+                                        "value": 1000000
+                                    }
+                                ],
+                                "required": false,
+                                "type": "enum"
+                            },
+                            {
+                                "default": false,
+                                "key": "listenOnly",
+                                "name": "Listen Only",
+                                "required": false,
+                                "type": "boolean"
+                            },
+                            {
+                                "default": false,
+                                "key": "selfTest",
+                                "name": "Self Test",
+                                "required": false,
+                                "type": "boolean"
+                            }
+                        ],
+                        "name": "Open CAN",
+                        "outputs": [
+                            {
+                                "key": "connected",
+                                "name": "Connected",
+                                "type": "boolean"
+                            },
+                            {
+                                "key": "device",
+                                "name": "Device",
+                                "type": "string"
+                            }
+                        ],
+                        "timeoutMs": 5000
+                    },
+                    {
+                        "description": "Transmit one CAN frame",
+                        "id": "write",
+                        "inputs": [
+                            {
+                                "default": "0x123",
+                                "key": "id",
+                                "name": "CAN ID (Std 0x000-0x7FF / Ext 0x00000000-0x1FFFFFFF)",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "default": "01 02 03 04",
+                                "key": "data",
+                                "name": "Frame Data",
+                                "required": true,
+                                "type": "hex-bytes"
+                            },
+                            {
+                                "default": false,
+                                "key": "extended",
+                                "name": "Extended Frame",
+                                "required": false,
+                                "type": "boolean"
+                            },
+                            {
+                                "default": false,
+                                "key": "remote",
+                                "name": "Remote Frame",
+                                "required": false,
+                                "type": "boolean"
+                            }
+                        ],
+                        "name": "Send CAN Frame",
+                        "outputs": [
+                            {
+                                "key": "transmitted",
+                                "name": "Transmitted",
+                                "type": "boolean"
+                            }
+                        ],
+                        "timeoutMs": 2000
+                    },
+                    {
+                        "description": "Receive one CAN frame with an optional ID filter",
+                        "id": "read",
+                        "inputs": [
+                            {
+                                "default": "0x000",
+                                "key": "filterId",
+                                "name": "Filter ID (0x00000000-0x1FFFFFFF)",
+                                "required": false,
+                                "type": "string"
+                            },
+                            {
+                                "default": "0x000",
+                                "key": "filterMask",
+                                "name": "Filter Mask (0=Any, Std Exact=0x7FF, Ext Exact=0x1FFFFFFF)",
+                                "required": false,
+                                "type": "string"
+                            },
+                            {
+                                "default": 1500,
+                                "key": "timeoutMs",
+                                "maximum": 60000,
+                                "minimum": 0,
+                                "name": "Receive Timeout",
+                                "required": false,
+                                "type": "integer",
+                                "unit": "ms"
+                            }
+                        ],
+                        "name": "Read CAN Frame",
+                        "outputs": [
+                            {
+                                "key": "id",
+                                "name": "CAN ID",
+                                "type": "string"
+                            },
+                            {
+                                "key": "dataHex",
+                                "name": "Frame Data",
+                                "type": "hex-bytes"
+                            },
+                            {
+                                "key": "dlc",
+                                "name": "Data Length",
+                                "type": "integer",
+                                "unit": "byte"
+                            }
+                        ],
+                        "timeoutMs": 2500
+                    },
+                    {
+                        "description": "Close the active GCAN channel",
+                        "id": "close",
+                        "inputs": [
+                        ],
+                        "name": "Close CAN",
+                        "outputs": [
+                            {
+                                "key": "connected",
+                                "name": "Connected",
+                                "type": "boolean"
+                            }
+                        ],
+                        "stepKind": "cleanup",
+                        "timeoutMs": 3000
+                    }
+                ],
+                "name": "GCAN USB-CAN"
+            },
+            "dll": "PicoATE.CAN.GCAN.dll",
+            "moduleId": "plugin.can.gcan"
+        }
+    ]
+}

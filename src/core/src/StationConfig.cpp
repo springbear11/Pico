@@ -187,9 +187,6 @@ DeviceSessionConfig parseDevice(const QJsonObject& object,
         config.driverId = readString(object, "driver", result, QString("%1.driver").arg(path));
     }
 
-    config.pluginPath = readString(
-        object, "pluginPath", result, QString("%1.pluginPath").arg(path));
-
     config.address = readString(object, "address", result, QString("%1.address").arg(path));
     if (config.address.isEmpty() && object.contains("visaAddress")) {
         config.address = readString(object, "visaAddress", result, QString("%1.visaAddress").arg(path));
@@ -222,8 +219,6 @@ DeviceSessionConfig parseDevice(const QJsonObject& object,
     config.deviceId = resolveStringField(config.deviceId, resolver, result, QString("%1.deviceId").arg(path));
     config.deviceType = resolveStringField(config.deviceType, resolver, result, QString("%1.deviceType").arg(path));
     config.driverId = resolveStringField(config.driverId, resolver, result, QString("%1.driverId").arg(path));
-    config.pluginPath = resolveStringField(
-        config.pluginPath, resolver, result, QString("%1.pluginPath").arg(path));
     config.address = resolveStringField(config.address, resolver, result, QString("%1.address").arg(path));
     config.options = resolveMapField(config.options, resolver, result, QString("%1.options").arg(path));
 
@@ -265,6 +260,22 @@ StationConfigResult parseStationConfigJson(const QJsonObject& object,
         object, "csvReportEnabled", result, "csvReportEnabled", false);
     result.config.xlsxReportEnabled = readBool(
         object, "xlsxReportEnabled", result, "xlsxReportEnabled", false);
+    result.config.loopTestEnabled = readBool(
+        object, "loopTestEnabled", result, "loopTestEnabled", false);
+    result.config.loopTestCount = readInt(
+        object, "loopTestCount", result, "loopTestCount", 1);
+    if (result.config.loopTestCount < 1 || result.config.loopTestCount > 100000) {
+        addError(result,
+                 "loopTestCount",
+                 "Loop test count must be between 1 and 100000",
+                 "Enter the number of complete sequence runs");
+    }
+    result.config.pluginRegistryPath = readString(
+        object,
+        "pluginRegistry",
+        result,
+        "pluginRegistry",
+        QStringLiteral("plugins/PluginRegistry.json"));
     result.config.reportOutputDirectory = readString(
         object,
         "reportOutputDirectory",
@@ -286,6 +297,11 @@ StationConfigResult parseStationConfigJson(const QJsonObject& object,
         resolver,
         result,
         "reportOutputDirectory");
+    result.config.pluginRegistryPath = resolveStringField(
+        result.config.pluginRegistryPath,
+        resolver,
+        result,
+        "pluginRegistry");
     result.config.metadata = resolveMapField(result.config.metadata, resolver, result, "metadata");
 
     if (!object.contains("devices")) {
