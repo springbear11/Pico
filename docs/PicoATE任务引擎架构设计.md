@@ -985,6 +985,13 @@ sequenceDiagram
     Note over SCH: 跳过该 UUT 所有后续非 alwaysRun 节点
 ```
 
+CleanupRegion 的失败传播遵守以下终态约束：
+
+- `bestEffort=true` 时，Cleanup 节点（包括 TestItem 子节点）在 Retry 用尽后仍记录真实 Fail/Error/Timeout，但调度依赖允许后续 Cleanup 继续执行。
+- best-effort 只改变“是否继续清理”，不把错误改写成 Passed；最终 Session 为 `CompletedWithError`。
+- 当已激活的 Cleanup 不再有 Ready 节点且仍存在非终态清理节点时，Scheduler 执行终态兜底：将无法继续的节点标记 Skipped，再由 ExecutionSession 发布 UUT 完成和 Session 终态事件。
+- 因此“Setup 连接失败 + Cleanup 再次连接失败”不能形成无后继可执行的 Running 悬挂状态。
+
 ### 8.5 暂停/恢复
 
 Pause/Resume 已实现为 Session 级协作式控制。`ExecutionControl` 可跨线程请求暂停，`ExecutionSession` 在每次 `pumpOnce` 前确认节点边界安全点并发布 Paused 事件；当前 Step 不会被强制中断。暂停保留 UUT、Barrier 和等待状态，节点资源在进入安全点前已释放。Stop/Abort 可唤醒暂停并继续 Cleanup。Breakpoint 与 Step Into/Over 尚未实现。

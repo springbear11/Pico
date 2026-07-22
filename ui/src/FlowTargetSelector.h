@@ -35,6 +35,7 @@ public:
     QString currentDeviceId() const;
     QString currentTargetId() const;
     bool selectTarget(const QString& targetId);
+    void showSelectionRequired();
 
 signals:
     void targetChanged(const QString& targetId);

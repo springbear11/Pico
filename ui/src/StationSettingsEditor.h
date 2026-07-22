@@ -51,6 +51,8 @@ private:
     QLineEdit* m_reportOutputEdit = nullptr;
     QPushButton* m_browseReportOutputButton = nullptr;
     QSpinBox* m_snLengthSpin = nullptr;
+    QLineEdit* m_snPatternEdit = nullptr;
+    QLineEdit* m_snAllowedRegexEdit = nullptr;
     QLineEdit* m_jigNoEdit = nullptr;
     QLineEdit* m_orderEdit = nullptr;
     QLineEdit* m_testerEdit = nullptr;

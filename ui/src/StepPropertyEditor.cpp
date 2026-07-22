@@ -4,6 +4,7 @@
 
 #include <QAbstractButton>
 #include <QCheckBox>
+#include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -25,6 +26,7 @@
 #include <QTextCursor>
 #include <QTimer>
 #include <QToolButton>
+#include <QVariantAnimation>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -340,14 +342,22 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
             this,
             [this] { if (!m_loading) updateLoopRows(); });
     const auto rebuildCallEditors = [this] {
+        rebuildFunctionChoices();
         rebuildDeviceChoices();
         rebuildPluginInputEditors();
         updateKindRows();
     };
     connect(m_moduleIdEdit, &QLineEdit::editingFinished,
             this, rebuildCallEditors);
-    connect(m_functionEdit, &QLineEdit::editingFinished,
-            this, rebuildCallEditors);
+    connect(m_functionEdit, &QComboBox::currentIndexChanged,
+            this, [this] {
+                if (m_loading) {
+                    return;
+                }
+                rebuildDeviceChoices();
+                rebuildPluginInputEditors();
+                updateKindRows();
+            });
     connect(m_deviceIdCombo, &QComboBox::currentIndexChanged,
             this, [this] {
                 if (m_loading) {
@@ -366,6 +376,8 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
                     inputs.insert(QStringLiteral("deviceId"), deviceId);
                 }
                 m_inputsEdit->setPlainText(objectText(inputs));
+                rebuildFunctionChoices(
+                    m_functionEdit->currentData().toString());
                 rebuildPluginInputEditors();
                 updateAdvancedJsonVisibility();
             });
@@ -516,11 +528,13 @@ void StepPropertyEditor::setEditable(bool editable)
     if (m_advancedJsonToggle) {
         m_advancedJsonToggle->setEnabled(hasObject);
     }
+    rebuildFunctionChoices();
 }
 
 void StepPropertyEditor::setPluginRegistry(QVector<PluginManifest> plugins)
 {
     m_plugins = std::move(plugins);
+    rebuildFunctionChoices();
     rebuildDeviceChoices();
     rebuildPluginInputEditors();
     updateAdvancedJsonVisibility();
@@ -757,8 +771,9 @@ void StepPropertyEditor::buildDataPage()
     m_moduleIdEdit = new QLineEdit(content);
     m_moduleIdEdit->setObjectName(QStringLiteral("propertyModuleIdEdit"));
     m_dataForm->addRow(tr("Module ID"), m_moduleIdEdit);
-    m_functionEdit = new QLineEdit(content);
+    m_functionEdit = new QComboBox(content);
     m_functionEdit->setObjectName(QStringLiteral("propertyFunctionEdit"));
+    m_functionEdit->setEditable(false);
     m_dataForm->addRow(tr("Function"), m_functionEdit);
     m_deviceIdCombo = new QComboBox(content);
     m_deviceIdCombo->setObjectName(QStringLiteral("propertyDeviceIdCombo"));
@@ -1116,8 +1131,8 @@ void StepPropertyEditor::loadCurrentObject()
     m_tagsEdit->setText(tagsText(m_sourceObject.value("tags").toArray()));
 
     m_moduleIdEdit->setText(m_sourceObject.value("moduleId").toString());
-    m_functionEdit->setText(m_sourceObject.value("function").toString());
     m_inputsEdit->setPlainText(objectText(m_sourceObject.value("inputs").toObject()));
+    rebuildFunctionChoices(m_sourceObject.value("function").toString());
     m_errorPolicyEdit->setPlainText(
         objectText(m_sourceObject.value("errorPolicy").toObject()));
     m_advancedJsonToggle->setChecked(false);
@@ -1449,6 +1464,68 @@ void StepPropertyEditor::updateAdvancedJsonVisibility()
     }
 }
 
+void StepPropertyEditor::rebuildFunctionChoices(const QString& selectedFunction)
+{
+    if (!m_functionEdit) {
+        return;
+    }
+
+    const auto selected = selectedFunction.isEmpty()
+        ? m_functionEdit->currentData().toString()
+        : selectedFunction;
+    QStringList moduleIds;
+    const auto moduleId = m_moduleIdEdit->text().trimmed();
+    if (moduleId == QStringLiteral("device")) {
+        QJsonObject inputs;
+        QString ignoredError;
+        parseObjectText(m_inputsEdit->toPlainText(), inputs, ignoredError);
+        const auto deviceId = inputs.value(QStringLiteral("deviceId")).toString();
+        const auto boundModule = m_pluginByDeviceId.value(deviceId);
+        if (!boundModule.isEmpty()) {
+            moduleIds.push_back(boundModule);
+        } else {
+            moduleIds = m_pluginByDeviceId.values();
+            moduleIds.removeDuplicates();
+        }
+    } else if (!moduleId.isEmpty()) {
+        moduleIds.push_back(moduleId);
+    }
+
+    QSignalBlocker blocker(m_functionEdit);
+    m_functionEdit->clear();
+    QSet<QString> addedFunctions;
+    for (const auto& plugin : m_plugins) {
+        if (!moduleIds.contains(plugin.moduleId)) {
+            continue;
+        }
+        for (const auto& function : plugin.functions) {
+            if (function.id.isEmpty() || addedFunctions.contains(function.id)) {
+                continue;
+            }
+            const auto label = function.name.isEmpty() ||
+                                       function.name == function.id
+                ? function.id
+                : QStringLiteral("%1 (%2)").arg(function.name, function.id);
+            m_functionEdit->addItem(label, function.id);
+            addedFunctions.insert(function.id);
+        }
+    }
+
+    int selectedIndex = m_functionEdit->findData(selected);
+    if (!selected.isEmpty() && selectedIndex < 0) {
+        m_functionEdit->addItem(
+            tr("%1 (Unavailable)").arg(selected), selected);
+        selectedIndex = m_functionEdit->count() - 1;
+    }
+    if (m_functionEdit->count() == 0) {
+        m_functionEdit->addItem(tr("No plugin functions available"), QVariant{});
+        m_functionEdit->setEnabled(false);
+        return;
+    }
+    m_functionEdit->setCurrentIndex(selectedIndex >= 0 ? selectedIndex : 0);
+    m_functionEdit->setEnabled(m_editable && !m_previewing);
+}
+
 void StepPropertyEditor::rebuildDeviceChoices()
 {
     if (!m_deviceIdCombo) {
@@ -1460,7 +1537,7 @@ void StepPropertyEditor::rebuildDeviceChoices()
     parseObjectText(m_inputsEdit->toPlainText(), inputs, ignoredError);
     const auto currentDeviceId = inputs.value(
         QStringLiteral("deviceId")).toString();
-    const auto functionId = m_functionEdit->text().trimmed();
+    const auto functionId = m_functionEdit->currentData().toString();
     const bool logicalDevice = m_moduleIdEdit->text().trimmed() ==
                                QStringLiteral("device");
 
@@ -1528,7 +1605,7 @@ const PluginFunctionDefinition* StepPropertyEditor::currentPluginFunction() cons
         }
         moduleId = m_pluginByDeviceId.value(deviceId);
     }
-    const auto functionId = m_functionEdit->text().trimmed();
+    const auto functionId = m_functionEdit->currentData().toString();
     for (const auto& plugin : m_plugins) {
         if (plugin.moduleId != moduleId) {
             continue;
@@ -1546,6 +1623,7 @@ void StepPropertyEditor::setDevicePluginBindings(
     QHash<QString, QString> pluginByDeviceId)
 {
     m_pluginByDeviceId = std::move(pluginByDeviceId);
+    rebuildFunctionChoices();
     rebuildDeviceChoices();
     rebuildPluginInputEditors();
     updateAdvancedJsonVisibility();
@@ -1598,7 +1676,7 @@ void StepPropertyEditor::rebuildPluginInputEditors()
     QString ignoredError;
     parseObjectText(m_inputsEdit->toPlainText(), currentInputs, ignoredError);
     const auto moduleId = m_moduleIdEdit->text().trimmed();
-    const auto functionId = m_functionEdit->text().trimmed();
+    const auto functionId = m_functionEdit->currentData().toString();
     const bool logicalDeviceConnection = moduleId == QStringLiteral("device") &&
         (functionId.compare(QStringLiteral("open"), Qt::CaseInsensitive) == 0 ||
          functionId.compare(QStringLiteral("connect"), Qt::CaseInsensitive) == 0 ||
@@ -1900,7 +1978,8 @@ QString StepPropertyEditor::selectedPromptCloseStep() const
 }
 
 bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
-                                                QString& errorMessage) const
+                                                QString& errorMessage,
+                                                QWidget** invalidWidget) const
 {
     const auto isExpression = [](const QString& value) {
         const auto trimmed = value.trimmed();
@@ -1924,6 +2003,7 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
             if (!value.isValid()) {
                 if (definition.required) {
                     errorMessage = tr("%1 is required").arg(definition.name);
+                    if (invalidWidget) *invalidWidget = item.widget;
                     return false;
                 }
                 inputs.remove(definition.key);
@@ -1941,6 +2021,7 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
         if (text.isEmpty()) {
             if (definition.required) {
                 errorMessage = tr("%1 is required").arg(definition.name);
+                if (invalidWidget) *invalidWidget = item.widget;
                 return false;
             }
             inputs.remove(definition.key);
@@ -1957,12 +2038,14 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
             if (!ok) {
                 errorMessage = tr("%1 must be an integer or expression")
                                    .arg(definition.name);
+                if (invalidWidget) *invalidWidget = item.widget;
                 return false;
             }
             if ((definition.minimum && number < *definition.minimum) ||
                 (definition.maximum && number > *definition.maximum)) {
                 errorMessage = tr("%1 is outside the allowed range")
                                    .arg(definition.name);
+                if (invalidWidget) *invalidWidget = item.widget;
                 return false;
             }
             inputs.insert(definition.key, static_cast<double>(number));
@@ -1976,12 +2059,14 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
             if (!ok || !std::isfinite(number)) {
                 errorMessage = tr("%1 must be a number or expression")
                                    .arg(definition.name);
+                if (invalidWidget) *invalidWidget = item.widget;
                 return false;
             }
             if ((definition.minimum && number < *definition.minimum) ||
                 (definition.maximum && number > *definition.maximum)) {
                 errorMessage = tr("%1 is outside the allowed range")
                                    .arg(definition.name);
+                if (invalidWidget) *invalidWidget = item.widget;
                 return false;
             }
             inputs.insert(definition.key, number);
@@ -2028,6 +2113,15 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
                 : (key == QStringLiteral("filterId") ? tr("Filter ID")
                                                        : tr("Filter Mask"));
             errorMessage = tr("%1 must be in range %2").arg(displayName, rangeText);
+            if (invalidWidget) {
+                const auto iterator = std::find_if(
+                    m_pluginInputEditors.cbegin(), m_pluginInputEditors.cend(),
+                    [&key](const auto& editor) {
+                        return editor.definition.key == key;
+                    });
+                *invalidWidget = iterator == m_pluginInputEditors.cend()
+                    ? nullptr : iterator->widget;
+            }
             return false;
         }
         return true;
@@ -2049,6 +2143,53 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
         return false;
     }
     return true;
+}
+
+void StepPropertyEditor::flashValidationError(QWidget* widget)
+{
+    if (!widget) {
+        return;
+    }
+    widget->setFocus(Qt::OtherFocusReason);
+    widget->setProperty("validationError", true);
+    auto* animation = new QVariantAnimation(widget);
+    animation->setStartValue(QColor(QStringLiteral("#fff1f0")));
+    animation->setEndValue(QColor(QStringLiteral("#ffffff")));
+    animation->setDuration(220);
+    animation->setLoopCount(3);
+    connect(animation, &QVariantAnimation::valueChanged, widget,
+            [widget](const QVariant& value) {
+                if (!widget->property("validationError").toBool()) {
+                    return;
+                }
+                widget->setStyleSheet(QStringLiteral(
+                    "border: 2px solid #d92d20; border-radius: 3px; "
+                    "background: %1;").arg(value.value<QColor>().name()));
+            });
+    connect(animation, &QVariantAnimation::finished, widget, [widget] {
+        if (widget->property("validationError").toBool()) {
+            widget->setStyleSheet(QStringLiteral(
+                "border: 2px solid #d92d20; border-radius: 3px; "
+                "background: #fff1f0;"));
+        }
+    });
+    if (!widget->property("validationClearConnected").toBool()) {
+        if (auto* edit = qobject_cast<QLineEdit*>(widget)) {
+            connect(edit, &QLineEdit::textChanged, widget, [widget] {
+                if (!widget->property("validationError").toBool()) {
+                    return;
+                }
+                widget->setProperty("validationError", false);
+                widget->setStyleSheet({});
+                for (auto* animation : widget->findChildren<QVariantAnimation*>()) {
+                    animation->stop();
+                    animation->deleteLater();
+                }
+            });
+            widget->setProperty("validationClearConnected", true);
+        }
+    }
+    animation->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 bool StepPropertyEditor::commitPendingChanges()
@@ -2082,7 +2223,10 @@ bool StepPropertyEditor::commitPendingChanges()
         }
         inputs.insert(QStringLiteral("deviceId"), deviceId);
     }
-    if (!m_isGroup && !mergePluginInputValues(inputs, error)) {
+    QWidget* invalidPluginInput = nullptr;
+    if (!m_isGroup &&
+        !mergePluginInputValues(inputs, error, &invalidPluginInput)) {
+        flashValidationError(invalidPluginInput);
         showError(error);
         return false;
     }
@@ -2122,7 +2266,8 @@ bool StepPropertyEditor::commitPendingChanges()
         const auto tags = tagsFromText(m_tagsEdit->text());
         if (tags.isEmpty()) updated.remove("tags"); else updated.insert("tags", tags);
         insertOrRemove(updated, "moduleId", m_moduleIdEdit->text());
-        insertOrRemove(updated, "function", m_functionEdit->text());
+        insertOrRemove(updated, "function",
+                       m_functionEdit->currentData().toString());
         const auto kind = m_kindCombo->currentData().toString();
         if (kind == "wait") {
             parameters.remove("ms");
@@ -2298,13 +2443,54 @@ bool StepPropertyEditor::commitPendingChanges()
         }
     }
 
-    if (!m_document->replaceItemObject(m_path, std::move(updated))) {
+    const auto clearSuccessfulDraft = [this] {
+        for (const auto& item : std::as_const(m_pluginInputEditors)) {
+            if (!item.widget ||
+                !item.widget->property("validationError").toBool()) {
+                continue;
+            }
+            item.widget->setProperty("validationError", false);
+            item.widget->setStyleSheet({});
+            for (auto* animation :
+                 item.widget->findChildren<QVariantAnimation*>()) {
+                animation->stop();
+                animation->deleteLater();
+            }
+        }
+        m_errorLabel->hide();
+        setDraftDirty(false);
+    };
+
+    auto targetPath = m_path;
+    auto currentObject = m_document->objectAt(targetPath);
+    if (currentObject.isEmpty() || currentObject != m_sourceObject) {
+        const auto relocatedPath = m_document->findItemPath(
+            m_sourceObject, targetPath);
+        if (!relocatedPath.isValid()) {
+            showError(tr("The selected sequence item no longer exists"));
+            return false;
+        }
+        targetPath = relocatedPath;
+        m_path = relocatedPath;
+        currentObject = m_document->objectAt(targetPath);
+    }
+
+    // Reverting an invalid draft can leave the editor marked dirty even though
+    // every field once again matches the document. That is a successful no-op,
+    // not a missing sequence item.
+    if (updated == currentObject) {
+        m_sourceObject = currentObject;
+        clearSuccessfulDraft();
+        return true;
+    }
+
+    if (!m_document->replaceItemObject(targetPath, updated)) {
         showError(tr("The selected sequence item no longer exists"));
         return false;
     }
-    m_errorLabel->hide();
-    setDraftDirty(false);
-    emit itemApplied(m_path);
+    m_sourceObject = updated;
+    clearSuccessfulDraft();
+    emit itemApplied(targetPath);
     return true;
 }
 

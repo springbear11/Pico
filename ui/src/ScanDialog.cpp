@@ -6,6 +6,8 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <utility>
+
 namespace PicoATE::Ui {
 
 ScanDialog::ScanDialog(QWidget* parent)
@@ -49,9 +51,12 @@ ScanDialog::ScanDialog(QWidget* parent)
             this, &ScanDialog::submitBarcode);
 }
 
-void ScanDialog::setExpectedLength(int length)
+void ScanDialog::setValidationRules(SnValidationRules rules)
 {
-    m_expectedLength = qBound(0, length, 256);
+    rules.exactLength = qBound(0, rules.exactLength, 256);
+    rules.wildcardPattern = rules.wildcardPattern.trimmed();
+    rules.allowedRegex = rules.allowedRegex.trimmed();
+    m_validationRules = std::move(rules);
 }
 
 void ScanDialog::showForNextScan()
@@ -78,17 +83,10 @@ void ScanDialog::reject()
 void ScanDialog::submitBarcode()
 {
     const auto barcode = m_barcodeEdit->text().trimmed();
-    if (barcode.isEmpty()) {
-        m_errorLabel->setText(tr("SN cannot be empty"));
-        m_errorLabel->show();
-        m_barcodeEdit->setFocus(Qt::OtherFocusReason);
-        return;
-    }
-    if (m_expectedLength > 0 && barcode.size() != m_expectedLength) {
-        m_errorLabel->setText(
-            tr("SN must contain exactly %1 characters (current: %2)")
-                .arg(m_expectedLength)
-                .arg(barcode.size()));
+    const auto validation = StartupSupport::validateSerialNumber(
+        barcode, m_validationRules);
+    if (!validation.ok()) {
+        m_errorLabel->setText(validation.errorMessage);
         m_errorLabel->show();
         m_barcodeEdit->selectAll();
         m_barcodeEdit->setFocus(Qt::OtherFocusReason);

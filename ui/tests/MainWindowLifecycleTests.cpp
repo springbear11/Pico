@@ -94,6 +94,7 @@ private slots:
     void stationDeviceApplyPreservesDllPathWhenModelIsUnchanged();
     void stationPropertyEditorUsesTypedIdsAndFilteredDrivers();
     void stationPropertyEditorKeepsCanChannelOptionsIndependent();
+    void stationNewCanKeepsTableEnabledStateWhenDraftIsSaved();
     void stationDeviceSlotsMoveReferencesBeforeOrderedDeletion();
     void compileFailureFocusesDiagnosticAndExplainsDisabledRun();
     void stationCtrlSaveCommitsDraftAndClearsWindowMarker();
@@ -110,6 +111,7 @@ private slots:
     void productionWindowPreloadsFlowAndRunsWithoutScanner();
     void productionWindowShowsSkippedStepsAndCleanupAfterFailure();
     void pluginPropertyEditorValidatesRequiredAndRangeAndSavesInputs();
+    void pluginPropertyEditorAcceptsRevertedInvalidDraftAsNoOp();
     void pluginPropertyEditorInsertsPreviousStepOutputExpression();
     void logicalDeviceOpenKeepsStationParametersOutOfStepInputs();
     void pluginPropertyEditorPrefersTypedControlsAndPreservesAdvancedJson();
@@ -117,6 +119,7 @@ private slots:
     void ctrlSaveCommitsCurrentStepDraftWithoutPrompt();
     void switchingStepsKeepsDraftWithoutPrompt();
     void leavingFlowPromptsOnceAndCanKeepDraft();
+    void stepEditorRelocatesDraftAfterSequenceStructureChanges();
     void limitPropertyEditorSwitchesComparisonFieldsAndRemovesStaleValues();
     void wrapsSelectedStepsInTestItemFromToolbar();
     void copiesAndPastesSelectedItemsFromToolbar();
@@ -590,6 +593,8 @@ void MainWindowLifecycleTests::pluginPropertyEditorValidatesRequiredAndRangeAndS
 
     auto* parameterGroup = editor.findChild<QGroupBox*>(
         QStringLiteral("pluginInputsGroup"));
+    auto* function = editor.findChild<QComboBox*>(
+        QStringLiteral("propertyFunctionEdit"));
     auto* id = editor.findChild<QLineEdit*>(QStringLiteral("pluginInput_id"));
     auto* filterId = editor.findChild<QLineEdit*>(
         QStringLiteral("pluginInput_filterId"));
@@ -602,6 +607,9 @@ void MainWindowLifecycleTests::pluginPropertyEditorValidatesRequiredAndRangeAndS
         QStringLiteral("pluginInput_timeoutMs"));
     auto* error = editor.findChild<QLabel*>(QStringLiteral("propertyErrorLabel"));
     QVERIFY(parameterGroup && !parameterGroup->isHidden());
+    QVERIFY(function);
+    QVERIFY(!function->isEditable());
+    QCOMPARE(function->currentData().toString(), QStringLiteral("write"));
     QVERIFY(id && filterId && filterMask);
     QVERIFY(data);
     QVERIFY(extended);
@@ -639,6 +647,8 @@ void MainWindowLifecycleTests::pluginPropertyEditorValidatesRequiredAndRangeAndS
     extended->setChecked(false);
     QVERIFY(!editor.commitPendingChanges());
     QVERIFY(error->text().contains(QStringLiteral("0x000~0x7FF")));
+    QVERIFY(id->property("validationError").toBool());
+    QTRY_VERIFY(id->styleSheet().contains(QStringLiteral("#d92d20")));
     QCOMPARE(id->placeholderText(), QStringLiteral("0x000-0x7FF"));
 
     extended->setChecked(true);
@@ -649,6 +659,8 @@ void MainWindowLifecycleTests::pluginPropertyEditorValidatesRequiredAndRangeAndS
     QCOMPARE(filterMask->placeholderText(),
              QStringLiteral("0x00000000=Any; 0x1FFFFFFF=Exact"));
     QVERIFY(editor.commitPendingChanges());
+    QVERIFY(!id->property("validationError").toBool());
+    QVERIFY(id->styleSheet().isEmpty());
     QVERIFY(!error->isVisible());
     const auto inputs = document.objectAt(path).value(QStringLiteral("inputs")).toObject();
     QCOMPARE(inputs.value(QStringLiteral("data")).toString(),
@@ -656,6 +668,89 @@ void MainWindowLifecycleTests::pluginPropertyEditorValidatesRequiredAndRangeAndS
     QCOMPARE(inputs.value(QStringLiteral("id")).toString(), QStringLiteral("0x800"));
     QVERIFY(inputs.value(QStringLiteral("extended")).toBool());
     QCOMPARE(inputs.value(QStringLiteral("timeoutMs")).toInt(), 1500);
+}
+
+void MainWindowLifecycleTests::pluginPropertyEditorAcceptsRevertedInvalidDraftAsNoOp()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("reverted_draft.json"));
+    QFile sequenceFile(sequencePath);
+    QVERIFY(sequenceFile.open(QIODevice::WriteOnly));
+    sequenceFile.write(R"({
+      "id": "reverted-draft-test",
+      "name": "Reverted Draft Test",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [{
+          "id": "001",
+          "name": "Send CAN",
+          "kind": "action",
+          "moduleId": "plugin.can.gcan",
+          "function": "write",
+          "inputs": {"id": "0x123"}
+        }]
+      }]
+    })");
+    sequenceFile.close();
+
+    const auto plugin = PluginCatalog::parseDescription(
+        R"json({
+          "name": "GCAN USB-CAN",
+          "category": "CAN",
+          "functions": [{
+            "id": "write",
+            "name": "Send CAN Frame",
+            "inputs": [{
+              "key": "id", "name": "CAN ID", "type": "string",
+              "required": true, "default": "0x123"
+            }],
+            "outputs": []
+          }]
+        })json",
+        directory.filePath(QStringLiteral("PicoATE.CAN.GCAN.dll")),
+        1);
+    QVERIFY(plugin.ok());
+
+    SequenceDocument document;
+    QVERIFY(document.load(sequencePath));
+    StepPropertyEditor editor(&document);
+    editor.setPluginRegistry({plugin.manifest});
+    SequenceItemPath path;
+    path.groupIndex = 0;
+    path.stepIndices = {0};
+    editor.setCurrentItem(path);
+    editor.show();
+    QTest::qWait(20);
+
+    auto* id = editor.findChild<QLineEdit*>(QStringLiteral("pluginInput_id"));
+    auto* error = editor.findChild<QLabel*>(QStringLiteral("propertyErrorLabel"));
+    QVERIFY(id);
+    QVERIFY(error);
+
+    id->setText(QStringLiteral("0x124"));
+    QVERIFY(editor.commitPendingChanges());
+    const auto committedObject = document.objectAt(path);
+    const bool initiallyModified = document.isModified();
+    const int initialUndoCount = document.undoStack()->count();
+
+    id->setText(QStringLiteral("0x999"));
+    QVERIFY(!editor.commitPendingChanges());
+    QVERIFY(error->isVisible());
+    QVERIFY(id->property("validationError").toBool());
+
+    id->setText(QStringLiteral("0x124"));
+    QVERIFY(editor.hasPendingChanges());
+    QVERIFY(editor.commitPendingChanges());
+    QVERIFY(!editor.hasPendingChanges());
+    QVERIFY(!error->isVisible());
+    QVERIFY(!id->property("validationError").toBool());
+    QCOMPARE(document.isModified(), initiallyModified);
+    QCOMPARE(document.undoStack()->count(), initialUndoCount);
+    QCOMPARE(document.objectAt(path), committedObject);
+    QCOMPARE(document.objectAt(path).value("inputs").toObject().value("id").toString(),
+             QStringLiteral("0x124"));
 }
 
 void MainWindowLifecycleTests::pluginPropertyEditorInsertsPreviousStepOutputExpression()
@@ -1096,6 +1191,46 @@ void MainWindowLifecycleTests::leavingFlowPromptsOnceAndCanKeepDraft()
     QVERIFY(!editor->hasPendingChanges());
     QVERIFY(document->isModified());
     document->undoStack()->setClean();
+}
+
+void MainWindowLifecycleTests::stepEditorRelocatesDraftAfterSequenceStructureChanges()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("relocate_draft.json"));
+    QFile sequenceFile(sequencePath);
+    QVERIFY(sequenceFile.open(QIODevice::WriteOnly));
+    sequenceFile.write(R"json({
+      "id":"relocate","name":"Relocate Draft","groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"001","name":"First","kind":"noop"},
+          {"id":"002","name":"Second","kind":"noop"}
+        ]
+      }]
+    })json");
+    sequenceFile.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(sequencePath));
+    StepPropertyEditor editor(&document);
+    const SequenceItemPath originalPath{0, {1}};
+    editor.setCurrentItem(originalPath);
+    auto* name = editor.findChild<QLineEdit*>(QStringLiteral("propertyNameEdit"));
+    auto* error = editor.findChild<QLabel*>(QStringLiteral("propertyErrorLabel"));
+    QVERIFY(name && error);
+    name->setText(QStringLiteral("Second draft after insert"));
+    QVERIFY(editor.hasPendingChanges());
+
+    QVERIFY(document.insertStep(SequenceItemPath{0, {}}, 0,
+                                QJsonObject{{QStringLiteral("id"), QStringLiteral("000")},
+                                            {QStringLiteral("name"), QStringLiteral("Inserted")},
+                                            {QStringLiteral("kind"), QStringLiteral("noop")}}));
+    QVERIFY(editor.commitPendingChanges());
+    QCOMPARE(editor.currentPath(), (SequenceItemPath{0, {2}}));
+    QCOMPARE(document.objectAt(SequenceItemPath{0, {2}})
+                 .value(QStringLiteral("name")).toString(),
+             QStringLiteral("Second draft after insert"));
+    QVERIFY(!error->isVisible());
 }
 
 void MainWindowLifecycleTests::limitPropertyEditorSwitchesComparisonFieldsAndRemovesStaleValues()
@@ -1734,6 +1869,65 @@ void MainWindowLifecycleTests::stationPropertyEditorKeepsCanChannelOptionsIndepe
                  .value(QStringLiteral("channelIndex")).toInt(), 1);
 }
 
+void MainWindowLifecycleTests::stationNewCanKeepsTableEnabledStateWhenDraftIsSaved()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile stationFile(stationPath);
+    QVERIFY(stationFile.open(QIODevice::WriteOnly));
+    stationFile.write(R"({
+      "stationId":"new-can",
+      "devices":[{
+        "deviceId":"PLUGIN1",
+        "deviceType":"PLUGIN",
+        "driverId":"",
+        "enabled":false,
+        "options":{}
+      }]
+    })");
+    stationFile.close();
+
+    PluginManifest plugin;
+    plugin.moduleId = QStringLiteral("plugin.can.test");
+    plugin.name = QStringLiteral("Two-channel CAN");
+    plugin.category = QStringLiteral("CAN");
+    PluginFunctionDefinition open;
+    open.id = QStringLiteral("open");
+    PluginParameterDefinition channel;
+    channel.key = QStringLiteral("channelIndex");
+    channel.name = QStringLiteral("Channel");
+    channel.type = PluginParameterType::Integer;
+    channel.maximum = 1.0;
+    open.inputs = {channel};
+    plugin.functions.push_back(open);
+
+    StationDocument document;
+    QVERIFY(document.load(stationPath));
+    StationPropertyEditor editor(&document);
+    editor.setPluginRegistry({plugin});
+    editor.setCurrentDevice(0);
+    editor.show();
+    QTest::qWait(20);
+
+    auto* type = editor.findChild<QComboBox*>(QStringLiteral("deviceTypeCombo"));
+    QVERIFY(type);
+    type->setCurrentIndex(type->findData(QStringLiteral("CAN")));
+    QVERIFY(editor.hasPendingChanges());
+
+    // This is the center table's Enable checkbox changing the document while
+    // the right-side CAN conversion is still an uncommitted draft.
+    QVERIFY(document.setDeviceValue(0, QStringLiteral("enabled"), true));
+    QVERIFY(editor.commitPendingChanges());
+    QCOMPARE(document.deviceCount(), 2);
+    QCOMPARE(document.deviceAt(0).value(QStringLiteral("deviceId")).toString(),
+             QStringLiteral("CAN1.CH1"));
+    QCOMPARE(document.deviceAt(1).value(QStringLiteral("deviceId")).toString(),
+             QStringLiteral("CAN1.CH2"));
+    QVERIFY(document.deviceAt(0).value(QStringLiteral("enabled")).toBool());
+    QVERIFY(document.deviceAt(1).value(QStringLiteral("enabled")).toBool());
+}
+
 void MainWindowLifecycleTests::stationDeviceSlotsMoveReferencesBeforeOrderedDeletion()
 {
     QTemporaryDir directory;
@@ -2211,11 +2405,16 @@ void MainWindowLifecycleTests::runActionSyncsTreeBreakpointsAndStopsAtBreakpoint
     auto* viewModel = window.findChild<ExecutionViewModel*>();
     auto* runAction = window.findChild<QAction*>(QStringLiteral("runAction"));
     auto* resultView = window.findChild<QTreeView*>(QStringLiteral("resultView"));
+    auto* workspaceTabs = window.findChild<QTabWidget*>(
+        QStringLiteral("workspaceTabs"));
     QVERIFY(treeView);
     QVERIFY(treeModel);
     QVERIFY(viewModel);
     QVERIFY(runAction);
     QVERIFY(resultView);
+    QVERIFY(workspaceTabs);
+    workspaceTabs->setCurrentIndex(1);
+    QCOMPARE(workspaceTabs->currentIndex(), 1);
 
     const auto setupGroup = treeModel->index(0, SequenceTreeModel::NameColumn);
     const auto firstStep = treeModel->index(0, SequenceTreeModel::NameColumn, setupGroup);
@@ -2242,6 +2441,7 @@ void MainWindowLifecycleTests::runActionSyncsTreeBreakpointsAndStopsAtBreakpoint
                           QStringLiteral("MAIN"),
                           QStringLiteral("CLEANUP")}));
     runAction->trigger();
+    QCOMPARE(workspaceTabs->currentIndex(), 0);
     QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Paused, 3000);
     QCOMPARE(resultView->model()->rowCount(), 3);
     for (int row = 0; row < resultView->model()->rowCount(); ++row) {
@@ -2586,6 +2786,10 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
         QStringLiteral("stationScanDialogSwitch"));
     auto* snLength = window.findChild<QSpinBox*>(
         QStringLiteral("stationSnLengthSpin"));
+    auto* snPattern = window.findChild<QLineEdit*>(
+        QStringLiteral("stationSnPatternEdit"));
+    auto* snAllowedRegex = window.findChild<QLineEdit*>(
+        QStringLiteral("stationSnAllowedRegexEdit"));
     auto* jigNo = window.findChild<QLineEdit*>(
         QStringLiteral("stationJigNoEdit"));
     auto* order = window.findChild<QLineEdit*>(
@@ -2601,6 +2805,8 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QVERIFY(stopOnFailure);
     QVERIFY(scanEnabled);
     QVERIFY(snLength);
+    QVERIFY(snPattern);
+    QVERIFY(snAllowedRegex);
     QVERIFY(jigNo);
     QVERIFY(order);
     QVERIFY(tester);
@@ -2648,6 +2854,8 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     stopOnFailure->setChecked(false);
     scanEnabled->setChecked(false);
     snLength->setValue(10);
+    snPattern->setText(QStringLiteral("BTSN*"));
+    snAllowedRegex->setText(QStringLiteral("^[A-Z0-9]+$"));
     jigNo->setText(QStringLiteral("JIG-02"));
     order->setText(QStringLiteral("ORDER-02"));
     tester->setText(QStringLiteral("Tester B"));
@@ -2658,6 +2866,11 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QCOMPARE(document->rootObject().value(QStringLiteral("scanDialogEnabled")).toBool(),
              false);
     QCOMPARE(document->rootObject().value(QStringLiteral("snLength")).toInt(), 10);
+    QCOMPARE(document->rootObject().value(QStringLiteral("snPattern")).toString(),
+             QStringLiteral("BTSN*"));
+    QCOMPARE(document->rootObject().value(
+                 QStringLiteral("snAllowedRegex")).toString(),
+             QStringLiteral("^[A-Z0-9]+$"));
     const auto metadata = document->rootObject()
                               .value(QStringLiteral("metadata")).toObject();
     QCOMPARE(metadata.value(QStringLiteral("jigNo")).toString(),
@@ -2673,6 +2886,9 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QVERIFY2(!StartupSupport::stationScanDialogEnabled(stationPath),
              qPrintable(errorMessage));
     QCOMPARE(StartupSupport::stationSnLength(stationPath), 10);
+    const auto rules = StartupSupport::stationSnValidationRules(stationPath);
+    QCOMPARE(rules.wildcardPattern, QStringLiteral("BTSN*"));
+    QCOMPARE(rules.allowedRegex, QStringLiteral("^[A-Z0-9]+$"));
     QVERIFY(window.close());
 }
 
@@ -2702,12 +2918,20 @@ void MainWindowLifecycleTests::scanDialogAcceptsRepeatedBarcodeAndHasNoWindowBut
     QVERIFY(QMetaObject::invokeMethod(&dialog, "submitBarcode"));
     QCOMPARE(barcodeSpy.count(), 0);
     QVERIFY(!error->isHidden());
-    dialog.setExpectedLength(6);
+    SnValidationRules rules;
+    rules.exactLength = 6;
+    rules.wildcardPattern = QStringLiteral("SN-*");
+    rules.allowedRegex = QStringLiteral("^[A-Z0-9-]+$");
+    dialog.setValidationRules(rules);
     barcode->setText(QStringLiteral("12345"));
     QVERIFY(QMetaObject::invokeMethod(&dialog, "submitBarcode"));
     QCOMPARE(barcodeSpy.count(), 0);
     QVERIFY(!error->isHidden());
     barcode->setText(QStringLiteral("1234567"));
+    QVERIFY(QMetaObject::invokeMethod(&dialog, "submitBarcode"));
+    QCOMPARE(barcodeSpy.count(), 0);
+    QVERIFY(!error->isHidden());
+    barcode->setText(QStringLiteral("AB-001"));
     QVERIFY(QMetaObject::invokeMethod(&dialog, "submitBarcode"));
     QCOMPARE(barcodeSpy.count(), 0);
     QVERIFY(!error->isHidden());

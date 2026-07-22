@@ -264,6 +264,7 @@ private:
     QStringList m_recentStations;
     QVector<QJsonObject> m_sequenceClipboard;
     SequenceItemPath m_selectedSequencePath;
+    QString m_selectedSequenceNodePath;
     QVector<SequenceItemPath> m_expandedSequencePaths;
     int m_sequenceTreeScrollValue = 0;
     int m_selectedStationDeviceRow = -1;

@@ -759,7 +759,32 @@ void ExecutionViewModelTests::coreServiceRunsExplicitScannedUut()
     CompileRequest compileRequest;
     compileRequest.requestId = 81;
     compileRequest.sequencePath = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
-        + QStringLiteral("/examples/simple_sequence.json");
+        + QStringLiteral("/examples/sn_variable_sequence.json");
+    compileRequest.sequenceJson = R"json({
+      "id":"sn-variable-test","name":"SN Variable Test","groups":[
+        {"id":"setup","name":"Setup","kind":"setup","steps":[]},
+        {"id":"main","name":"Main","kind":"main","steps":[
+          {"id":"capture","name":"Capture SN","kind":"action",
+           "moduleId":"mock.action",
+           "inputs":{"sn":"${sn}","serialNumber":"${serialNumber}",
+                     "uutSn":"${uut.sn}","uutSerialNumber":"${uut.serialNumber}"},
+           "parameters":{"echoInputs":true}},
+          {"id":"check-sn","name":"Check SN","kind":"limit",
+           "inputs":{"actual":"${step:capture.outputs.sn}"},
+           "parameters":{"comparison":"equal","expected":"SN-20260710-001"}},
+          {"id":"check-serial","name":"Check Serial Number","kind":"limit",
+           "inputs":{"actual":"${step:capture.outputs.serialNumber}"},
+           "parameters":{"comparison":"equal","expected":"SN-20260710-001"}},
+          {"id":"check-uut-sn","name":"Check UUT SN","kind":"limit",
+           "inputs":{"actual":"${step:capture.outputs.uutSn}"},
+           "parameters":{"comparison":"equal","expected":"SN-20260710-001"}},
+          {"id":"check-uut-serial","name":"Check UUT Serial Number","kind":"limit",
+           "inputs":{"actual":"${step:capture.outputs.uutSerialNumber}"},
+           "parameters":{"comparison":"equal","expected":"SN-20260710-001"}}
+        ]},
+        {"id":"cleanup","name":"Cleanup","kind":"cleanup","steps":[]}
+      ]
+    })json";
     const auto compileResult = service.compile(compileRequest);
     QVERIFY(compileResult.success);
 
@@ -772,6 +797,10 @@ void ExecutionViewModelTests::coreServiceRunsExplicitScannedUut()
     const auto runResult = service.run(
         request, std::make_shared<PicoATE::Core::StopToken>());
     QVERIFY(runResult.executed);
+    QVERIFY2(!runResult.report.hasError,
+             qPrintable(runResult.diagnostics.isEmpty()
+                            ? QStringLiteral("SN variables did not resolve")
+                            : runResult.diagnostics.first().message));
     QCOMPARE(runResult.report.uuts.size(), 1);
     QCOMPARE(runResult.report.uuts.first().uutId,
              QStringLiteral("SN-20260710-001"));
@@ -815,6 +844,8 @@ void ExecutionViewModelTests::startupSupportDiscoversSequencesAndValidatesDailyP
         "name": "Station Test",
         "scanDialogEnabled": false,
         "snLength": 10,
+        "snPattern": "BTSN*",
+        "snAllowedRegex": "^[A-Z0-9]+$",
         "devices": []
     })");
     station.close();
@@ -824,6 +855,26 @@ void ExecutionViewModelTests::startupSupportDiscoversSequencesAndValidatesDailyP
     QCOMPARE(StartupSupport::stationPathForSequence(sequencePath), stationPath);
     QVERIFY(!StartupSupport::stationScanDialogEnabled(stationPath));
     QCOMPARE(StartupSupport::stationSnLength(stationPath), 10);
+    const auto snRules = StartupSupport::stationSnValidationRules(stationPath);
+    QCOMPARE(snRules.exactLength, 10);
+    QCOMPARE(snRules.wildcardPattern, QStringLiteral("BTSN*"));
+    QCOMPARE(snRules.allowedRegex, QStringLiteral("^[A-Z0-9]+$"));
+    QVERIFY(StartupSupport::validateSerialNumber(
+        QStringLiteral("BTSN123456"), snRules).ok());
+    QVERIFY(!StartupSupport::validateSerialNumber(
+        QStringLiteral("BTSN12345"), snRules).ok());
+    QVERIFY(!StartupSupport::validateSerialNumber(
+        QStringLiteral("XXBTSN1234"), snRules).ok());
+    QVERIFY(!StartupSupport::validateSerialNumber(
+        QStringLiteral("BTSN12345-"), snRules).ok());
+
+    auto middleRules = snRules;
+    middleRules.wildcardPattern = QStringLiteral("*BTSN*");
+    QVERIFY(StartupSupport::validateSerialNumber(
+        QStringLiteral("12BTSN3456"), middleRules).ok());
+    middleRules.wildcardPattern = QStringLiteral("*BTSN");
+    QVERIFY(StartupSupport::validateSerialNumber(
+        QStringLiteral("123456BTSN"), middleRules).ok());
 
     const auto testValidation = StartupSupport::validateSelection(
         UiMode::Test, sequencePath, stationPath);
@@ -1090,13 +1141,29 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     QVERIFY(manifest.ok());
     const auto cxManifest = canPluginFixture(QStringLiteral("CX"));
     QVERIFY(cxManifest.ok());
+    PluginManifest dmmManifest;
+    dmmManifest.moduleId = QStringLiteral("plugin.dmm.test");
+    dmmManifest.name = QStringLiteral("DMM Test");
+    dmmManifest.category = QStringLiteral("DMM");
+    PluginFunctionDefinition readVoltage;
+    readVoltage.id = QStringLiteral("readVoltage");
+    readVoltage.name = QStringLiteral("Read Voltage");
+    dmmManifest.functions.push_back(readVoltage);
 
     PluginFunctionModel functionModel;
     QAbstractItemModelTester functionTester(
         &functionModel, QAbstractItemModelTester::FailureReportingMode::QtTest);
-    functionModel.setPlugins({manifest.manifest, cxManifest.manifest});
+    functionModel.setPlugins({manifest.manifest, cxManifest.manifest, dmmManifest});
     functionModel.setDeviceBindings({
-        {QStringLiteral("plugin.can.gcan"), QStringList{QStringLiteral("CAN1")}}});
+        {QStringLiteral("plugin.can.gcan"), QStringList{QStringLiteral("CAN1")}},
+        {QStringLiteral("plugin.dmm.test"), QStringList{QStringLiteral("DMM1")}}});
+    const auto allPluginSection = functionModel.index(1, 0);
+    QCOMPARE(functionModel.rowCount(allPluginSection), 2);
+    const auto allCanCategory = functionModel.index(0, 0, allPluginSection);
+    const auto unboundOpen = functionModel.index(0, 0, allCanCategory);
+    QVERIFY(functionModel.requiresDeviceSelection(unboundOpen));
+    QVERIFY(!functionModel.mimeData({unboundOpen}));
+
     functionModel.setSelectedDeviceId(QStringLiteral("CAN1"));
     QCOMPARE(functionModel.rowCount(), 2);
     const auto basicSection = functionModel.index(0, 0);
@@ -1149,10 +1216,12 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
 
     const auto pluginSection = functionModel.index(1, 0);
     QCOMPARE(pluginSection.data().toString(), QStringLiteral("Plugin Functions"));
+    QCOMPARE(functionModel.rowCount(pluginSection), 1);
     const auto category = functionModel.index(0, 0, pluginSection);
     QCOMPARE(category.data().toString(), QStringLiteral("CAN"));
     QCOMPARE(functionModel.rowCount(category), 4);
     const auto openFunction = functionModel.index(0, 0, category);
+    QVERIFY(!functionModel.requiresDeviceSelection(openFunction));
     const auto openStep = functionModel.stepTemplate(openFunction);
     QCOMPARE(openStep.value(QStringLiteral("moduleId")).toString(),
              QStringLiteral("device"));

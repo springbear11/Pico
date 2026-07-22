@@ -229,6 +229,27 @@ public:
     }
 };
 
+class PluginFunctionTreeView final : public QTreeView
+{
+public:
+    using QTreeView::QTreeView;
+
+    std::function<void()> deviceSelectionRequired;
+
+protected:
+    void startDrag(Qt::DropActions supportedActions) override
+    {
+        const auto* functions = qobject_cast<PluginFunctionModel*>(model());
+        if (functions && functions->requiresDeviceSelection(currentIndex())) {
+            if (deviceSelectionRequired) {
+                deviceSelectionRequired();
+            }
+            return;
+        }
+        QTreeView::startDrag(supportedActions);
+    }
+};
+
 QString normalizedRecentPath(const QString& filePath)
 {
     return QFileInfo(filePath).absoluteFilePath();
@@ -517,7 +538,10 @@ MainWindow::MainWindow(QWidget* parent)
                 if (m_handlingSequenceSelection) {
                     return;
                 }
-                const auto path = m_sequenceTreeModel->pathForIndex(current);
+                auto path = m_sequenceTreeModel->pathForIndex(current);
+                const auto requestedNodePath =
+                    m_sequenceTreeModel->nodePathForIndex(current);
+                auto selectedIndex = current;
                 const auto previousPath = m_stepPropertyEditor->currentPath();
                 if (path != previousPath &&
                     m_stepPropertyEditor->hasPendingChanges()) {
@@ -531,14 +555,24 @@ MainWindow::MainWindow(QWidget* parent)
                         m_handlingSequenceSelection = false;
                         return;
                     }
-                    const auto refreshed = m_sequenceTreeModel->indexForPath(path);
+                    auto refreshed = requestedNodePath.isEmpty()
+                        ? QModelIndex{}
+                        : m_sequenceTreeModel->indexForNodePath(
+                              requestedNodePath);
+                    if (!refreshed.isValid()) {
+                        refreshed = m_sequenceTreeModel->indexForPath(path);
+                    }
                     if (refreshed.isValid()) {
                         m_sequenceTreeView->setCurrentIndex(refreshed);
                     }
+                    selectedIndex = refreshed;
                     m_handlingSequenceSelection = false;
                 }
+                path = m_sequenceTreeModel->pathForIndex(selectedIndex);
                 if (path.isValid()) {
                     m_selectedSequencePath = path;
+                    m_selectedSequenceNodePath =
+                        m_sequenceTreeModel->nodePathForIndex(selectedIndex);
                 }
                 m_stepPropertyEditor->setCurrentItem(path);
                 updateCommandState();
@@ -579,6 +613,8 @@ MainWindow::MainWindow(QWidget* parent)
                 m_selectedSequencePath = path;
                 const auto index = m_sequenceTreeModel->indexForPath(path);
                 if (index.isValid()) {
+                    m_selectedSequenceNodePath =
+                        m_sequenceTreeModel->nodePathForIndex(index);
                     m_sequenceTreeView->setCurrentIndex(index);
                     m_sequenceTreeView->scrollTo(
                         index, QAbstractItemView::PositionAtCenter);
@@ -764,6 +800,7 @@ bool MainWindow::openSequenceFile(const QString& filePath)
     m_sequenceTreeModel->clearBreakpoints();
     m_sequenceTreeModel->setCurrentDebugNodePath({});
     m_selectedSequencePath = {};
+    m_selectedSequenceNodePath.clear();
     applyStationLogicalIdMigrations();
     synchronizeSequenceSnapshot();
     updateSequenceEditor();
@@ -778,7 +815,11 @@ bool MainWindow::openSequenceFile(const QString& filePath)
 void MainWindow::showRunPage()
 {
     if (m_workspaceTabs && m_workspaceTabs->count() > 0) {
+        m_handlingWorkspaceTabChange = true;
         m_workspaceTabs->setCurrentIndex(0);
+        m_handlingWorkspaceTabChange = false;
+        m_previousWorkspaceTabIndex = 0;
+        updateCommandState();
     }
 }
 
@@ -830,6 +871,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
                 return true;
             }
             m_selectedSequencePath = {};
+            m_selectedSequenceNodePath.clear();
             m_sequenceTreeView->selectionModel()->clearSelection();
             m_sequenceTreeView->setCurrentIndex({});
             m_stepPropertyEditor->setCurrentItem({});
@@ -1490,7 +1532,9 @@ void MainWindow::runScannedUut(const QString& serialNumber)
     updateAdminProgress();
     QVariantMap variables;
     variables.insert(QStringLiteral("sn"), sn);
+    variables.insert(QStringLiteral("serialNumber"), sn);
     m_viewModel->runUut(sn, variables);
+    showRunPage();
 }
 
 void MainWindow::showScanDialog()
@@ -1505,8 +1549,14 @@ void MainWindow::showScanDialog()
     const auto station = m_stationDocument
         ? m_stationDocument->rootObject()
         : QJsonObject{};
-    m_scanDialog->setExpectedLength(
-        qBound(0, station.value(QStringLiteral("snLength")).toInt(0), 256));
+    SnValidationRules rules;
+    rules.exactLength = qBound(
+        0, station.value(QStringLiteral("snLength")).toInt(0), 256);
+    rules.wildcardPattern = station.value(QStringLiteral("snPattern"))
+                                .toString().trimmed();
+    rules.allowedRegex = station.value(QStringLiteral("snAllowedRegex"))
+                             .toString().trimmed();
+    m_scanDialog->setValidationRules(std::move(rules));
     m_scanDialog->showForNextScan();
 }
 
@@ -2050,6 +2100,8 @@ void MainWindow::captureSequenceTreeViewState()
 
     m_sequenceTreeScrollValue =
         m_sequenceTreeView->verticalScrollBar()->value();
+    m_selectedSequenceNodePath = m_sequenceTreeModel->nodePathForIndex(
+        m_sequenceTreeView->currentIndex());
     const std::function<void(const QModelIndex&)> collectExpanded =
         [this, &collectExpanded](const QModelIndex& parent) {
             const int rows = m_sequenceTreeModel->rowCount(parent);
@@ -2101,12 +2153,20 @@ void MainWindow::updateSequenceEditor()
             m_expandSequenceTreeOnNextUpdate = false;
             m_sequenceTreeStatePending = false;
         }
-        auto selected = m_sequenceTreeModel->indexForPath(m_selectedSequencePath);
+        auto selected = m_selectedSequenceNodePath.isEmpty()
+            ? QModelIndex{}
+            : m_sequenceTreeModel->indexForNodePath(m_selectedSequenceNodePath);
+        if (!selected.isValid()) {
+            selected = m_sequenceTreeModel->indexForPath(m_selectedSequencePath);
+        }
         if (!selected.isValid() && m_sequenceTreeModel->rowCount() > 0) {
             selected = m_sequenceTreeModel->index(0, 0);
             m_selectedSequencePath = m_sequenceTreeModel->pathForIndex(selected);
         }
         if (selected.isValid()) {
+            m_selectedSequencePath = m_sequenceTreeModel->pathForIndex(selected);
+            m_selectedSequenceNodePath =
+                m_sequenceTreeModel->nodePathForIndex(selected);
             m_sequenceTreeView->setCurrentIndex(selected);
             m_stepPropertyEditor->setCurrentItem(
                 m_sequenceTreeModel->pathForIndex(selected));
@@ -2431,7 +2491,11 @@ void MainWindow::focusStationDiagnosticValue(const UiDiagnostic& diagnostic)
                 m_stationDeviceModel->logicalBaseId(deviceIndex));
         }
     }
+    m_handlingWorkspaceTabChange = true;
     m_workspaceTabs->setCurrentWidget(m_stationEditorPage);
+    m_handlingWorkspaceTabChange = false;
+    m_previousWorkspaceTabIndex =
+        m_workspaceTabs->indexOf(m_stationEditorPage);
     const bool focused = diagnostic.path.startsWith(QStringLiteral("devices["))
         ? m_stationPropertyEditor->focusField(diagnostic.path)
         : m_stationSettingsEditor->focusField(diagnostic.path);
@@ -2881,7 +2945,8 @@ void MainWindow::buildLayout()
     functionPanelLayout->setSpacing(0);
     m_flowTargetSelector = new FlowTargetSelector(functionPanel);
     functionPanelLayout->addWidget(m_flowTargetSelector);
-    m_pluginFunctionView = new QTreeView;
+    auto* pluginFunctionView = new PluginFunctionTreeView;
+    m_pluginFunctionView = pluginFunctionView;
     m_pluginFunctionView->setObjectName(QStringLiteral("pluginFunctionView"));
     m_pluginFunctionView->setModel(m_pluginFunctionModel);
     m_pluginFunctionView->setRootIsDecorated(true);
@@ -2895,6 +2960,12 @@ void MainWindow::buildLayout()
         0, new DragHandleDelegate(m_pluginFunctionView));
     polishReadableTreeView(m_pluginFunctionView);
     m_pluginFunctionView->header()->setStretchLastSection(true);
+    pluginFunctionView->deviceSelectionRequired = [this] {
+        m_flowTargetSelector->showSelectionRequired();
+        statusBar()->showMessage(
+            tr("Select a target device above before dragging a plugin function"),
+            5000);
+    };
     functionPanelLayout->addWidget(m_pluginFunctionView, 1);
     functionPanel->setMinimumWidth(230);
     functionPanel->setMaximumWidth(390);

@@ -111,6 +111,21 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_snLengthSpin->setToolTip(tr("0 means no SN length restriction"));
     form->addRow(tr("SN Length"), m_snLengthSpin);
 
+    m_snPatternEdit = new QLineEdit(this);
+    m_snPatternEdit->setObjectName(QStringLiteral("stationSnPatternEdit"));
+    m_snPatternEdit->setPlaceholderText(tr("BTSN*, *BTSN*, or *BTSN"));
+    m_snPatternEdit->setToolTip(
+        tr("Optional wildcard rule. * matches any number of characters."));
+    form->addRow(tr("SN Pattern"), m_snPatternEdit);
+
+    m_snAllowedRegexEdit = new QLineEdit(this);
+    m_snAllowedRegexEdit->setObjectName(
+        QStringLiteral("stationSnAllowedRegexEdit"));
+    m_snAllowedRegexEdit->setPlaceholderText(QStringLiteral("^[A-Z0-9]+$"));
+    m_snAllowedRegexEdit->setToolTip(
+        tr("Optional regular expression applied to the complete SN."));
+    form->addRow(tr("Allowed Characters"), m_snAllowedRegexEdit);
+
     m_txtLogSwitch = new OnOffSwitch(this);
     m_txtLogSwitch->setObjectName(QStringLiteral("stationTxtLogSwitch"));
     m_txtLogSwitch->setAccessibleName(tr("Enable TXT execution log"));
@@ -188,6 +203,8 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
         }
     });
     connect(m_snLengthSpin, &QSpinBox::valueChanged, this, markPending);
+    connect(m_snPatternEdit, &QLineEdit::textEdited, this, markPending);
+    connect(m_snAllowedRegexEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_jigNoEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_orderEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_testerEdit, &QLineEdit::textEdited, this, markPending);
@@ -214,6 +231,8 @@ void StationSettingsEditor::setEditable(bool editable)
                         static_cast<QWidget*>(m_reportOutputEdit),
                         static_cast<QWidget*>(m_browseReportOutputButton),
                         static_cast<QWidget*>(m_snLengthSpin),
+                        static_cast<QWidget*>(m_snPatternEdit),
+                        static_cast<QWidget*>(m_snAllowedRegexEdit),
                         static_cast<QWidget*>(m_jigNoEdit),
                         static_cast<QWidget*>(m_orderEdit),
                         static_cast<QWidget*>(m_testerEdit)}) {
@@ -268,6 +287,18 @@ bool StationSettingsEditor::commitPendingChanges()
         root.insert(QStringLiteral("reportOutputDirectory"), outputDirectory);
     }
     root.insert(QStringLiteral("snLength"), m_snLengthSpin->value());
+    const auto snPattern = m_snPatternEdit->text().trimmed();
+    if (snPattern.isEmpty()) {
+        root.remove(QStringLiteral("snPattern"));
+    } else {
+        root.insert(QStringLiteral("snPattern"), snPattern);
+    }
+    const auto snAllowedRegex = m_snAllowedRegexEdit->text().trimmed();
+    if (snAllowedRegex.isEmpty()) {
+        root.remove(QStringLiteral("snAllowedRegex"));
+    } else {
+        root.insert(QStringLiteral("snAllowedRegex"), snAllowedRegex);
+    }
     root.insert(QStringLiteral("metadata"), metadata);
     m_document->replaceRootObject(std::move(root));
     m_errorLabel->hide();
@@ -307,6 +338,10 @@ bool StationSettingsEditor::focusField(const QString& path)
         field = m_reportOutputEdit;
     } else if (path == QStringLiteral("snLength")) {
         field = m_snLengthSpin;
+    } else if (path == QStringLiteral("snPattern")) {
+        field = m_snPatternEdit;
+    } else if (path == QStringLiteral("snAllowedRegex")) {
+        field = m_snAllowedRegexEdit;
     } else if (path.startsWith(QStringLiteral("metadata"))) {
         if (path.contains(QStringLiteral("jigNo")) ||
             path.contains(QStringLiteral("fixture"))) {
@@ -356,6 +391,10 @@ void StationSettingsEditor::reload()
         root.value(QStringLiteral("reportOutputDirectory")).toString());
     m_snLengthSpin->setValue(
         qBound(0, root.value(QStringLiteral("snLength")).toInt(0), 256));
+    m_snPatternEdit->setText(
+        root.value(QStringLiteral("snPattern")).toString());
+    m_snAllowedRegexEdit->setText(
+        root.value(QStringLiteral("snAllowedRegex")).toString());
     const auto metadata = root.value(QStringLiteral("metadata")).toObject();
     m_jigNoEdit->setText(metadataValue(
         metadata, {"jigNo", "fixtureId", "fixture"}));
@@ -376,6 +415,8 @@ void StationSettingsEditor::reload()
                         static_cast<QWidget*>(m_reportOutputEdit),
                         static_cast<QWidget*>(m_browseReportOutputButton),
                         static_cast<QWidget*>(m_snLengthSpin),
+                        static_cast<QWidget*>(m_snPatternEdit),
+                        static_cast<QWidget*>(m_snAllowedRegexEdit),
                         static_cast<QWidget*>(m_jigNoEdit),
                         static_cast<QWidget*>(m_orderEdit),
                         static_cast<QWidget*>(m_testerEdit)}) {

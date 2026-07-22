@@ -149,6 +149,9 @@ QMimeData* PluginFunctionModel::mimeData(const QModelIndexList& indexes) const
             item->kind != ItemKind::Function) {
             continue;
         }
+        if (item->requiresDeviceSelection) {
+            return nullptr;
+        }
         if (item->stepTemplate.isEmpty() && item->pluginIndex < 0) {
             continue;
         }
@@ -214,6 +217,14 @@ QVector<PluginManifest> PluginFunctionModel::plugins() const
 QString PluginFunctionModel::selectedDeviceId() const
 {
     return m_selectedDeviceId;
+}
+
+bool PluginFunctionModel::requiresDeviceSelection(
+    const QModelIndex& modelIndex) const
+{
+    const auto* item = itemForIndex(modelIndex);
+    return item && item->kind == ItemKind::Function &&
+           item->requiresDeviceSelection;
 }
 
 QJsonObject PluginFunctionModel::stepTemplate(const QModelIndex& modelIndex) const
@@ -359,6 +370,16 @@ void PluginFunctionModel::rebuild()
             break;
         }
     }
+    QString selectedCategoryKey;
+    if (!selectedModuleId.isEmpty()) {
+        for (const auto& plugin : std::as_const(m_plugins)) {
+            if (plugin.moduleId.compare(selectedModuleId,
+                                        Qt::CaseInsensitive) == 0) {
+                selectedCategoryKey = plugin.category.trimmed().toLower();
+                break;
+            }
+        }
+    }
 
     if (m_plugins.isEmpty()) {
         auto placeholder = std::make_unique<Item>();
@@ -377,6 +398,20 @@ void PluginFunctionModel::rebuild()
         const auto categoryName = plugin.category.trimmed().isEmpty()
             ? tr("Other") : plugin.category.trimmed();
         const auto categoryKey = categoryName.toLower();
+        if (!m_selectedDeviceId.isEmpty() &&
+            categoryKey != selectedCategoryKey) {
+            continue;
+        }
+        bool pluginHasBoundDevice = false;
+        for (auto iterator = m_devicesByModuleId.constBegin();
+             iterator != m_devicesByModuleId.constEnd(); ++iterator) {
+            if (iterator.key().compare(plugin.moduleId,
+                                       Qt::CaseInsensitive) == 0 &&
+                !iterator.value().isEmpty()) {
+                pluginHasBoundDevice = true;
+                break;
+            }
+        }
         auto* categoryPointer = categories.value(categoryKey);
         if (!categoryPointer) {
             auto category = std::make_unique<Item>();
@@ -397,6 +432,9 @@ void PluginFunctionModel::rebuild()
             const auto functionKey = function.id.trimmed().toLower();
             auto* existing = functionsByCategory[categoryKey].value(functionKey);
             if (existing) {
+                existing->requiresDeviceSelection =
+                    existing->requiresDeviceSelection ||
+                    (m_selectedDeviceId.isEmpty() && pluginHasBoundDevice);
                 const bool existingMatchesTarget = !existing->deviceId.isEmpty();
                 if (!selectedDeviceUsesPlugin || existingMatchesTarget) {
                     continue;
@@ -406,6 +444,7 @@ void PluginFunctionModel::rebuild()
                 existing->pluginIndex = pluginIndex;
                 existing->functionIndex = functionIndex;
                 existing->deviceId = m_selectedDeviceId;
+                existing->requiresDeviceSelection = false;
                 existing->tooltip += tr("\nTarget: %1\nDriver module: %2")
                                          .arg(m_selectedDeviceId, plugin.moduleId);
                 continue;
@@ -425,6 +464,12 @@ void PluginFunctionModel::rebuild()
             functionItem->functionIndex = functionIndex;
             functionItem->deviceId = selectedDeviceUsesPlugin
                 ? m_selectedDeviceId : QString{};
+            functionItem->requiresDeviceSelection =
+                m_selectedDeviceId.isEmpty() && pluginHasBoundDevice;
+            if (functionItem->requiresDeviceSelection) {
+                functionItem->tooltip +=
+                    tr("\nSelect a target device above before dragging this function");
+            }
             functionItem->parent = categoryPointer;
             auto* functionPointer = functionItem.get();
             categoryPointer->children.push_back(std::move(functionItem));

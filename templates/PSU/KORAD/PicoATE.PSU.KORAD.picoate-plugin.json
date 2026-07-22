@@ -1,0 +1,29 @@
+{
+  "schema": "picoate.plugin",
+  "schemaVersion": 1,
+  "pluginId": "picoate.psu.korad",
+  "moduleId": "plugin.psu.korad",
+  "name": "KORAD USB VISA Power Supply",
+  "category": "PSU",
+  "vendor": "KORAD",
+  "version": "1.0.0",
+  "functions": [
+    {"id":"open","name":"Open Power Supply","description":"Open the USB VISA resource configured by Station","stepKind":"action","timeoutMs":5000,"inputs":[{"key":"address","name":"VISA Resource","type":"string","required":true},{"key":"ioTimeoutMs","name":"VISA I/O Timeout","type":"integer","default":2000,"minimum":1,"maximum":600000,"unit":"ms"},{"key":"commandDelayMs","name":"Command Delay","type":"integer","default":20,"minimum":0,"maximum":10000,"unit":"ms"},{"key":"writeTermination","name":"Write Termination","type":"string","default":""},{"key":"readTermination","name":"Read Termination","type":"string","default":""}],"outputs":[{"key":"connected","name":"Connected","type":"boolean"},{"key":"address","name":"VISA Resource","type":"string"}]},
+    {"id":"identity","name":"Read Identity","description":"Send *IDN?","timeoutMs":2000,"inputs":[],"outputs":[{"key":"identity","name":"Identity","type":"string"}]},
+    {"id":"setCurrent","name":"Set Current","description":"Send ISET<X>:<NR2>","timeoutMs":2000,"inputs":[{"key":"channel","name":"Channel","type":"integer","default":1,"minimum":1,"maximum":3},{"key":"current","name":"Current","type":"number","required":true,"default":1.0,"minimum":0.0,"unit":"A"}],"outputs":[{"key":"current","name":"Current","type":"number","unit":"A"}]},
+    {"id":"getCurrentSetpoint","name":"Read Current Setpoint","description":"Send ISET<X>?","timeoutMs":2000,"inputs":[{"key":"channel","name":"Channel","type":"integer","default":1,"minimum":1,"maximum":3}],"outputs":[{"key":"current","name":"Current Setpoint","type":"number","unit":"A"}]},
+    {"id":"setVoltage","name":"Set Voltage","description":"Send VSET<X>:<NR2>","timeoutMs":2000,"inputs":[{"key":"channel","name":"Channel","type":"integer","default":1,"minimum":1,"maximum":3},{"key":"voltage","name":"Voltage","type":"number","required":true,"default":5.0,"minimum":0.0,"unit":"V"}],"outputs":[{"key":"voltage","name":"Voltage","type":"number","unit":"V"}]},
+    {"id":"getVoltageSetpoint","name":"Read Voltage Setpoint","description":"Send VSET<X>?","timeoutMs":2000,"inputs":[{"key":"channel","name":"Channel","type":"integer","default":1,"minimum":1,"maximum":3}],"outputs":[{"key":"voltage","name":"Voltage Setpoint","type":"number","unit":"V"}]},
+    {"id":"measureCurrent","name":"Measure Output Current","description":"Send IOUT<X>?","timeoutMs":2000,"inputs":[{"key":"channel","name":"Channel","type":"integer","default":1,"minimum":1,"maximum":3}],"outputs":[{"key":"current","name":"Output Current","type":"number","unit":"A"}]},
+    {"id":"measureVoltage","name":"Measure Output Voltage","description":"Send VOUT<X>?","timeoutMs":2000,"inputs":[{"key":"channel","name":"Channel","type":"integer","default":1,"minimum":1,"maximum":3}],"outputs":[{"key":"voltage","name":"Output Voltage","type":"number","unit":"V"}]},
+    {"id":"setBeep","name":"Set Beeper","description":"Send BEEP<Boolean>","timeoutMs":2000,"inputs":[{"key":"enabled","name":"Enabled","type":"boolean","required":true,"default":true}],"outputs":[{"key":"enabled","name":"Enabled","type":"boolean"}]},
+    {"id":"setOutput","name":"Set Output","description":"Send OUT<Boolean>","timeoutMs":2000,"inputs":[{"key":"enabled","name":"Enabled","type":"boolean","required":true,"default":true}],"outputs":[{"key":"enabled","name":"Enabled","type":"boolean"}]},
+    {"id":"readStatus","name":"Read Working Status","description":"Send STATUS? and decode bits 0, 4, 5, 6, and 7","timeoutMs":2000,"inputs":[],"outputs":[{"key":"rawStatus","name":"Raw Status","type":"integer"},{"key":"binary","name":"Binary Status","type":"string"},{"key":"ch1CvMode","name":"CH1 CV Mode","type":"boolean"},{"key":"beepEnabled","name":"Beeper Enabled","type":"boolean"},{"key":"ocpEnabled","name":"OCP Enabled","type":"boolean"},{"key":"outputEnabled","name":"Output Enabled","type":"boolean"},{"key":"ovpEnabled","name":"OVP Enabled","type":"boolean"}]},
+    {"id":"recall","name":"Recall Preset","description":"Send RCL<NR1>","timeoutMs":2000,"inputs":[{"key":"slot","name":"Memory Slot","type":"integer","required":true,"default":1,"minimum":1,"maximum":5}],"outputs":[{"key":"slot","name":"Memory Slot","type":"integer"}]},
+    {"id":"save","name":"Save Preset","description":"Send SAV<NR1>","timeoutMs":2000,"inputs":[{"key":"slot","name":"Memory Slot","type":"integer","required":true,"default":1,"minimum":1,"maximum":5}],"outputs":[{"key":"slot","name":"Memory Slot","type":"integer"}]},
+    {"id":"setOcp","name":"Set OCP","description":"Send OCP<Boolean>","timeoutMs":2000,"inputs":[{"key":"enabled","name":"Enabled","type":"boolean","required":true,"default":true}],"outputs":[{"key":"enabled","name":"Enabled","type":"boolean"}]},
+    {"id":"setOvp","name":"Set OVP","description":"Send OVP<Boolean>","timeoutMs":2000,"inputs":[{"key":"enabled","name":"Enabled","type":"boolean","required":true,"default":true}],"outputs":[{"key":"enabled","name":"Enabled","type":"boolean"}]},
+    {"id":"setLock","name":"Set Keyboard Lock","description":"Send LOCK<Boolean>","timeoutMs":2000,"inputs":[{"key":"enabled","name":"Enabled","type":"boolean","required":true,"default":true}],"outputs":[{"key":"enabled","name":"Enabled","type":"boolean"}]},
+    {"id":"close","name":"Close Power Supply","description":"Close the VISA session","stepKind":"cleanup","timeoutMs":3000,"inputs":[],"outputs":[{"key":"connected","name":"Connected","type":"boolean"}]}
+  ]
+}

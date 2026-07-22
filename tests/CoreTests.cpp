@@ -580,6 +580,8 @@ private slots:
     void testItemAggregatesErrorSeverity();
     void testItemStopSkipsChildrenAndRunsCleanup();
     void cleanupTestItemRunsAllChildren();
+    void cleanupTestItemContinuesAfterChildError();
+    void cleanupFailureContinuesBestEffortAndCompletesSession();
     void nestedTestItemsAggregateDirectChildrenRecursively();
     void testItemContainingLoopAggregatesIterationFailures();
     void loopTestItemChildrenKeepSerialOrderAcrossIterations();
@@ -703,6 +705,8 @@ void CoreTests::stationConfigParsesDevicesAndConfiguresSessionManager()
     QVERIFY(!load.config.xlsxReportEnabled);
     QVERIFY(load.config.reportOutputDirectory.isEmpty());
     QCOMPARE(load.config.snLength, 12);
+    QCOMPARE(load.config.snPattern, QString("BTSN*"));
+    QCOMPARE(load.config.snAllowedRegex, QString("^[A-Z0-9]+$"));
     QCOMPARE(load.config.devices.size(), 2);
 
     const auto reportSettings = parseStationConfigJson({
@@ -759,6 +763,7 @@ void CoreTests::stationConfigReportsDeviceErrors()
     {
       "stationId": "bad-station",
       "snLength": -1,
+      "snAllowedRegex": "[",
       "devices": [
         {
           "deviceId": "DMM1",
@@ -800,6 +805,7 @@ void CoreTests::stationConfigReportsDeviceErrors()
 
     QVERIFY(hasErrorAt("devices[0].address"));
     QVERIFY(hasErrorAt("snLength"));
+    QVERIFY(hasErrorAt("snAllowedRegex"));
     QVERIFY(hasErrorAt("devices[0].lifetime"));
     QVERIFY(hasErrorAt("devices[1].driverId"));
     QVERIFY(hasErrorAt("devices[1].deviceId"));
@@ -5549,6 +5555,131 @@ void CoreTests::cleanupTestItemRunsAllChildren()
     QCOMPARE(cleanup->children.size(), 2);
     QCOMPARE(cleanup->children[0].outcome, NodeOutcome::Passed);
     QCOMPARE(cleanup->children[1].outcome, NodeOutcome::Passed);
+}
+
+void CoreTests::cleanupTestItemContinuesAfterChildError()
+{
+    const auto json = R"json({
+      "id":"cleanup-test-item-error","name":"Cleanup TestItem Error","groups":[
+        {"id":"setup","kind":"setup","steps":[
+          {"id":"open-psu","kind":"action",
+           "parameters":{"outcome":"Error"},
+           "errorPolicy":{"onError":"RunCleanup"}}
+        ]},
+        {"id":"cleanup","kind":"cleanup","steps":[
+          {"id":"close-all","kind":"testItem","steps":[
+            {"id":"01","key":"output-off","kind":"action",
+             "parameters":{"outcome":"Error"}},
+            {"id":"02","key":"close-psu","kind":"cleanup"}
+          ]},
+          {"id":"close-fixture","kind":"cleanup"}
+        ]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compile.ok(), qPrintable(compile.errors.isEmpty()
+                                          ? QString()
+                                          : compile.errors.first().message));
+
+    ExecutionSession session(compile.plan);
+    session.addUut("uut-1");
+    const auto run = session.run();
+
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+    QCOMPARE(run.state, ExecutionState::CompletedWithError);
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.outcomeOf("close-all.output-off"), NodeOutcome::Error);
+    QCOMPARE(uut.outcomeOf("close-all.close-psu"), NodeOutcome::Passed);
+    QCOMPARE(uut.outcomeOf("close-all"), NodeOutcome::Error);
+    QCOMPARE(uut.outcomeOf("close-fixture"), NodeOutcome::Passed);
+}
+
+void CoreTests::cleanupFailureContinuesBestEffortAndCompletesSession()
+{
+    const auto json = R"json({
+      "id":"cleanup-error-terminal","name":"Cleanup Error Terminal","groups":[
+        {"id":"setup","kind":"setup","steps":[
+          {"id":"open-psu","name":"Open PSU","kind":"action",
+           "parameters":{"outcome":"Error","errorCode":"DeviceConnectFailed",
+                         "errorMessage":"resource not found"},
+           "errorPolicy":{"onError":"RunCleanup"}}
+        ]},
+        {"id":"main","kind":"main","steps":[
+          {"id":"measure","name":"Measure","kind":"action"}
+        ]},
+        {"id":"cleanup","kind":"cleanup","steps":[
+          {"id":"output-off","name":"Set Output OFF","kind":"action",
+           "parameters":{"outcome":"Error","errorCode":"DeviceConnectFailed",
+                         "errorMessage":"resource not found"}},
+          {"id":"set-ovp","name":"Set OVP","kind":"action"},
+          {"id":"set-ocp","name":"Set OCP","kind":"action"},
+          {"id":"close-psu","name":"Close PSU","kind":"cleanup"}
+        ]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compile.ok(), qPrintable(compile.errors.isEmpty()
+                                          ? QString()
+                                          : compile.errors.first().message));
+    QVERIFY(compile.plan.cleanupRegions.first().bestEffort);
+
+    CollectingRuntimeEventSink events;
+    ExecutionSession session(compile.plan, {}, &events);
+    session.addUut("uut-1");
+    const auto run = session.run();
+
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+    QCOMPARE(run.state, ExecutionState::CompletedWithError);
+    QCOMPARE(session.state(), ExecutionState::CompletedWithError);
+
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.outcomeOf("open-psu"), NodeOutcome::Error);
+    QCOMPARE(uut.outcomeOf("measure"), NodeOutcome::Skipped);
+    QCOMPARE(uut.outcomeOf("output-off"), NodeOutcome::Error);
+    QCOMPARE(uut.outcomeOf("set-ovp"), NodeOutcome::Passed);
+    QCOMPARE(uut.outcomeOf("set-ocp"), NodeOutcome::Passed);
+    QCOMPARE(uut.outcomeOf("close-psu"), NodeOutcome::Passed);
+
+    const auto report = session.report();
+    QVERIFY(report.completed);
+    QVERIFY(report.hasError);
+    QCOMPARE(report.state, ExecutionState::CompletedWithError);
+
+    bool sawCompletedState = false;
+    bool sawUutCompleted = false;
+    for (const auto& event : events.records()) {
+        sawCompletedState = sawCompletedState ||
+            (event.kind == RuntimeEventKind::SessionStateChanged &&
+             event.executionState == ExecutionState::CompletedWithError);
+        sawUutCompleted = sawUutCompleted ||
+            event.kind == RuntimeEventKind::UutCompleted;
+    }
+    QVERIFY(sawCompletedState);
+    QVERIFY(sawUutCompleted);
+
+    auto strictCompile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(strictCompile.ok());
+    QVERIFY(!strictCompile.plan.cleanupRegions.isEmpty());
+    strictCompile.plan.cleanupRegions.first().bestEffort = false;
+
+    ExecutionSession strictSession(strictCompile.plan);
+    strictSession.addUut("uut-strict");
+    const auto strictRun = strictSession.run();
+    QVERIFY(strictRun.completed);
+    QVERIFY(strictRun.hasError);
+    QCOMPARE(strictRun.state, ExecutionState::CompletedWithError);
+
+    const auto& strictUut = strictSession.uuts().first();
+    QCOMPARE(strictUut.outcomeOf("output-off"), NodeOutcome::Error);
+    QCOMPARE(strictUut.outcomeOf("set-ovp"), NodeOutcome::Skipped);
+    QCOMPARE(strictUut.outcomeOf("set-ocp"), NodeOutcome::Skipped);
+    QCOMPARE(strictUut.outcomeOf("close-psu"), NodeOutcome::Skipped);
 }
 
 void CoreTests::testItemAggregatesErrorSeverity()

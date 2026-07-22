@@ -185,6 +185,11 @@ Example with checkpoint flags:
 
 The same action module pattern is used in `examples/basic_sequence.json`.
 
+Admin Flow Editor 中，插件 Action 的 `function` 不再作为普通自由文本输入，而是从
+`PicoATE_Describe.functions` 生成下拉选项。设备类插件应使用 `moduleId: "device"`，并在
+`inputs.deviceId` 中保存 Station 逻辑设备或通道，例如 `CAN1.CH1`；算法、文件处理等非设备插件
+可以直接使用插件自己的 `moduleId`。UI 的目标设备筛选用于减少误配，最终 JSON 仍以上述字段为准。
+
 ## 人工提示节点
 
 `operatorPrompt` 是引擎内置的人机交互节点，不调用业务 DLL。Core 只发布只读

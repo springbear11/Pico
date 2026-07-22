@@ -636,6 +636,69 @@ QJsonObject SequenceDocument::objectAt(const SequenceItemPath& path) const
     return path.stepIndices.isEmpty() ? group : nestedObject(group, path.stepIndices);
 }
 
+SequenceItemPath SequenceDocument::findItemPath(
+    const QJsonObject& object,
+    const SequenceItemPath& preferredPath) const
+{
+    if (object.isEmpty()) {
+        return {};
+    }
+    if (preferredPath.isValid() && objectAt(preferredPath) == object) {
+        return preferredPath;
+    }
+
+    QVector<SequenceItemPath> exactMatches;
+    QVector<SequenceItemPath> identityMatches;
+    const auto identityMatchesObject = [&object](const QJsonObject& candidate) {
+        const auto sourceKey = object.value(QStringLiteral("key")).toString();
+        const auto candidateKey = candidate.value(QStringLiteral("key")).toString();
+        if (!sourceKey.isEmpty() || !candidateKey.isEmpty()) {
+            return !sourceKey.isEmpty() && sourceKey == candidateKey;
+        }
+        return object.value(QStringLiteral("id")).toString() ==
+                   candidate.value(QStringLiteral("id")).toString() &&
+               object.value(QStringLiteral("kind")).toString(
+                   object.value(QStringLiteral("type")).toString()) ==
+                   candidate.value(QStringLiteral("kind")).toString(
+                       candidate.value(QStringLiteral("type")).toString()) &&
+               object.value(QStringLiteral("name")).toString() ==
+                   candidate.value(QStringLiteral("name")).toString();
+    };
+    const std::function<void(const QJsonArray&, const SequenceItemPath&)> collect =
+        [&](const QJsonArray& steps, const SequenceItemPath& parentPath) {
+            for (int row = 0; row < steps.size(); ++row) {
+                const auto candidate = steps.at(row).toObject();
+                if (candidate.isEmpty()) {
+                    continue;
+                }
+                auto path = parentPath;
+                path.stepIndices.push_back(row);
+                if (candidate == object) {
+                    exactMatches.push_back(path);
+                }
+                if (identityMatchesObject(candidate)) {
+                    identityMatches.push_back(path);
+                }
+                collect(candidate.value(QStringLiteral("steps")).toArray(), path);
+            }
+        };
+
+    const auto groups = m_root.value(QStringLiteral("groups")).toArray();
+    for (int groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+        const auto group = groups.at(groupIndex).toObject();
+        SequenceItemPath groupPath{groupIndex, {}};
+        if (object == group) {
+            exactMatches.push_back(groupPath);
+        }
+        collect(group.value(QStringLiteral("steps")).toArray(), groupPath);
+    }
+    if (exactMatches.size() == 1) {
+        return exactMatches.first();
+    }
+    return identityMatches.size() == 1 ? identityMatches.first()
+                                       : SequenceItemPath{};
+}
+
 bool SequenceDocument::canContainSteps(const SequenceItemPath& path) const
 {
     if (path.isGroup()) {

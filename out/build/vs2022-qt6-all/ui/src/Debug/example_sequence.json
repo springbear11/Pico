@@ -195,32 +195,6 @@
                             "checkpointAfter": false,
                             "checkpointBefore": false,
                             "enabled": true,
-                            "id": "009",
-                            "inputs": {
-                                "actual": "${step:007.008.outputs.id}"
-                            },
-                            "kind": "limit",
-                            "name": "Check_CAN_ID",
-                            "parameters": {
-                                "comparison": "equal",
-                                "expected": "0x199",
-                                "measurementName": "Measurement",
-                                "tolerance": 0
-                            },
-                            "resultRecording": true,
-                            "retry": {
-                                "delayMs": 0,
-                                "maxAttempts": 1
-                            },
-                            "timeout": {
-                                "timeoutMs": 0
-                            }
-                        },
-                        {
-                            "alwaysRun": false,
-                            "checkpointAfter": false,
-                            "checkpointBefore": false,
-                            "enabled": true,
                             "id": "010",
                             "inputs": {
                                 "actual": "${step:007.008.outputs.dataHex}"
@@ -331,7 +305,7 @@
                             "inputs": {
                                 "deviceId": "CAN1.CH2",
                                 "filterId": "0x198",
-                                "filterMask": "0xFFF",
+                                "filterMask": "0x7FF",
                                 "timeoutMs": 1500
                             },
                             "kind": "action",

@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QRegularExpression>
 
 namespace PicoATE::Ui {
 
@@ -112,6 +113,61 @@ int StartupSupport::stationSnLength(const QString& stationPath, int defaultValue
     }
     const int length = value.toInt(defaultValue);
     return length >= 0 && length <= 256 ? length : defaultValue;
+}
+
+SnValidationRules StartupSupport::stationSnValidationRules(
+    const QString& stationPath)
+{
+    SnValidationRules rules;
+    QJsonObject root;
+    if (!readJsonObject(stationPath, root)) {
+        return rules;
+    }
+    rules.exactLength = stationSnLength(stationPath);
+    rules.wildcardPattern = root.value(QStringLiteral("snPattern"))
+                                .toString().trimmed();
+    rules.allowedRegex = root.value(QStringLiteral("snAllowedRegex"))
+                             .toString().trimmed();
+    return rules;
+}
+
+SnValidationResult StartupSupport::validateSerialNumber(
+    const QString& serialNumber,
+    const SnValidationRules& rules)
+{
+    const auto sn = serialNumber.trimmed();
+    if (sn.isEmpty()) {
+        return {QStringLiteral("SN cannot be empty")};
+    }
+    if (rules.exactLength > 0 && sn.size() != rules.exactLength) {
+        return {QStringLiteral("SN must contain exactly %1 characters (current: %2)")
+                    .arg(rules.exactLength)
+                    .arg(sn.size())};
+    }
+    if (!rules.wildcardPattern.isEmpty()) {
+        const QRegularExpression wildcard(
+            QRegularExpression::wildcardToRegularExpression(
+                rules.wildcardPattern,
+                QRegularExpression::NonPathWildcardConversion));
+        if (!wildcard.match(sn).hasMatch()) {
+            return {QStringLiteral("SN must match pattern: %1")
+                        .arg(rules.wildcardPattern)};
+        }
+    }
+    if (!rules.allowedRegex.isEmpty()) {
+        const QRegularExpression allowed(rules.allowedRegex);
+        if (!allowed.isValid()) {
+            return {QStringLiteral("Invalid SN character regular expression: %1")
+                        .arg(allowed.errorString())};
+        }
+        const auto match = allowed.match(sn);
+        if (!match.hasMatch() || match.capturedStart() != 0 ||
+            match.capturedLength() != sn.size()) {
+            return {QStringLiteral("SN contains characters not allowed by: %1")
+                        .arg(rules.allowedRegex)};
+        }
+    }
+    return {};
 }
 
 StartupValidationResult StartupSupport::validateSelection(

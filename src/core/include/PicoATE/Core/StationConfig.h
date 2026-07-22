@@ -30,6 +30,8 @@ struct StationConfig {
     QString pluginRegistryPath = QStringLiteral("plugins/PluginRegistry.json");
     QString reportOutputDirectory;
     int snLength = 0;
+    QString snPattern;
+    QString snAllowedRegex;
     QVariantMap metadata;
     QVector<DeviceSessionConfig> devices;
 };

@@ -1,0 +1,81 @@
+{
+    "id":  "dmm-dcv-verification",
+    "name":  "DMM DC Voltage Verification",
+    "version":  "1.0.0",
+    "groups":  [
+                   {
+                       "id":  "main",
+                       "kind":  "sequence",
+                       "steps":  [
+                                     {
+                                         "id":  "open-dmm",
+                                         "kind":  "action",
+                                         "moduleId":  "device",
+                                         "function":  "open",
+                                         "name":  "Open DMM",
+                                         "enabled":  true,
+                                         "inputs":  {
+                                                        "deviceId":  "DMM1"
+                                                    },
+                                         "timeoutMs":  15000
+                                     },
+                                     {
+                                         "id":  "identity",
+                                         "kind":  "action",
+                                         "moduleId":  "device",
+                                         "function":  "identity",
+                                         "name":  "Read DMM Identity",
+                                         "enabled":  true,
+                                         "inputs":  {
+                                                        "deviceId":  "DMM1"
+                                                    },
+                                         "timeoutMs":  5000
+                                     },
+                                     {
+                                         "id":  "configure-dcv",
+                                         "kind":  "action",
+                                         "moduleId":  "device",
+                                         "function":  "configureDcv",
+                                         "name":  "Configure DC Voltage",
+                                         "enabled":  true,
+                                         "inputs":  {
+                                                        "deviceId":  "DMM1",
+                                                        "range":  10.0,
+                                                        "nplc":  10.0
+                                                    },
+                                         "timeoutMs":  5000
+                                     },
+                                     {
+                                         "id":  "read-dcv",
+                                         "kind":  "action",
+                                         "moduleId":  "device",
+                                         "function":  "read",
+                                         "name":  "Read DC Voltage",
+                                         "enabled":  true,
+                                         "inputs":  {
+                                                        "deviceId":  "DMM1"
+                                                    },
+                                         "timeoutMs":  15000
+                                     }
+                                 ]
+                   },
+                   {
+                       "id":  "cleanup",
+                       "kind":  "cleanup",
+                       "steps":  [
+                                     {
+                                         "id":  "close-dmm",
+                                         "kind":  "action",
+                                         "moduleId":  "device",
+                                         "function":  "close",
+                                         "name":  "Close DMM",
+                                         "enabled":  true,
+                                         "inputs":  {
+                                                        "deviceId":  "DMM1"
+                                                    },
+                                         "timeoutMs":  5000
+                                     }
+                                 ]
+                   }
+               ]
+}

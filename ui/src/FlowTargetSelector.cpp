@@ -97,7 +97,10 @@ FlowTargetSelector::FlowTargetSelector(QWidget* parent)
     root->addWidget(separator);
 
     setStyleSheet(QStringLiteral(R"(
-        QWidget#flowTargetSelector { background: #fbfcfd; }
+        QWidget#flowTargetSelector { background: #fbfcfd; border: 1px solid transparent; }
+        QWidget#flowTargetSelector[selectionRequired="true"] {
+            background: #fff1f0; border: 1px solid #e5484d; border-radius: 4px;
+        }
         QLabel#flowTargetTitle { color: #344054; font-weight: 600; }
         QToolButton[deviceShortcut="true"] {
             min-width: 54px; min-height: 40px; padding: 3px 5px;
@@ -170,6 +173,22 @@ bool FlowTargetSelector::selectTarget(const QString& targetId)
     }
     selectDevice(device->logicalId, targetId);
     return m_currentTargetId == targetId;
+}
+
+void FlowTargetSelector::showSelectionRequired()
+{
+    setProperty("selectionRequired", true);
+    style()->unpolish(this);
+    style()->polish(this);
+    m_currentLabel->setText(tr("Select a target device before using plugin functions"));
+    m_currentLabel->setStyleSheet(QStringLiteral("color: #b42318; font-weight: 600;"));
+    QTimer::singleShot(1400, this, [this] {
+        setProperty("selectionRequired", false);
+        style()->unpolish(this);
+        style()->polish(this);
+        m_currentLabel->setStyleSheet({});
+        updateCurrentLabel();
+    });
 }
 
 const FlowTargetDevice* FlowTargetSelector::deviceById(

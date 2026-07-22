@@ -25,6 +25,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <utility>
 
 namespace PicoATE::Ui {
@@ -456,6 +457,13 @@ void StationPropertyEditor::loadDevice()
         device, QStringLiteral("deviceType"), QStringLiteral("type")));
     m_loadedDriverId = valueWithAlias(
         device, QStringLiteral("driverId"), QStringLiteral("driver"));
+    m_loadedChannelEnabled.clear();
+    for (const int row : m_currentRows) {
+        const auto loadedDevice = m_document->deviceAt(row);
+        m_loadedChannelEnabled.insert(
+            optionChannelIndex(loadedDevice),
+            loadedDevice.value(QStringLiteral("enabled")).toBool(true));
+    }
 
     int typeIndex = m_deviceTypeCombo->findData(m_loadedDeviceType);
     if (typeIndex < 0 && !m_loadedDeviceType.isEmpty()) {
@@ -901,10 +909,24 @@ bool StationPropertyEditor::commitDevice()
     };
 
     QVector<QJsonObject> replacements;
+    std::optional<bool> externallyChangedEnabled;
+    for (const int row : m_currentRows) {
+        const auto currentDevice = m_document->deviceAt(row);
+        const int channel = optionChannelIndex(currentDevice);
+        const bool enabled = currentDevice.value(
+            QStringLiteral("enabled")).toBool(true);
+        if (m_loadedChannelEnabled.contains(channel) &&
+            m_loadedChannelEnabled.value(channel) != enabled) {
+            externallyChangedEnabled = enabled;
+            break;
+        }
+    }
     if (can) {
         for (int channel = 0; channel < m_channelSwitches.size(); ++channel) {
             replacements.push_back(makeDevice(
-                channel, m_channelSwitches[channel]->isChecked()));
+                channel,
+                externallyChangedEnabled.value_or(
+                    m_channelSwitches[channel]->isChecked())));
         }
     } else {
         replacements.push_back(makeDevice(

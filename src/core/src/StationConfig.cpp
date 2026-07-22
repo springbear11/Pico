@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QRegularExpression>
 #include <QSet>
 
 namespace PicoATE::Core {
@@ -288,6 +289,10 @@ StationConfigResult parseStationConfigJson(const QJsonObject& object,
                  "SN length must be between 0 and 256",
                  "Use 0 for unrestricted length, or enter the required length");
     }
+    result.config.snPattern = readString(
+        object, "snPattern", result, "snPattern").trimmed();
+    result.config.snAllowedRegex = readString(
+        object, "snAllowedRegex", result, "snAllowedRegex").trimmed();
     result.config.metadata = readObjectMap(object, "metadata", result, "metadata");
 
     result.config.stationId = resolveStringField(result.config.stationId, resolver, result, "stationId");
@@ -302,6 +307,20 @@ StationConfigResult parseStationConfigJson(const QJsonObject& object,
         resolver,
         result,
         "pluginRegistry");
+    result.config.snPattern = resolveStringField(
+        result.config.snPattern, resolver, result, "snPattern");
+    result.config.snAllowedRegex = resolveStringField(
+        result.config.snAllowedRegex, resolver, result, "snAllowedRegex");
+    if (!result.config.snAllowedRegex.isEmpty()) {
+        const QRegularExpression expression(result.config.snAllowedRegex);
+        if (!expression.isValid()) {
+            addError(result,
+                     "snAllowedRegex",
+                     QString("Invalid SN regular expression: %1")
+                         .arg(expression.errorString()),
+                     "Use a valid expression such as ^[A-Z0-9]+$");
+        }
+    }
     result.config.metadata = resolveMapField(result.config.metadata, resolver, result, "metadata");
 
     if (!object.contains("devices")) {

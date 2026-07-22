@@ -1,0 +1,38 @@
+{
+  "stationId": "KORAD-PSU-01",
+  "name": "KORAD USB VISA Power Supply Station",
+  "stopOnFailure": true,
+  "scanDialogEnabled": false,
+  "snLength": 0,
+  "metadata": {
+    "order": "KORAD-PSU-VERIFY",
+    "tester": "Hardware Verification",
+    "jigNo": "USB-VISA"
+  },
+  "devices": [
+    {
+      "deviceId": "PPS1",
+      "deviceType": "PSU",
+      "driverId": "plugin.psu.korad",
+      "pluginPath": "${PROJECT_DIR}/templates/bin/Debug/PicoATE.PSU.KORAD.dll",
+      "address": "${KORAD_PSU_ADDRESS}",
+      "timeoutMs": 6000,
+      "lifetime": "Run",
+      "enabled": true,
+      "options": {
+        "ioTimeoutMs": 2000,
+        "commandDelayMs": 20,
+        "writeTermination": "",
+        "readTermination": "",
+        "clearOnConnect": false
+      }
+    },
+    {"deviceId":"PPS2","deviceType":"PSU","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"CAN1","deviceType":"CAN","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"CAN2","deviceType":"CAN","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"DMM1","deviceType":"DMM","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"DMM2","deviceType":"DMM","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"SCOPE1","deviceType":"SCOPE","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"SCOPE2","deviceType":"SCOPE","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}}
+  ]
+}

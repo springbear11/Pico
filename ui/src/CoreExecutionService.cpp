@@ -386,10 +386,23 @@ RunServiceResult CoreExecutionService::run(
 
         for (const auto& input : uutInputs) {
         auto uutVariables = input.variables;
+        if (!uutVariables.contains(QStringLiteral("sn"))) {
+            uutVariables.insert(QStringLiteral("sn"), input.uutId);
+        }
+        if (!uutVariables.contains(QStringLiteral("serialNumber"))) {
+            uutVariables.insert(QStringLiteral("serialNumber"), input.uutId);
+        }
         auto uutNamespace = uutVariables.value(QStringLiteral("uut")).toMap();
         uutNamespace.insert(QStringLiteral("id"), input.uutId);
         if (!uutNamespace.contains(QStringLiteral("sn"))) {
-            uutNamespace.insert(QStringLiteral("sn"), input.uutId);
+            uutNamespace.insert(
+                QStringLiteral("sn"),
+                uutVariables.value(QStringLiteral("sn"), input.uutId));
+        }
+        if (!uutNamespace.contains(QStringLiteral("serialNumber"))) {
+            uutNamespace.insert(
+                QStringLiteral("serialNumber"),
+                uutVariables.value(QStringLiteral("serialNumber"), input.uutId));
         }
         uutVariables.insert(QStringLiteral("uut"), uutNamespace);
 

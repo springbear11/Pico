@@ -101,6 +101,7 @@ private:
     QString m_logicalBaseId;
     QString m_loadedDeviceType;
     QString m_loadedDriverId;
+    QHash<int, bool> m_loadedChannelEnabled;
     QVector<QAbstractButton*> m_channelSwitches;
     QVector<OptionEditor> m_optionEditors;
     bool m_editable = true;
