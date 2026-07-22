@@ -1,4 +1,5 @@
-add_library(PicoATECore STATIC
+add_library(PicoATECore SHARED
+    include/PicoATE/Core/CoreExport.h
     src/BarrierController.cpp
     src/DllBridgeInvoker.cpp
     src/DeviceSessionManager.cpp
@@ -46,3 +47,45 @@ target_link_libraries(PicoATECore
 )
 
 target_compile_features(PicoATECore PUBLIC cxx_std_20)
+
+target_compile_definitions(PicoATECore
+    PRIVATE
+        PICOATE_CORE_BUILD
+)
+
+set_target_properties(PicoATECore
+    PROPERTIES
+        WINDOWS_EXPORT_ALL_SYMBOLS ON
+)
+
+# Keep the existing executable layout while allowing PicoATECore to be built
+# independently from its consumers. Building only PicoATECore refreshes the
+# runtime DLL beside every executable that may already exist in this build tree.
+if(WIN32)
+    set(PICOATE_CORE_RUNTIME_DIRECTORIES
+        "${CMAKE_BINARY_DIR}/src/cli/$<CONFIG>"
+        "${CMAKE_BINARY_DIR}/src/nativehost/$<CONFIG>"
+        "${CMAKE_BINARY_DIR}/tests/$<CONFIG>"
+        "${CMAKE_BINARY_DIR}/ui/src/$<CONFIG>"
+        "${CMAKE_BINARY_DIR}/ui/tests/$<CONFIG>"
+        # Paths used when ui/CMakeLists.txt is configured as a standalone project.
+        "${CMAKE_BINARY_DIR}/src/$<CONFIG>"
+    )
+
+    set(PICOATE_CORE_DEPLOY_COMMANDS)
+    foreach(PICOATE_CORE_RUNTIME_DIRECTORY IN LISTS PICOATE_CORE_RUNTIME_DIRECTORIES)
+        list(APPEND PICOATE_CORE_DEPLOY_COMMANDS
+            COMMAND "${CMAKE_COMMAND}" -E make_directory
+                    "${PICOATE_CORE_RUNTIME_DIRECTORY}"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "$<TARGET_FILE:PicoATECore>"
+                    "${PICOATE_CORE_RUNTIME_DIRECTORY}/"
+        )
+    endforeach()
+
+    add_custom_command(TARGET PicoATECore POST_BUILD
+        ${PICOATE_CORE_DEPLOY_COMMANDS}
+        COMMENT "Deploying PicoATECore DLL to Debug/Release runtime directories"
+        VERBATIM
+    )
+endif()

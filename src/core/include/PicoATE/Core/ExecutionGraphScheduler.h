@@ -80,6 +80,16 @@ private:
                                               const NodeId& testItemNodeId);
     bool isNodeOrDescendantOf(const NodeId& nodeId, const NodeId& rootNodeId) const;
     void activateCleanup(UutExecution& uut, const CleanupRegionId& cleanupRegionId);
+    bool cleanupRegionContainsNode(const CleanupRegion& region,
+                                   const NodeId& nodeId) const;
+    bool cleanupRegionIsActive(const CleanupRegion& region,
+                               const UutExecution& uut) const;
+    bool bestEffortCleanupApplies(const UutExecution& uut,
+                                  const NodeId& nodeId) const;
+    bool bestEffortCleanupEdgeActive(const UutExecution& uut,
+                                     const NodeId& from,
+                                     const NodeId& to) const;
+    bool finalizeBlockedCleanup(UutExecution& uut, const FrameId& frameId);
     void handleNodeFailureForBarriers(UutExecution& uut,
                                       const ExecNode& failedNode,
                                       const NodeResult& result,

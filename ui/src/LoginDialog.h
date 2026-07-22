@@ -16,7 +16,7 @@ struct StartupSelection {
     QString sequencePath;
     QString stationPath;
     bool scanDialogEnabled = true;
-    int snLength = 0;
+    SnValidationRules snValidationRules;
 };
 
 class LoginDialog final : public QDialog

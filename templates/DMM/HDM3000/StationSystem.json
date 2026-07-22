@@ -1,0 +1,24 @@
+{
+    "stationId":  "dmm-station",
+    "name":  "DMM VISA Station",
+    "devices":  [
+                    {
+                        "deviceId":  "DMM1",
+                        "deviceType":  "DMM",
+                        "driverId":  "plugin.dmm.hdm3000",
+                        "pluginPath":  "${PROJECT_DIR}/templates/bin/Debug/PicoATE.DMM.HDM3000.dll",
+                        "address":  "USB0::0x1A2B::0x0300::HDM3000-001::INSTR",
+                        "timeoutMs":  15000,
+                        "lifetime":  "Run",
+                        "enabled":  true,
+                        "options":  {
+                                        "visaLibrary":  "visa64.dll",
+                                        "ioTimeoutMs":  5000,
+                                        "commandDelayMs":  20,
+                                        "writeTermination":  "\\n",
+                                        "readTermination":  "\\n",
+                                        "clearOnConnect":  false
+                                    }
+                    }
+                ]
+}

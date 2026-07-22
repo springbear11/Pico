@@ -1,5 +1,5 @@
 {
-  "dll": "${PROJECT_DIR}/templates/bin/Debug/PicoATE.CAN.GCAN.dll",
+  "dll": "../../bin/Debug/PicoATE.CAN.GCAN.dll",
   "symbol": "PicoATE_Execute",
   "bufferSize": 65536,
   "dllTimeoutMs": 5000,

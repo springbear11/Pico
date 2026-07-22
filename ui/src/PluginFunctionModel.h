@@ -58,6 +58,7 @@ public:
     void setSelectedDeviceId(const QString& deviceId);
     QVector<PluginManifest> plugins() const;
     QString selectedDeviceId() const;
+    bool requiresDeviceSelection(const QModelIndex& index) const;
     QJsonObject stepTemplate(const QModelIndex& index) const;
 
 private:
@@ -68,6 +69,7 @@ private:
         int pluginIndex = -1;
         int functionIndex = -1;
         QString deviceId;
+        bool requiresDeviceSelection = false;
         QJsonObject stepTemplate;
         Item* parent = nullptr;
         std::vector<std::unique_ptr<Item>> children;

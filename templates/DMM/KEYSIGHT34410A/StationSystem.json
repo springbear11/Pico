@@ -1,0 +1,24 @@
+{
+    "stationId":  "dmm-station",
+    "name":  "DMM VISA Station",
+    "devices":  [
+                    {
+                        "deviceId":  "DMM1",
+                        "deviceType":  "DMM",
+                        "driverId":  "plugin.dmm.keysight34410a",
+                        "pluginPath":  "${PROJECT_DIR}/templates/bin/Debug/PicoATE.DMM.KEYSIGHT34410A.dll",
+                        "address":  "USB0::0x0957::0x0101::MY00000000::INSTR",
+                        "timeoutMs":  15000,
+                        "lifetime":  "Run",
+                        "enabled":  true,
+                        "options":  {
+                                        "visaLibrary":  "visa64.dll",
+                                        "ioTimeoutMs":  5000,
+                                        "commandDelayMs":  20,
+                                        "writeTermination":  "\\n",
+                                        "readTermination":  "\\n",
+                                        "clearOnConnect":  false
+                                    }
+                    }
+                ]
+}

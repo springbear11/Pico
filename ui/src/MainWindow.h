@@ -100,7 +100,7 @@ private:
     void runSequence();
     void runScannedUut(const QString& serialNumber);
     void showScanDialog();
-    void scanPlugins();
+    void scanPlugins(bool interactive = true);
     void loadPluginRegistry();
     void updatePluginDeviceBindings();
     void addStationDevice();
@@ -186,6 +186,7 @@ private:
     QAction* m_deleteStepAction = nullptr;
     QAction* m_copyStepAction = nullptr;
     QAction* m_pasteStepAction = nullptr;
+    QAction* m_findFlowFieldAction = nullptr;
     QAction* m_wrapTestItemAction = nullptr;
     QAction* m_enableStepsAction = nullptr;
     QAction* m_disableStepsAction = nullptr;
@@ -238,6 +239,7 @@ private:
     QProgressBar* m_adminProgress = nullptr;
     QTimer* m_adminElapsedTimer = nullptr;
     QTreeView* m_sequenceTreeView = nullptr;
+    QLineEdit* m_flowFieldSearch = nullptr;
     QTreeView* m_pluginFunctionView = nullptr;
     FlowTargetSelector* m_flowTargetSelector = nullptr;
     StepPropertyEditor* m_stepPropertyEditor = nullptr;
@@ -262,6 +264,7 @@ private:
     QStringList m_recentStations;
     QVector<QJsonObject> m_sequenceClipboard;
     SequenceItemPath m_selectedSequencePath;
+    QString m_selectedSequenceNodePath;
     QVector<SequenceItemPath> m_expandedSequencePaths;
     int m_sequenceTreeScrollValue = 0;
     int m_selectedStationDeviceRow = -1;
@@ -271,6 +274,8 @@ private:
     bool m_shuttingDown = false;
     bool m_handlingSequenceSelection = false;
     bool m_handlingStationSelection = false;
+    bool m_handlingWorkspaceTabChange = false;
+    int m_previousWorkspaceTabIndex = -1;
     bool m_sequenceTreeStatePending = false;
     bool m_expandSequenceTreeOnNextUpdate = true;
     bool m_loadingSequenceFile = false;

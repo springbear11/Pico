@@ -37,6 +37,7 @@ public:
     DeviceSessionManager& devices();
     const DeviceSessionManager& devices() const;
     bool registerModule(std::shared_ptr<IModule> module);
+    bool hasModule(const ModuleId& moduleId) const;
 
     void requestStop(StopMode mode = StopMode::Graceful);
     bool requestPause();

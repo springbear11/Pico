@@ -55,18 +55,16 @@ int channelIndex(const QJsonObject& device)
 QString canGroupKey(const QJsonObject& device, int row)
 {
     const auto driver = driverId(device);
-    const auto pluginPath = device.value(QStringLiteral("pluginPath"))
-                                .toString().trimmed().toLower();
     const auto options = device.value(QStringLiteral("options")).toObject();
     const auto hardwareId = options.value(QStringLiteral("hardwareId"))
                                 .toVariant().toString().trimmed().toLower();
     const auto serialNumber = options.value(QStringLiteral("serialNumber"))
                                   .toVariant().toString().trimmed().toLower();
-    if (driver.isEmpty() && pluginPath.isEmpty()) {
+    if (driver.isEmpty()) {
         return QStringLiteral("empty:%1").arg(row);
     }
-    return QStringLiteral("%1|%2|%3|%4|%5")
-        .arg(driver.toLower(), pluginPath)
+    return QStringLiteral("%1|%2|%3|%4")
+        .arg(driver.toLower())
         .arg(options.value(QStringLiteral("deviceIndex")).toInt())
         .arg(hardwareId, serialNumber);
 }

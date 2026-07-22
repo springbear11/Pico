@@ -62,6 +62,7 @@ endif()
 add_custom_target(PicoATECliPortable
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${PICOATE_CLI_PORTABLE_DIR}"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:PicoATECli>" "${PICOATE_CLI_PORTABLE_DIR}/"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:PicoATECore>" "${PICOATE_CLI_PORTABLE_DIR}/"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:PicoATEMockHost>" "${PICOATE_CLI_PORTABLE_DIR}/"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:PicoATEFakeInstrumentHost>" "${PICOATE_CLI_PORTABLE_DIR}/"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:PicoATENativeHost>" "${PICOATE_CLI_PORTABLE_DIR}/"
@@ -75,7 +76,7 @@ add_custom_target(PicoATECliPortable
             --no-opengl-sw
             --dir "${PICOATE_CLI_PORTABLE_DIR}"
             "$<TARGET_FILE:PicoATECli>"
-    DEPENDS PicoATECli PicoATEMockHost PicoATEFakeInstrumentHost PicoATENativeHost PicoATETestDllModule PicoATECanExampleModule
+    DEPENDS PicoATECli PicoATECore PicoATEMockHost PicoATEFakeInstrumentHost PicoATENativeHost PicoATETestDllModule PicoATECanExampleModule
     COMMENT "Creating a self-contained PicoATE CLI folder"
     VERBATIM
 )

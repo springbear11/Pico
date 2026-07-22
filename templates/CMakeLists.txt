@@ -42,9 +42,6 @@ function(picoate_add_plugin_category category entry_source)
             "${vendor_dir}/*.h"
             "${vendor_dir}/*.hpp"
         )
-        file(GLOB vendor_manifests CONFIGURE_DEPENDS
-            "${vendor_dir}/*.picoate-plugin.json"
-        )
         set(compilation_units ${vendor_sources})
         list(FILTER compilation_units INCLUDE REGEX "\\.(c|cc|cpp)$")
         if(NOT compilation_units)
@@ -84,17 +81,8 @@ function(picoate_add_plugin_category category entry_source)
             )
         endif()
 
-        foreach(manifest IN LISTS vendor_manifests)
-            add_custom_command(TARGET ${target_name} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        "${manifest}"
-                        "$<TARGET_FILE_DIR:${target_name}>"
-                COMMENT "Copying ${category}/${vendor} plugin catalog manifest"
-            )
-        endforeach()
-
         source_group(TREE "${category_dir}" PREFIX "${category}" FILES
-            ${category_headers} "${entry_source}" ${vendor_sources} ${vendor_manifests})
+            ${category_headers} "${entry_source}" ${vendor_sources})
         message(STATUS "Discovered plugin: ${category}/${vendor} -> PicoATE.${category}.${vendor}.dll")
     endforeach()
 endfunction()

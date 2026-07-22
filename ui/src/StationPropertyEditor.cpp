@@ -25,6 +25,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <utility>
 
 namespace PicoATE::Ui {
@@ -89,6 +90,14 @@ bool isCanDeviceScopedOption(const QString& key)
         QStringLiteral("hardwareId"),
         QStringLiteral("serialNumber")};
     return std::find(keys.cbegin(), keys.cend(), key) != keys.cend();
+}
+
+bool isTopLevelDeviceField(const QString& key)
+{
+    return key == QStringLiteral("deviceId") ||
+           key == QStringLiteral("channelIndex") ||
+           key == QStringLiteral("address") ||
+           key == QStringLiteral("visaAddress");
 }
 
 QWidget* scrollPage(QWidget* content, QWidget* parent)
@@ -448,6 +457,13 @@ void StationPropertyEditor::loadDevice()
         device, QStringLiteral("deviceType"), QStringLiteral("type")));
     m_loadedDriverId = valueWithAlias(
         device, QStringLiteral("driverId"), QStringLiteral("driver"));
+    m_loadedChannelEnabled.clear();
+    for (const int row : m_currentRows) {
+        const auto loadedDevice = m_document->deviceAt(row);
+        m_loadedChannelEnabled.insert(
+            optionChannelIndex(loadedDevice),
+            loadedDevice.value(QStringLiteral("enabled")).toBool(true));
+    }
 
     int typeIndex = m_deviceTypeCombo->findData(m_loadedDeviceType);
     if (typeIndex < 0 && !m_loadedDeviceType.isEmpty()) {
@@ -700,8 +716,7 @@ void StationPropertyEditor::rebuildOptionEditors()
     };
 
     for (const auto& definition : function->inputs) {
-        if (definition.key == QStringLiteral("deviceId") ||
-            definition.key == QStringLiteral("channelIndex")) {
+        if (isTopLevelDeviceField(definition.key)) {
             continue;
         }
         const bool perChannel = can &&
@@ -859,17 +874,9 @@ bool StationPropertyEditor::commitDevice()
         device.remove(QStringLiteral("type"));
         if (plugin) {
             device.insert(QStringLiteral("driverId"), plugin->moduleId);
-            const auto deployedPath = original.value(QStringLiteral("pluginPath"))
-                                          .toString().trimmed();
-            device.insert(
-                QStringLiteral("pluginPath"),
-                plugin->moduleId == m_loadedDriverId && !deployedPath.isEmpty()
-                    ? deployedPath
-                    : plugin->dllPath);
         } else {
             device.remove(QStringLiteral("driverId"));
             device.remove(QStringLiteral("driver"));
-            device.remove(QStringLiteral("pluginPath"));
         }
         if (m_addressEdit->isVisible()) {
             device.insert(QStringLiteral("address"),
@@ -884,6 +891,8 @@ bool StationPropertyEditor::commitDevice()
         device.insert(QStringLiteral("timeoutMs"), m_timeoutSpin->value());
         device.insert(QStringLiteral("enabled"), enabled);
         auto effectiveOptions = channelOptions.value(channel, sharedOptions);
+        effectiveOptions.remove(QStringLiteral("address"));
+        effectiveOptions.remove(QStringLiteral("visaAddress"));
         for (const auto& item : m_optionEditors) {
             if (item.channelIndex < 0 && sharedOptions.contains(item.definition.key)) {
                 effectiveOptions.insert(item.definition.key,
@@ -900,10 +909,24 @@ bool StationPropertyEditor::commitDevice()
     };
 
     QVector<QJsonObject> replacements;
+    std::optional<bool> externallyChangedEnabled;
+    for (const int row : m_currentRows) {
+        const auto currentDevice = m_document->deviceAt(row);
+        const int channel = optionChannelIndex(currentDevice);
+        const bool enabled = currentDevice.value(
+            QStringLiteral("enabled")).toBool(true);
+        if (m_loadedChannelEnabled.contains(channel) &&
+            m_loadedChannelEnabled.value(channel) != enabled) {
+            externallyChangedEnabled = enabled;
+            break;
+        }
+    }
     if (can) {
         for (int channel = 0; channel < m_channelSwitches.size(); ++channel) {
             replacements.push_back(makeDevice(
-                channel, m_channelSwitches[channel]->isChecked()));
+                channel,
+                externallyChangedEnabled.value_or(
+                    m_channelSwitches[channel]->isChecked())));
         }
     } else {
         replacements.push_back(makeDevice(
@@ -914,11 +937,20 @@ bool StationPropertyEditor::commitDevice()
     auto devices = root.value(QStringLiteral("devices")).toArray();
     auto sortedRows = m_currentRows;
     std::sort(sortedRows.begin(), sortedRows.end(), std::greater<int>());
-    const int insertionRow = *std::min_element(
-        m_currentRows.cbegin(), m_currentRows.cend());
     for (const int row : sortedRows) {
         if (row >= 0 && row < devices.size()) {
             devices.removeAt(row);
+        }
+    }
+    const auto selectedType = m_deviceTypeCombo->currentData().toString();
+    int insertionRow = devices.size();
+    for (int index = 0; index < devices.size(); ++index) {
+        const auto type = normalizedType(valueWithAlias(
+            devices[index].toObject(),
+            QStringLiteral("deviceType"),
+            QStringLiteral("type")));
+        if (type == selectedType) {
+            insertionRow = index + 1;
         }
     }
     for (int index = 0; index < replacements.size(); ++index) {

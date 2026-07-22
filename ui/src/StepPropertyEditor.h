@@ -55,8 +55,10 @@ private:
     void updateLimitRows();
     void updateLoopRows();
     void updateAdvancedJsonVisibility();
+    void rebuildFunctionChoices(const QString& selectedFunction = {});
     void rebuildDeviceChoices();
     void rebuildPluginInputEditors();
+    void refreshCanIdentifierHints();
     void observeDraftWidget(QWidget* widget);
     void markDraftDirty();
     void setDraftDirty(bool dirty);
@@ -65,7 +67,10 @@ private:
     void rebuildPromptCloseStepChoices(const QString& selectedPath);
     QString selectedPromptCloseStep() const;
     const PluginFunctionDefinition* currentPluginFunction() const;
-    bool mergePluginInputValues(QJsonObject& inputs, QString& errorMessage) const;
+    bool mergePluginInputValues(QJsonObject& inputs,
+                                QString& errorMessage,
+                                QWidget** invalidWidget = nullptr) const;
+    void flashValidationError(QWidget* widget);
     void showError(const QString& message);
 
     QPointer<SequenceDocument> m_document;
@@ -106,7 +111,7 @@ private:
 
     QFormLayout* m_dataForm = nullptr;
     QLineEdit* m_moduleIdEdit = nullptr;
-    QLineEdit* m_functionEdit = nullptr;
+    QComboBox* m_functionEdit = nullptr;
     QComboBox* m_deviceIdCombo = nullptr;
     QGroupBox* m_pluginInputsGroup = nullptr;
     QFormLayout* m_pluginInputsForm = nullptr;

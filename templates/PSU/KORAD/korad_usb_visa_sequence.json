@@ -1,0 +1,51 @@
+{
+  "id": "korad-usb-visa-test",
+  "name": "KORAD USB VISA Power Supply Verification",
+  "version": "0.1.0",
+  "groups": [
+    {
+      "id": "setup",
+      "kind": "setup",
+      "steps": [
+        {"id":"psu-open","name":"Open PPS1","kind":"action","moduleId":"device","function":"open","inputs":{"deviceId":"PPS1"}},
+        {"id":"psu-idn","name":"Read Power Supply Identity","kind":"action","moduleId":"device","function":"identity","inputs":{"deviceId":"PPS1"}},
+        {"id":"psu-unlock","name":"Unlock Front Panel","kind":"action","moduleId":"device","function":"setLock","inputs":{"deviceId":"PPS1","enabled":false}},
+        {"id":"psu-ovp","name":"Enable OVP","kind":"action","moduleId":"device","function":"setOvp","inputs":{"deviceId":"PPS1","enabled":true}},
+        {"id":"psu-ocp","name":"Enable OCP","kind":"action","moduleId":"device","function":"setOcp","inputs":{"deviceId":"PPS1","enabled":true}}
+      ]
+    },
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "001",
+          "name": "Configure And Verify CH1",
+          "kind": "testItem",
+          "steps": [
+            {"id":"01","key":"set-voltage","name":"Set CH1 Voltage To 5 V","kind":"action","moduleId":"device","function":"setVoltage","inputs":{"deviceId":"PPS1","channel":1,"voltage":5.0}},
+            {"id":"02","key":"set-current","name":"Set CH1 Current To 1 A","kind":"action","moduleId":"device","function":"setCurrent","inputs":{"deviceId":"PPS1","channel":1,"current":1.0}},
+            {"id":"03","key":"read-vset","name":"Read CH1 Voltage Setpoint","kind":"action","moduleId":"device","function":"getVoltageSetpoint","inputs":{"deviceId":"PPS1","channel":1}},
+            {"id":"04","key":"vset-limit","name":"Validate Voltage Setpoint","kind":"limit","inputs":{"actual":"${step:read-vset.outputs.voltage}"},"parameters":{"comparison":"between","expected":5.0,"tolerance":0.02,"unit":"V","measurementName":"PPS1_CH1_VSET"}},
+            {"id":"05","key":"read-iset","name":"Read CH1 Current Setpoint","kind":"action","moduleId":"device","function":"getCurrentSetpoint","inputs":{"deviceId":"PPS1","channel":1}},
+            {"id":"06","key":"iset-limit","name":"Validate Current Setpoint","kind":"limit","inputs":{"actual":"${step:read-iset.outputs.current}"},"parameters":{"comparison":"between","expected":1.0,"tolerance":0.02,"unit":"A","measurementName":"PPS1_CH1_ISET"}},
+            {"id":"07","key":"output-on","name":"Enable Output","kind":"action","moduleId":"device","function":"setOutput","inputs":{"deviceId":"PPS1","enabled":true}},
+            {"id":"08","key":"settle","name":"Wait For Output To Settle","kind":"wait","ms":300},
+            {"id":"09","key":"measure-voltage","name":"Measure CH1 Output Voltage","kind":"action","moduleId":"device","function":"measureVoltage","inputs":{"deviceId":"PPS1","channel":1}},
+            {"id":"10","key":"voltage-limit","name":"Validate Output Voltage","kind":"limit","inputs":{"actual":"${step:measure-voltage.outputs.voltage}"},"parameters":{"comparison":"between","expected":5.0,"tolerance":0.15,"unit":"V","measurementName":"PPS1_CH1_VOUT"}},
+            {"id":"11","key":"measure-current","name":"Measure CH1 Output Current","kind":"action","moduleId":"device","function":"measureCurrent","inputs":{"deviceId":"PPS1","channel":1}},
+            {"id":"12","key":"status","name":"Read Power Supply Status","kind":"action","moduleId":"device","function":"readStatus","inputs":{"deviceId":"PPS1"}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {"id":"psu-output-off","name":"Disable Power Supply Output","kind":"cleanup","moduleId":"device","function":"setOutput","inputs":{"deviceId":"PPS1","enabled":false}},
+        {"id":"psu-close","name":"Close PPS1","kind":"cleanup","moduleId":"device","function":"close","inputs":{"deviceId":"PPS1"}}
+      ]
+    }
+  ]
+}

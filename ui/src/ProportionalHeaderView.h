@@ -14,6 +14,7 @@ public:
     explicit ProportionalHeaderView(QWidget* parent = nullptr);
 
     void setSectionWeights(QVector<int> weights);
+    void redistributeSections();
 
 protected:
     void resizeEvent(QResizeEvent* event) override;

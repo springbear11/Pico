@@ -124,7 +124,7 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
     m_logModel = new RuntimeTimelineModel(this);
     m_runArtifactWriter = std::make_unique<RunArtifactWriter>();
     m_scanDialog = new ScanDialog(this);
-    m_scanDialog->setExpectedLength(m_selection.snLength);
+    m_scanDialog->setValidationRules(m_selection.snValidationRules);
     buildUi();
 
     connect(m_viewModel, &ExecutionViewModel::stateChanged,
@@ -658,6 +658,7 @@ void ProductionWindow::beginRun(const QString& serialNumber)
     updateProgress();
     QVariantMap variables;
     variables.insert(QStringLiteral("sn"), sn);
+    variables.insert(QStringLiteral("serialNumber"), sn);
     m_viewModel->runUut(sn, variables);
 }
 

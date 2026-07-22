@@ -320,6 +320,11 @@ bool ExecutionSession::registerModule(std::shared_ptr<IModule> module)
     return m_runner.registerModule(std::move(module));
 }
 
+bool ExecutionSession::hasModule(const ModuleId& moduleId) const
+{
+    return m_runner.modules().contains(moduleId);
+}
+
 void ExecutionSession::requestStop(StopMode mode)
 {
     m_stopToken->requestStop(mode);

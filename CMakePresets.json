@@ -30,6 +30,23 @@
       "configuration": "Debug"
     },
     {
+      "name": "vs2022-qt6-release",
+      "configurePreset": "vs2022-qt6",
+      "configuration": "Release"
+    },
+    {
+      "name": "vs2022-qt6-core-debug",
+      "configurePreset": "vs2022-qt6-all",
+      "configuration": "Debug",
+      "targets": ["PicoATECore"]
+    },
+    {
+      "name": "vs2022-qt6-core-release",
+      "configurePreset": "vs2022-qt6-all",
+      "configuration": "Release",
+      "targets": ["PicoATECore"]
+    },
+    {
       "name": "vs2022-qt6-all-debug",
       "configurePreset": "vs2022-qt6-all",
       "configuration": "Debug"
@@ -51,6 +68,14 @@
       "name": "vs2022-qt6-debug",
       "configurePreset": "vs2022-qt6",
       "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "vs2022-qt6-release",
+      "configurePreset": "vs2022-qt6",
+      "configuration": "Release",
       "output": {
         "outputOnFailure": true
       }

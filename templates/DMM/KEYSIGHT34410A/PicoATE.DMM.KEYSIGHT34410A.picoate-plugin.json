@@ -1,0 +1,486 @@
+{
+    "category":  "DMM",
+    "functions":  [
+                      {
+                          "description":  "Open the VISA resource configured by Station",
+                          "id":  "open",
+                          "inputs":  [
+                                         {
+                                             "key":  "address",
+                                             "name":  "VISA Resource",
+                                             "required":  true,
+                                             "type":  "string"
+                                         },
+                                         {
+                                             "default":  "visa64.dll",
+                                             "key":  "visaLibrary",
+                                             "name":  "VISA Runtime",
+                                             "type":  "string"
+                                         },
+                                         {
+                                             "default":  5000,
+                                             "key":  "ioTimeoutMs",
+                                             "maximum":  600000,
+                                             "minimum":  1,
+                                             "name":  "VISA I/O Timeout",
+                                             "type":  "integer",
+                                             "unit":  "ms"
+                                         },
+                                         {
+                                             "default":  20,
+                                             "key":  "commandDelayMs",
+                                             "maximum":  10000,
+                                             "minimum":  0,
+                                             "name":  "Command Delay",
+                                             "type":  "integer",
+                                             "unit":  "ms"
+                                         },
+                                         {
+                                             "default":  "\\n",
+                                             "key":  "writeTermination",
+                                             "name":  "Write Termination",
+                                             "type":  "string"
+                                         },
+                                         {
+                                             "default":  "\\n",
+                                             "key":  "readTermination",
+                                             "name":  "Read Termination",
+                                             "type":  "string"
+                                         }
+                                     ],
+                          "name":  "Open Keysight 34410A",
+                          "outputs":  [
+                                          {
+                                              "key":  "connected",
+                                              "name":  "Connected",
+                                              "type":  "boolean"
+                                          }
+                                      ],
+                          "stepKind":  "action",
+                          "timeoutMs":  10000
+                      },
+                      {
+                          "description":  "Send *IDN?",
+                          "id":  "identity",
+                          "inputs":  [
+
+                                     ],
+                          "name":  "Read Identity",
+                          "outputs":  [
+                                          {
+                                              "key":  "identity",
+                                              "name":  "Identity",
+                                              "type":  "string"
+                                          }
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "Send *RST",
+                          "id":  "reset",
+                          "inputs":  [
+
+                                     ],
+                          "name":  "Reset DMM",
+                          "outputs":  [
+
+                                      ],
+                          "timeoutMs":  10000
+                      },
+                      {
+                          "description":  "Clear VISA/SCPI status",
+                          "id":  "clear",
+                          "inputs":  [
+
+                                     ],
+                          "name":  "Clear DMM Status",
+                          "outputs":  [
+
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "CONF:VOLT:DC and SENS:VOLT:DC:NPLC",
+                          "id":  "configureDcv",
+                          "inputs":  [
+                                         {
+                                             "default":  0.0,
+                                             "key":  "range",
+                                             "minimum":  0.0,
+                                             "name":  "Range",
+                                             "type":  "number",
+                                             "unit":  "V"
+                                         },
+                                         {
+                                             "default":  10.0,
+                                             "key":  "nplc",
+                                             "maximum":  100.0,
+                                             "minimum":  0.02,
+                                             "name":  "NPLC",
+                                             "type":  "number"
+                                         }
+                                     ],
+                          "name":  "Configure DC Voltage",
+                          "outputs":  [
+                                          {
+                                              "key":  "configured",
+                                              "name":  "Configured",
+                                              "type":  "boolean"
+                                          }
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "CONF:VOLT:AC and SENS:VOLT:AC:NPLC",
+                          "id":  "configureAcv",
+                          "inputs":  [
+                                         {
+                                             "default":  0.0,
+                                             "key":  "range",
+                                             "minimum":  0.0,
+                                             "name":  "Range",
+                                             "type":  "number",
+                                             "unit":  "V"
+                                         },
+                                         {
+                                             "default":  10.0,
+                                             "key":  "nplc",
+                                             "maximum":  100.0,
+                                             "minimum":  0.02,
+                                             "name":  "NPLC",
+                                             "type":  "number"
+                                         }
+                                     ],
+                          "name":  "Configure AC Voltage",
+                          "outputs":  [
+                                          {
+                                              "key":  "configured",
+                                              "name":  "Configured",
+                                              "type":  "boolean"
+                                          }
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "CONF:CURR:DC and SENS:CURR:DC:NPLC",
+                          "id":  "configureDci",
+                          "inputs":  [
+                                         {
+                                             "default":  0.0,
+                                             "key":  "range",
+                                             "minimum":  0.0,
+                                             "name":  "Range",
+                                             "type":  "number",
+                                             "unit":  "A"
+                                         },
+                                         {
+                                             "default":  10.0,
+                                             "key":  "nplc",
+                                             "maximum":  100.0,
+                                             "minimum":  0.02,
+                                             "name":  "NPLC",
+                                             "type":  "number"
+                                         }
+                                     ],
+                          "name":  "Configure DC Current",
+                          "outputs":  [
+                                          {
+                                              "key":  "configured",
+                                              "name":  "Configured",
+                                              "type":  "boolean"
+                                          }
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "CONF:CURR:AC and SENS:CURR:AC:NPLC",
+                          "id":  "configureAci",
+                          "inputs":  [
+                                         {
+                                             "default":  0.0,
+                                             "key":  "range",
+                                             "minimum":  0.0,
+                                             "name":  "Range",
+                                             "type":  "number",
+                                             "unit":  "A"
+                                         },
+                                         {
+                                             "default":  10.0,
+                                             "key":  "nplc",
+                                             "maximum":  100.0,
+                                             "minimum":  0.02,
+                                             "name":  "NPLC",
+                                             "type":  "number"
+                                         }
+                                     ],
+                          "name":  "Configure AC Current",
+                          "outputs":  [
+                                          {
+                                              "key":  "configured",
+                                              "name":  "Configured",
+                                              "type":  "boolean"
+                                          }
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "CONF:RES and SENS:RES:NPLC",
+                          "id":  "configureResistance2w",
+                          "inputs":  [
+                                         {
+                                             "default":  0.0,
+                                             "key":  "range",
+                                             "minimum":  0.0,
+                                             "name":  "Range",
+                                             "type":  "number",
+                                             "unit":  "Ohm"
+                                         },
+                                         {
+                                             "default":  10.0,
+                                             "key":  "nplc",
+                                             "maximum":  100.0,
+                                             "minimum":  0.02,
+                                             "name":  "NPLC",
+                                             "type":  "number"
+                                         }
+                                     ],
+                          "name":  "Configure 2-Wire Resistance",
+                          "outputs":  [
+                                          {
+                                              "key":  "configured",
+                                              "name":  "Configured",
+                                              "type":  "boolean"
+                                          }
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "CONF:FRES and SENS:FRES:NPLC",
+                          "id":  "configureResistance4w",
+                          "inputs":  [
+                                         {
+                                             "default":  0.0,
+                                             "key":  "range",
+                                             "minimum":  0.0,
+                                             "name":  "Range",
+                                             "type":  "number",
+                                             "unit":  "Ohm"
+                                         },
+                                         {
+                                             "default":  10.0,
+                                             "key":  "nplc",
+                                             "maximum":  100.0,
+                                             "minimum":  0.02,
+                                             "name":  "NPLC",
+                                             "type":  "number"
+                                         }
+                                     ],
+                          "name":  "Configure 4-Wire Resistance",
+                          "outputs":  [
+                                          {
+                                              "key":  "configured",
+                                              "name":  "Configured",
+                                              "type":  "boolean"
+                                          }
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "CONF:FREQ and SENS:FREQ:APER",
+                          "id":  "configureFrequency",
+                          "inputs":  [
+                                         {
+                                             "default":  0.0,
+                                             "key":  "range",
+                                             "minimum":  0.0,
+                                             "name":  "Range",
+                                             "type":  "number",
+                                             "unit":  "Hz"
+                                         },
+                                         {
+                                             "default":  0.1,
+                                             "key":  "aperture",
+                                             "maximum":  1.0,
+                                             "minimum":  0.01,
+                                             "name":  "Aperture",
+                                             "type":  "number",
+                                             "unit":  "s"
+                                         }
+                                     ],
+                          "name":  "Configure Frequency",
+                          "outputs":  [
+                                          {
+                                              "key":  "configured",
+                                              "name":  "Configured",
+                                              "type":  "boolean"
+                                          }
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "CONF:PER and SENS:PER:APER",
+                          "id":  "configurePeriod",
+                          "inputs":  [
+                                         {
+                                             "default":  0.0,
+                                             "key":  "range",
+                                             "minimum":  0.0,
+                                             "name":  "Range",
+                                             "type":  "number",
+                                             "unit":  "s"
+                                         },
+                                         {
+                                             "default":  0.1,
+                                             "key":  "aperture",
+                                             "maximum":  1.0,
+                                             "minimum":  0.01,
+                                             "name":  "Aperture",
+                                             "type":  "number",
+                                             "unit":  "s"
+                                         }
+                                     ],
+                          "name":  "Configure Period",
+                          "outputs":  [
+                                          {
+                                              "key":  "configured",
+                                              "name":  "Configured",
+                                              "type":  "boolean"
+                                          }
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "CONF:DIOD",
+                          "id":  "configureDiode",
+                          "inputs":  [
+
+                                     ],
+                          "name":  "Configure Diode",
+                          "outputs":  [
+                                          {
+                                              "key":  "configured",
+                                              "name":  "Configured",
+                                              "type":  "boolean"
+                                          }
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "CONF:CONT",
+                          "id":  "configureContinuity",
+                          "inputs":  [
+
+                                     ],
+                          "name":  "Configure Continuity",
+                          "outputs":  [
+                                          {
+                                              "key":  "configured",
+                                              "name":  "Configured",
+                                              "type":  "boolean"
+                                          }
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "CONF:CAP",
+                          "id":  "configureCapacitance",
+                          "inputs":  [
+                                         {
+                                             "default":  0.0,
+                                             "key":  "range",
+                                             "minimum":  0.0,
+                                             "name":  "Range",
+                                             "type":  "number",
+                                             "unit":  "F"
+                                         }
+                                     ],
+                          "name":  "Configure Capacitance",
+                          "outputs":  [
+                                          {
+                                              "key":  "configured",
+                                              "name":  "Configured",
+                                              "type":  "boolean"
+                                          }
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "Trigger and read using READ?",
+                          "id":  "read",
+                          "inputs":  [
+
+                                     ],
+                          "name":  "Read Measurement",
+                          "outputs":  [
+                                          {
+                                              "key":  "value",
+                                              "name":  "Measurement",
+                                              "type":  "number"
+                                          }
+                                      ],
+                          "timeoutMs":  10000
+                      },
+                      {
+                          "description":  "Write command and return response",
+                          "id":  "query",
+                          "inputs":  [
+                                         {
+                                             "key":  "command",
+                                             "name":  "SCPI Command",
+                                             "required":  true,
+                                             "type":  "string"
+                                         }
+                                     ],
+                          "name":  "Send SCPI Query",
+                          "outputs":  [
+                                          {
+                                              "key":  "response",
+                                              "name":  "Response",
+                                              "type":  "string"
+                                          }
+                                      ],
+                          "timeoutMs":  10000
+                      },
+                      {
+                          "description":  "Write command without readback",
+                          "id":  "write",
+                          "inputs":  [
+                                         {
+                                             "key":  "command",
+                                             "name":  "SCPI Command",
+                                             "required":  true,
+                                             "type":  "string"
+                                         }
+                                     ],
+                          "name":  "Send SCPI Command",
+                          "outputs":  [
+
+                                      ],
+                          "timeoutMs":  5000
+                      },
+                      {
+                          "description":  "Close VISA session",
+                          "id":  "close",
+                          "inputs":  [
+
+                                     ],
+                          "name":  "Close Keysight 34410A",
+                          "outputs":  [
+                                          {
+                                              "key":  "connected",
+                                              "name":  "Connected",
+                                              "type":  "boolean"
+                                          }
+                                      ],
+                          "stepKind":  "cleanup",
+                          "timeoutMs":  5000
+                      }
+                  ],
+    "moduleId":  "plugin.dmm.keysight34410a",
+    "name":  "Keysight KEYSIGHT34410A VISA DMM",
+    "pluginId":  "picoate.dmm.keysight34410a",
+    "schema":  "picoate.plugin",
+    "schemaVersion":  1,
+    "vendor":  "Keysight",
+    "version":  "1.0.0"
+}

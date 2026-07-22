@@ -109,6 +109,12 @@ target_compile_definitions(PicoATEUi
         PICOATE_PROJECT_DIR="${PICOATE_ROOT_DIR}"
 )
 
+add_custom_command(TARGET PicoATEUi POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:PicoATEUi>/plugins"
+    COMMENT "Ensuring the shared plugins directory exists"
+)
+
 if(TARGET PicoATENativeHost)
     add_dependencies(PicoATEUi PicoATENativeHost)
     add_custom_command(TARGET PicoATEUi POST_BUILD

@@ -129,7 +129,7 @@ Qt::ItemFlags PluginFunctionModel::flags(const QModelIndex& modelIndex) const
     auto result = QAbstractItemModel::flags(modelIndex);
     const auto* item = itemForIndex(modelIndex);
     if (item && item->kind == ItemKind::Function) {
-        if (!item->stepTemplate.isEmpty() || !item->deviceId.isEmpty()) {
+        if (!item->stepTemplate.isEmpty() || item->pluginIndex >= 0) {
             result |= Qt::ItemIsDragEnabled;
         }
     }
@@ -149,7 +149,10 @@ QMimeData* PluginFunctionModel::mimeData(const QModelIndexList& indexes) const
             item->kind != ItemKind::Function) {
             continue;
         }
-        if (item->stepTemplate.isEmpty() && item->deviceId.isEmpty()) {
+        if (item->requiresDeviceSelection) {
+            return nullptr;
+        }
+        if (item->stepTemplate.isEmpty() && item->pluginIndex < 0) {
             continue;
         }
         const auto step = stepTemplate(modelIndex);
@@ -214,6 +217,14 @@ QVector<PluginManifest> PluginFunctionModel::plugins() const
 QString PluginFunctionModel::selectedDeviceId() const
 {
     return m_selectedDeviceId;
+}
+
+bool PluginFunctionModel::requiresDeviceSelection(
+    const QModelIndex& modelIndex) const
+{
+    const auto* item = itemForIndex(modelIndex);
+    return item && item->kind == ItemKind::Function &&
+           item->requiresDeviceSelection;
 }
 
 QJsonObject PluginFunctionModel::stepTemplate(const QModelIndex& modelIndex) const
@@ -359,55 +370,111 @@ void PluginFunctionModel::rebuild()
             break;
         }
     }
+    QString selectedCategoryKey;
+    if (!selectedModuleId.isEmpty()) {
+        for (const auto& plugin : std::as_const(m_plugins)) {
+            if (plugin.moduleId.compare(selectedModuleId,
+                                        Qt::CaseInsensitive) == 0) {
+                selectedCategoryKey = plugin.category.trimmed().toLower();
+                break;
+            }
+        }
+    }
 
-    const auto pluginIterator = std::find_if(
-        m_plugins.cbegin(), m_plugins.cend(),
-        [&](const PluginManifest& plugin) {
-            return plugin.moduleId == selectedModuleId;
-        });
-    if (m_selectedDeviceId.isEmpty() || selectedModuleId.isEmpty() ||
-        pluginIterator == m_plugins.cend()) {
+    if (m_plugins.isEmpty()) {
         auto placeholder = std::make_unique<Item>();
         placeholder->kind = ItemKind::Plugin;
-        placeholder->text = m_selectedDeviceId.isEmpty()
-            ? tr("Select a configured target device")
-            : tr("No plugin available for %1").arg(m_selectedDeviceId);
-        placeholder->tooltip = tr(
-            "Choose a configured Station device before dragging plugin functions");
+        placeholder->text = tr("No scanned plugins");
+        placeholder->tooltip = tr("Use Scan Plugins to load plugin functions");
         placeholder->parent = pluginSectionPointer;
         pluginSectionPointer->children.push_back(std::move(placeholder));
         return;
     }
 
-    const int pluginIndex = static_cast<int>(std::distance(
-        m_plugins.cbegin(), pluginIterator));
-    const auto& plugin = *pluginIterator;
-    auto category = std::make_unique<Item>();
-    category->kind = ItemKind::Category;
-    category->text = plugin.category;
-    category->tooltip = tr("%1 functions for %2 using %3")
-                            .arg(plugin.category, m_selectedDeviceId,
-                                 plugin.name);
-    category->parent = pluginSectionPointer;
-    auto* categoryPointer = category.get();
-    pluginSectionPointer->children.push_back(std::move(category));
+    QHash<QString, Item*> categories;
+    QHash<QString, QHash<QString, Item*>> functionsByCategory;
+    for (int pluginIndex = 0; pluginIndex < m_plugins.size(); ++pluginIndex) {
+        const auto& plugin = m_plugins[pluginIndex];
+        const auto categoryName = plugin.category.trimmed().isEmpty()
+            ? tr("Other") : plugin.category.trimmed();
+        const auto categoryKey = categoryName.toLower();
+        if (!m_selectedDeviceId.isEmpty() &&
+            categoryKey != selectedCategoryKey) {
+            continue;
+        }
+        bool pluginHasBoundDevice = false;
+        for (auto iterator = m_devicesByModuleId.constBegin();
+             iterator != m_devicesByModuleId.constEnd(); ++iterator) {
+            if (iterator.key().compare(plugin.moduleId,
+                                       Qt::CaseInsensitive) == 0 &&
+                !iterator.value().isEmpty()) {
+                pluginHasBoundDevice = true;
+                break;
+            }
+        }
+        auto* categoryPointer = categories.value(categoryKey);
+        if (!categoryPointer) {
+            auto category = std::make_unique<Item>();
+            category->kind = ItemKind::Category;
+            category->text = categoryName;
+            category->tooltip = tr("Scanned %1 plugin functions").arg(categoryName);
+            category->parent = pluginSectionPointer;
+            categoryPointer = category.get();
+            pluginSectionPointer->children.push_back(std::move(category));
+            categories.insert(categoryKey, categoryPointer);
+        }
 
-    for (int functionIndex = 0;
-         functionIndex < plugin.functions.size(); ++functionIndex) {
-        const auto& function = plugin.functions[functionIndex];
-        auto functionItem = std::make_unique<Item>();
-        functionItem->kind = ItemKind::Function;
-        functionItem->text = function.name;
-        functionItem->tooltip = function.description.isEmpty()
-            ? tr("Function: %1").arg(function.id)
-            : function.description;
-        functionItem->tooltip += tr("\nTarget: %1\nDriver: %2")
-                                     .arg(m_selectedDeviceId, plugin.name);
-        functionItem->pluginIndex = pluginIndex;
-        functionItem->functionIndex = functionIndex;
-        functionItem->deviceId = m_selectedDeviceId;
-        functionItem->parent = categoryPointer;
-        categoryPointer->children.push_back(std::move(functionItem));
+        const bool selectedDeviceUsesPlugin = !m_selectedDeviceId.isEmpty() &&
+            selectedModuleId.compare(plugin.moduleId, Qt::CaseInsensitive) == 0;
+        for (int functionIndex = 0;
+             functionIndex < plugin.functions.size(); ++functionIndex) {
+            const auto& function = plugin.functions[functionIndex];
+            const auto functionKey = function.id.trimmed().toLower();
+            auto* existing = functionsByCategory[categoryKey].value(functionKey);
+            if (existing) {
+                existing->requiresDeviceSelection =
+                    existing->requiresDeviceSelection ||
+                    (m_selectedDeviceId.isEmpty() && pluginHasBoundDevice);
+                const bool existingMatchesTarget = !existing->deviceId.isEmpty();
+                if (!selectedDeviceUsesPlugin || existingMatchesTarget) {
+                    continue;
+                }
+                existing->text = function.name;
+                existing->tooltip = function.description;
+                existing->pluginIndex = pluginIndex;
+                existing->functionIndex = functionIndex;
+                existing->deviceId = m_selectedDeviceId;
+                existing->requiresDeviceSelection = false;
+                existing->tooltip += tr("\nTarget: %1\nDriver module: %2")
+                                         .arg(m_selectedDeviceId, plugin.moduleId);
+                continue;
+            }
+
+            auto functionItem = std::make_unique<Item>();
+            functionItem->kind = ItemKind::Function;
+            functionItem->text = function.name;
+            functionItem->tooltip = function.description.isEmpty()
+                ? tr("Function: %1").arg(function.id)
+                : function.description;
+            functionItem->tooltip += selectedDeviceUsesPlugin
+                ? tr("\nTarget: %1\nModule: %2")
+                      .arg(m_selectedDeviceId, plugin.moduleId)
+                : tr("\nDirect plugin call\nModule: %1").arg(plugin.moduleId);
+            functionItem->pluginIndex = pluginIndex;
+            functionItem->functionIndex = functionIndex;
+            functionItem->deviceId = selectedDeviceUsesPlugin
+                ? m_selectedDeviceId : QString{};
+            functionItem->requiresDeviceSelection =
+                m_selectedDeviceId.isEmpty() && pluginHasBoundDevice;
+            if (functionItem->requiresDeviceSelection) {
+                functionItem->tooltip +=
+                    tr("\nSelect a target device above before dragging this function");
+            }
+            functionItem->parent = categoryPointer;
+            auto* functionPointer = functionItem.get();
+            categoryPointer->children.push_back(std::move(functionItem));
+            functionsByCategory[categoryKey].insert(functionKey, functionPointer);
+        }
     }
 }
 

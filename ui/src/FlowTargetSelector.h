@@ -35,6 +35,7 @@ public:
     QString currentDeviceId() const;
     QString currentTargetId() const;
     bool selectTarget(const QString& targetId);
+    void showSelectionRequired();
 
 signals:
     void targetChanged(const QString& targetId);
@@ -44,6 +45,7 @@ private:
     const FlowTargetDevice* deviceForTarget(const QString& targetId) const;
     void selectDevice(const QString& logicalId,
                       const QString& preferredTarget = {});
+    void toggleDevice(const QString& logicalId);
     void rebuildShortcuts();
     void rebuildChannels();
     void rebuildMoreMenu();

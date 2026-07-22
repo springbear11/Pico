@@ -43,12 +43,16 @@ private:
     QLineEdit* m_stationNameEdit = nullptr;
     QAbstractButton* m_stopOnFailureSwitch = nullptr;
     QAbstractButton* m_scanDialogSwitch = nullptr;
+    QAbstractButton* m_loopTestSwitch = nullptr;
+    QSpinBox* m_loopTestCountSpin = nullptr;
     QAbstractButton* m_txtLogSwitch = nullptr;
     QAbstractButton* m_csvReportSwitch = nullptr;
     QAbstractButton* m_xlsxReportSwitch = nullptr;
     QLineEdit* m_reportOutputEdit = nullptr;
     QPushButton* m_browseReportOutputButton = nullptr;
     QSpinBox* m_snLengthSpin = nullptr;
+    QLineEdit* m_snPatternEdit = nullptr;
+    QLineEdit* m_snAllowedRegexEdit = nullptr;
     QLineEdit* m_jigNoEdit = nullptr;
     QLineEdit* m_orderEdit = nullptr;
     QLineEdit* m_testerEdit = nullptr;

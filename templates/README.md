@@ -56,10 +56,10 @@ bin/Debug/PicoATE.CAN.CX.dll
 bin/Release/...
 ```
 
-厂商目录可同时提供 `<插件名>.picoate-plugin.json`。构建 DLL 后，CMake 会自动把该
-清单复制到 DLL 输出目录，Admin 流程编辑器据此显示插件分类、功能、输入参数和输出。
-详细格式见 `../docs/插件功能清单规范.md`。功能清单只服务编辑器，不替代 NativeHost
-清单或 Sequence 的 `moduleBindings`。
+插件功能由 DLL 自己的 `PicoATE_Describe` 导出，不再维护旁车
+`*.picoate-plugin.json`。把 DLL 和厂家运行库放入应用的 `plugins/` 目录后，在 Admin
+界面执行 `Scan Plugins`，统一生成 `plugins/PluginRegistry.json`。详细格式见
+`../docs/插件功能清单规范.md`。
 
 ## 新增插件
 

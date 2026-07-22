@@ -2,6 +2,16 @@
 Config: Using QtTest library 6.9.1, Qt 6.9.1 (x86_64-little_endian-llp64 shared (dynamic) debug build; by MSVC 2022), windows 11
 INFO   : CoreTests::initTestCase() entering
 PASS   : CoreTests::initTestCase()
+INFO   : CoreTests::deviceSessionManagerReusesConnectedSession() entering
+PASS   : CoreTests::deviceSessionManagerReusesConnectedSession()
+INFO   : CoreTests::deviceSessionManagerReportsMissingFactoryAndConnectFailure() entering
+PASS   : CoreTests::deviceSessionManagerReportsMissingFactoryAndConnectFailure()
+INFO   : CoreTests::stationConfigParsesDevicesAndConfiguresSessionManager() entering
+PASS   : CoreTests::stationConfigParsesDevicesAndConfiguresSessionManager()
+INFO   : CoreTests::stationConfigReportsDeviceErrors() entering
+PASS   : CoreTests::stationConfigReportsDeviceErrors()
+INFO   : CoreTests::stationRuntimeLoadsStationConfig() entering
+PASS   : CoreTests::stationRuntimeLoadsStationConfig()
 INFO   : CoreTests::resourceManagerSerializesWaiters() entering
 PASS   : CoreTests::resourceManagerSerializesWaiters()
 INFO   : CoreTests::barrierControllerReleasesOnlyThroughDecision() entering
@@ -12,12 +22,80 @@ INFO   : CoreTests::nodeRunnerRunsRegisteredModuleAndMapsModuleResult() entering
 PASS   : CoreTests::nodeRunnerRunsRegisteredModuleAndMapsModuleResult()
 INFO   : CoreTests::nodeRunnerReportsMissingModule() entering
 PASS   : CoreTests::nodeRunnerReportsMissingModule()
+INFO   : CoreTests::moduleTransportJsonSerializesRequestAndResponse() entering
+PASS   : CoreTests::moduleTransportJsonSerializesRequestAndResponse()
+INFO   : CoreTests::pluginLogHandlesEmptyCallbackAndMixedValues() entering
+PASS   : CoreTests::pluginLogHandlesEmptyCallbackAndMixedValues()
+INFO   : CoreTests::variableResolverResolvesBuiltInsExplicitVariablesAndEnvironment() entering
+PASS   : CoreTests::variableResolverResolvesBuiltInsExplicitVariablesAndEnvironment()
+INFO   : CoreTests::variableResolverRecursivelyResolvesVariantContainers() entering
+PASS   : CoreTests::variableResolverRecursivelyResolvesVariantContainers()
+INFO   : CoreTests::runtimeVariableResolverPreservesTypesAndInterpolatesStrings() entering
+PASS   : CoreTests::runtimeVariableResolverPreservesTypesAndInterpolatesStrings()
+INFO   : CoreTests::nodeRunnerResolvesRuntimeVariablesBeforeModuleExecution() entering
+PASS   : CoreTests::nodeRunnerResolvesRuntimeVariablesBeforeModuleExecution()
+INFO   : CoreTests::moduleBindingRegistrarReportsVariableResolutionErrors() entering
+PASS   : CoreTests::moduleBindingRegistrarReportsVariableResolutionErrors()
 INFO   : CoreTests::transportModuleAdapterMapsSuccessfulResponse() entering
 PASS   : CoreTests::transportModuleAdapterMapsSuccessfulResponse()
 INFO   : CoreTests::transportModuleAdapterMapsTimeout() entering
 PASS   : CoreTests::transportModuleAdapterMapsTimeout()
 INFO   : CoreTests::transportModuleAdapterMapsTransportError() entering
 PASS   : CoreTests::transportModuleAdapterMapsTransportError()
+INFO   : CoreTests::qProcessTransportCallsMockHost() entering
+PASS   : CoreTests::qProcessTransportCallsMockHost()
+INFO   : CoreTests::qProcessTransportTimesOutMockHost() entering
+PASS   : CoreTests::qProcessTransportTimesOutMockHost()
+INFO   : CoreTests::qProcessTransportReportsHostExitError() entering
+PASS   : CoreTests::qProcessTransportReportsHostExitError()
+INFO   : CoreTests::persistentQProcessTransportReusesHostStateAcrossCalls() entering
+PASS   : CoreTests::persistentQProcessTransportReusesHostStateAcrossCalls()
+INFO   : CoreTests::persistentInstrumentHostReportsHealthReconnectAndShutdown() entering
+PASS   : CoreTests::persistentInstrumentHostReportsHealthReconnectAndShutdown()
+INFO   : CoreTests::moduleRuntimeServicesInvokesTransportDeviceSession() entering
+PASS   : CoreTests::moduleRuntimeServicesInvokesTransportDeviceSession()
+INFO   : CoreTests::executionSessionRunsActionThroughQProcessTransport() entering
+PASS   : CoreTests::executionSessionRunsActionThroughQProcessTransport()
+INFO   : CoreTests::dllBridgeInvokerCallsTestDll() entering
+PASS   : CoreTests::dllBridgeInvokerCallsTestDll()
+INFO   : CoreTests::dllBridgeInvokerStreamsPluginLogs() entering
+PASS   : CoreTests::dllBridgeInvokerStreamsPluginLogs()
+INFO   : CoreTests::dllBridgeInvokerReportsDllErrorCode() entering
+PASS   : CoreTests::dllBridgeInvokerReportsDllErrorCode()
+INFO   : CoreTests::dllBridgeInvokerReportsTimeout() entering
+PASS   : CoreTests::dllBridgeInvokerReportsTimeout()
+INFO   : CoreTests::nativeHostManifestResolvesVariables() entering
+PASS   : CoreTests::nativeHostManifestResolvesVariables()
+INFO   : CoreTests::nativeHostManifestReportsUnresolvedVariables() entering
+PASS   : CoreTests::nativeHostManifestReportsUnresolvedVariables()
+INFO   : CoreTests::nativeHostManifestRejectsInvalidDiagnostics() entering
+PASS   : CoreTests::nativeHostManifestRejectsInvalidDiagnostics()
+INFO   : CoreTests::qProcessTransportCallsNativeHostDll() entering
+PASS   : CoreTests::qProcessTransportCallsNativeHostDll()
+INFO   : CoreTests::qProcessTransportStreamsOrderedNativeHostLogs() entering
+PASS   : CoreTests::qProcessTransportStreamsOrderedNativeHostLogs()
+INFO   : CoreTests::qProcessTransportCapturesVendorStdoutAndStderr() entering
+PASS   : CoreTests::qProcessTransportCapturesVendorStdoutAndStderr()
+INFO   : CoreTests::qProcessTransportBoundsRawVendorOutput() entering
+PASS   : CoreTests::qProcessTransportBoundsRawVendorOutput()
+INFO   : CoreTests::nativeHostBatchesProtocolLogFrames() entering
+PASS   : CoreTests::nativeHostBatchesProtocolLogFrames()
+INFO   : CoreTests::qProcessTransportDiscardsVendorStdoutWhenConfigured() entering
+PASS   : CoreTests::qProcessTransportDiscardsVendorStdoutWhenConfigured()
+INFO   : CoreTests::persistentNativeHostHandlesManyShortCalls() entering
+PASS   : CoreTests::persistentNativeHostHandlesManyShortCalls()
+INFO   : CoreTests::qProcessTransportDropsHighFrequencyLogsWithoutBlocking() entering
+PASS   : CoreTests::qProcessTransportDropsHighFrequencyLogsWithoutBlocking()
+INFO   : CoreTests::executionSessionPublishesPluginLogsWithAttemptContext() entering
+PASS   : CoreTests::executionSessionPublishesPluginLogsWithAttemptContext()
+INFO   : CoreTests::qProcessTransportCallsNativeHostDllManifest() entering
+PASS   : CoreTests::qProcessTransportCallsNativeHostDllManifest()
+INFO   : CoreTests::qProcessTransportKillsNativeHostOnDllTimeout() entering
+PASS   : CoreTests::qProcessTransportKillsNativeHostOnDllTimeout()
+INFO   : CoreTests::qProcessTransportCallsSimulatedCanDllManifest() entering
+PASS   : CoreTests::qProcessTransportCallsSimulatedCanDllManifest()
+INFO   : CoreTests::qProcessTransportReportsSimulatedCanLimitFail() entering
+PASS   : CoreTests::qProcessTransportReportsSimulatedCanLimitFail()
 INFO   : CoreTests::schedulerRetriesAndRunsCleanup() entering
 PASS   : CoreTests::schedulerRetriesAndRunsCleanup()
 INFO   : CoreTests::executionSessionReleasesBarrierAcrossUuts() entering
@@ -26,6 +104,16 @@ INFO   : CoreTests::executionSessionDropsFailedUutBeforeBarrier() entering
 PASS   : CoreTests::executionSessionDropsFailedUutBeforeBarrier()
 INFO   : CoreTests::executionSessionStopRunsCleanupOnly() entering
 PASS   : CoreTests::executionSessionStopRunsCleanupOnly()
+INFO   : CoreTests::stopTokenEscalatesAtomically() entering
+PASS   : CoreTests::stopTokenEscalatesAtomically()
+INFO   : CoreTests::executionSessionConsumesCrossThreadStopToken() entering
+PASS   : CoreTests::executionSessionConsumesCrossThreadStopToken()
+INFO   : CoreTests::executionSessionPausesAtNodeBoundaryAndResumes() entering
+PASS   : CoreTests::executionSessionPausesAtNodeBoundaryAndResumes()
+INFO   : CoreTests::executionSessionPausePreservesMultiUutBarrierState() entering
+PASS   : CoreTests::executionSessionPausePreservesMultiUutBarrierState()
+INFO   : CoreTests::executionSessionStopWakesPausedRunAndRunsCleanup() entering
+PASS   : CoreTests::executionSessionStopWakesPausedRunAndRunsCleanup()
 INFO   : CoreTests::sequenceDefModelsSetupMainCleanup() entering
 PASS   : CoreTests::sequenceDefModelsSetupMainCleanup()
 INFO   : CoreTests::sequenceDefDetectsDuplicateStepIds() entering
@@ -42,6 +130,8 @@ INFO   : CoreTests::planBuilderRejectsDuplicateStepIds() entering
 PASS   : CoreTests::planBuilderRejectsDuplicateStepIds()
 INFO   : CoreTests::planBuilderSkipsDisabledAndBridgesCustomGroups() entering
 PASS   : CoreTests::planBuilderSkipsDisabledAndBridgesCustomGroups()
+INFO   : CoreTests::planBuilderBuildsLoopRegion() entering
+PASS   : CoreTests::planBuilderBuildsLoopRegion()
 INFO   : CoreTests::planBuilderPlanRunsInExecutionSession() entering
 PASS   : CoreTests::planBuilderPlanRunsInExecutionSession()
 INFO   : CoreTests::sequenceCompilerCompilesJsonToExecutablePlan() entering
@@ -50,14 +140,76 @@ INFO   : CoreTests::sequenceCompilerReportsUnsupportedStepKind() entering
 PASS   : CoreTests::sequenceCompilerReportsUnsupportedStepKind()
 INFO   : CoreTests::sequenceCompilerReportsFieldTypeErrors() entering
 PASS   : CoreTests::sequenceCompilerReportsFieldTypeErrors()
+INFO   : CoreTests::sequenceCompilerReportsLoopErrors() entering
+PASS   : CoreTests::sequenceCompilerReportsLoopErrors()
 INFO   : CoreTests::sequenceCompilerReportsUnknownFieldWarnings() entering
 PASS   : CoreTests::sequenceCompilerReportsUnknownFieldWarnings()
+INFO   : CoreTests::sequenceCompilerParsesModuleBindings() entering
+PASS   : CoreTests::sequenceCompilerParsesModuleBindings()
+INFO   : CoreTests::sequenceCompilerReportsModuleBindingErrors() entering
+PASS   : CoreTests::sequenceCompilerReportsModuleBindingErrors()
 INFO   : CoreTests::sequenceCompilerRunsSimpleExampleFile() entering
 PASS   : CoreTests::sequenceCompilerRunsSimpleExampleFile()
 INFO   : CoreTests::sequenceCompilerRunsBasicExampleFile() entering
 PASS   : CoreTests::sequenceCompilerRunsBasicExampleFile()
 INFO   : CoreTests::sequenceCompilerRunsCustomDisabledExampleFile() entering
 PASS   : CoreTests::sequenceCompilerRunsCustomDisabledExampleFile()
+INFO   : CoreTests::sequenceCompilerRunsExternalEchoExampleFile() entering
+PASS   : CoreTests::sequenceCompilerRunsExternalEchoExampleFile()
+INFO   : CoreTests::sequenceCompilerRunsPythonEchoExampleFile() entering
+PASS   : CoreTests::sequenceCompilerRunsPythonEchoExampleFile()
+INFO   : CoreTests::sequenceCompilerRunsNativeHostDllExampleFile() entering
+PASS   : CoreTests::sequenceCompilerRunsNativeHostDllExampleFile()
+INFO   : CoreTests::sequenceCompilerRunsSimulatedCanDllExampleFile() entering
+PASS   : CoreTests::sequenceCompilerRunsSimulatedCanDllExampleFile()
+INFO   : CoreTests::sequenceCompilerRunsPersistentInstrumentExampleFile() entering
+PASS   : CoreTests::sequenceCompilerRunsPersistentInstrumentExampleFile()
+INFO   : CoreTests::sequenceCompilerRunsDmmCanAdapterExampleFile() entering
+PASS   : CoreTests::sequenceCompilerRunsDmmCanAdapterExampleFile()
+INFO   : CoreTests::sequenceCompilerRunsForLoopExampleFile() entering
+PASS   : CoreTests::sequenceCompilerRunsForLoopExampleFile()
+INFO   : CoreTests::sequenceCompilerRunsTestItemExampleFile() entering
+PASS   : CoreTests::sequenceCompilerRunsTestItemExampleFile()
+INFO   : CoreTests::testItemStopsRemainingChildrenAfterFailure() entering
+PASS   : CoreTests::testItemStopsRemainingChildrenAfterFailure()
+INFO   : CoreTests::testItemChildContinueRunsRemainingChildren() entering
+PASS   : CoreTests::testItemChildContinueRunsRemainingChildren()
+INFO   : CoreTests::testItemAggregatesErrorSeverity() entering
+PASS   : CoreTests::testItemAggregatesErrorSeverity()
+INFO   : CoreTests::testItemStopSkipsChildrenAndRunsCleanup() entering
+PASS   : CoreTests::testItemStopSkipsChildrenAndRunsCleanup()
+INFO   : CoreTests::nestedTestItemsAggregateDirectChildrenRecursively() entering
+PASS   : CoreTests::nestedTestItemsAggregateDirectChildrenRecursively()
+INFO   : CoreTests::testItemContainingLoopAggregatesIterationFailures() entering
+PASS   : CoreTests::testItemContainingLoopAggregatesIterationFailures()
+INFO   : CoreTests::loopTestItemChildrenKeepSerialOrderAcrossIterations() entering
+PASS   : CoreTests::loopTestItemChildrenKeepSerialOrderAcrossIterations()
+INFO   : CoreTests::continuePolicyAdvancesAfterOrdinaryStepFailure() entering
+PASS   : CoreTests::continuePolicyAdvancesAfterOrdinaryStepFailure()
+INFO   : CoreTests::continuePolicyAdvancesAfterTestItemFailure() entering
+PASS   : CoreTests::continuePolicyAdvancesAfterTestItemFailure()
+INFO   : CoreTests::statementAndSequenceCallKeepDistinctRuntimeKinds() entering
+PASS   : CoreTests::statementAndSequenceCallKeepDistinctRuntimeKinds()
+INFO   : CoreTests::reportOrdersTestItemChildrenByTopology() entering
+PASS   : CoreTests::reportOrdersTestItemChildrenByTopology()
+INFO   : CoreTests::testItemIgnoresSkippedChildrenWhenAggregating() entering
+PASS   : CoreTests::testItemIgnoresSkippedChildrenWhenAggregating()
+INFO   : CoreTests::scopedStepResultsFlowAcrossTestItemsPerUut() entering
+PASS   : CoreTests::scopedStepResultsFlowAcrossTestItemsPerUut()
+INFO   : CoreTests::resultStoreTracksRetryAndLoopHistory() entering
+PASS   : CoreTests::resultStoreTracksRetryAndLoopHistory()
+INFO   : CoreTests::compilerRejectsInvalidStepResultReferencesAndScopedKeys() entering
+PASS   : CoreTests::compilerRejectsInvalidStepResultReferencesAndScopedKeys()
+INFO   : CoreTests::compilerDeduplicatesMultipleReferencesToSameStep() entering
+PASS   : CoreTests::compilerDeduplicatesMultipleReferencesToSameStep()
+INFO   : CoreTests::runtimeResultLookupReportsMissingAndNonPassedSources() entering
+PASS   : CoreTests::runtimeResultLookupReportsMissingAndNonPassedSources()
+INFO   : CoreTests::limitNodeSupportsNumericStringAndBooleanComparisons() entering
+PASS   : CoreTests::limitNodeSupportsNumericStringAndBooleanComparisons()
+INFO   : CoreTests::limitNodeDistinguishesFailuresFromConfigurationErrors() entering
+PASS   : CoreTests::limitNodeDistinguishesFailuresFromConfigurationErrors()
+INFO   : CoreTests::limitStepFailsReferencedParsedValueOutsideRange() entering
+PASS   : CoreTests::limitStepFailsReferencedParsedValueOutsideRange()
 INFO   : CoreTests::executionSessionJsonFailureRunsCleanup() entering
 PASS   : CoreTests::executionSessionJsonFailureRunsCleanup()
 INFO   : CoreTests::executionSessionJsonRetryAttemptsAreRecorded() entering
@@ -68,5 +220,5 @@ INFO   : CoreTests::executionSessionReportFlagsErrorsWithoutTreatingSkippedAsErr
 PASS   : CoreTests::executionSessionReportFlagsErrorsWithoutTreatingSkippedAsError()
 INFO   : CoreTests::cleanupTestCase() entering
 PASS   : CoreTests::cleanupTestCase()
-Totals: 34 passed, 0 failed, 0 skipped, 0 blacklisted, 130ms
+Totals: 110 passed, 0 failed, 0 skipped, 0 blacklisted, 4023ms
 ********* Finished testing of CoreTests *********

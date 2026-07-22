@@ -97,7 +97,10 @@ FlowTargetSelector::FlowTargetSelector(QWidget* parent)
     root->addWidget(separator);
 
     setStyleSheet(QStringLiteral(R"(
-        QWidget#flowTargetSelector { background: #fbfcfd; }
+        QWidget#flowTargetSelector { background: #fbfcfd; border: 1px solid transparent; }
+        QWidget#flowTargetSelector[selectionRequired="true"] {
+            background: #fff1f0; border: 1px solid #e5484d; border-radius: 4px;
+        }
         QLabel#flowTargetTitle { color: #344054; font-weight: 600; }
         QToolButton[deviceShortcut="true"] {
             min-width: 54px; min-height: 40px; padding: 3px 5px;
@@ -144,16 +147,6 @@ void FlowTargetSelector::setDevices(QVector<FlowTargetDevice> devices)
         m_currentDeviceId.clear();
         m_currentTargetId.clear();
     }
-    if (m_currentDeviceId.isEmpty()) {
-        const auto firstConfigured = std::find_if(
-            m_devices.cbegin(), m_devices.cend(),
-            [](const FlowTargetDevice& device) { return device.configured; });
-        if (firstConfigured != m_devices.cend()) {
-            m_currentDeviceId = firstConfigured->logicalId;
-        } else if (!m_devices.isEmpty()) {
-            m_currentDeviceId = m_devices.first().logicalId;
-        }
-    }
     selectDevice(m_currentDeviceId, previousTarget);
 }
 
@@ -180,6 +173,22 @@ bool FlowTargetSelector::selectTarget(const QString& targetId)
     }
     selectDevice(device->logicalId, targetId);
     return m_currentTargetId == targetId;
+}
+
+void FlowTargetSelector::showSelectionRequired()
+{
+    setProperty("selectionRequired", true);
+    style()->unpolish(this);
+    style()->polish(this);
+    m_currentLabel->setText(tr("Select a target device before using plugin functions"));
+    m_currentLabel->setStyleSheet(QStringLiteral("color: #b42318; font-weight: 600;"));
+    QTimer::singleShot(1400, this, [this] {
+        setProperty("selectionRequired", false);
+        style()->unpolish(this);
+        style()->polish(this);
+        m_currentLabel->setStyleSheet({});
+        updateCurrentLabel();
+    });
 }
 
 const FlowTargetDevice* FlowTargetSelector::deviceById(
@@ -232,6 +241,19 @@ void FlowTargetSelector::selectDevice(const QString& logicalId,
     }
 }
 
+void FlowTargetSelector::toggleDevice(const QString& logicalId)
+{
+    if (m_currentDeviceId.compare(logicalId, Qt::CaseInsensitive) == 0) {
+        selectDevice({});
+        return;
+    }
+    const auto* device = deviceById(logicalId);
+    selectDevice(logicalId,
+                 device && !device->targetIds.isEmpty()
+                     ? device->targetIds.first()
+                     : QString{});
+}
+
 void FlowTargetSelector::rebuildShortcuts()
 {
     clearLayout(m_shortcutLayout);
@@ -253,7 +275,7 @@ void FlowTargetSelector::rebuildShortcuts()
             : tr("%1 has no configured driver").arg(device->logicalId));
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         connect(button, &QToolButton::clicked, this,
-                [this, id = device->logicalId] { selectDevice(id); });
+                [this, id = device->logicalId] { toggleDevice(id); });
         m_shortcutLayout->addWidget(button, 1);
     }
 
@@ -334,7 +356,7 @@ void FlowTargetSelector::rebuildMoreMenu()
         action->setChecked(device.logicalId == m_currentDeviceId);
         action->setEnabled(device.configured);
         connect(action, &QAction::triggered, this,
-                [this, id = device.logicalId] { selectDevice(id); });
+                [this, id = device.logicalId] { toggleDevice(id); });
         deviceActions.push_back(action);
     }
     connect(search, &QLineEdit::textChanged, menu,

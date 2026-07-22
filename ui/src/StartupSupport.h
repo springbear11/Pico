@@ -17,6 +17,18 @@ struct StartupValidationResult {
     bool ok() const { return errors.isEmpty(); }
 };
 
+struct SnValidationRules {
+    int exactLength = 0;
+    QString wildcardPattern;
+    QString allowedRegex;
+};
+
+struct SnValidationResult {
+    QString errorMessage;
+
+    bool ok() const { return errorMessage.isEmpty(); }
+};
+
 class StartupSupport final
 {
 public:
@@ -31,6 +43,11 @@ public:
                                          bool defaultValue = true);
     static int stationSnLength(const QString& stationPath,
                                int defaultValue = 0);
+    static SnValidationRules stationSnValidationRules(
+        const QString& stationPath);
+    static SnValidationResult validateSerialNumber(
+        const QString& serialNumber,
+        const SnValidationRules& rules);
     static StartupValidationResult validateSelection(
         UiMode mode,
         const QString& sequencePath,

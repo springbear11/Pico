@@ -25,8 +25,13 @@ struct StationConfig {
     bool txtLogEnabled = false;
     bool csvReportEnabled = false;
     bool xlsxReportEnabled = false;
+    bool loopTestEnabled = false;
+    int loopTestCount = 1;
+    QString pluginRegistryPath = QStringLiteral("plugins/PluginRegistry.json");
     QString reportOutputDirectory;
     int snLength = 0;
+    QString snPattern;
+    QString snAllowedRegex;
     QVariantMap metadata;
     QVector<DeviceSessionConfig> devices;
 };

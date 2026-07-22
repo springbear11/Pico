@@ -49,6 +49,17 @@ cmake --build --preset vs2022-qt6-all-debug
 ctest --preset vs2022-qt6-all-debug
 ```
 
+只更新引擎 DLL，不重新编译 UI：
+
+```powershell
+cmake --build --preset vs2022-qt6-core-debug
+cmake --build --preset vs2022-qt6-core-release
+```
+
+`PicoATECore` 当前为动态库。独立构建完成后，CMake 会把对应配置的
+`PicoATECore.dll` 自动更新到 UI、CLI、NativeHost 和测试程序目录。
+具体边界与产物位置见 [引擎动态库构建说明](docs/引擎动态库构建说明.md)。
+
 对应解决方案：
 
 ```text

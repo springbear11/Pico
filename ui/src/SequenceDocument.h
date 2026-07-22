@@ -71,6 +71,8 @@ public:
     bool isStandardGroup(const SequenceItemPath& path) const;
     bool replaceRootObject(QJsonObject root);
     QJsonObject objectAt(const SequenceItemPath& path) const;
+    SequenceItemPath findItemPath(const QJsonObject& object,
+                                  const SequenceItemPath& preferredPath = {}) const;
     bool canContainSteps(const SequenceItemPath& path) const;
     bool insertStep(const SequenceItemPath& parentPath,
                     int row = -1,

@@ -83,6 +83,72 @@ QString childLocalPath(const QString& parentLocalPath, const QJsonObject& object
     return parentLocalPath.isEmpty() ? id : QString("%1/%2").arg(parentLocalPath, id);
 }
 
+QJsonValue valueByPath(const QJsonObject& object, const QStringList& segments)
+{
+    QJsonValue current(object);
+    for (const auto& segment : segments) {
+        if (!current.isObject()) {
+            return {};
+        }
+        const auto currentObject = current.toObject();
+        auto iterator = currentObject.constBegin();
+        for (; iterator != currentObject.constEnd(); ++iterator) {
+            if (iterator.key().compare(segment, Qt::CaseInsensitive) == 0) {
+                break;
+            }
+        }
+        if (iterator == currentObject.constEnd()) {
+            return {};
+        }
+        current = iterator.value();
+    }
+    return current;
+}
+
+QJsonValue findValue(const QJsonObject& object, const QString& fieldPath)
+{
+    const auto segments = fieldPath.split('.', Qt::SkipEmptyParts);
+    if (segments.size() > 1) {
+        return valueByPath(object, segments);
+    }
+    const auto field = segments.value(0);
+    for (auto iterator = object.constBegin(); iterator != object.constEnd(); ++iterator) {
+        if (iterator.key().compare(field, Qt::CaseInsensitive) == 0) {
+            return iterator.value();
+        }
+    }
+    for (auto iterator = object.constBegin(); iterator != object.constEnd(); ++iterator) {
+        if (iterator.key().compare(QStringLiteral("steps"),
+                                   Qt::CaseInsensitive) == 0 ||
+            !iterator.value().isObject()) {
+            continue;
+        }
+        const auto nested = findValue(iterator.value().toObject(), field);
+        if (!nested.isUndefined()) {
+            return nested;
+        }
+    }
+    return {};
+}
+
+QString displayJsonValue(const QJsonValue& value)
+{
+    if (value.isUndefined() || value.isNull()) return {};
+    if (value.isString()) return value.toString();
+    if (value.isBool()) return value.toBool() ? QStringLiteral("true")
+                                               : QStringLiteral("false");
+    if (value.isDouble()) return QString::number(value.toDouble(), 'g', 15);
+    if (value.isObject()) {
+        return QString::fromUtf8(QJsonDocument(value.toObject())
+                                     .toJson(QJsonDocument::Compact));
+    }
+    if (value.isArray()) {
+        return QString::fromUtf8(QJsonDocument(value.toArray())
+                                     .toJson(QJsonDocument::Compact));
+    }
+    return {};
+}
+
 } // namespace
 
 SequenceTreeModel::SequenceTreeModel(SequenceDocument* document, QObject* parent)
@@ -191,10 +257,27 @@ QVariant SequenceTreeModel::data(const QModelIndex& modelIndex, int role) const
     if (role == Qt::ForegroundRole && !item->effectiveEnabled) {
         return QColor(QStringLiteral("#737d87"));
     }
+    if (role == Qt::BackgroundRole && modelIndex.column() == InspectionColumn &&
+        !m_inspectionField.isEmpty()) {
+        const auto value = displayJsonValue(
+            findValue(item->object, m_inspectionField));
+        if (!value.isEmpty()) {
+            return m_inspectionColors.value(value,
+                                            QColor(QStringLiteral("#dceeff")));
+        }
+    }
     if (role == Qt::BackgroundRole && !item->effectiveEnabled) {
         return QColor(QStringLiteral("#eef1f3"));
     }
     if (role == Qt::ToolTipRole) {
+        if (modelIndex.column() == InspectionColumn &&
+            !m_inspectionField.isEmpty()) {
+            const auto value = displayJsonValue(
+                findValue(item->object, m_inspectionField));
+            return value.isEmpty()
+                ? tr("Field '%1' is not set on this item").arg(m_inspectionField)
+                : tr("%1 = %2").arg(m_inspectionField, value);
+        }
         if (item->disabledByAncestor) {
             return tr("Inactive because a parent TestItem or Loop is disabled");
         }
@@ -244,6 +327,10 @@ QVariant SequenceTreeModel::data(const QModelIndex& modelIndex, int role) const
         return m_breakpointNodePaths.contains(item->nodePath) ? tr("On") : QVariant{};
     case EnabledColumn:
         return {};
+    case InspectionColumn:
+        return m_inspectionField.isEmpty()
+            ? QVariant{}
+            : displayJsonValue(findValue(item->object, m_inspectionField));
     default:
         return {};
     }
@@ -333,9 +420,83 @@ QVariant SequenceTreeModel::headerData(int section,
         return tr("BP");
     case EnabledColumn:
         return tr("Enabled");
+    case InspectionColumn:
+        return m_inspectionField.isEmpty()
+            ? tr("Key")
+            : tr("Key: %1").arg(m_inspectionField);
     default:
         return {};
     }
+}
+
+int SequenceTreeModel::setInspectionField(QString fieldPath)
+{
+    fieldPath = fieldPath.trimmed();
+    if (m_inspectionField == fieldPath) {
+        return m_inspectionMatchCount;
+    }
+    m_inspectionField = std::move(fieldPath);
+    rebuildInspectionColors();
+    emit headerDataChanged(Qt::Horizontal, InspectionColumn, InspectionColumn);
+    std::function<void(const QModelIndex&)> refresh =
+        [this, &refresh](const QModelIndex& parentIndex) {
+            for (int row = 0; row < rowCount(parentIndex); ++row) {
+                const auto inspection = index(row, InspectionColumn, parentIndex);
+                emit dataChanged(inspection, inspection,
+                                 {Qt::DisplayRole, Qt::BackgroundRole,
+                                  Qt::ToolTipRole});
+                refresh(index(row, NameColumn, parentIndex));
+            }
+        };
+    refresh({});
+    return m_inspectionMatchCount;
+}
+
+QString SequenceTreeModel::inspectionField() const
+{
+    return m_inspectionField;
+}
+
+int SequenceTreeModel::inspectionMatchCount() const
+{
+    return m_inspectionMatchCount;
+}
+
+void SequenceTreeModel::rebuildInspectionColors()
+{
+    m_inspectionColors.clear();
+    m_inspectionMatchCount = 0;
+    if (!m_root || m_inspectionField.isEmpty()) {
+        return;
+    }
+
+    static const QVector<QColor> palette = {
+        QColor(QStringLiteral("#dceeff")),
+        QColor(QStringLiteral("#dff4e5")),
+        QColor(QStringLiteral("#fff0c7")),
+        QColor(QStringLiteral("#eadffc")),
+        QColor(QStringLiteral("#ffdfe0")),
+        QColor(QStringLiteral("#d9f2f2")),
+        QColor(QStringLiteral("#f6e2ce")),
+        QColor(QStringLiteral("#e4e8f7")),
+    };
+    std::function<void(const Item&)> collect = [&](const Item& item) {
+        if (item.type == ItemType::Step) {
+            const auto value = displayJsonValue(
+                findValue(item.object, m_inspectionField));
+            if (!value.isEmpty()) {
+                ++m_inspectionMatchCount;
+                if (!m_inspectionColors.contains(value)) {
+                    m_inspectionColors.insert(
+                        value, palette[m_inspectionColors.size() % palette.size()]);
+                }
+            }
+        }
+        for (const auto& child : item.children) {
+            collect(*child);
+        }
+    };
+    collect(*m_root);
 }
 
 QStringList SequenceTreeModel::mimeTypes() const
@@ -540,6 +701,7 @@ void SequenceTreeModel::rebuild()
             m_root->children.push_back(std::move(group));
         }
     }
+    rebuildInspectionColors();
     endResetModel();
 }
 
