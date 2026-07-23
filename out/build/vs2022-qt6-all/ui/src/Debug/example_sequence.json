@@ -10,10 +10,11 @@
                     "checkpointAfter": false,
                     "checkpointBefore": false,
                     "enabled": true,
+                    "function": "open",
                     "id": "005",
                     "kind": "testItem",
                     "name": "OPEN_CAN_DEVICE",
-                    "resultRecording": true,
+                    "resultRecording": false,
                     "retry": {
                         "delayMs": 0,
                         "maxAttempts": 1
@@ -32,7 +33,7 @@
                             "kind": "action",
                             "moduleId": "device",
                             "name": "Open_GACN_CAN1_CH1",
-                            "resultRecording": true,
+                            "resultRecording": false,
                             "retry": {
                                 "delayMs": 0,
                                 "maxAttempts": 1
@@ -54,7 +55,7 @@
                             "kind": "action",
                             "moduleId": "device",
                             "name": "Open_GACN_CAN1_CH2",
-                            "resultRecording": true,
+                            "resultRecording": false,
                             "retry": {
                                 "delayMs": 0,
                                 "maxAttempts": 1
@@ -76,7 +77,7 @@
                             "kind": "action",
                             "moduleId": "device",
                             "name": "Open_CX_CAN1_CH1",
-                            "resultRecording": true,
+                            "resultRecording": false,
                             "retry": {
                                 "delayMs": 0,
                                 "maxAttempts": 1
@@ -98,7 +99,7 @@
                             "kind": "action",
                             "moduleId": "device",
                             "name": "Open_CX_CAN1_CH1",
-                            "resultRecording": true,
+                            "resultRecording": false,
                             "retry": {
                                 "delayMs": 0,
                                 "maxAttempts": 1
@@ -149,7 +150,7 @@
                             "kind": "action",
                             "moduleId": "device",
                             "name": "CAN1_Send_Frame",
-                            "resultRecording": true,
+                            "resultRecording": false,
                             "retry": {
                                 "delayMs": 0,
                                 "maxAttempts": 1
@@ -159,11 +160,23 @@
                             }
                         },
                         {
+                            "alwaysRun": false,
+                            "checkpointAfter": false,
+                            "checkpointBefore": false,
                             "enabled": true,
+                            "function": "write",
                             "id": "007",
                             "kind": "wait",
                             "ms": 1000,
-                            "name": "Wait"
+                            "name": "Wait",
+                            "resultRecording": false,
+                            "retry": {
+                                "delayMs": 0,
+                                "maxAttempts": 1
+                            },
+                            "timeout": {
+                                "timeoutMs": 0
+                            }
                         },
                         {
                             "alwaysRun": false,

@@ -99,6 +99,7 @@ private:
     void compileSequence();
     void runSequence();
     void runScannedUut(const QString& serialNumber);
+    void beginAdminRunIteration(int iteration, int totalIterations);
     void showScanDialog();
     void scanPlugins(bool interactive = true);
     void loadPluginRegistry();
@@ -236,6 +237,7 @@ private:
     QLabel* m_adminFailCount = nullptr;
     QLabel* m_adminTotalCount = nullptr;
     QLabel* m_adminYield = nullptr;
+    QLabel* m_adminAverageTime = nullptr;
     QProgressBar* m_adminProgress = nullptr;
     QTimer* m_adminElapsedTimer = nullptr;
     QTreeView* m_sequenceTreeView = nullptr;
@@ -282,6 +284,7 @@ private:
     int m_adminTotalNodes = 0;
     int m_adminPassedUnits = 0;
     int m_adminFailedUnits = 0;
+    qint64 m_adminTotalCompletedDurationMs = 0;
     QSet<PicoATE::Core::NodeId> m_adminTerminalNodes;
     QElapsedTimer m_adminElapsed;
     PicoATE::Core::ExecutionReport m_adminPreviewReport;

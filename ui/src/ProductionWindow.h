@@ -49,6 +49,7 @@ private:
     void focusExecutionLogForResult(const QModelIndex& index);
     void beginRun(const QString& serialNumber);
     void beginManualRun();
+    void beginRunIteration(int iteration, int totalIterations);
     void resetPreviewForUut(const QString& uutId);
     void showScanDialogWhenReady();
     void updateElapsedTime();
@@ -77,6 +78,7 @@ private:
     QLabel* m_failCountLabel = nullptr;
     QLabel* m_totalCountLabel = nullptr;
     QLabel* m_yieldLabel = nullptr;
+    QLabel* m_averageTimeLabel = nullptr;
     QTreeView* m_resultView = nullptr;
     QTableView* m_logView = nullptr;
     QProgressBar* m_progress = nullptr;
@@ -88,6 +90,7 @@ private:
     int m_totalNodes = 0;
     int m_passedUnits = 0;
     int m_failedUnits = 0;
+    qint64 m_totalCompletedDurationMs = 0;
     QString m_activeUutId;
     bool m_currentRunCounted = false;
 };

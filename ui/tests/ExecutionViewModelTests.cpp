@@ -115,6 +115,7 @@ struct FakeServiceControl {
     std::atomic<QThread*> deviceTestThread{nullptr};
     int compileDelayMs = 0;
     bool compileSucceeds = true;
+    int loopTestCount = 1;
 };
 
 class FakeExecutionService final : public IExecutionService
@@ -141,6 +142,7 @@ public:
             result.sequenceName = QStringLiteral("Fake Sequence");
             result.sequenceVersion = QStringLiteral("1.0");
             result.nodeCount = 3;
+            result.loopTestCount = m_control->loopTestCount;
         } else {
             result.diagnostics.push_back({UiDiagnosticSeverity::Error,
                                           QStringLiteral("groups[0]"),
@@ -1643,7 +1645,10 @@ void ExecutionViewModelTests::uutStepModelBuildsSingleUutPhaseLayout()
         QCOMPARE(model.itemType(phase), UutStepModel::PhaseItem);
         QCOMPARE(model.data(phase).toString(), phaseNames[row]);
         QCOMPARE(model.rowCount(phase), 1);
-        QCOMPARE(model.parent(model.index(0, 0, phase)), phase);
+        const auto step = model.index(0, 0, phase);
+        QCOMPARE(model.parent(step), phase);
+        QCOMPARE(model.visualLineNumber(step), row + 1);
+        QCOMPARE(model.visualLineNumber(phase), 0);
     }
 
     const auto measure = model.indexForStep(QStringLiteral("SN-001"),
@@ -2372,7 +2377,8 @@ void ExecutionViewModelTests::bufferedEventSinkPreservesControlEventsDuringLogFl
 
 void ExecutionViewModelTests::executionReportJsonRoundTripsAndRejectsUnsupportedVersions()
 {
-    const auto report = sampleReport();
+    auto report = sampleReport();
+    report.uuts.first().steps.first().resultRecording = false;
     const auto bytes = PicoATE::Core::serializeExecutionReport(report);
     const auto parsed = PicoATE::Core::parseExecutionReport(bytes);
     QVERIFY2(parsed.ok(),
@@ -2386,6 +2392,7 @@ void ExecutionViewModelTests::executionReportJsonRoundTripsAndRejectsUnsupported
     QCOMPARE(step.kind, PicoATE::Core::ExecNodeKind::Action);
     QCOMPARE(step.phase, PicoATE::Core::ExecutionPhase::Cleanup);
     QCOMPARE(step.durationMs, 1021);
+    QVERIFY(!step.resultRecording);
     QCOMPARE(step.attempts.first().index, 2);
     QCOMPARE(step.attempts.first().durationMs, 987);
     QCOMPARE(step.attempts.first().loopIteration.iterationNumber, 2);
@@ -2530,6 +2537,44 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(xlsx.contains("Actual Value"));
     QVERIFY(xlsx.contains(QStringLiteral("测量,&quot;输出&quot;").toUtf8()));
 
+    auto filteredReport = sampleReport();
+    filteredReport.uuts.first().steps.first().resultRecording = false;
+    const auto filteredTextPath = directory.filePath(QStringLiteral("filtered.txt"));
+    const auto filteredCsvPath = directory.filePath(QStringLiteral("filtered.csv"));
+    const auto filteredXlsxPath = directory.filePath(QStringLiteral("filtered.xlsx"));
+    QVERIFY(ReportExporter::saveText(filteredTextPath, filteredReport).success);
+    QVERIFY(ReportExporter::saveCsv(filteredCsvPath, filteredReport).success);
+    QVERIFY(ReportExporter::saveXlsx(filteredXlsxPath, filteredReport).success);
+    QFile filteredTextFile(filteredTextPath);
+    QFile filteredCsvFile(filteredCsvPath);
+    QFile filteredXlsxFile(filteredXlsxPath);
+    QVERIFY(filteredTextFile.open(QIODevice::ReadOnly));
+    QVERIFY(filteredCsvFile.open(QIODevice::ReadOnly));
+    QVERIFY(filteredXlsxFile.open(QIODevice::ReadOnly));
+    QVERIFY(QString::fromUtf8(filteredTextFile.readAll()).contains(
+        QStringLiteral("测量,\"输出\"")));
+    QVERIFY(!QString::fromUtf8(filteredCsvFile.readAll()).contains(
+        QStringLiteral("测量,\"输出\"")));
+    QVERIFY(!filteredXlsxFile.readAll().contains(
+        QStringLiteral("测量,&quot;输出&quot;").toUtf8()));
+
+    auto attemptErrorReport = sampleReport();
+    auto& attemptErrorStep = attemptErrorReport.uuts.first().steps.first();
+    attemptErrorStep.displayName = QStringLiteral("Open PSU");
+    attemptErrorStep.outcome = PicoATE::Core::NodeOutcome::Error;
+    attemptErrorStep.state = PicoATE::Core::ActivationState::Failed;
+    attemptErrorStep.measurements.clear();
+    attemptErrorStep.attempts.last().measurements.clear();
+    attemptErrorStep.attempts.last().outcome = PicoATE::Core::NodeOutcome::Error;
+    attemptErrorStep.attempts.last().errorCode = QStringLiteral("VisaOpenFailed");
+    const auto attemptErrorCsvPath = directory.filePath(
+        QStringLiteral("attempt-error.csv"));
+    QVERIFY(ReportExporter::saveCsv(attemptErrorCsvPath, attemptErrorReport).success);
+    QFile attemptErrorCsv(attemptErrorCsvPath);
+    QVERIFY(attemptErrorCsv.open(QIODevice::ReadOnly));
+    QVERIFY(QString::fromUtf8(attemptErrorCsv.readAll()).contains(
+        QStringLiteral("\"Open PSU\",\"VisaOpenFailed\"")));
+
     auto hierarchyReport = sampleReport();
     auto firstChild = hierarchyReport.uuts.first().steps.first();
     firstChild.displayName = QStringLiteral("Read CAN");
@@ -2541,6 +2586,7 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     firstItem.displayName = QStringLiteral("CAN Item");
     firstItem.kind = PicoATE::Core::ExecNodeKind::TestItem;
     firstItem.outcome = PicoATE::Core::NodeOutcome::Passed;
+    firstItem.resultRecording = false;
     firstItem.children = {firstChild, secondChild};
     auto secondItem = firstItem;
     secondItem.stepId = QStringLiteral("next-item");
@@ -2558,6 +2604,14 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(hierarchyText.contains(QStringLiteral(
         "======================== CAN_ITEM_TESTITEM_END ========================\r\n\r\n\r\n\r\n"
         "======================== NEXT_ITEM_TESTITEM_START ========================")));
+    const auto hierarchyCsvPath = directory.filePath(QStringLiteral("hierarchy.csv"));
+    QVERIFY(ReportExporter::saveCsv(hierarchyCsvPath, hierarchyReport).success);
+    QFile hierarchyCsv(hierarchyCsvPath);
+    QVERIFY(hierarchyCsv.open(QIODevice::ReadOnly));
+    const auto hierarchyCsvText = QString::fromUtf8(hierarchyCsv.readAll());
+    QVERIFY(!hierarchyCsvText.contains(QStringLiteral("CAN Item")));
+    QVERIFY(hierarchyCsvText.contains(QStringLiteral("Read CAN")));
+    QVERIFY(hierarchyCsvText.contains(QStringLiteral("Check CAN")));
 }
 
 void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
@@ -2576,11 +2630,11 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
     RunArtifactWriter writer;
     const auto begun = writer.begin(settings, QStringLiteral("SN:001"), startedAt);
     QVERIFY2(begun.success, qPrintable(begun.errorMessage));
-    QCOMPARE(writer.baseName(), QStringLiteral("SN_001"));
+    QCOMPARE(writer.baseName(), QStringLiteral("SN_001_080910111"));
     const auto dateDirectory = directory.filePath(QStringLiteral("20260719"));
-    const auto rootText = QDir(dateDirectory).filePath(QStringLiteral("SN_001.txt"));
-    const auto rootCsv = QDir(dateDirectory).filePath(QStringLiteral("SN_001.csv"));
-    const auto rootXlsx = QDir(dateDirectory).filePath(QStringLiteral("SN_001.xlsx"));
+    const auto rootText = QDir(dateDirectory).filePath(QStringLiteral("SN_001_080910111.txt"));
+    const auto rootCsv = QDir(dateDirectory).filePath(QStringLiteral("SN_001_080910111.csv"));
+    const auto rootXlsx = QDir(dateDirectory).filePath(QStringLiteral("SN_001_080910111.xlsx"));
     QVERIFY(QFileInfo::exists(rootText));
     QVERIFY(QFileInfo::exists(rootCsv));
     QVERIFY(!QFileInfo::exists(rootXlsx));
@@ -2602,11 +2656,11 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
     const auto archived = writer.finalize(sampleReport());
     QVERIFY2(archived.success, qPrintable(archived.errorMessage));
     const auto passText = QDir(dateDirectory).filePath(
-        QStringLiteral("PASS/SN_001.txt"));
+        QStringLiteral("PASS/SN_001_080910111.txt"));
     const auto passCsv = QDir(dateDirectory).filePath(
-        QStringLiteral("PASS/SN_001.csv"));
+        QStringLiteral("PASS/SN_001_080910111.csv"));
     const auto passXlsx = QDir(dateDirectory).filePath(
-        QStringLiteral("PASS/SN_001.xlsx"));
+        QStringLiteral("PASS/SN_001_080910111.xlsx"));
     QVERIFY(!QFileInfo::exists(rootText));
     QVERIFY(QFileInfo::exists(passText));
     QVERIFY(QFileInfo::exists(passCsv));
@@ -2623,6 +2677,37 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
     QVERIFY(savedLog.contains(QStringLiteral(
         "======================== CAN_CHECK_TESTITEM_END ========================\r\n\r\n\r\n\r\n"
         "[08:09:10.131] ======================== NEXT_ITEM_TESTITEM_START ========================")));
+
+    const auto sameMillisecond = writer.begin(
+        settings, QStringLiteral("SN:001"), startedAt);
+    QVERIFY(sameMillisecond.success);
+    QCOMPARE(writer.baseName(), QStringLiteral("SN_001_080910112"));
+    QVERIFY(!writer.baseName().contains(QStringLiteral("_2")));
+    writer.abandon();
+
+    auto hiddenFailure = sampleReport();
+    auto& hiddenStep = hiddenFailure.uuts.first().steps.first();
+    hiddenStep.resultRecording = false;
+    hiddenStep.outcome = PicoATE::Core::NodeOutcome::Error;
+    hiddenStep.state = PicoATE::Core::ActivationState::Failed;
+    hiddenStep.wasError = true;
+    hiddenStep.attempts.last().outcome = PicoATE::Core::NodeOutcome::Error;
+    hiddenStep.attempts.last().errorCode = QStringLiteral("HiddenFailure");
+    hiddenFailure.uuts.first().hasError = true;
+    hiddenFailure.hasError = true;
+    hiddenFailure.state = PicoATE::Core::ExecutionState::CompletedWithError;
+    const auto hiddenBegun = writer.begin(
+        settings, QStringLiteral("SN-FAIL"), startedAt.addSecs(2));
+    QVERIFY(hiddenBegun.success);
+    const auto hiddenArchived = writer.finalize(hiddenFailure);
+    QVERIFY2(hiddenArchived.success, qPrintable(hiddenArchived.errorMessage));
+    const auto hiddenCsvPath = QDir(dateDirectory).filePath(
+        QStringLiteral("FAIL/SN-FAIL_080912111.csv"));
+    QVERIFY(QFileInfo::exists(hiddenCsvPath));
+    QFile hiddenCsv(hiddenCsvPath);
+    QVERIFY(hiddenCsv.open(QIODevice::ReadOnly));
+    QVERIFY(!QString::fromUtf8(hiddenCsv.readAll()).contains(
+        QStringLiteral("测量,\"输出\"")));
 
     auto legacyReport = sampleReport();
     auto& legacyMeasurement = legacyReport.uuts.first().steps.first().measurements.first();
@@ -2643,7 +2728,7 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
     const auto second = writer.begin(settings, QString(), startedAt.addSecs(1));
     QVERIFY(second.success);
     const auto abandonedText = QDir(dateDirectory).filePath(
-        QStringLiteral("20260719_080911_111.txt"));
+        QStringLiteral("20260719_080911111.txt"));
     writer.abandon();
     QVERIFY(QFileInfo::exists(abandonedText));
     QVERIFY(!QFileInfo::exists(QDir(dateDirectory).filePath(
@@ -3959,7 +4044,6 @@ void ExecutionViewModelTests::stationFailurePolicyContinuesAllTestItemChildren()
              qPrintable(compiled.diagnostics.isEmpty()
                  ? QStringLiteral("compile failed")
                  : compiled.diagnostics.first().message));
-
     RunRequest runRequest;
     runRequest.requestId = 102;
     runRequest.uuts = {{QStringLiteral("SN-001"), {}}};
@@ -4145,7 +4229,7 @@ void ExecutionViewModelTests::coreServiceRepeatsWholeSequenceForLoopTest()
       "id":"loop-test","name":"Loop Test","groups":[
         {"id":"setup","kind":"setup","steps":[]},
         {"id":"main","kind":"main","steps":[
-          {"id":"001","name":"One Pass","kind":"noop"}
+          {"id":"001","name":"One Pass","kind":"noop","resultRecording":false}
         ]},
         {"id":"cleanup","kind":"cleanup","steps":[]}
       ]
@@ -4168,6 +4252,7 @@ void ExecutionViewModelTests::coreServiceRepeatsWholeSequenceForLoopTest()
              qPrintable(compiled.diagnostics.isEmpty()
                  ? QStringLiteral("compile failed")
                  : compiled.diagnostics.first().message));
+    QCOMPARE(compiled.loopTestCount, 3);
 
     RunRequest runRequest;
     runRequest.uutCount = 1;
@@ -4177,15 +4262,30 @@ void ExecutionViewModelTests::coreServiceRepeatsWholeSequenceForLoopTest()
     QVERIFY(result.report.completed);
     QCOMPARE(result.report.uuts.size(), 1);
     QCOMPARE(result.report.uuts.first().steps.size(), 1);
-    QCOMPARE(result.report.uuts.first().steps.first().attempts.size(), 3);
-    for (int index = 0; index < result.report.uuts.first().steps.first().attempts.size();
-         ++index) {
-        QCOMPARE(result.report.uuts.first().steps.first().attempts[index].index,
-                 index + 1);
-    }
+    QCOMPARE(result.report.uuts.first().steps.first().attempts.size(), 1);
+    QVERIFY(!result.report.uuts.first().steps.first().resultRecording);
     for (int index = 1; index < sink.events.size(); ++index) {
         QVERIFY(sink.events[index - 1].sequenceNumber <
                 sink.events[index].sequenceNumber);
+    }
+
+    auto control = std::make_shared<FakeServiceControl>();
+    control->loopTestCount = 3;
+    ExecutionViewModel viewModel(fakeService(control));
+    viewModel.setSequencePath(QStringLiteral("loop-sequence.json"));
+    viewModel.compile();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel.state(), UiRunState::Ready, 1000);
+    QSignalSpy iterationStarted(&viewModel,
+        &ExecutionViewModel::runIterationStarted);
+    QSignalSpy reports(&viewModel, &ExecutionViewModel::reportChanged);
+    viewModel.run();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel.state(), UiRunState::Completed, 3000);
+    QCOMPARE(control->runCalls.load(), 3);
+    QCOMPARE(iterationStarted.count(), 3);
+    QCOMPARE(reports.count(), 3);
+    for (int index = 0; index < iterationStarted.count(); ++index) {
+        QCOMPARE(iterationStarted.at(index).at(0).toInt(), index + 1);
+        QCOMPARE(iterationStarted.at(index).at(1).toInt(), 3);
     }
 }
 QTEST_GUILESS_MAIN(ExecutionViewModelTests)

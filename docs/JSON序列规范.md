@@ -129,7 +129,7 @@ gaps. Cleanup groups are connected from the last non-empty normal group by a
 | `kind` / `type` | string | no | `noop` | See step kinds below. |
 | `enabled` | bool | no | `true` | Disabled steps are not compiled into the plan. |
 | `alwaysRun` | bool | no | `false` | Cleanup groups and cleanup steps are always-run automatically. |
-| `resultRecording` | bool | no | `true` | Copied to `ExecNode::resultRecording`. |
+| `resultRecording` | bool | no | `true` | `true` writes this Step/TestItem row to CSV/XLSX; `false` hides only its own table row. TXT logs and overall pass/fail are unaffected. Child steps keep their own setting. |
 | `checkpointBefore` | bool | no | `false` | Copied to `ExecNode::checkpointBefore`. |
 | `checkpointAfter` | bool | no | `false` | Copied to `ExecNode::checkpointAfter`. |
 | `parameters` | object | no | `{}` | Copied to `ExecNode::payload` for non-barrier steps. |

@@ -88,5 +88,7 @@ function(picoate_add_plugin_category category entry_source)
 endfunction()
 
 picoate_add_plugin_category(CAN "${CMAKE_SOURCE_DIR}/CAN/CanPluginBridge.cpp")
+picoate_add_plugin_category(DMM "${CMAKE_SOURCE_DIR}/DMM/DmmPluginBridge.cpp")
+picoate_add_plugin_category(PSU "${CMAKE_SOURCE_DIR}/PSU/PowerSupplyPluginBridge.cpp")
 picoate_add_plugin_category(VISA "${CMAKE_SOURCE_DIR}/VISA/VisaPluginBridge.cpp")
 picoate_add_plugin_category(Modbus "${CMAKE_SOURCE_DIR}/Modbus/ModbusPluginBridge.cpp")

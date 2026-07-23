@@ -198,11 +198,13 @@ void appendStepXlsx(QVector<XlsxRow>& rows,
         : (step.attempts.isEmpty()
                ? QVector<PicoATE::Core::MeasurementResult>{}
                : step.attempts.constLast().measurements);
-    if (measurements.isEmpty()) {
-        rows.push_back(xlsxRow(step, nullptr));
-    } else {
-        for (const auto& measurement : measurements) {
-            rows.push_back(xlsxRow(step, &measurement));
+    if (step.resultRecording) {
+        if (measurements.isEmpty()) {
+            rows.push_back(xlsxRow(step, nullptr));
+        } else {
+            for (const auto& measurement : measurements) {
+                rows.push_back(xlsxRow(step, &measurement));
+            }
         }
     }
     for (const auto& child : step.children) {
@@ -218,11 +220,13 @@ void appendStepCsv(QByteArray& csv,
         : (step.attempts.isEmpty()
                ? QVector<PicoATE::Core::MeasurementResult>{}
                : step.attempts.constLast().measurements);
-    if (measurements.isEmpty()) {
-        csv += csvRow(step, nullptr).toUtf8();
-    } else {
-        for (const auto& measurement : measurements) {
-            csv += csvRow(step, &measurement).toUtf8();
+    if (step.resultRecording) {
+        if (measurements.isEmpty()) {
+            csv += csvRow(step, nullptr).toUtf8();
+        } else {
+            for (const auto& measurement : measurements) {
+                csv += csvRow(step, &measurement).toUtf8();
+            }
         }
     }
     for (const auto& child : step.children) {

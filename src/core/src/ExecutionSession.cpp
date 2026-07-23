@@ -161,6 +161,7 @@ StepReport makeStepReport(const ExecutionPlan& plan, const UutExecution& uut, co
         report.displayName = node->displayName;
         report.kind = node->kind;
         report.phase = node->phase;
+        report.resultRecording = node->resultRecording;
     }
 
     const auto loopRegion = plan.loopRegionForBodyNode(nodeId);

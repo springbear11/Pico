@@ -25,8 +25,10 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDate>
 #include <QDoubleSpinBox>
 #include <QDialog>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QGroupBox>
@@ -39,6 +41,7 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QPixmap>
 #include <QSettings>
 #include <QScreen>
@@ -101,6 +104,7 @@ private slots:
     void switchingStationDevicesCanDiscardCurrentDraft();
     void disabledReferencedDeviceDiagnosticPersistsAcrossEditors();
     void runActionSyncsTreeBreakpointsAndStopsAtBreakpoint();
+    void runTestBreakpointGutterIsVisualOnly();
     void runPopulatesRuntimeTimeline();
     void persistsLayoutAndRecentFiles();
     void invalidOrOffscreenGeometryFallsBackToPrimaryScreen();
@@ -109,6 +113,7 @@ private slots:
     void scanDialogAcceptsRepeatedBarcodeAndHasNoWindowButtons();
     void adminStartsOnProductionDashboardAndOpensScannerOnDemand();
     void productionWindowPreloadsFlowAndRunsWithoutScanner();
+    void productionLoopTestCountsAndArchivesEveryIteration();
     void productionWindowShowsSkippedStepsAndCleanupAfterFailure();
     void pluginPropertyEditorValidatesRequiredAndRangeAndSavesInputs();
     void pluginPropertyEditorAcceptsRevertedInvalidDraftAsNoOp();
@@ -3146,6 +3151,144 @@ void MainWindowLifecycleTests::productionWindowPreloadsFlowAndRunsWithoutScanner
     QCOMPARE(totalCount->text(), QStringLiteral("TOTAL 2"));
     QCOMPARE(yieldLabel->text(), QStringLiteral("YIELD 100.00%"));
     QVERIFY(window.close());
+}
+
+void MainWindowLifecycleTests::productionLoopTestCountsAndArchivesEveryIteration()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("loop_sequence.json"));
+    QVERIFY(QFile::copy(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+                           + QStringLiteral("/examples/simple_sequence.json"),
+                       sequencePath));
+    const auto reportRoot = directory.filePath(QStringLiteral("reports"));
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(QJsonDocument(QJsonObject{
+        {QStringLiteral("stationId"), QStringLiteral("loop-line")},
+        {QStringLiteral("scanDialogEnabled"), false},
+        {QStringLiteral("loopTestEnabled"), true},
+        {QStringLiteral("loopTestCount"), 3},
+        {QStringLiteral("txtLogEnabled"), true},
+        {QStringLiteral("reportOutputDirectory"), reportRoot},
+        {QStringLiteral("devices"), QJsonArray{}}}).toJson());
+    station.close();
+
+    StartupSelection selection;
+    selection.mode = UiMode::Test;
+    selection.sequencePath = sequencePath;
+    selection.stationPath = stationPath;
+    selection.scanDialogEnabled = false;
+    ProductionWindow window(selection);
+    window.show();
+
+    auto* viewModel = window.findChild<ExecutionViewModel*>();
+    auto* resultView = window.findChild<QTreeView*>(
+        QStringLiteral("productionResultView"));
+    auto* start = window.findChild<QAction*>(QStringLiteral("productionStartAction"));
+    auto* passCount = window.findChild<QLabel*>(QStringLiteral("productionPassCount"));
+    auto* totalCount = window.findChild<QLabel*>(QStringLiteral("productionTotalCount"));
+    auto* averageTime = window.findChild<QLabel*>(
+        QStringLiteral("productionAverageTime"));
+    QVERIFY(viewModel);
+    QVERIFY(resultView);
+    QVERIFY(start);
+    QVERIFY(passCount);
+    QVERIFY(totalCount);
+    QVERIFY(averageTime);
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 3000);
+
+    int resetRounds = 0;
+    connect(viewModel,
+            &ExecutionViewModel::runIterationStarted,
+            &window,
+            [&](int iteration, int) {
+                if (iteration <= 1) {
+                    return;
+                }
+                const auto setup = resultView->model()->index(0, 0);
+                const auto firstStep = resultView->model()->index(
+                    0, UutStepModel::OutcomeColumn, setup);
+                if (firstStep.data().toString() == QStringLiteral("Pending")) {
+                    ++resetRounds;
+                }
+            });
+
+    start->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Completed, 5000);
+    QCOMPARE(passCount->text(), QStringLiteral("PASS 3"));
+    QCOMPARE(totalCount->text(), QStringLiteral("TOTAL 3"));
+    QCOMPARE(resetRounds, 2);
+    QVERIFY(averageTime->text().startsWith(QStringLiteral("AVG ")));
+
+    const auto dateDirectory = QDir(reportRoot).filePath(
+        QDate::currentDate().toString(QStringLiteral("yyyyMMdd")));
+    const auto logs = QDir(QDir(dateDirectory).filePath(QStringLiteral("PASS")))
+                          .entryList({QStringLiteral("*.txt")}, QDir::Files);
+    QCOMPARE(logs.size(), 3);
+    for (const auto& log : logs) {
+        QVERIFY(QRegularExpression(
+            QStringLiteral("_\\d{9}\\.txt$")).match(log).hasMatch());
+    }
+}
+
+void MainWindowLifecycleTests::runTestBreakpointGutterIsVisualOnly()
+{
+    const QString projectDir = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR);
+
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(
+        projectDir + QStringLiteral("/examples/simple_sequence.json")));
+    window.show();
+    QTest::qWait(20);
+
+    auto* resultView = window.findChild<QTreeView*>(QStringLiteral("resultView"));
+    auto* treeModel = window.findChild<SequenceTreeModel*>();
+    auto* viewModel = window.findChild<ExecutionViewModel*>();
+    auto* delegate = window.findChild<QAbstractItemDelegate*>(
+        QStringLiteral("runTestBreakpointDelegate"));
+    QVERIFY(resultView);
+    QVERIFY(treeModel);
+    QVERIFY(viewModel);
+    QVERIFY(delegate);
+
+    viewModel->compile();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 3000);
+    resultView->expandAll();
+    QTest::qWait(20);
+
+    const auto setupPhase = resultView->model()->index(
+        0, UutStepModel::NameColumn);
+    const auto firstStep = resultView->model()->index(
+        0, UutStepModel::NameColumn, setupPhase);
+    QVERIFY(firstStep.isValid());
+    const auto breakpointIndex = firstStep.siblingAtColumn(
+        UutStepModel::BreakpointVisualColumn);
+    const auto stepRect = resultView->visualRect(breakpointIndex);
+    QVERIFY(stepRect.isValid());
+
+    const QPoint breakpointPoint(stepRect.left() + 11,
+                                 stepRect.center().y());
+    QTest::mouseClick(resultView->viewport(),
+                      Qt::LeftButton,
+                      Qt::NoModifier,
+                      breakpointPoint);
+    QCOMPARE(delegate->property("visualBreakpointCount").toInt(), 1);
+    QVERIFY(treeModel->breakpointSpecs().isEmpty());
+
+    const auto screenshotPath = qEnvironmentVariable(
+        "PICOATE_BREAKPOINT_SCREENSHOT");
+    if (!screenshotPath.isEmpty()) {
+        QVERIFY2(window.grab().save(screenshotPath), qPrintable(screenshotPath));
+    }
+
+    QTest::mouseClick(resultView->viewport(),
+                      Qt::LeftButton,
+                      Qt::NoModifier,
+                      breakpointPoint);
+    QCOMPARE(delegate->property("visualBreakpointCount").toInt(), 0);
+    QVERIFY(treeModel->breakpointSpecs().isEmpty());
 }
 
 void MainWindowLifecycleTests::productionWindowShowsSkippedStepsAndCleanupAfterFailure()
