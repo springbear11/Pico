@@ -40,19 +40,6 @@ bool artifactExists(const QString& dateDirectory, const QString& baseName)
     return false;
 }
 
-QString uniqueBaseName(const QString& dateDirectory, const QString& requested)
-{
-    if (!artifactExists(dateDirectory, requested)) {
-        return requested;
-    }
-    for (int suffix = 2; ; ++suffix) {
-        const auto candidate = QStringLiteral("%1_%2").arg(requested).arg(suffix);
-        if (!artifactExists(dateDirectory, candidate)) {
-            return candidate;
-        }
-    }
-}
-
 QString resolvedOutputDirectory(QString configured, const QString& stationFilePath)
 {
     configured = configured.trimmed();
@@ -123,11 +110,17 @@ RunArtifactResult RunArtifactWriter::begin(const RunArtifactSettings& settings,
                            .arg(m_dateDirectory));
     }
 
-    auto requestedName = safeFileName(serialNumber);
-    if (requestedName.isEmpty()) {
-        requestedName = localStart.toString(QStringLiteral("yyyyMMdd_HHmmss_zzz"));
-    }
-    m_baseName = uniqueBaseName(m_dateDirectory, requestedName);
+    const auto serialPrefix = safeFileName(serialNumber);
+    auto fileTimestamp = localStart;
+    do {
+        m_baseName = serialPrefix.isEmpty()
+            ? fileTimestamp.toString(QStringLiteral("yyyyMMdd_HHmmsszzz"))
+            : serialPrefix + fileTimestamp.toString(QStringLiteral("_HHmmsszzz"));
+        if (!artifactExists(m_dateDirectory, m_baseName)) {
+            break;
+        }
+        fileTimestamp = fileTimestamp.addMSecs(1);
+    } while (true);
 
     RunArtifactResult result;
     if (settings.txtLogEnabled) {

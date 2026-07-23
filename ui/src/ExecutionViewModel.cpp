@@ -295,10 +295,10 @@ void ExecutionViewModel::startRun(RunRequest request)
     }
 
     request.requestId = ++m_runRequestId;
+    m_activeRunRequest = std::move(request);
+    m_runIteration = 0;
+    m_runIterationCount = qMax(1, m_compileSummary.loopTestCount);
     m_stopToken = std::make_shared<PicoATE::Core::StopToken>();
-    m_executionControl = std::make_shared<PicoATE::Core::ExecutionControl>();
-    m_executionControl->setBreakpoints(m_breakpoints);
-    m_executionControl->operatorPrompts().setResponderAvailable(true);
     m_eventSink->clear();
     m_eventFlushTimer->start();
     m_diagnostics.clear();
@@ -308,11 +308,23 @@ void ExecutionViewModel::startRun(RunRequest request)
     // The windows already display the compile-time preview tree. Keep that
     // stable until the final report arrives; runtime events only update state.
     setState(UiRunState::Starting);
+    startNextRunIteration();
+}
+
+void ExecutionViewModel::startNextRunIteration()
+{
+    ++m_runIteration;
+    m_eventSink->clear();
+    m_executionControl = std::make_shared<PicoATE::Core::ExecutionControl>();
+    m_executionControl->setBreakpoints(m_breakpoints);
+    m_executionControl->operatorPrompts().setResponderAvailable(true);
+    emit runIterationStarted(m_runIteration, m_runIterationCount);
 
     QPointer<ExecutionWorker> worker(m_worker);
     const auto stopToken = m_stopToken;
     const auto executionControl = m_executionControl;
     const std::shared_ptr<PicoATE::Core::IRuntimeEventSink> eventSink = m_eventSink;
+    const auto request = m_activeRunRequest;
     QMetaObject::invokeMethod(
         m_worker,
         [worker, request, stopToken, eventSink, executionControl] {
@@ -450,6 +462,27 @@ void ExecutionViewModel::handleRunFinished(const RunServiceResult& result)
     }
 
     flushRuntimeEvents();
+    m_diagnostics = result.diagnostics;
+    m_report = result.report;
+    clearDebugSnapshot();
+    emit diagnosticsChanged();
+    emit reportChanged();
+
+    const bool continueLoop = result.executed &&
+                              !result.stopRequested &&
+                              m_stopToken &&
+                              !m_stopToken->isStopRequested() &&
+                              m_runIteration < m_runIterationCount;
+    if (continueLoop) {
+        if (m_executionControl) {
+            m_executionControl->operatorPrompts().cancelAll();
+            m_executionControl->operatorPrompts().setResponderAvailable(false);
+        }
+        m_executionControl.reset();
+        startNextRunIteration();
+        return;
+    }
+
     m_eventFlushTimer->stop();
     m_stopToken.reset();
     if (m_executionControl) {
@@ -457,12 +490,6 @@ void ExecutionViewModel::handleRunFinished(const RunServiceResult& result)
         m_executionControl->operatorPrompts().setResponderAvailable(false);
     }
     m_executionControl.reset();
-    m_diagnostics = result.diagnostics;
-    m_report = result.report;
-    clearDebugSnapshot();
-    emit diagnosticsChanged();
-    emit reportChanged();
-
     const bool aborted = result.report.state == PicoATE::Core::ExecutionState::Aborted;
     const bool failed = !result.executed || aborted || result.report.hasError;
     setState(failed ? UiRunState::Failed : UiRunState::Completed);

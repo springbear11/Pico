@@ -824,7 +824,8 @@ QVariant UutStepModel::headerData(int section,
         QStringLiteral("Time"),
         QStringLiteral("State"),
         QStringLiteral("Attempts"),
-        QStringLiteral("Loop")};
+        QStringLiteral("Loop"),
+        QString()};
     return section >= 0 && section < headers.size() ? headers[section] : QVariant();
 }
 
@@ -1149,10 +1150,20 @@ const PicoATE::Core::StepReport* UutStepModel::stepForIndex(const QModelIndex& i
     return item ? item->step : nullptr;
 }
 
+int UutStepModel::visualLineNumber(const QModelIndex& index) const
+{
+    if (!index.isValid()) {
+        return 0;
+    }
+    const auto* item = static_cast<ModelItem*>(index.internalPointer());
+    return item && item->step ? item->visualLineNumber : 0;
+}
+
 void UutStepModel::rebuildIndexTree()
 {
     m_modelItems.clear();
     m_rootItems.clear();
+    m_nextVisualLineNumber = 1;
     if (m_singleUutPhaseLayout && m_report.uuts.size() == 1) {
         auto& uut = m_report.uuts.first();
         const QVector<PicoATE::Core::ExecutionPhase> phases = {
@@ -1205,6 +1216,7 @@ UutStepModel::ModelItem* UutStepModel::appendModelItem(
     item->uutIndex = uutIndex;
     item->row = parent->children.size();
     item->step = step;
+    item->visualLineNumber = m_nextVisualLineNumber++;
     item->parent = parent;
     auto* pointer = item.get();
     m_modelItems.push_back(std::move(item));

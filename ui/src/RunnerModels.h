@@ -61,6 +61,7 @@ public:
         StateColumn,
         AttemptsColumn,
         LoopColumn,
+        BreakpointVisualColumn,
         ColumnCount
     };
 
@@ -92,6 +93,7 @@ public:
     std::optional<PicoATE::Core::UutReport> uutAt(const QModelIndex& index) const;
     QModelIndex indexForStep(const PicoATE::Core::UutId& uutId,
                              const PicoATE::Core::NodeId& stepId) const;
+    int visualLineNumber(const QModelIndex& index) const;
 
 private:
     struct ModelItem {
@@ -101,6 +103,7 @@ private:
         int row = -1;
         PicoATE::Core::ExecutionPhase phase = PicoATE::Core::ExecutionPhase::Main;
         PicoATE::Core::StepReport* step = nullptr;
+        int visualLineNumber = 0;
         ModelItem* parent = nullptr;
         QVector<ModelItem*> children;
     };
@@ -123,6 +126,7 @@ private:
     bool m_singleUutPhaseLayout = false;
     std::vector<std::unique_ptr<ModelItem>> m_modelItems;
     QVector<ModelItem*> m_rootItems;
+    int m_nextVisualLineNumber = 1;
 };
 
 class DeviceStatusModel final : public QAbstractTableModel

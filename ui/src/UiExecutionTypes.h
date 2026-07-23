@@ -60,6 +60,7 @@ struct CompileServiceResult {
     QString sequenceName;
     QString sequenceVersion;
     int nodeCount = 0;
+    int loopTestCount = 1;
     PicoATE::Core::ExecutionReport previewReport;
     QVector<UiDiagnostic> diagnostics;
 };

@@ -312,6 +312,7 @@ QJsonObject stepToJson(const StepReport& step)
         {"outcome", nodeOutcomeName(step.outcome)},
         {"durationMs", step.durationMs},
         {"wasError", step.wasError},
+        {"resultRecording", step.resultRecording},
         {"loop", stepLoopToJson(step.loop)},
         {"measurements", measurementsToJson(step.measurements)},
         {"attempts", attempts},
@@ -349,6 +350,7 @@ StepReport stepFromJson(const QJsonObject& object,
         step.durationMs = object.value("durationMs").toVariant().toLongLong();
     }
     step.wasError = object.value("wasError").toBool(false);
+    step.resultRecording = object.value("resultRecording").toBool(true);
     step.loop = stepLoopFromJson(object.value("loop").toObject());
     step.measurements = measurementsFromJson(
         object.value("measurements"), path + ".measurements", errors);

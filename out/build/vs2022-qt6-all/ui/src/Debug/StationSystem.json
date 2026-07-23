@@ -66,6 +66,8 @@
             "timeoutMs": 30000
         }
     ],
+    "loopTestCount": 10,
+    "loopTestEnabled": true,
     "metadata": {
         "jigNo": "NA",
         "order": "NA",
@@ -73,10 +75,10 @@
     },
     "name": "NA",
     "pluginRegistry": "plugins/PluginRegistry.json",
-    "scanDialogEnabled": false,
+    "scanDialogEnabled": true,
     "snLength": 0,
     "stationId": "NA",
     "stopOnFailure": true,
     "txtLogEnabled": true,
-    "xlsxReportEnabled": false
+    "xlsxReportEnabled": true
 }

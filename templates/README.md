@@ -18,6 +18,15 @@ templates/
 │   ├── CX/                      # 创芯 ControlCAN 动态库实现
 │   ├── GCAN/                    # 广成具体实现
 │   └── ZLG/                     # 周立功实现预留目录
+├── DMM/
+│   ├── DmmAdapter.h             # DMM 统一抽象
+│   ├── DmmPluginBridge.cpp      # DMM ABI/JSON 通用桥
+│   ├── HDM3000/                 # 汉泰 HDM3000 实现
+│   └── KEYSIGHT34410A/          # Keysight 34410A 实现
+├── PSU/
+│   ├── PowerSupplyAdapter.h     # 程控电源统一抽象
+│   ├── PowerSupplyPluginBridge.cpp
+│   └── KORAD/                   # KORAD VISA 电源实现
 ├── VISA/
 │   ├── VisaAdapter.h            # VISA/DMM 统一抽象
 │   └── VisaPluginBridge.cpp     # 通用 ABI 桥，存在厂商实现时才参与编译
@@ -53,6 +62,9 @@ cmake --build --preset vs2022-release
 ```text
 bin/Debug/PicoATE.CAN.GCAN.dll
 bin/Debug/PicoATE.CAN.CX.dll
+bin/Debug/PicoATE.DMM.HDM3000.dll
+bin/Debug/PicoATE.DMM.KEYSIGHT34410A.dll
+bin/Debug/PicoATE.PSU.KORAD.dll
 bin/Release/...
 ```
 

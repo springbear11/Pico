@@ -108,6 +108,15 @@ void collectStepStates(
     }
 }
 
+QString compactDuration(qint64 milliseconds)
+{
+    milliseconds = qMax<qint64>(0, milliseconds);
+    return QStringLiteral("%1:%2.%3")
+        .arg(milliseconds / 60000, 2, 10, QLatin1Char('0'))
+        .arg(milliseconds / 1000 % 60, 2, 10, QLatin1Char('0'))
+        .arg(milliseconds % 1000, 3, 10, QLatin1Char('0'));
+}
+
 } // namespace
 
 ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
@@ -135,6 +144,8 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
             this, &ProductionWindow::updateCompileSummary);
     connect(m_viewModel, &ExecutionViewModel::reportChanged,
             this, &ProductionWindow::updateReport);
+    connect(m_viewModel, &ExecutionViewModel::runIterationStarted,
+            this, &ProductionWindow::beginRunIteration);
     connect(m_viewModel, &ExecutionViewModel::runtimeEventsReady,
             this, &ProductionWindow::applyRuntimeEvents);
     connect(m_scanDialog, &ScanDialog::barcodeAccepted,
@@ -310,6 +321,7 @@ void ProductionWindow::buildUi()
     m_resultView->setColumnHidden(UutStepModel::AttemptsColumn, true);
     m_resultView->setColumnHidden(UutStepModel::LoopColumn, true);
     m_resultView->setColumnHidden(UutStepModel::StateColumn, true);
+    m_resultView->setColumnHidden(UutStepModel::BreakpointVisualColumn, true);
     resultsLayout->addWidget(m_resultView, 1);
 
     auto* logsArea = new QWidget(rightSplitter);
@@ -365,11 +377,14 @@ void ProductionWindow::buildUi()
     m_failCountLabel = createCount(QStringLiteral("productionFailCount"));
     m_totalCountLabel = createCount(QStringLiteral("productionTotalCount"));
     m_yieldLabel = createCount(QStringLiteral("productionYield"));
+    m_averageTimeLabel = createCount(QStringLiteral("productionAverageTime"));
     m_yieldLabel->setMinimumWidth(112);
+    m_averageTimeLabel->setMinimumWidth(132);
     footerLayout->addWidget(m_passCountLabel);
     footerLayout->addWidget(m_failCountLabel);
     footerLayout->addWidget(m_totalCountLabel);
     footerLayout->addWidget(m_yieldLabel);
+    footerLayout->addWidget(m_averageTimeLabel);
     layout->addWidget(footer);
     setCentralWidget(central);
 
@@ -464,6 +479,7 @@ void ProductionWindow::buildUi()
         QLabel#productionFailCount { color: #b12f2f; font-weight: 700; }
         QLabel#productionTotalCount { color: #33414d; font-weight: 700; }
         QLabel#productionYield { color: #175b87; font-weight: 700; }
+        QLabel#productionAverageTime { color: #465561; font-weight: 700; }
     )css"));
 
     m_elapsedTimer = new QTimer(this);
@@ -552,14 +568,15 @@ void ProductionWindow::updateReport()
         report.uuts.cbegin(),
         report.uuts.cend(),
         [this](const auto& uut) { return uut.uutId == m_activeUutId; });
-    if (!m_currentRunCounted && matchingUut) {
-        if (report.state == PicoATE::Core::ExecutionState::Completed) {
+    if (!m_currentRunCounted && matchingUut && report.completed) {
+        if (report.state == PicoATE::Core::ExecutionState::Completed &&
+            !report.hasError) {
             ++m_passedUnits;
-            m_currentRunCounted = true;
-        } else if (report.state == PicoATE::Core::ExecutionState::CompletedWithError) {
+        } else {
             ++m_failedUnits;
-            m_currentRunCounted = true;
         }
+        m_totalCompletedDurationMs += m_elapsed.isValid() ? m_elapsed.elapsed() : 0;
+        m_currentRunCounted = true;
         updateYieldStatistics();
     }
 }
@@ -635,9 +652,17 @@ void ProductionWindow::beginRun(const QString& serialNumber)
     }
     const auto sn = serialNumber.trimmed();
     m_activeUutId = sn;
-    m_currentRunCounted = false;
     m_serialLabel->setText(sn);
-    resetPreviewForUut(sn);
+    QVariantMap variables;
+    variables.insert(QStringLiteral("sn"), sn);
+    variables.insert(QStringLiteral("serialNumber"), sn);
+    m_viewModel->runUut(sn, variables);
+}
+
+void ProductionWindow::beginRunIteration(int iteration, int totalIterations)
+{
+    m_currentRunCounted = false;
+    resetPreviewForUut(m_activeUutId);
     m_logModel->clear();
     QFile stationFile(m_selection.stationPath);
     QJsonObject stationObject;
@@ -646,7 +671,7 @@ void ProductionWindow::beginRun(const QString& serialNumber)
     }
     const auto artifact = m_runArtifactWriter->begin(
         runArtifactSettingsFromStation(stationObject, m_selection.stationPath),
-        sn);
+        m_activeUutId);
     if (!artifact.success) {
         statusBar()->showMessage(
             tr("Cannot create report files: %1").arg(artifact.errorMessage),
@@ -656,10 +681,10 @@ void ProductionWindow::beginRun(const QString& serialNumber)
     m_nodeStates.clear();
     m_progress->setValue(0);
     updateProgress();
-    QVariantMap variables;
-    variables.insert(QStringLiteral("sn"), sn);
-    variables.insert(QStringLiteral("serialNumber"), sn);
-    m_viewModel->runUut(sn, variables);
+    m_elapsed.restart();
+    m_elapsedTimer->start();
+    statusBar()->showMessage(
+        tr("Loop run %1 of %2").arg(iteration).arg(totalIterations));
 }
 
 void ProductionWindow::beginManualRun()
@@ -725,6 +750,8 @@ void ProductionWindow::updateYieldStatistics()
     m_failCountLabel->setText(tr("FAIL %1").arg(m_failedUnits));
     m_totalCountLabel->setText(tr("TOTAL %1").arg(total));
     m_yieldLabel->setText(tr("YIELD %1%").arg(yield, 0, 'f', 2));
+    const qint64 average = total > 0 ? m_totalCompletedDurationMs / total : 0;
+    m_averageTimeLabel->setText(tr("AVG %1").arg(compactDuration(average)));
 }
 
 } // namespace PicoATE::Ui

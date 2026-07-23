@@ -73,6 +73,7 @@ signals:
     void diagnosticsChanged();
     void compileSummaryChanged();
     void reportChanged();
+    void runIterationStarted(int iteration, int totalIterations);
     void debugSnapshotChanged();
     void runtimeEventsReady(const QVector<PicoATE::Core::RuntimeEvent>& events);
     void commandAvailabilityChanged();
@@ -94,6 +95,7 @@ private:
     void initialize(std::unique_ptr<IExecutionService> service);
     void invalidateCompilation();
     void startRun(RunRequest request);
+    void startNextRunIteration();
     void setState(UiRunState state);
     void setDebugSnapshot(std::optional<PicoATE::Core::ExecutionDebugSnapshot> snapshot);
     void clearDebugSnapshot();
@@ -121,6 +123,9 @@ private:
     quint64 m_deviceConnectionTestRequestId = 0;
     bool m_hasCompiledArtifact = false;
     bool m_shuttingDown = false;
+    RunRequest m_activeRunRequest;
+    int m_runIteration = 0;
+    int m_runIterationCount = 1;
     UiRunState m_stateBeforeDeviceTest = UiRunState::SourceSelected;
 };
 

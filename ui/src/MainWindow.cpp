@@ -54,6 +54,7 @@
 #include <QRegularExpression>
 #include <QScreen>
 #include <QScrollBar>
+#include <QSet>
 #include <QSettings>
 #include <QSizePolicy>
 #include <QSpinBox>
@@ -227,6 +228,134 @@ public:
         }
         painter->restore();
     }
+};
+
+class RunTestBreakpointDelegate final : public QStyledItemDelegate
+{
+public:
+    explicit RunTestBreakpointDelegate(QTreeView* view)
+        : QStyledItemDelegate(view)
+        , m_view(view)
+    {
+        setObjectName(QStringLiteral("runTestBreakpointDelegate"));
+        setProperty("visualBreakpointCount", 0);
+    }
+
+    void paint(QPainter* painter,
+               const QStyleOptionViewItem& option,
+               const QModelIndex& index) const override
+    {
+        const auto key = breakpointKey(index);
+        if (index.column() != UutStepModel::BreakpointVisualColumn) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+
+        painter->fillRect(option.rect, option.palette.base());
+        if (key.isEmpty()) {
+            return;
+        }
+
+        const auto* stepModel = qobject_cast<const UutStepModel*>(index.model());
+        const int lineNumber = stepModel ? stepModel->visualLineNumber(index) : 0;
+        if (lineNumber > 0) {
+            QFont lineNumberFont = option.font;
+            lineNumberFont.setWeight(QFont::Normal);
+            if (lineNumberFont.pointSizeF() > 0.0) {
+                lineNumberFont.setPointSizeF(
+                    qMax(7.5, lineNumberFont.pointSizeF() - 1.5));
+            } else if (lineNumberFont.pixelSize() > 0) {
+                lineNumberFont.setPixelSize(qMax(9, lineNumberFont.pixelSize() - 2));
+            }
+
+            painter->save();
+            painter->setFont(lineNumberFont);
+            painter->setPen(QColor(QStringLiteral("#7b8790")));
+            const QRect lineNumberRect(
+                option.rect.left() + BreakpointMarkerWidth,
+                option.rect.top(),
+                option.rect.width() - BreakpointMarkerWidth - 3,
+                option.rect.height());
+            painter->drawText(lineNumberRect,
+                              Qt::AlignRight | Qt::AlignVCenter,
+                              QString::number(lineNumber));
+            painter->restore();
+        }
+
+        const bool active = m_visualBreakpointKeys.contains(key);
+        const bool hovered = option.state & QStyle::State_MouseOver;
+        if (!active && !hovered) {
+            return;
+        }
+
+        const QPoint center(option.rect.left() + BreakpointMarkerWidth / 2,
+                            option.rect.center().y());
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        if (active) {
+            painter->setPen(QPen(QColor(QStringLiteral("#a51d14")), 1.0));
+            painter->setBrush(QColor(QStringLiteral("#e13a2d")));
+        } else {
+            painter->setPen(QPen(QColor(QStringLiteral("#d96a61")), 1.0));
+            painter->setBrush(QColor(QStringLiteral("#f3b2ad")));
+        }
+        painter->drawEllipse(center, BreakpointRadius, BreakpointRadius);
+        painter->restore();
+    }
+
+    bool editorEvent(QEvent* event,
+                     QAbstractItemModel* model,
+                     const QStyleOptionViewItem& option,
+                     const QModelIndex& index) override
+    {
+        Q_UNUSED(model);
+        if (event->type() != QEvent::MouseButtonRelease ||
+            index.column() != UutStepModel::BreakpointVisualColumn) {
+            return QStyledItemDelegate::editorEvent(event, model, option, index);
+        }
+
+        const auto* mouseEvent = static_cast<QMouseEvent*>(event);
+        const QRect markerRect(option.rect.left(),
+                               option.rect.top(),
+                               BreakpointMarkerWidth,
+                               option.rect.height());
+        const auto key = breakpointKey(index);
+        if (mouseEvent->button() != Qt::LeftButton || key.isEmpty() ||
+            !markerRect.contains(mouseEvent->position().toPoint())) {
+            return QStyledItemDelegate::editorEvent(event, model, option, index);
+        }
+
+        if (m_visualBreakpointKeys.contains(key)) {
+            m_visualBreakpointKeys.remove(key);
+        } else {
+            m_visualBreakpointKeys.insert(key);
+        }
+        setProperty("visualBreakpointCount", m_visualBreakpointKeys.size());
+        if (m_view && m_view->viewport()) {
+            m_view->viewport()->update();
+        }
+        return true;
+    }
+
+private:
+    QString breakpointKey(const QModelIndex& index) const
+    {
+        const auto* model = qobject_cast<const UutStepModel*>(index.model());
+        if (!model || model->itemType(index) != UutStepModel::StepItem) {
+            return {};
+        }
+        const auto step = model->stepAt(index);
+        if (!step) {
+            return {};
+        }
+        return step->nodePath.isEmpty() ? step->stepId : step->nodePath;
+    }
+
+    static constexpr int BreakpointRadius = 4;
+    static constexpr int BreakpointMarkerWidth = 16;
+    QPointer<QTreeView> m_view;
+    QSet<QString> m_visualBreakpointKeys;
 };
 
 class PluginFunctionTreeView final : public QTreeView
@@ -417,6 +546,10 @@ MainWindow::MainWindow(QWidget* parent)
             &ExecutionViewModel::reportChanged,
             this,
             &MainWindow::updateReport);
+    connect(m_viewModel,
+            &ExecutionViewModel::runIterationStarted,
+            this,
+            &MainWindow::beginAdminRunIteration);
     connect(m_viewModel,
             &ExecutionViewModel::debugSnapshotChanged,
             this,
@@ -1507,6 +1640,16 @@ void MainWindow::runScannedUut(const QString& serialNumber)
     m_viewModel->setBreakpoints(m_sequenceTreeModel->breakpointSpecs());
     m_sequenceTreeModel->setCurrentDebugNodePath({});
     m_adminSerialLabel->setText(sn);
+    QVariantMap variables;
+    variables.insert(QStringLiteral("sn"), sn);
+    variables.insert(QStringLiteral("serialNumber"), sn);
+    m_viewModel->runUut(sn, variables);
+    showRunPage();
+}
+
+void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
+{
+    m_currentReportSaved = false;
     m_currentAdminRunCounted = false;
     m_adminTerminalNodes.clear();
     m_runtimeTimelineModel->clear();
@@ -1514,7 +1657,7 @@ void MainWindow::runScannedUut(const QString& serialNumber)
         runArtifactSettingsFromStation(
             m_stationDocument ? m_stationDocument->rootObject() : QJsonObject{},
             m_stationDocument ? m_stationDocument->filePath() : QString()),
-        sn);
+        m_adminSerialLabel->text().trimmed());
     if (!artifact.success) {
         statusBar()->showMessage(
             tr("Cannot create report files: %1").arg(artifact.errorMessage),
@@ -1525,16 +1668,15 @@ void MainWindow::runScannedUut(const QString& serialNumber)
     preview.hasError = false;
     preview.state = PicoATE::Core::ExecutionState::Idle;
     if (!preview.uuts.isEmpty()) {
-        preview.uuts.first().uutId = sn;
+        preview.uuts.first().uutId = m_adminSerialLabel->text().trimmed();
         preview.uuts.first().hasError = false;
     }
     displayReport(preview);
     updateAdminProgress();
-    QVariantMap variables;
-    variables.insert(QStringLiteral("sn"), sn);
-    variables.insert(QStringLiteral("serialNumber"), sn);
-    m_viewModel->runUut(sn, variables);
-    showRunPage();
+    m_adminElapsed.restart();
+    m_adminElapsedTimer->start();
+    statusBar()->showMessage(
+        tr("Loop run %1 of %2").arg(iteration).arg(totalIterations));
 }
 
 void MainWindow::showScanDialog()
@@ -3284,7 +3426,18 @@ void MainWindow::buildLayout()
     m_resultView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_resultView->setSelectionMode(QAbstractItemView::SingleSelection);
     polishReadableTreeView(m_resultView);
-    installProportionalHeader(m_resultView, {2, 1, 1, 1, 1, 1, 1, 1, 1, 1});
+    m_resultView->setMouseTracking(true);
+    m_resultView->setItemDelegateForColumn(
+        UutStepModel::BreakpointVisualColumn,
+        new RunTestBreakpointDelegate(m_resultView));
+    installProportionalHeader(m_resultView, {2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1});
+    auto* resultHeader = m_resultView->header();
+    resultHeader->setMinimumSectionSize(28);
+    resultHeader->setSectionResizeMode(UutStepModel::BreakpointVisualColumn,
+                                       QHeaderView::Fixed);
+    resultHeader->resizeSection(UutStepModel::BreakpointVisualColumn, 40);
+    resultHeader->moveSection(
+        resultHeader->visualIndex(UutStepModel::BreakpointVisualColumn), 0);
     m_resultView->setColumnHidden(UutStepModel::StateColumn, true);
     m_resultView->setColumnHidden(UutStepModel::AttemptsColumn, true);
     m_resultView->setColumnHidden(UutStepModel::LoopColumn, true);
@@ -3443,11 +3596,14 @@ void MainWindow::buildLayout()
     m_adminFailCount = createCounter(QStringLiteral("adminFailCount"));
     m_adminTotalCount = createCounter(QStringLiteral("adminTotalCount"));
     m_adminYield = createCounter(QStringLiteral("adminYield"));
+    m_adminAverageTime = createCounter(QStringLiteral("adminAverageTime"));
     m_adminYield->setMinimumWidth(110);
+    m_adminAverageTime->setMinimumWidth(130);
     footerLayout->addWidget(m_adminPassCount);
     footerLayout->addWidget(m_adminFailCount);
     footerLayout->addWidget(m_adminTotalCount);
     footerLayout->addWidget(m_adminYield);
+    footerLayout->addWidget(m_adminAverageTime);
     runPageLayout->addWidget(footer);
 
     m_workspaceTabs->insertTab(0, runPage, tr("Run Test"));
@@ -3475,6 +3631,7 @@ void MainWindow::buildLayout()
         QLabel#adminFailCount { color: #b12f2f; font-weight: 700; }
         QLabel#adminTotalCount { color: #33414d; font-weight: 700; }
         QLabel#adminYield { color: #175b87; font-weight: 700; }
+        QLabel#adminAverageTime { color: #465561; font-weight: 700; }
         QProgressBar#adminRunProgress {
             border: 1px solid #aeb9c2; background: #edf1f3;
             min-height: 23px; text-align: center;
@@ -3798,6 +3955,13 @@ void MainWindow::updateAdminYield()
     m_adminFailCount->setText(tr("FAIL %1").arg(m_adminFailedUnits));
     m_adminTotalCount->setText(tr("TOTAL %1").arg(total));
     m_adminYield->setText(tr("YIELD %1%").arg(yield, 0, 'f', 2));
+    const qint64 average = total > 0
+        ? m_adminTotalCompletedDurationMs / total
+        : 0;
+    m_adminAverageTime->setText(tr("AVG %1:%2.%3")
+        .arg(average / 60000, 2, 10, QLatin1Char('0'))
+        .arg(average / 1000 % 60, 2, 10, QLatin1Char('0'))
+        .arg(average % 1000, 3, 10, QLatin1Char('0')));
 }
 
 void MainWindow::updateAdminElapsed()
@@ -3835,13 +3999,16 @@ void MainWindow::updateReport()
         }
     }
     if (report.completed && !m_currentAdminRunCounted) {
-        if (report.state == PicoATE::Core::ExecutionState::Completed) {
+        if (report.state == PicoATE::Core::ExecutionState::Completed &&
+            !report.hasError) {
             ++m_adminPassedUnits;
-            m_currentAdminRunCounted = true;
-        } else if (report.state == PicoATE::Core::ExecutionState::CompletedWithError) {
+        } else {
             ++m_adminFailedUnits;
-            m_currentAdminRunCounted = true;
         }
+        m_adminTotalCompletedDurationMs += m_adminElapsed.isValid()
+            ? m_adminElapsed.elapsed()
+            : 0;
+        m_currentAdminRunCounted = true;
         updateAdminYield();
     }
     displayReport(report);

@@ -748,7 +748,11 @@ void StepPropertyEditor::buildGeneralPage()
     m_alwaysRunCheck = new QCheckBox(page);
     m_generalForm->addRow(tr("Always run"), m_alwaysRunCheck);
     m_resultRecordingCheck = new QCheckBox(page);
-    m_generalForm->addRow(tr("Record result"), m_resultRecordingCheck);
+    m_resultRecordingCheck->setObjectName(
+        QStringLiteral("propertyResultRecordingCheck"));
+    m_resultRecordingCheck->setToolTip(tr(
+        "Include this item in CSV and XLSX reports. TXT logs and the overall pass/fail result are unaffected."));
+    m_generalForm->addRow(tr("Record in CSV / XLSX"), m_resultRecordingCheck);
     m_checkpointBeforeCheck = new QCheckBox(page);
     m_generalForm->addRow(tr("Checkpoint before"), m_checkpointBeforeCheck);
     m_checkpointAfterCheck = new QCheckBox(page);

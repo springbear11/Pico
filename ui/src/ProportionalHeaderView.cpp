@@ -46,9 +46,14 @@ void ProportionalHeaderView::redistribute()
     }
 
     QVector<int> visibleSections;
+    int fixedWidth = 0;
     int totalWeight = 0;
     for (int section = 0; section < count(); ++section) {
         if (isSectionHidden(section)) {
+            continue;
+        }
+        if (sectionResizeMode(section) == QHeaderView::Fixed) {
+            fixedWidth += sectionSize(section);
             continue;
         }
         visibleSections.push_back(section);
@@ -59,7 +64,7 @@ void ProportionalHeaderView::redistribute()
     }
 
     m_redistributing = true;
-    const int available = viewport()->width();
+    const int available = qMax(0, viewport()->width() - fixedWidth);
     int assigned = 0;
     int remainingWeight = totalWeight;
     for (int index = 0; index < visibleSections.size(); ++index) {

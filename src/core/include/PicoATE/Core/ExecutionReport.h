@@ -33,6 +33,7 @@ struct StepReport {
     NodeOutcome outcome = NodeOutcome::Unknown;
     qint64 durationMs = -1;
     bool wasError = false;
+    bool resultRecording = true;
     StepLoopReport loop;
     QVector<MeasurementResult> measurements;
     QVector<AttemptReport> attempts;
