@@ -224,8 +224,6 @@ Plugin::Json pluginDescription()
                          {{"label", "USBCAN-I"}, {"value", 3}},
                          {{"label", "USBCAN-II / CANalyst-II"}, {"value", 4}}
                      })}},
-                    {{"key", "deviceIndex"}, {"name", "Device Index"}, {"type", "integer"},
-                     {"required", false}, {"default", 0}, {"minimum", 0}},
                     {{"key", "channelIndex"}, {"name", "Channel"}, {"type", "integer"},
                      {"required", false}, {"default", 0}, {"minimum", 0}, {"maximum", 1}},
                     {{"key", "bitrate"}, {"name", "Bitrate"}, {"type", "enum"},
@@ -490,6 +488,61 @@ CxCanAdapter::CxCanAdapter()
 }
 
 CxCanAdapter::~CxCanAdapter() = default;
+
+DiscoveryResult CxCanAdapter::findDevices(const DiscoveryOptions& options)
+{
+    DiscoveryResult result;
+    result.status = m_impl->load(options.libraryPath);
+    if (!result.status.success) {
+        return result;
+    }
+    if (options.deviceType != 0 && options.deviceType != UsbCan1 &&
+        options.deviceType != UsbCan2) {
+        result.status = OperationResult::failed(
+            "InvalidDeviceType", "deviceType must be 0, 3 (USBCAN-I), or 4 (USBCAN-II)");
+        return result;
+    }
+
+    const auto deviceTypes = options.deviceType == 0
+        ? std::vector<int>{UsbCan2, UsbCan1}
+        : std::vector<int>{options.deviceType};
+    for (int deviceIndex = 0; deviceIndex <= options.maximumDeviceIndex; ++deviceIndex) {
+        for (const auto deviceType : deviceTypes) {
+            PicoATE_Log("VENDOR CX VCI_OpenDevice(type={}, device={}, reserved=0) for discovery",
+                        deviceType, deviceIndex);
+            const auto openStatus = m_impl->openDevice(deviceType, deviceIndex, 0);
+            PicoATE_Log("VENDOR CX VCI_OpenDevice discovery return={}", openStatus);
+            if (openStatus != StatusOk) {
+                continue;
+            }
+
+            ControlCanBoardInfo board{};
+            PicoATE_Log("VENDOR CX VCI_ReadBoardInfo(type={}, device={}) for discovery",
+                        deviceType, deviceIndex);
+            const auto boardStatus = m_impl->readBoardInfo(deviceType, deviceIndex, &board);
+            PicoATE_Log("VENDOR CX VCI_ReadBoardInfo discovery return={}", boardStatus);
+            if (boardStatus == StatusOk) {
+                const auto serial = fixedString(board.serialNumber, sizeof(board.serialNumber));
+                const auto model = fixedString(board.hardwareType, sizeof(board.hardwareType));
+                const auto channels = board.channelCount >= '0' && board.channelCount <= '9'
+                    ? board.channelCount - '0' : board.channelCount;
+                PicoATE_Log("VENDOR CX discovered index={} serial={} model={} channels={}",
+                            deviceIndex, serial, model, channels);
+                if (!serial.empty()) {
+                    result.devices.push_back(
+                        {serial, model, deviceType, deviceIndex, channels});
+                }
+            }
+            PicoATE_Log("VENDOR CX VCI_CloseDevice(type={}, device={}) after discovery",
+                        deviceType, deviceIndex);
+            const auto closeStatus = m_impl->closeDevice(deviceType, deviceIndex);
+            PicoATE_Log("VENDOR CX VCI_CloseDevice discovery return={}", closeStatus);
+            break;
+        }
+    }
+    result.status = OperationResult::passed();
+    return result;
+}
 
 OperationResult CxCanAdapter::open(const OpenOptions& options)
 {

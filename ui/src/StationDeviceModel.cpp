@@ -4,6 +4,7 @@
 #include <QColor>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QRegularExpression>
 #include <QSet>
 
 #include <algorithm>
@@ -42,6 +43,17 @@ QString driverId(const QJsonObject& device)
     return valueWithAlias(device, QStringLiteral("driverId"),
                           QStringLiteral("driver"))
         .trimmed();
+}
+
+QString canonicalCanBaseId(const QJsonObject& device)
+{
+    static const QRegularExpression pattern(
+        QStringLiteral("^CAN([1-9][0-9]*)(?:\\.CH[1-9][0-9]*)?$"),
+        QRegularExpression::CaseInsensitiveOption);
+    const auto match = pattern.match(deviceId(device));
+    return match.hasMatch()
+        ? QStringLiteral("CAN%1").arg(match.captured(1).toInt())
+        : QString{};
 }
 
 int channelIndex(const QJsonObject& device)
@@ -403,6 +415,20 @@ void StationDeviceModel::rebuildRows()
     }
     QHash<QString, QVector<int>> canGroups;
     QHash<QString, int> typeCounts;
+    QSet<QString> reservedCanBaseIds;
+    QSet<QString> usedCanBaseIds;
+    int nextCanIndex = 1;
+    for (int documentRow = 0;
+         documentRow < m_document->deviceCount(); ++documentRow) {
+        const auto device = m_document->deviceAt(documentRow);
+        if (normalizedType(device) != QStringLiteral("CAN")) {
+            continue;
+        }
+        const auto baseId = canonicalCanBaseId(device);
+        if (!baseId.isEmpty()) {
+            reservedCanBaseIds.insert(baseId);
+        }
+    }
     for (int documentRow = 0;
          documentRow < m_document->deviceCount(); ++documentRow) {
         const auto device = m_document->deviceAt(documentRow);
@@ -432,7 +458,16 @@ void StationDeviceModel::rebuildRows()
             DeviceRow row;
             row.documentRows.push_back(documentRow);
             row.deviceType = type;
-            row.baseId = QStringLiteral("CAN%1").arg(++typeCounts[type]);
+            row.baseId = canonicalCanBaseId(device);
+            if (row.baseId.isEmpty() || usedCanBaseIds.contains(row.baseId)) {
+                QString candidate;
+                do {
+                    candidate = QStringLiteral("CAN%1").arg(nextCanIndex++);
+                } while (reservedCanBaseIds.contains(candidate) ||
+                         usedCanBaseIds.contains(candidate));
+                row.baseId = std::move(candidate);
+            }
+            usedCanBaseIds.insert(row.baseId);
             canGroups[key].push_back(m_rows.size());
             m_rows.push_back(std::move(row));
             continue;

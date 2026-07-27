@@ -232,6 +232,35 @@ Plugin::Json execute(const Plugin::Json& request)
     const auto options = optionsFromInputs(input);
     auto& can = adapter();
 
+    if (function == "finddevices") {
+        DiscoveryOptions discovery;
+        discovery.libraryPath = options.libraryPath;
+        discovery.deviceType = options.deviceType;
+        discovery.maximumDeviceIndex = std::clamp(
+            Plugin::numberValue(input, "maximumDeviceIndex", 15), 0, 63);
+        PicoATE_Log("CAN_FIND_DEVICES type={} maxIndex={}",
+                    discovery.deviceType,
+                    discovery.maximumDeviceIndex);
+        const auto found = can.findDevices(discovery);
+        if (!found.status.success) {
+            PicoATE_Log("CAN_FIND_DEVICES failed: {}", found.status.errorMessage);
+            return Plugin::errorResponse(found.status.errorCode,
+                                         found.status.errorMessage);
+        }
+        Plugin::Json devices = Plugin::Json::array();
+        for (const auto& device : found.devices) {
+            devices.push_back({
+                {"serialNumber", device.serialNumber},
+                {"model", device.model},
+                {"deviceType", device.deviceType},
+                {"deviceIndex", device.deviceIndex},
+                {"channelCount", device.channelCount},
+            });
+        }
+        PicoATE_Log("CAN_FIND_DEVICES passed count={}", devices.size());
+        return Plugin::response("Passed", {{"devices", std::move(devices)}});
+    }
+
     if (function == "open" || function == "connectcan") {
         PicoATE_Log("CAN_OPEN type={} device={} channel={} bitrate={} mode={}",
                     options.deviceType,
@@ -362,7 +391,7 @@ Plugin::Json execute(const Plugin::Json& request)
     }
 
     return Plugin::errorResponse(
-        "UnknownFunction", "Use open, close, status, write, read, or requestResponse");
+        "UnknownFunction", "Use open, close, status, write, read, requestResponse, or findDevices");
 }
 
 } // namespace

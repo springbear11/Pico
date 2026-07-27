@@ -44,6 +44,25 @@ struct OperationResult {
     }
 };
 
+struct DiscoveryOptions {
+    std::string libraryPath;
+    int deviceType = 0;
+    int maximumDeviceIndex = 15;
+};
+
+struct DiscoveredCanDevice {
+    std::string serialNumber;
+    std::string model;
+    int deviceType = 0;
+    int deviceIndex = 0;
+    int channelCount = 0;
+};
+
+struct DiscoveryResult {
+    OperationResult status;
+    std::vector<DiscoveredCanDevice> devices;
+};
+
 enum class ReceiveStatus {
     Received,
     Timeout,
@@ -62,6 +81,7 @@ class ICanAdapter
 public:
     virtual ~ICanAdapter() = default;
 
+    virtual DiscoveryResult findDevices(const DiscoveryOptions& options) = 0;
     virtual OperationResult open(const OpenOptions& options) = 0;
     virtual OperationResult close(const OpenOptions& options) = 0;
     virtual bool isOpen(const OpenOptions& options) const noexcept = 0;

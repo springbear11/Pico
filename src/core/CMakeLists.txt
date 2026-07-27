@@ -2,6 +2,7 @@ add_library(PicoATECore SHARED
     include/PicoATE/Core/CoreExport.h
     src/BarrierController.cpp
     src/DllBridgeInvoker.cpp
+    src/DeviceDiscovery.cpp
     src/DeviceSessionManager.cpp
     src/DeviceTransportSession.cpp
     src/ErrorPolicyEngine.cpp

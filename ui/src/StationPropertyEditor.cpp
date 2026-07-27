@@ -937,20 +937,26 @@ bool StationPropertyEditor::commitDevice()
     auto devices = root.value(QStringLiteral("devices")).toArray();
     auto sortedRows = m_currentRows;
     std::sort(sortedRows.begin(), sortedRows.end(), std::greater<int>());
+    const int originalFirstRow = sortedRows.isEmpty()
+        ? devices.size()
+        : sortedRows.back();
     for (const int row : sortedRows) {
         if (row >= 0 && row < devices.size()) {
             devices.removeAt(row);
         }
     }
     const auto selectedType = m_deviceTypeCombo->currentData().toString();
-    int insertionRow = devices.size();
-    for (int index = 0; index < devices.size(); ++index) {
-        const auto type = normalizedType(valueWithAlias(
-            devices[index].toObject(),
-            QStringLiteral("deviceType"),
-            QStringLiteral("type")));
-        if (type == selectedType) {
-            insertionRow = index + 1;
+    int insertionRow = qMin(originalFirstRow, devices.size());
+    if (selectedType != m_loadedDeviceType) {
+        insertionRow = devices.size();
+        for (int index = 0; index < devices.size(); ++index) {
+            const auto type = normalizedType(valueWithAlias(
+                devices[index].toObject(),
+                QStringLiteral("deviceType"),
+                QStringLiteral("type")));
+            if (type == selectedType) {
+                insertionRow = index + 1;
+            }
         }
     }
     for (int index = 0; index < replacements.size(); ++index) {

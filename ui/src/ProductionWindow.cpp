@@ -3,6 +3,7 @@
 #include "ProportionalHeaderView.h"
 
 #include "ExecutionViewModel.h"
+#include "FieldDeviceDialog.h"
 #include "OperatorPromptPresenter.h"
 #include "PicoATE/Core/StationConfig.h"
 #include "RunnerModels.h"
@@ -22,6 +23,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QJsonDocument>
+#include <QMessageBox>
 #include <QProgressBar>
 #include <QSizePolicy>
 #include <QSplitter>
@@ -133,6 +135,7 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
     m_logModel = new RuntimeTimelineModel(this);
     m_runArtifactWriter = std::make_unique<RunArtifactWriter>();
     m_scanDialog = new ScanDialog(this);
+    m_fieldDeviceDialog = new FieldDeviceDialog(m_selection.stationPath, this);
     m_scanDialog->setValidationRules(m_selection.snValidationRules);
     buildUi();
 
@@ -150,10 +153,19 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
             this, &ProductionWindow::applyRuntimeEvents);
     connect(m_scanDialog, &ScanDialog::barcodeAccepted,
             this, &ProductionWindow::beginRun);
+    connect(m_fieldDeviceDialog, &FieldDeviceDialog::stationSaved,
+            this, [this] {
+                m_stationSnapshotReady = false;
+                m_resolvingStation = true;
+                updateCommands();
+                m_fieldDeviceDialog->resolveEffectiveStation();
+            });
+    connect(m_fieldDeviceDialog, &FieldDeviceDialog::effectiveStationReady,
+            this, &ProductionWindow::applyEffectiveStation);
 
     m_viewModel->setSequencePath(m_selection.sequencePath);
-    m_viewModel->setStationPath(m_selection.stationPath);
-    m_viewModel->compile();
+    m_resolvingStation = true;
+    m_fieldDeviceDialog->resolveEffectiveStation();
     updateCommands();
 }
 
@@ -209,6 +221,10 @@ void ProductionWindow::buildUi()
     m_stopAction = toolbar->addAction(
         style()->standardIcon(QStyle::SP_MediaStop), tr("Stop"));
     m_stopAction->setObjectName(QStringLiteral("productionStopAction"));
+    toolbar->addSeparator();
+    m_fieldDeviceAction = toolbar->addAction(
+        style()->standardIcon(QStyle::SP_DriveNetIcon), tr("Devices"));
+    m_fieldDeviceAction->setObjectName(QStringLiteral("productionFieldDeviceAction"));
     connect(m_startAction, &QAction::triggered,
             this, &ProductionWindow::beginManualRun);
     connect(m_pauseAction, &QAction::triggered,
@@ -217,6 +233,8 @@ void ProductionWindow::buildUi()
             m_viewModel, &ExecutionViewModel::resume);
     connect(m_stopAction, &QAction::triggered,
             this, [this] { m_viewModel->stop(); });
+    connect(m_fieldDeviceAction, &QAction::triggered,
+            this, &ProductionWindow::openFieldDeviceConfiguration);
     layout->addWidget(toolbar);
 
     auto* contentSplitter = new QSplitter(Qt::Horizontal, central);
@@ -499,6 +517,9 @@ void ProductionWindow::updateCommands()
     m_pauseAction->setEnabled(m_viewModel->canPause());
     m_resumeAction->setEnabled(m_viewModel->canResume());
     m_stopAction->setEnabled(m_viewModel->canStop());
+    m_fieldDeviceAction->setEnabled(!m_resolvingStation &&
+                                    !m_viewModel->canPause() &&
+                                    !m_viewModel->canStop());
 }
 
 void ProductionWindow::updateState(UiRunState state)
@@ -510,7 +531,11 @@ void ProductionWindow::updateState(UiRunState state)
         m_elapsedTimer->start();
     }
     if (state == UiRunState::Ready) {
-        showScanDialogWhenReady();
+        if (!m_pendingSerialNumber.isEmpty() && m_stationSnapshotReady) {
+            startResolvedRun();
+        } else {
+            showScanDialogWhenReady();
+        }
     }
     if (state == UiRunState::Completed || state == UiRunState::Failed) {
         m_elapsedTimer->stop();
@@ -526,12 +551,18 @@ void ProductionWindow::updateCompileSummary()
 {
     const auto summary = m_viewModel->compileSummary();
     if (!summary.success) {
+        m_stationSnapshotReady = false;
+        m_pendingSerialNumber.clear();
         return;
     }
+    m_stationSnapshotReady = true;
     m_previewReport = summary.previewReport;
     m_totalNodes = qMax(1, summary.nodeCount);
     resetPreviewForUut({});
     showScanDialogWhenReady();
+    if (!m_pendingSerialNumber.isEmpty() && m_viewModel->canRun()) {
+        startResolvedRun();
+    }
 }
 
 void ProductionWindow::updateReport()
@@ -646,17 +677,64 @@ void ProductionWindow::focusExecutionLogForResult(const QModelIndex& index)
 
 void ProductionWindow::beginRun(const QString& serialNumber)
 {
-    if (!m_viewModel->canRun()) {
+    if (!m_viewModel->canRun() || m_resolvingStation) {
         showScanDialogWhenReady();
         return;
     }
-    const auto sn = serialNumber.trimmed();
+    m_pendingSerialNumber = serialNumber.trimmed();
+    m_stationSnapshotReady = false;
+    m_resolvingStation = true;
+    updateCommands();
+    statusBar()->showMessage(tr("Resolving field devices..."));
+    m_fieldDeviceDialog->resolveEffectiveStation(true);
+}
+
+void ProductionWindow::startResolvedRun()
+{
+    if (!m_stationSnapshotReady || !m_viewModel->canRun() ||
+        m_pendingSerialNumber.isEmpty()) {
+        return;
+    }
+    const auto sn = std::exchange(m_pendingSerialNumber, {});
     m_activeUutId = sn;
     m_serialLabel->setText(sn);
     QVariantMap variables;
     variables.insert(QStringLiteral("sn"), sn);
     variables.insert(QStringLiteral("serialNumber"), sn);
     m_viewModel->runUut(sn, variables);
+}
+
+void ProductionWindow::openFieldDeviceConfiguration()
+{
+    if (m_viewModel->canPause() || m_viewModel->canStop() || m_resolvingStation) {
+        return;
+    }
+    const bool restoreScanner = m_scanDialog->isVisible();
+    m_scanDialog->hide();
+    m_fieldDeviceDialog->exec();
+    if (restoreScanner) {
+        showScanDialogWhenReady();
+    }
+}
+
+void ProductionWindow::applyEffectiveStation(const QByteArray& stationJson,
+                                             const QString& errorMessage)
+{
+    m_resolvingStation = false;
+    if (!errorMessage.isEmpty() || stationJson.isEmpty()) {
+        m_stationSnapshotReady = false;
+        m_pendingSerialNumber.clear();
+        const auto message = errorMessage.isEmpty()
+            ? tr("Cannot create the effective Station snapshot") : errorMessage;
+        statusBar()->showMessage(message, 12000);
+        QMessageBox::warning(this, tr("Field Device Configuration"), message);
+        updateCommands();
+        showScanDialogWhenReady();
+        return;
+    }
+    m_viewModel->setStationDocument(m_selection.stationPath, stationJson);
+    m_viewModel->compile();
+    updateCommands();
 }
 
 void ProductionWindow::beginRunIteration(int iteration, int totalIterations)

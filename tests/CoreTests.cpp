@@ -2,6 +2,7 @@
 
 #include "PicoATE/Core/BarrierController.h"
 #include "PicoATE/Core/DeviceSessionManager.h"
+#include "PicoATE/Core/DeviceDiscovery.h"
 #include "PicoATE/Core/DeviceTransportSession.h"
 #include "PicoATE/Core/DllBridgeInvoker.h"
 #include "PicoATE/Core/ExecutionGraphScheduler.h"
@@ -468,6 +469,7 @@ private slots:
     void deviceSessionManagerReportsMissingFactoryAndConnectFailure();
     void stationConfigParsesDevicesAndConfiguresSessionManager();
     void stationConfigReportsDeviceErrors();
+    void stationFieldBindingPersistsResourcesAndKeepsRuntimeIndexTransient();
     void stationRuntimeLoadsStationConfig();
     void resourceManagerSerializesWaiters();
     void barrierControllerReleasesOnlyThroughDecision();
@@ -809,6 +811,52 @@ void CoreTests::stationConfigReportsDeviceErrors()
     QVERIFY(hasErrorAt("devices[0].lifetime"));
     QVERIFY(hasErrorAt("devices[1].driverId"));
     QVERIFY(hasErrorAt("devices[1].deviceId"));
+}
+
+void CoreTests::stationFieldBindingPersistsResourcesAndKeepsRuntimeIndexTransient()
+{
+    QJsonObject station = QJsonDocument::fromJson(R"json({
+      "devices": [
+        {"deviceId":"CAN1.CH1","deviceType":"CAN","driverId":"plugin.can.gcan",
+         "enabled":true,"options":{"channelIndex":0,"deviceIndex":3,"bitrate":500000}},
+        {"deviceId":"CAN1.CH2","deviceType":"CAN","driverId":"plugin.can.gcan",
+         "enabled":true,"options":{"channelIndex":1,"deviceIndex":3,"bitrate":1000000}},
+        {"deviceId":"DMM1","deviceType":"DMM","driverId":"plugin.dmm.demo",
+         "enabled":true,"address":"OLD"}
+      ]
+    })json").object();
+
+    const auto devices = stationFieldDevices(station);
+    QCOMPARE(devices.size(), 2);
+    QCOMPARE(devices[0].logicalId, QStringLiteral("CAN1"));
+    QCOMPARE(devices[0].memberDeviceIds,
+             QStringList({QStringLiteral("CAN1.CH1"), QStringLiteral("CAN1.CH2")}));
+
+    QString error;
+    QVERIFY(applyStationFieldBinding(station, QStringLiteral("CAN1"),
+                                     QStringLiteral("GCAN-SN-001"), &error));
+    QVERIFY(applyStationFieldBinding(station, QStringLiteral("DMM1"),
+                                     QStringLiteral("USB0::1::INSTR"), &error));
+    const auto persisted = station.value(QStringLiteral("devices")).toArray();
+    for (int index = 0; index < 2; ++index) {
+        const auto options = persisted[index].toObject().value(QStringLiteral("options")).toObject();
+        QCOMPARE(options.value(QStringLiteral("serialNumber")).toString(),
+                 QStringLiteral("GCAN-SN-001"));
+        QVERIFY(!options.contains(QStringLiteral("deviceIndex")));
+    }
+    QCOMPARE(persisted[2].toObject().value(QStringLiteral("address")).toString(),
+             QStringLiteral("USB0::1::INSTR"));
+
+    const auto effective = effectiveStationSnapshot(
+        station, {{QStringLiteral("CAN1"), 7}});
+    const auto effectiveDevices = effective.value(QStringLiteral("devices")).toArray();
+    QCOMPARE(effectiveDevices[0].toObject().value(QStringLiteral("options"))
+                 .toObject().value(QStringLiteral("deviceIndex")).toInt(), 7);
+    QCOMPARE(effectiveDevices[1].toObject().value(QStringLiteral("options"))
+                 .toObject().value(QStringLiteral("deviceIndex")).toInt(), 7);
+    QVERIFY(!station.value(QStringLiteral("devices")).toArray()[0].toObject()
+                 .value(QStringLiteral("options")).toObject()
+                 .contains(QStringLiteral("deviceIndex")));
 }
 
 void CoreTests::stationRuntimeLoadsStationConfig()

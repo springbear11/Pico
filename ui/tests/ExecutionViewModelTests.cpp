@@ -3818,6 +3818,8 @@ void ExecutionViewModelTests::stationDeviceModelEditsAndReordersDevices()
              QString("CAN2.CH1"));
     QVERIFY(document.moveDevice(2, -1));
     QCOMPARE(model.data(model.index(1, StationDeviceModel::DeviceIdColumn)).toString(),
+             QString("CAN2.CH1"));
+    QCOMPARE(model.data(model.index(2, StationDeviceModel::DeviceIdColumn)).toString(),
              QString("CAN1.CH1"));
     QVERIFY(document.removeDevice(1));
     QCOMPARE(model.rowCount(), 2);
