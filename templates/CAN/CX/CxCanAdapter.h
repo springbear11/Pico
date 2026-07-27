@@ -12,6 +12,7 @@ public:
     CxCanAdapter();
     ~CxCanAdapter() override;
 
+    DiscoveryResult findDevices(const DiscoveryOptions& options) override;
     OperationResult open(const OpenOptions& options) override;
     OperationResult close(const OpenOptions& options) override;
     bool isOpen(const OpenOptions& options) const noexcept override;

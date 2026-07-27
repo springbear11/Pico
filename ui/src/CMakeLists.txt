@@ -63,6 +63,8 @@ set_target_properties(PicoATEUiRuntime
 )
 
 qt_add_executable(PicoATEUi WIN32
+    FieldDeviceDialog.cpp
+    FieldDeviceDialog.h
     FlowTargetSelector.cpp
     FlowTargetSelector.h
     LoginDialog.cpp

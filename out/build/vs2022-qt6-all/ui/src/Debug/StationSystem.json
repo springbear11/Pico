@@ -64,6 +64,22 @@
                 "selfTest": false
             },
             "timeoutMs": 30000
+        },
+        {
+            "address": "",
+            "deviceId": "DMM1",
+            "deviceType": "DMM",
+            "driverId": "plugin.dmm.hdm3000",
+            "enabled": true,
+            "lifetime": "Station",
+            "options": {
+                "commandDelayMs": 20,
+                "ioTimeoutMs": 5000,
+                "readTermination": "\\n",
+                "visaLibrary": "visa64.dll",
+                "writeTermination": "\\n"
+            },
+            "timeoutMs": 30000
         }
     ],
     "loopTestCount": 10,

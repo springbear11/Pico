@@ -97,6 +97,7 @@ private slots:
     void stationDeviceApplyPreservesDllPathWhenModelIsUnchanged();
     void stationPropertyEditorUsesTypedIdsAndFilteredDrivers();
     void stationPropertyEditorKeepsCanChannelOptionsIndependent();
+    void stationPropertyEditorPreservesCanIdentityWhenEditingFirstGroup();
     void stationNewCanKeepsTableEnabledStateWhenDraftIsSaved();
     void stationDeviceSlotsMoveReferencesBeforeOrderedDeletion();
     void compileFailureFocusesDiagnosticAndExplainsDisabledRun();
@@ -1872,6 +1873,101 @@ void MainWindowLifecycleTests::stationPropertyEditorKeepsCanChannelOptionsIndepe
                  .value(QStringLiteral("channelIndex")).toInt(), 0);
     QCOMPARE(document.deviceAt(1).value(QStringLiteral("options")).toObject()
                  .value(QStringLiteral("channelIndex")).toInt(), 1);
+}
+
+void MainWindowLifecycleTests::stationPropertyEditorPreservesCanIdentityWhenEditingFirstGroup()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile stationFile(stationPath);
+    QVERIFY(stationFile.open(QIODevice::WriteOnly));
+    stationFile.write(R"({
+        "stationId":"stable-can-identity",
+        "devices":[
+          {"deviceId":"CAN1.CH1","deviceType":"CAN","driverId":"plugin.can.cx",
+           "enabled":true,"options":{"deviceIndex":0,"channelIndex":0,"bitrate":500000}},
+          {"deviceId":"CAN1.CH2","deviceType":"CAN","driverId":"plugin.can.cx",
+           "enabled":true,"options":{"deviceIndex":0,"channelIndex":1,"bitrate":500000}},
+          {"deviceId":"CAN2.CH1","deviceType":"CAN","driverId":"plugin.can.gcan",
+           "enabled":true,"options":{"deviceIndex":0,"channelIndex":0,"bitrate":500000}},
+          {"deviceId":"CAN2.CH2","deviceType":"CAN","driverId":"plugin.can.gcan",
+           "enabled":true,"options":{"deviceIndex":0,"channelIndex":1,"bitrate":500000}}
+        ]
+    })");
+    stationFile.close();
+
+    auto makePlugin = [](const QString& moduleId) {
+        PluginManifest plugin;
+        plugin.moduleId = moduleId;
+        plugin.name = moduleId;
+        plugin.category = QStringLiteral("CAN");
+        plugin.dllPath = moduleId + QStringLiteral(".dll");
+        PluginFunctionDefinition open;
+        open.id = QStringLiteral("open");
+        PluginParameterDefinition channel;
+        channel.key = QStringLiteral("channelIndex");
+        channel.name = QStringLiteral("Channel");
+        channel.type = PluginParameterType::Integer;
+        channel.maximum = 1.0;
+        PluginParameterDefinition bitrate;
+        bitrate.key = QStringLiteral("bitrate");
+        bitrate.name = QStringLiteral("Bitrate");
+        bitrate.type = PluginParameterType::Enumeration;
+        bitrate.options = {
+            {QStringLiteral("250 kbit/s"), 250000},
+            {QStringLiteral("500 kbit/s"), 500000}};
+        open.inputs = {channel, bitrate};
+        plugin.functions.push_back(open);
+        return plugin;
+    };
+
+    StationDocument document;
+    QVERIFY(document.load(stationPath));
+    StationPropertyEditor editor(&document);
+    editor.setPluginRegistry({makePlugin(QStringLiteral("plugin.can.cx")),
+                              makePlugin(QStringLiteral("plugin.can.gcan"))});
+    editor.setCurrentDevices({0, 1}, QStringLiteral("CAN1"));
+
+    auto* channel1Bitrate = editor.findChild<QComboBox*>(
+        QStringLiteral("deviceOption_ch1_bitrate"));
+    QVERIFY(channel1Bitrate);
+    channel1Bitrate->setCurrentIndex(channel1Bitrate->findData(250000));
+    QVERIFY(editor.commitPendingChanges());
+
+    const QStringList expectedIds = {
+        QStringLiteral("CAN1.CH1"), QStringLiteral("CAN1.CH2"),
+        QStringLiteral("CAN2.CH1"), QStringLiteral("CAN2.CH2")};
+    for (int row = 0; row < expectedIds.size(); ++row) {
+        QCOMPARE(document.deviceAt(row).value(QStringLiteral("deviceId")).toString(),
+                 expectedIds[row]);
+    }
+    QCOMPARE(document.deviceAt(0).value(QStringLiteral("driverId")).toString(),
+             QStringLiteral("plugin.can.cx"));
+    QCOMPARE(document.deviceAt(1).value(QStringLiteral("driverId")).toString(),
+             QStringLiteral("plugin.can.cx"));
+    QCOMPARE(document.deviceAt(2).value(QStringLiteral("driverId")).toString(),
+             QStringLiteral("plugin.can.gcan"));
+    QCOMPARE(document.deviceAt(3).value(QStringLiteral("driverId")).toString(),
+             QStringLiteral("plugin.can.gcan"));
+    QCOMPARE(document.deviceAt(0).value(QStringLiteral("options")).toObject()
+                 .value(QStringLiteral("bitrate")).toInt(), 250000);
+
+    auto root = document.rootObject();
+    const auto devices = root.value(QStringLiteral("devices")).toArray();
+    root.insert(QStringLiteral("devices"), QJsonArray{
+        devices[2], devices[3], devices[0], devices[1]});
+    QVERIFY(document.replaceRootObject(root));
+
+    StationDeviceModel model(&document);
+    QCOMPARE(model.logicalBaseId(model.index(0, 0)), QStringLiteral("CAN2"));
+    QCOMPARE(model.data(model.index(0, StationDeviceModel::DriverIdColumn),
+                        Qt::EditRole).toString(),
+             QStringLiteral("plugin.can.gcan"));
+    QCOMPARE(model.logicalBaseId(model.index(1, 0)), QStringLiteral("CAN1"));
+    QCOMPARE(model.data(model.index(1, StationDeviceModel::DriverIdColumn),
+                        Qt::EditRole).toString(),
+             QStringLiteral("plugin.can.cx"));
 }
 
 void MainWindowLifecycleTests::stationNewCanKeepsTableEnabledStateWhenDraftIsSaved()

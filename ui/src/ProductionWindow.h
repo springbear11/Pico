@@ -21,6 +21,7 @@ class QTreeView;
 namespace PicoATE::Ui {
 
 class ExecutionViewModel;
+class FieldDeviceDialog;
 class OperatorPromptPresenter;
 class RuntimeTimelineModel;
 class RunArtifactWriter;
@@ -48,7 +49,11 @@ private:
     void applyRuntimeEvents(const QVector<PicoATE::Core::RuntimeEvent>& events);
     void focusExecutionLogForResult(const QModelIndex& index);
     void beginRun(const QString& serialNumber);
+    void startResolvedRun();
     void beginManualRun();
+    void openFieldDeviceConfiguration();
+    void applyEffectiveStation(const QByteArray& stationJson,
+                               const QString& errorMessage);
     void beginRunIteration(int iteration, int totalIterations);
     void resetPreviewForUut(const QString& uutId);
     void showScanDialogWhenReady();
@@ -63,10 +68,12 @@ private:
     RuntimeTimelineModel* m_logModel = nullptr;
     std::unique_ptr<RunArtifactWriter> m_runArtifactWriter;
     ScanDialog* m_scanDialog = nullptr;
+    FieldDeviceDialog* m_fieldDeviceDialog = nullptr;
     QAction* m_startAction = nullptr;
     QAction* m_pauseAction = nullptr;
     QAction* m_resumeAction = nullptr;
     QAction* m_stopAction = nullptr;
+    QAction* m_fieldDeviceAction = nullptr;
     QLabel* m_serialLabel = nullptr;
     QLabel* m_stationLabel = nullptr;
     QLabel* m_orderLabel = nullptr;
@@ -92,7 +99,10 @@ private:
     int m_failedUnits = 0;
     qint64 m_totalCompletedDurationMs = 0;
     QString m_activeUutId;
+    QString m_pendingSerialNumber;
     bool m_currentRunCounted = false;
+    bool m_resolvingStation = false;
+    bool m_stationSnapshotReady = false;
 };
 
 } // namespace PicoATE::Ui

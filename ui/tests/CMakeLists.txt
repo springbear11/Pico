@@ -35,6 +35,8 @@ set_target_properties(PicoATEUiTests
 add_test(NAME PicoATEUiTests COMMAND PicoATEUiTests)
 
 qt_add_executable(PicoATEUiWindowTests
+    ../src/FieldDeviceDialog.cpp
+    ../src/FieldDeviceDialog.h
     ../src/FlowTargetSelector.cpp
     ../src/FlowTargetSelector.h
     ../src/LoginDialog.cpp
