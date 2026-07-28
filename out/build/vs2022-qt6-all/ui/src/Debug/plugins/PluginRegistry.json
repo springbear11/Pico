@@ -4,6 +4,9 @@
             "abiVersion": 1,
             "description": {
                 "category": "CAN",
+                "connectionKinds": [
+                    "canSerial"
+                ],
                 "functions": [
                     {
                         "description": "Open and initialize a CX ControlCAN channel",
@@ -29,14 +32,6 @@
                                 ],
                                 "required": false,
                                 "type": "enum"
-                            },
-                            {
-                                "default": 0,
-                                "key": "deviceIndex",
-                                "minimum": 0,
-                                "name": "Device Index",
-                                "required": false,
-                                "type": "integer"
                             },
                             {
                                 "default": 0,
@@ -226,6 +221,9 @@
             "abiVersion": 1,
             "description": {
                 "category": "CAN",
+                "connectionKinds": [
+                    "canSerial"
+                ],
                 "functions": [
                     {
                         "description": "Open and initialize a GCAN channel",
@@ -251,14 +249,6 @@
                                 ],
                                 "required": false,
                                 "type": "enum"
-                            },
-                            {
-                                "default": 0,
-                                "key": "deviceIndex",
-                                "minimum": 0,
-                                "name": "Device Index",
-                                "required": false,
-                                "type": "integer"
                             },
                             {
                                 "default": 0,
@@ -443,6 +433,9 @@
             "abiVersion": 1,
             "description": {
                 "category": "DMM",
+                "connectionKinds": [
+                    "visa"
+                ],
                 "functions": [
                     {
                         "description": "Open the VISA resource configured by Station",
@@ -924,6 +917,9 @@
             "abiVersion": 1,
             "description": {
                 "category": "DMM",
+                "connectionKinds": [
+                    "visa"
+                ],
                 "functions": [
                     {
                         "description": "Open the VISA resource configured by Station",
@@ -1405,6 +1401,9 @@
             "abiVersion": 1,
             "description": {
                 "category": "PSU",
+                "connectionKinds": [
+                    "visa"
+                ],
                 "functions": [
                     {
                         "description": "Open the USB VISA resource configured by Station",

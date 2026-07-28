@@ -4,6 +4,7 @@
 
 #include "PicoATE/Core/ExecutionSession.h"
 #include "PicoATE/Core/ModuleBindingRegistrar.h"
+#include "PicoATE/Core/StationRunPreparation.h"
 
 #include <QDir>
 #include <QCoreApplication>
@@ -130,6 +131,7 @@ CompileServiceResult CoreExecutionService::compile(const CompileRequest& request
             return result;
         }
         artifact.station = stationResult.config;
+        artifact.stationDocument = stationObject;
         artifact.stationPath = QFileInfo(request.stationPath).absoluteFilePath();
         const auto registryPath = pluginRegistryPath(stationObject,
                                                      request.stationPath);
@@ -240,8 +242,33 @@ RunServiceResult CoreExecutionService::run(
 
     }
 
-    const auto failureHandling = m_compiled->station
-        ? PicoATE::Core::failureHandlingMode(*m_compiled->station)
+    auto runStation = m_compiled->station;
+    if (runStation && !m_compiled->stationDocument.isEmpty()) {
+        PicoATE::Core::StationRunPreparationOptions preparationOptions;
+        preparationOptions.stationFilePath = m_compiled->stationPath;
+        preparationOptions.projectDir = m_projectDir;
+        preparationOptions.nativeHostProgram = nativeHostProgram();
+        const auto preparation = PicoATE::Core::StationRunPreparationService().prepare(
+            m_compiled->stationDocument, preparationOptions);
+        for (const auto& diagnostic : preparation.errors) {
+            result.diagnostics.push_back(
+                error(diagnostic.path, diagnostic.message, diagnostic.suggestion));
+        }
+        for (const auto& diagnostic : preparation.warnings) {
+            result.diagnostics.push_back(
+                {UiDiagnosticSeverity::Warning,
+                 diagnostic.path,
+                 diagnostic.message,
+                 diagnostic.suggestion});
+        }
+        if (!preparation.ok()) {
+            return result;
+        }
+        runStation = preparation.stationConfig;
+    }
+
+    const auto failureHandling = runStation
+        ? PicoATE::Core::failureHandlingMode(*runStation)
         : PicoATE::Core::FailureHandlingMode::UseNodePolicy;
     RunEventSequencer eventSequencer(eventSink);
     PicoATE::Core::ExecutionSession session(
@@ -250,9 +277,9 @@ RunServiceResult CoreExecutionService::run(
         eventSink ? &eventSequencer : nullptr,
         executionControl,
         failureHandling);
-    if (m_compiled->station) {
+    if (runStation) {
         const auto stationErrors = PicoATE::Core::configureDeviceSessions(
-            *m_compiled->station, session.devices());
+            *runStation, session.devices());
         for (const auto& diagnostic : stationErrors) {
             result.diagnostics.push_back(
                 error(diagnostic.path, diagnostic.message, diagnostic.suggestion));
@@ -275,13 +302,13 @@ RunServiceResult CoreExecutionService::run(
         return result;
     }
 
-    if (m_compiled->station) {
+    if (runStation) {
         PicoATE::Core::StationPluginRegistrationOptions pluginOptions;
         pluginOptions.stationFilePath = m_compiled->stationPath;
         pluginOptions.projectDir = m_projectDir;
         pluginOptions.nativeHostProgram = nativeHostProgram();
         const auto pluginResult = PicoATE::Core::registerStationPluginModules(
-            session, *m_compiled->station, pluginOptions);
+            session, *runStation, pluginOptions);
         for (const auto& diagnostic : pluginResult.errors) {
             result.diagnostics.push_back(
                 error(diagnostic.moduleId, diagnostic.message,
@@ -400,23 +427,28 @@ DeviceConnectionTestResult CoreExecutionService::testDeviceConnection(
                       diagnostic.message,
                       diagnostic.suggestion);
     }
-    const auto stationResult = PicoATE::Core::parseStationConfigJson(
-        stationObject, resolverOptions(request.stationPath));
+    PicoATE::Core::StationRunPreparationOptions preparationOptions;
+    preparationOptions.stationFilePath = request.stationPath;
+    preparationOptions.projectDir = m_projectDir;
+    preparationOptions.nativeHostProgram = nativeHostProgram();
+    preparationOptions.discoveryTimeoutMs = qBound(100, request.timeoutMs, 60000);
+    const auto stationResult = PicoATE::Core::StationRunPreparationService().prepare(
+        stationObject, preparationOptions);
     if (!stationResult.ok()) {
         const auto& diagnostic = stationResult.errors.first();
         return finish(DeviceConnectionTestOutcome::Failed,
-                      "StationConfigInvalid",
+                      "StationPreparationFailed",
                       diagnostic.message,
                       diagnostic.suggestion);
     }
 
     const auto deviceIt = std::find_if(
-        stationResult.config.devices.cbegin(),
-        stationResult.config.devices.cend(),
+        stationResult.stationConfig.devices.cbegin(),
+        stationResult.stationConfig.devices.cend(),
         [&](const PicoATE::Core::DeviceSessionConfig& config) {
             return config.deviceId == result.deviceId;
         });
-    if (deviceIt == stationResult.config.devices.cend()) {
+    if (deviceIt == stationResult.stationConfig.devices.cend()) {
         return finish(DeviceConnectionTestOutcome::Failed,
                       "DeviceNotConfigured",
                       QString("Enabled device is not configured: %1").arg(result.deviceId),
@@ -450,7 +482,7 @@ DeviceConnectionTestResult CoreExecutionService::testDeviceConnection(
     pluginOptions.projectDir = m_projectDir;
     pluginOptions.nativeHostProgram = nativeHostProgram();
     const auto pluginResult = PicoATE::Core::registerStationPluginModules(
-        session, stationResult.config, pluginOptions);
+        session, stationResult.stationConfig, pluginOptions);
     if (!pluginResult.ok()) {
         const auto& diagnostic = pluginResult.errors.first();
         return finish(DeviceConnectionTestOutcome::Failed,

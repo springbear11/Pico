@@ -15,7 +15,6 @@
             "bitrate": 500000,
             "channelIndex": 0,
             "deviceId": "CAN1.CH1",
-            "deviceIndex": 0,
             "deviceType": 0,
             "listenOnly": false,
             "selfTest": false

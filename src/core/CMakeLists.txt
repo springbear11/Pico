@@ -32,6 +32,7 @@ add_library(PicoATECore SHARED
     src/SequenceCompiler.cpp
     src/SequenceDef.cpp
     src/StationConfig.cpp
+    src/StationRunPreparation.cpp
     src/StationRuntime.cpp
     src/StopToken.cpp
     src/VariableResolver.cpp

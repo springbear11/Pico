@@ -33,6 +33,8 @@ struct DeviceSessionConfig {
     DeviceId deviceId;
     QString deviceType;
     DeviceDriverId driverId;
+    QString connectionKind;
+    QString resource;
     QString address;
     int timeoutMs = 30000;
     DeviceSessionLifetime lifetime = DeviceSessionLifetime::Station;

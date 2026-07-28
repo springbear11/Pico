@@ -14,28 +14,30 @@
   },
   "devices": [
     {
-      "deviceId": "CAN1",
+      "deviceId": "CAN1.CH1",
       "deviceType": "CAN",
+      "physicalDeviceId": "CAN1",
+      "channelId": "CH1",
       "driverId": "plugin.can.gcan",
-      "address": "GCAN:0:0",
+      "connectionKind": "canSerial",
+      "resource": "",
       "timeoutMs": 6000,
       "lifetime": "Run",
       "enabled": true,
       "options": {
         "deviceType": 0,
-        "deviceIndex": 0,
         "channelIndex": 0,
         "bitrate": 500000,
         "canFd": false,
         "selfTest": true
       }
     },
-    {"deviceId":"CAN2","deviceType":"CAN","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
-    {"deviceId":"PPS1","deviceType":"PSU","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
-    {"deviceId":"PPS2","deviceType":"PSU","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
-    {"deviceId":"DMM1","deviceType":"DMM","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
-    {"deviceId":"DMM2","deviceType":"DMM","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
-    {"deviceId":"SCOPE1","deviceType":"SCOPE","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}},
-    {"deviceId":"SCOPE2","deviceType":"SCOPE","driverId":"","address":"","lifetime":"Station","enabled":false,"options":{}}
+    {"deviceId":"CAN2","deviceType":"CAN","driverId":"","connectionKind":"canSerial","resource":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"PPS1","deviceType":"PSU","driverId":"","connectionKind":"visa","resource":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"PPS2","deviceType":"PSU","driverId":"","connectionKind":"visa","resource":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"DMM1","deviceType":"DMM","driverId":"","connectionKind":"visa","resource":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"DMM2","deviceType":"DMM","driverId":"","connectionKind":"visa","resource":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"SCOPE1","deviceType":"SCOPE","driverId":"","connectionKind":"visa","resource":"","lifetime":"Station","enabled":false,"options":{}},
+    {"deviceId":"SCOPE2","deviceType":"SCOPE","driverId":"","connectionKind":"visa","resource":"","lifetime":"Station","enabled":false,"options":{}}
   ]
 }

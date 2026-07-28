@@ -52,8 +52,6 @@ private:
     void startResolvedRun();
     void beginManualRun();
     void openFieldDeviceConfiguration();
-    void applyEffectiveStation(const QByteArray& stationJson,
-                               const QString& errorMessage);
     void beginRunIteration(int iteration, int totalIterations);
     void resetPreviewForUut(const QString& uutId);
     void showScanDialogWhenReady();
@@ -101,8 +99,6 @@ private:
     QString m_activeUutId;
     QString m_pendingSerialNumber;
     bool m_currentRunCounted = false;
-    bool m_resolvingStation = false;
-    bool m_stationSnapshotReady = false;
 };
 
 } // namespace PicoATE::Ui

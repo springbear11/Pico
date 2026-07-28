@@ -4,6 +4,7 @@
 #include "PicoATE/Core/PersistentQProcessTransport.h"
 #include "PicoATE/Core/SequenceCompiler.h"
 #include "PicoATE/Core/StationRuntime.h"
+#include "PicoATE/Core/StationRunPreparation.h"
 
 #include <QCommandLineOption>
 #include <QCommandLineParser>
@@ -241,6 +242,16 @@ void printStationRuntimeErrors(const QVector<StationConfigDiagnostic>& errors, Q
             err << " (" << error.suggestion << ')';
         }
         err << '\n';
+    }
+}
+
+void printStationRuntimeWarnings(const QVector<StationConfigDiagnostic>& warnings,
+                                 QTextStream& out)
+{
+    for (const auto& warning : warnings) {
+        out << "[WARNING] "
+            << (warning.path.isEmpty() ? "<root>" : warning.path)
+            << ": " << warning.message << '\n';
     }
 }
 
@@ -582,11 +593,26 @@ int runCommand(const QCommandLineParser& parser, const QStringList& positional, 
     StationRuntime stationRuntime;
     const auto stationPath = parser.value("station").trimmed();
     if (!stationPath.isEmpty()) {
-        VariableResolverOptions stationOptions;
-        stationOptions.sequenceFilePath = QFileInfo(stationPath).absoluteFilePath();
-        stationOptions.projectDir = QString::fromUtf8(PICOATE_SOURCE_DIR);
-        stationOptions.variables = defaultRuntimeVariables();
-        const auto stationResult = stationRuntime.loadStationConfigFile(stationPath, stationOptions);
+        QJsonObject stationObject;
+        if (!readJsonObject(stationPath, stationObject, err)) {
+            return 2;
+        }
+        const auto variables = defaultRuntimeVariables();
+        StationRunPreparationOptions preparationOptions;
+        preparationOptions.stationFilePath = QFileInfo(stationPath).absoluteFilePath();
+        preparationOptions.projectDir = QString::fromUtf8(PICOATE_SOURCE_DIR);
+        preparationOptions.nativeHostProgram =
+            variables.value(QStringLiteral("PICOATE_NATIVE_HOST"));
+        preparationOptions.variables = variables;
+        const auto preparation = StationRunPreparationService().prepare(
+            stationObject, preparationOptions);
+        if (!preparation.ok()) {
+            printStationRuntimeErrors(preparation.errors, err);
+            return 2;
+        }
+        printStationRuntimeWarnings(preparation.warnings, out);
+        const auto stationResult = stationRuntime.applyStationConfig(
+            preparation.stationConfig);
         if (!stationResult.ok()) {
             printStationRuntimeErrors(stationResult.errors, err);
             return 2;

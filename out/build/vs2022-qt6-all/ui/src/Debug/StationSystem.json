@@ -2,6 +2,7 @@
     "csvReportEnabled": false,
     "devices": [
         {
+            "connectionKind": "canSerial",
             "deviceId": "CAN1.CH1",
             "deviceType": "CAN",
             "driverId": "plugin.can.gcan",
@@ -10,14 +11,15 @@
             "options": {
                 "bitrate": 1000000,
                 "channelIndex": 0,
-                "deviceIndex": 0,
                 "deviceType": 0,
                 "listenOnly": false,
                 "selfTest": false
             },
+            "resource": "",
             "timeoutMs": 30000
         },
         {
+            "connectionKind": "canSerial",
             "deviceId": "CAN1.CH2",
             "deviceType": "CAN",
             "driverId": "plugin.can.gcan",
@@ -26,14 +28,15 @@
             "options": {
                 "bitrate": 500000,
                 "channelIndex": 1,
-                "deviceIndex": 0,
                 "deviceType": 0,
                 "listenOnly": false,
                 "selfTest": false
             },
+            "resource": "",
             "timeoutMs": 30000
         },
         {
+            "connectionKind": "canSerial",
             "deviceId": "CAN2.CH1",
             "deviceType": "CAN",
             "driverId": "plugin.can.cx",
@@ -42,14 +45,15 @@
             "options": {
                 "bitrate": 500000,
                 "channelIndex": 0,
-                "deviceIndex": 0,
                 "deviceType": 4,
                 "listenOnly": false,
                 "selfTest": false
             },
+            "resource": "",
             "timeoutMs": 30000
         },
         {
+            "connectionKind": "canSerial",
             "deviceId": "CAN2.CH2",
             "deviceType": "CAN",
             "driverId": "plugin.can.cx",
@@ -58,15 +62,15 @@
             "options": {
                 "bitrate": 1000000,
                 "channelIndex": 1,
-                "deviceIndex": 0,
                 "deviceType": 4,
                 "listenOnly": false,
                 "selfTest": false
             },
+            "resource": "",
             "timeoutMs": 30000
         },
         {
-            "address": "",
+            "connectionKind": "visa",
             "deviceId": "DMM1",
             "deviceType": "DMM",
             "driverId": "plugin.dmm.hdm3000",
@@ -79,11 +83,12 @@
                 "visaLibrary": "visa64.dll",
                 "writeTermination": "\\n"
             },
+            "resource": "",
             "timeoutMs": 30000
         }
     ],
     "loopTestCount": 10,
-    "loopTestEnabled": true,
+    "loopTestEnabled": false,
     "metadata": {
         "jigNo": "NA",
         "order": "NA",

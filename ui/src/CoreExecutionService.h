@@ -5,6 +5,7 @@
 #include "PicoATE/Core/SequenceCompiler.h"
 #include "PicoATE/Core/StationConfig.h"
 
+#include <QJsonObject>
 #include <optional>
 
 namespace PicoATE::Ui {
@@ -31,6 +32,7 @@ private:
         PicoATE::Core::SequenceDef sequence;
         PicoATE::Core::ExecutionPlan plan;
         std::optional<PicoATE::Core::StationConfig> station;
+        QJsonObject stationDocument;
     };
 
     QVector<UiDiagnostic> readSequenceJson(const QString& filePath,

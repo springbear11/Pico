@@ -17,6 +17,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QSignalBlocker>
 #include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -28,23 +29,13 @@ namespace PicoATE::Ui {
 
 namespace {
 
-enum ConnectionKind {
-    CanConnection,
-    SerialConnection,
-    VisaConnection,
-    IpConnection
-};
-
-ConnectionKind defaultConnectionKind(const PicoATE::Core::StationFieldDevice& device)
+QString connectionKindLabel(const QString& kind)
 {
-    if (device.deviceType == QStringLiteral("CAN")) return CanConnection;
-    if (device.deviceType == QStringLiteral("SERIAL") ||
-        device.deviceType == QStringLiteral("MODBUS")) return SerialConnection;
-    if (device.deviceType == QStringLiteral("DMM") ||
-        device.deviceType == QStringLiteral("PSU") ||
-        device.deviceType == QStringLiteral("SCOPE") ||
-        device.address.contains(QStringLiteral("::"))) return VisaConnection;
-    return IpConnection;
+    if (kind == QStringLiteral("canSerial")) return QObject::tr("CAN Serial Number");
+    if (kind == QStringLiteral("visa")) return QObject::tr("VISA Resource");
+    if (kind == QStringLiteral("serialPort")) return QObject::tr("COM Port");
+    if (kind == QStringLiteral("tcpIp")) return QObject::tr("TCP / IP");
+    return QObject::tr("Manual Resource");
 }
 
 QString registryPath(const QJsonObject& station, const QString& stationPath)
@@ -68,7 +59,11 @@ FieldDeviceDialog::FieldDeviceDialog(QString stationPath, QWidget* parent)
     setWindowTitle(tr("Field Device Configuration"));
     setMinimumSize(760, 470);
     buildUi();
-    loadStation();
+    if (loadStation()) {
+        const auto registry = PluginCatalog::loadRegistry(
+            registryPath(m_station, m_stationPath));
+        m_plugins = registry.plugins;
+    }
     reloadDevices();
 }
 
@@ -96,18 +91,12 @@ void FieldDeviceDialog::buildUi()
     form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_connectionKind = new QComboBox(editor);
     m_connectionKind->setObjectName(QStringLiteral("fieldConnectionKind"));
-    m_connectionKind->addItem(tr("CAN Serial Number"), CanConnection);
-    m_connectionKind->addItem(tr("COM Port"), SerialConnection);
-    m_connectionKind->addItem(tr("VISA Resource"), VisaConnection);
-    m_connectionKind->addItem(tr("IP / Address"), IpConnection);
     m_resourceCombo = new QComboBox(editor);
     m_resourceCombo->setObjectName(QStringLiteral("fieldResourceCombo"));
-    m_manualAddress = new QLineEdit(editor);
-    m_manualAddress->setObjectName(QStringLiteral("fieldManualAddress"));
-    m_manualAddress->setPlaceholderText(tr("Enter IP address, host:port, or resource address"));
+    m_resourceCombo->setEditable(true);
+    m_resourceCombo->setInsertPolicy(QComboBox::NoInsert);
     form->addRow(tr("Connection"), m_connectionKind);
-    form->addRow(tr("Detected Resource"), m_resourceCombo);
-    form->addRow(tr("Address"), m_manualAddress);
+    form->addRow(tr("Resource"), m_resourceCombo);
     editorLayout->addLayout(form);
 
     auto* actions = new QHBoxLayout;
@@ -142,9 +131,11 @@ void FieldDeviceDialog::buildUi()
     m_refreshTimer = new QTimer(this);
     m_refreshTimer->setInterval(3000);
     connect(m_refreshTimer, &QTimer::timeout, this, [this] {
-        if (isVisible() && !m_busy && m_selectedRow >= 0 &&
-            m_connectionKind->currentData().toInt() != CanConnection &&
-            m_connectionKind->currentData().toInt() != IpConnection) {
+        const auto parsed = PicoATE::Core::deviceConnectionKindFromString(
+            m_connectionKind->currentData().toString());
+        if (isVisible() && !m_busy && m_selectedRow >= 0 && parsed &&
+            PicoATE::Core::discoveryKindForConnection(*parsed).has_value() &&
+            *parsed != PicoATE::Core::DeviceConnectionKind::CanSerial) {
             refreshResources();
         }
     });
@@ -153,7 +144,7 @@ void FieldDeviceDialog::buildUi()
     setStyleSheet(QStringLiteral(R"css(
         QDialog#fieldDeviceDialog { background: #f5f7f9; color: #26333d; }
         QLabel#fieldDeviceTitle { font-size: 17px; font-weight: 700; padding: 4px; }
-        QListWidget#fieldDeviceList, QComboBox, QLineEdit {
+        QListWidget#fieldDeviceList, QComboBox {
             background: white; border: 1px solid #c8d0d7; border-radius: 4px;
             min-height: 30px; padding: 3px 7px;
         }
@@ -190,13 +181,11 @@ void FieldDeviceDialog::reloadDevices()
     int selection = -1;
     for (int index = 0; index < m_devices.size(); ++index) {
         const auto& device = m_devices[index];
-        const auto binding = device.deviceType == QStringLiteral("CAN")
-            ? device.serialNumber : device.address;
         auto* item = new QListWidgetItem(
             QStringLiteral("%1\n%2  |  %3")
                 .arg(device.logicalId,
                      device.driverId.isEmpty() ? tr("No driver") : device.driverId,
-                     binding.isEmpty() ? tr("Not configured") : binding),
+                     device.resource.isEmpty() ? tr("Not configured") : device.resource),
             m_deviceList);
         item->setData(Qt::UserRole, device.logicalId);
         if (device.logicalId == currentId) selection = index;
@@ -215,42 +204,85 @@ void FieldDeviceDialog::selectDevice(int row)
         return;
     }
     const auto& device = m_devices[row];
-    const auto kind = defaultConnectionKind(device);
-    const auto comboIndex = m_connectionKind->findData(kind);
-    m_connectionKind->setCurrentIndex(comboIndex);
-    m_connectionKind->setEnabled(device.deviceType != QStringLiteral("CAN"));
-    m_manualAddress->setText(device.deviceType == QStringLiteral("CAN")
-                                 ? device.serialNumber : device.address);
+    reloadConnectionKinds();
+    const auto comboIndex = m_connectionKind->findData(device.connectionKind);
+    m_connectionKind->setCurrentIndex(comboIndex >= 0 ? comboIndex : 0);
+    m_resourceCombo->setEditText(device.resource);
     updateEditor();
     refreshResources();
+}
+
+void FieldDeviceDialog::reloadConnectionKinds()
+{
+    if (m_selectedRow < 0 || m_selectedRow >= m_devices.size()) return;
+    const auto& device = m_devices[m_selectedRow];
+    QStringList kinds;
+    const auto plugin = std::find_if(
+        m_plugins.cbegin(), m_plugins.cend(),
+        [&device](const PluginManifest& candidate) {
+            return candidate.moduleId == device.driverId;
+        });
+    if (plugin != m_plugins.cend()) kinds = plugin->connectionKinds;
+    if (kinds.isEmpty()) kinds = {device.connectionKind};
+    const QSignalBlocker blocker(m_connectionKind);
+    m_connectionKind->clear();
+    for (const auto& value : kinds) {
+        const auto parsed = PicoATE::Core::deviceConnectionKindFromString(value);
+        if (!parsed) continue;
+        const auto canonical = PicoATE::Core::deviceConnectionKindName(*parsed);
+        if (m_connectionKind->findData(canonical) < 0) {
+            m_connectionKind->addItem(connectionKindLabel(canonical), canonical);
+        }
+    }
+    if (m_connectionKind->count() == 0) {
+        m_connectionKind->addItem(connectionKindLabel(QStringLiteral("manual")),
+                                  QStringLiteral("manual"));
+    }
 }
 
 void FieldDeviceDialog::updateEditor()
 {
     const bool selected = m_selectedRow >= 0 && m_selectedRow < m_devices.size();
-    const auto kind = static_cast<ConnectionKind>(m_connectionKind->currentData().toInt());
-    const bool manual = kind == IpConnection;
-    m_resourceCombo->setVisible(selected && !manual);
-    m_manualAddress->setVisible(selected && manual);
-    m_refreshButton->setVisible(selected && !manual);
-    m_refreshButton->setText(kind == CanConnection ? tr("Scan Devices") : tr("Refresh"));
+    const auto parsed = PicoATE::Core::deviceConnectionKindFromString(
+        m_connectionKind->currentData().toString());
+    const bool enumerable = parsed &&
+        PicoATE::Core::discoveryKindForConnection(*parsed).has_value();
+    m_resourceCombo->setVisible(selected);
+    m_refreshButton->setVisible(selected && enumerable);
+    m_refreshButton->setText(parsed &&
+        *parsed == PicoATE::Core::DeviceConnectionKind::CanSerial
+            ? tr("Scan Devices") : tr("Refresh"));
+    if (auto* edit = m_resourceCombo->lineEdit()) {
+        const auto kind = m_connectionKind->currentData().toString();
+        if (kind == QStringLiteral("canSerial"))
+            edit->setPlaceholderText(tr("Select or enter the device serial number"));
+        else if (kind == QStringLiteral("visa"))
+            edit->setPlaceholderText(tr("Select or enter a VISA resource"));
+        else if (kind == QStringLiteral("serialPort"))
+            edit->setPlaceholderText(tr("Select or enter a COM port"));
+        else if (kind == QStringLiteral("tcpIp"))
+            edit->setPlaceholderText(tr("Enter an IP address or host:port"));
+        else
+            edit->setPlaceholderText(tr("Enter a connection resource"));
+    }
     m_applyButton->setEnabled(selected && !m_busy);
 }
 
 void FieldDeviceDialog::refreshResources()
 {
     if (m_busy || m_selectedRow < 0 || m_selectedRow >= m_devices.size()) return;
-    const auto kind = static_cast<ConnectionKind>(m_connectionKind->currentData().toInt());
-    if (kind == IpConnection) return;
-    if (kind == CanConnection) {
+    const auto kind = PicoATE::Core::deviceConnectionKindFromString(
+        m_connectionKind->currentData().toString());
+    if (!kind) return;
+    const auto discoveryKind = PicoATE::Core::discoveryKindForConnection(*kind);
+    if (!discoveryKind) return;
+    if (*kind == PicoATE::Core::DeviceConnectionKind::CanSerial) {
         scanCanDevices();
         return;
     }
     PicoATE::Core::DeviceDiscoveryRequest request;
-    request.kind = kind == SerialConnection
-        ? PicoATE::Core::DeviceDiscoveryKind::SerialPort
-        : PicoATE::Core::DeviceDiscoveryKind::VisaResource;
-    startDiscovery(request, false);
+    request.kind = *discoveryKind;
+    startDiscovery(request);
 }
 
 void FieldDeviceDialog::scanCanDevices()
@@ -262,14 +294,12 @@ void FieldDeviceDialog::scanCanDevices()
     request.pluginDllPath = pluginDllPath(device.driverId);
     request.nativeHostProgram = nativeHostProgram();
     request.timeoutMs = 12000;
-    startDiscovery(request, false);
+    startDiscovery(request);
 }
 
 void FieldDeviceDialog::startDiscovery(
-    const PicoATE::Core::DeviceDiscoveryRequest& request,
-    bool effectiveStationScan)
+    const PicoATE::Core::DeviceDiscoveryRequest& request)
 {
-    Q_UNUSED(effectiveStationScan);
     m_busy = true;
     updateEditor();
     m_statusLabel->setText(tr("Scanning resources..."));
@@ -294,16 +324,14 @@ void FieldDeviceDialog::finishResourceDiscovery(
     m_busy = false;
     m_refreshButton->setEnabled(true);
     m_resources = result.resources;
-    const auto previous = m_selectedRow >= 0 && m_selectedRow < m_devices.size()
-        ? (m_devices[m_selectedRow].deviceType == QStringLiteral("CAN")
-               ? m_devices[m_selectedRow].serialNumber : m_devices[m_selectedRow].address)
-        : QString();
+    const auto previous = m_resourceCombo->currentText().trimmed();
     m_resourceCombo->clear();
     for (const auto& resource : m_resources) {
         m_resourceCombo->addItem(resource.displayName, resource.resourceId);
     }
     const auto previousIndex = m_resourceCombo->findData(previous);
     if (previousIndex >= 0) m_resourceCombo->setCurrentIndex(previousIndex);
+    else m_resourceCombo->setEditText(previous);
     m_statusLabel->setText(result.ok()
         ? tr("Found %1 resource(s)").arg(result.resources.size())
         : tr("Scan failed: %1").arg(result.errorMessage));
@@ -313,10 +341,13 @@ void FieldDeviceDialog::finishResourceDiscovery(
 void FieldDeviceDialog::applyAndSave()
 {
     if (m_selectedRow < 0 || m_selectedRow >= m_devices.size()) return;
-    const auto kind = static_cast<ConnectionKind>(m_connectionKind->currentData().toInt());
-    const auto resource = kind == IpConnection
-        ? m_manualAddress->text().trimmed()
-        : m_resourceCombo->currentData().toString().trimmed();
+    const auto kind = m_connectionKind->currentData().toString();
+    const bool selectedEnumeratedItem = m_resourceCombo->currentIndex() >= 0 &&
+        m_resourceCombo->currentText() ==
+            m_resourceCombo->itemText(m_resourceCombo->currentIndex());
+    const auto resource = selectedEnumeratedItem
+        ? m_resourceCombo->currentData().toString().trimmed()
+        : m_resourceCombo->currentText().trimmed();
     if (resource.isEmpty()) {
         QMessageBox::warning(this, tr("Field Device Configuration"),
                              tr("Select or enter a connection resource first."));
@@ -325,11 +356,11 @@ void FieldDeviceDialog::applyAndSave()
 
     QString error;
     if (!PicoATE::Core::applyStationFieldBinding(
-            m_station, m_devices[m_selectedRow].logicalId, resource, &error)) {
+            m_station, m_devices[m_selectedRow].logicalId,
+            kind, resource, &error)) {
         QMessageBox::critical(this, tr("Field Device Configuration"), error);
         return;
     }
-    m_station = PicoATE::Core::effectiveStationSnapshot(m_station, {});
     QSaveFile file(m_stationPath);
     if (!file.open(QIODevice::WriteOnly) ||
         file.write(QJsonDocument(m_station).toJson(QJsonDocument::Indented)) < 0 ||
@@ -365,84 +396,6 @@ QString FieldDeviceDialog::nativeHostProgram() const
     const auto local = QDir(QCoreApplication::applicationDirPath())
                            .absoluteFilePath(QStringLiteral("PicoATE.NativeHost.exe"));
     return QFileInfo::exists(local) ? QFileInfo(local).absoluteFilePath() : QString();
-}
-
-void FieldDeviceDialog::resolveEffectiveStation(bool requireCanBindings)
-{
-    QString error;
-    if (!loadStation(&error)) {
-        emit effectiveStationReady({}, tr("Cannot load StationSystem: %1").arg(error));
-        return;
-    }
-    const auto station = m_station;
-    const auto devices = PicoATE::Core::stationFieldDevices(station);
-    struct ScanTarget { QString driverId; QString dll; QVariantMap options; };
-    QVector<ScanTarget> targets;
-    for (const auto& device : devices) {
-        if (device.deviceType != QStringLiteral("CAN") || device.serialNumber.isEmpty()) continue;
-        const auto duplicate = std::any_of(targets.cbegin(), targets.cend(),
-            [&device](const auto& target) { return target.driverId == device.driverId; });
-        if (!duplicate) targets.push_back({device.driverId, pluginDllPath(device.driverId), {}});
-    }
-
-    const auto host = nativeHostProgram();
-    const QPointer<FieldDeviceDialog> guard(this);
-    auto* thread = QThread::create([guard, station, devices, targets, host, requireCanBindings] {
-        QHash<QString, QHash<QString, int>> indicesByDriver;
-        QString failure;
-        PicoATE::Core::SystemDeviceDiscoveryService service;
-        for (const auto& target : targets) {
-            PicoATE::Core::DeviceDiscoveryRequest request;
-            request.kind = PicoATE::Core::DeviceDiscoveryKind::CanDevice;
-            request.driverId = target.driverId;
-            request.pluginDllPath = target.dll;
-            request.nativeHostProgram = host;
-            request.options = target.options;
-            request.timeoutMs = 12000;
-            const auto found = service.discover(request);
-            if (!found.ok()) {
-                failure = QStringLiteral("%1: %2").arg(target.driverId, found.errorMessage);
-                break;
-            }
-            for (const auto& resource : found.resources) {
-                indicesByDriver[target.driverId].insert(
-                    resource.serialNumber,
-                    resource.runtimeLocator.value(QStringLiteral("deviceIndex")).toInt());
-            }
-        }
-        QHash<QString, int> effectiveIndices;
-        if (failure.isEmpty()) {
-            for (const auto& device : devices) {
-                if (device.deviceType != QStringLiteral("CAN")) continue;
-                if (device.serialNumber.isEmpty()) {
-                    if (requireCanBindings) {
-                        failure = QStringLiteral("%1: select a CAN serial number in Devices before running")
-                                      .arg(device.logicalId);
-                        break;
-                    }
-                    continue;
-                }
-                const auto driver = indicesByDriver.constFind(device.driverId);
-                if (driver == indicesByDriver.constEnd() || !driver->contains(device.serialNumber)) {
-                    failure = QStringLiteral("%1: configured CAN serial number %2 was not found")
-                                  .arg(device.logicalId, device.serialNumber);
-                    break;
-                }
-                effectiveIndices.insert(device.logicalId, driver->value(device.serialNumber));
-            }
-        }
-        const auto snapshot = failure.isEmpty()
-            ? QJsonDocument(PicoATE::Core::effectiveStationSnapshot(station, effectiveIndices))
-                  .toJson(QJsonDocument::Compact)
-            : QByteArray();
-        if (guard) {
-            QMetaObject::invokeMethod(guard, [guard, snapshot, failure] {
-                if (guard) emit guard->effectiveStationReady(snapshot, failure);
-            }, Qt::QueuedConnection);
-        }
-    });
-    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
-    thread->start();
 }
 
 } // namespace PicoATE::Ui

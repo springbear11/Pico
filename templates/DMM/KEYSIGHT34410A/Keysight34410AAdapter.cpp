@@ -20,6 +20,7 @@ Plugin::Json pluginDescription()
   "moduleId": "plugin.dmm.keysight34410a",
   "name": "Keysight KEYSIGHT34410A VISA DMM",
   "category": "DMM",
+  "connectionKinds": ["visa"],
   "vendor": "Keysight",
   "version": "1.0.0",
   "functions": [

@@ -198,6 +198,7 @@ Plugin::Json pluginDescription()
     return {
         {"name", "GCAN USB-CAN"},
         {"category", "CAN"},
+        {"connectionKinds", Json::array({"canSerial"})},
         {"functions", Json::array({
             {
                 {"id", "open"},

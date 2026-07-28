@@ -1,4 +1,5 @@
 #include "PicoATE/Core/StationConfig.h"
+#include "PicoATE/Core/DeviceDiscovery.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -192,6 +193,7 @@ DeviceSessionConfig parseDevice(const QJsonObject& object,
     if (config.address.isEmpty() && object.contains("visaAddress")) {
         config.address = readString(object, "visaAddress", result, QString("%1.visaAddress").arg(path));
     }
+    config.resource = readString(object, "resource", result, QString("%1.resource").arg(path));
     config.timeoutMs = readInt(
         object, "timeoutMs", result, QString("%1.timeoutMs").arg(path), 30000);
     if (config.timeoutMs <= 0) {
@@ -217,12 +219,40 @@ DeviceSessionConfig parseDevice(const QJsonObject& object,
 
     config.options = readObjectMap(object, "options", result, QString("%1.options").arg(path));
 
+    if (config.resource.isEmpty()) {
+        config.resource = config.address;
+    }
+    if (config.resource.isEmpty()) {
+        config.resource = config.options.value(QStringLiteral("serialNumber"))
+                              .toString().trimmed();
+    }
+    config.connectionKind = readString(
+        object, "connectionKind", result, QString("%1.connectionKind").arg(path));
+    auto connectionKind = deviceConnectionKindFromString(config.connectionKind);
+    if (!connectionKind && config.connectionKind.trimmed().isEmpty()) {
+        connectionKind = inferDeviceConnectionKind(config.deviceType, config.resource);
+        config.connectionKind = deviceConnectionKindName(*connectionKind);
+    } else if (!connectionKind) {
+        addError(result,
+                 QString("%1.connectionKind").arg(path),
+                 QString("Unsupported connectionKind: %1").arg(config.connectionKind),
+                 "Use canSerial, visa, serialPort, tcpIp, or manual");
+    } else {
+        config.connectionKind = deviceConnectionKindName(*connectionKind);
+    }
+
     config.deviceId = resolveStringField(config.deviceId, resolver, result, QString("%1.deviceId").arg(path));
     config.deviceType = resolveStringField(config.deviceType, resolver, result, QString("%1.deviceType").arg(path));
     config.driverId = resolveStringField(config.driverId, resolver, result, QString("%1.driverId").arg(path));
+    config.connectionKind = resolveStringField(
+        config.connectionKind, resolver, result, QString("%1.connectionKind").arg(path));
+    config.resource = resolveStringField(
+        config.resource, resolver, result, QString("%1.resource").arg(path));
     config.address = resolveStringField(config.address, resolver, result, QString("%1.address").arg(path));
     config.options = resolveMapField(config.options, resolver, result, QString("%1.options").arg(path));
-
+    if (config.address.isEmpty() && config.connectionKind != QStringLiteral("canSerial")) {
+        config.address = config.resource;
+    }
     if (config.deviceId.trimmed().isEmpty()) {
         addError(result, QString("%1.deviceId").arg(path), "Device id is required", "Set deviceId or id");
     }

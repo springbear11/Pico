@@ -554,6 +554,7 @@ Plugin::Json pluginDescription()
 {
   "name": "KORAD USB VISA Power Supply",
   "category": "PSU",
+  "connectionKinds": ["visa"],
   "functions": [
     {
       "id": "open", "name": "Open Power Supply",

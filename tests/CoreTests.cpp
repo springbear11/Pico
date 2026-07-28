@@ -26,6 +26,7 @@
 #include "PicoATE/Core/SequenceCompiler.h"
 #include "PicoATE/Core/SequenceDef.h"
 #include "PicoATE/Core/StationConfig.h"
+#include "PicoATE/Core/StationRunPreparation.h"
 #include "PicoATE/Core/StationRuntime.h"
 #include "PicoATE/Core/VariableResolver.h"
 
@@ -152,6 +153,18 @@ ModuleBindingRegistrationOptions testBindingOptions(const QString& sequencePath 
     }
     return options;
 }
+
+class FakeDeviceDiscoveryService final : public IDeviceDiscoveryService {
+public:
+    DeviceDiscoveryResult discover(const DeviceDiscoveryRequest& request) override
+    {
+        requests.push_back(request);
+        return result;
+    }
+
+    DeviceDiscoveryResult result;
+    QVector<DeviceDiscoveryRequest> requests;
+};
 
 MeasurementResult makeMeasurement(const QString& name,
                                   const QVariant& value,
@@ -470,6 +483,9 @@ private slots:
     void stationConfigParsesDevicesAndConfiguresSessionManager();
     void stationConfigReportsDeviceErrors();
     void stationFieldBindingPersistsResourcesAndKeepsRuntimeIndexTransient();
+    void stationRunPreparationResolvesStableCanBindingIntoEffectiveSnapshot();
+    void stationRunPreparationMarksUnavailableBindings();
+    void deviceSessionManagerRejectsUnavailableDeviceAtOpen();
     void stationRuntimeLoadsStationConfig();
     void resourceManagerSerializesWaiters();
     void barrierControllerReleasesOnlyThroughDecision();
@@ -695,7 +711,7 @@ void CoreTests::stationConfigParsesDevicesAndConfiguresSessionManager()
     VariableResolverOptions options;
     options.sequenceFilePath = examplePath("stations/basic_station.json");
     options.projectDir = projectRootPath();
-    options.variables.insert("DMM1_ADDRESS", "USB0::0x0957::0x0607::MY59001234::INSTR");
+    options.variables.insert("DMM1_RESOURCE", "USB0::0x0957::0x0607::MY59001234::INSTR");
 
     const auto load = loadStationConfigFile(examplePath("stations/basic_station.json"), options);
     QVERIFY(load.ok());
@@ -834,18 +850,27 @@ void CoreTests::stationFieldBindingPersistsResourcesAndKeepsRuntimeIndexTransien
 
     QString error;
     QVERIFY(applyStationFieldBinding(station, QStringLiteral("CAN1"),
+                                     QStringLiteral("canSerial"),
                                      QStringLiteral("GCAN-SN-001"), &error));
     QVERIFY(applyStationFieldBinding(station, QStringLiteral("DMM1"),
+                                     QStringLiteral("visa"),
                                      QStringLiteral("USB0::1::INSTR"), &error));
     const auto persisted = station.value(QStringLiteral("devices")).toArray();
     for (int index = 0; index < 2; ++index) {
-        const auto options = persisted[index].toObject().value(QStringLiteral("options")).toObject();
-        QCOMPARE(options.value(QStringLiteral("serialNumber")).toString(),
+        const auto device = persisted[index].toObject();
+        const auto options = device.value(QStringLiteral("options")).toObject();
+        QCOMPARE(device.value(QStringLiteral("connectionKind")).toString(),
+                 QStringLiteral("canSerial"));
+        QCOMPARE(device.value(QStringLiteral("resource")).toString(),
                  QStringLiteral("GCAN-SN-001"));
+        QVERIFY(!options.contains(QStringLiteral("serialNumber")));
         QVERIFY(!options.contains(QStringLiteral("deviceIndex")));
     }
-    QCOMPARE(persisted[2].toObject().value(QStringLiteral("address")).toString(),
+    QCOMPARE(persisted[2].toObject().value(QStringLiteral("connectionKind")).toString(),
+             QStringLiteral("visa"));
+    QCOMPARE(persisted[2].toObject().value(QStringLiteral("resource")).toString(),
              QStringLiteral("USB0::1::INSTR"));
+    QVERIFY(!persisted[2].toObject().contains(QStringLiteral("address")));
 
     const auto effective = effectiveStationSnapshot(
         station, {{QStringLiteral("CAN1"), 7}});
@@ -859,6 +884,173 @@ void CoreTests::stationFieldBindingPersistsResourcesAndKeepsRuntimeIndexTransien
                  .contains(QStringLiteral("deviceIndex")));
 }
 
+void CoreTests::stationRunPreparationResolvesStableCanBindingIntoEffectiveSnapshot()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QVERIFY(QDir(directory.path()).mkpath(QStringLiteral("plugins")));
+    const auto dllPath = directory.filePath(QStringLiteral("plugins/PicoATE.CAN.Test.dll"));
+    QFile dll(dllPath);
+    QVERIFY(dll.open(QIODevice::WriteOnly));
+    dll.close();
+    QFile registry(directory.filePath(QStringLiteral("plugins/PluginRegistry.json")));
+    QVERIFY(registry.open(QIODevice::WriteOnly));
+    registry.write(R"json({"plugins":[
+      {"moduleId":"plugin.can.test","dll":"PicoATE.CAN.Test.dll"}
+    ]})json");
+    registry.close();
+
+    const auto station = QJsonDocument::fromJson(R"json({
+      "stationId":"station-prepare",
+      "pluginRegistry":"plugins/PluginRegistry.json",
+      "devices":[
+        {"deviceId":"CAN1.CH1","deviceType":"CAN","driverId":"plugin.can.test",
+         "enabled":true,"connectionKind":"canSerial","resource":"CAN-SN-001",
+         "options":{"channelIndex":0}},
+        {"deviceId":"CAN1.CH2","deviceType":"CAN","driverId":"plugin.can.test",
+         "enabled":true,"connectionKind":"canSerial","resource":"CAN-SN-001",
+         "options":{"channelIndex":1}}
+      ]
+    })json").object();
+
+    FakeDeviceDiscoveryService discovery;
+    DiscoveredDeviceResource resource;
+    resource.resourceId = QStringLiteral("CAN-SN-001");
+    resource.serialNumber = QStringLiteral("can-sn-001");
+    resource.runtimeLocator.insert(QStringLiteral("deviceIndex"), 4);
+    discovery.result.resources.push_back(resource);
+
+    StationRunPreparationOptions options;
+    options.stationFilePath = directory.filePath(QStringLiteral("StationSystem.json"));
+    options.projectDir = directory.path();
+    options.nativeHostProgram = directory.filePath(QStringLiteral("PicoATE.NativeHost.exe"));
+    const auto prepared = StationRunPreparationService(&discovery).prepare(station, options);
+
+    QVERIFY2(prepared.ok(), prepared.errors.isEmpty()
+        ? ""
+        : qPrintable(prepared.errors.first().message));
+    QCOMPARE(discovery.requests.size(), 1);
+    QCOMPARE(discovery.requests.first().driverId, QStringLiteral("plugin.can.test"));
+    QCOMPARE(discovery.requests.first().pluginDllPath, QFileInfo(dllPath).absoluteFilePath());
+    const auto effectiveDevices = prepared.effectiveStation.value(QStringLiteral("devices"))
+                                      .toArray();
+    QCOMPARE(effectiveDevices[0].toObject().value(QStringLiteral("options"))
+                 .toObject().value(QStringLiteral("deviceIndex")).toInt(), 4);
+    QCOMPARE(effectiveDevices[1].toObject().value(QStringLiteral("options"))
+                 .toObject().value(QStringLiteral("deviceIndex")).toInt(), 4);
+    QCOMPARE(effectiveDevices[0].toObject().value(QStringLiteral("resource")).toString(),
+             QStringLiteral("CAN-SN-001"));
+    QVERIFY(!effectiveDevices[0].toObject().contains(QStringLiteral("address")));
+    QVERIFY(!station.value(QStringLiteral("devices")).toArray()[0].toObject()
+                 .value(QStringLiteral("options")).toObject()
+                 .contains(QStringLiteral("deviceIndex")));
+    QCOMPARE(prepared.stationConfig.devices[0].resource,
+             QStringLiteral("CAN-SN-001"));
+    QCOMPARE(prepared.stationConfig.devices[0].connectionKind,
+             QStringLiteral("canSerial"));
+}
+
+void CoreTests::stationRunPreparationMarksUnavailableBindings()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QVERIFY(QDir(directory.path()).mkpath(QStringLiteral("plugins")));
+    QFile dll(directory.filePath(QStringLiteral("plugins/PicoATE.CAN.Test.dll")));
+    QVERIFY(dll.open(QIODevice::WriteOnly));
+    dll.close();
+    QFile registry(directory.filePath(QStringLiteral("plugins/PluginRegistry.json")));
+    QVERIFY(registry.open(QIODevice::WriteOnly));
+    registry.write(R"json({"plugins":[
+      {"moduleId":"plugin.can.test","dll":"PicoATE.CAN.Test.dll"}
+    ]})json");
+    registry.close();
+
+    auto station = QJsonDocument::fromJson(R"json({
+      "stationId":"station-prepare",
+      "pluginRegistry":"plugins/PluginRegistry.json",
+      "devices":[
+        {"deviceId":"CAN1.CH1","deviceType":"CAN","driverId":"plugin.can.test",
+         "enabled":true,"options":{"channelIndex":0}}
+      ]
+    })json").object();
+    StationRunPreparationOptions options;
+    options.stationFilePath = directory.filePath(QStringLiteral("StationSystem.json"));
+    options.projectDir = directory.path();
+
+    FakeDeviceDiscoveryService discovery;
+    auto prepared = StationRunPreparationService(&discovery).prepare(station, options);
+    QVERIFY2(prepared.ok(), prepared.errors.isEmpty()
+        ? ""
+        : qPrintable(prepared.errors.first().message));
+    QVERIFY(!prepared.warnings.isEmpty());
+    auto runtimeOptions = prepared.effectiveStation.value(QStringLiteral("devices"))
+                              .toArray().first().toObject()
+                              .value(QStringLiteral("options")).toObject();
+    QVERIFY(runtimeOptions.value(QStringLiteral("__picoateUnavailable")).toBool());
+    QVERIFY(!runtimeOptions.contains(QStringLiteral("deviceIndex")));
+    QVERIFY(discovery.requests.isEmpty());
+
+    auto devices = station.value(QStringLiteral("devices")).toArray();
+    auto can = devices[0].toObject();
+    can.insert(QStringLiteral("connectionKind"), QStringLiteral("canSerial"));
+    can.insert(QStringLiteral("resource"), QStringLiteral("MISSING-SN"));
+    devices[0] = can;
+    station.insert(QStringLiteral("devices"), devices);
+    prepared = StationRunPreparationService(&discovery).prepare(station, options);
+    QVERIFY(prepared.ok());
+    QVERIFY(std::any_of(prepared.warnings.cbegin(), prepared.warnings.cend(), [](const auto& warning) {
+        return warning.message.contains(QStringLiteral("was not found"));
+    }));
+
+    devices = station.value(QStringLiteral("devices")).toArray();
+    auto secondChannel = devices[0].toObject();
+    secondChannel.insert(QStringLiteral("deviceId"), QStringLiteral("CAN1.CH2"));
+    secondChannel.insert(QStringLiteral("resource"), QStringLiteral("OTHER-SN"));
+    auto secondOptions = secondChannel.value(QStringLiteral("options")).toObject();
+    secondOptions.insert(QStringLiteral("channelIndex"), 1);
+    secondChannel.insert(QStringLiteral("options"), secondOptions);
+    devices.push_back(secondChannel);
+    station.insert(QStringLiteral("devices"), devices);
+    prepared = StationRunPreparationService(&discovery).prepare(station, options);
+    QVERIFY(!prepared.ok());
+    QVERIFY(std::any_of(prepared.errors.cbegin(), prepared.errors.cend(), [](const auto& error) {
+        return error.message.contains(QStringLiteral("do not share"));
+    }));
+
+    station = QJsonDocument::fromJson(R"json({
+      "stationId":"station-prepare",
+      "devices":[
+        {"deviceId":"DMM1","deviceType":"DMM","driverId":"test.visa",
+         "connectionKind":"visa","resource":"","enabled":true}
+      ]
+    })json").object();
+    prepared = StationRunPreparationService(&discovery).prepare(station, options);
+    QVERIFY(prepared.ok());
+    QCOMPARE(prepared.warnings.first().path, QStringLiteral("devices.DMM1.resource"));
+    QVERIFY(prepared.stationConfig.devices.first().options
+                .value(QStringLiteral("__picoateUnavailable")).toBool());
+}
+
+void CoreTests::deviceSessionManagerRejectsUnavailableDeviceAtOpen()
+{
+    DeviceSessionManager manager;
+    DeviceSessionConfig config;
+    config.deviceId = QStringLiteral("DMM1");
+    config.deviceType = QStringLiteral("DMM");
+    config.driverId = QStringLiteral("test.visa");
+    config.options.insert(QStringLiteral("__picoateUnavailable"), true);
+    config.options.insert(
+        QStringLiteral("__picoateUnavailableReason"),
+        QStringLiteral("Device DMM1 has no VISA resource"));
+
+    QVERIFY(manager.configureDevice(config));
+    const auto opened = manager.openSession(QStringLiteral("DMM1"));
+    QVERIFY(!opened.ok());
+    QCOMPARE(opened.error.errorCode, QStringLiteral("DeviceUnavailable"));
+    QCOMPARE(opened.error.message,
+             QStringLiteral("Device DMM1 has no VISA resource"));
+}
+
 void CoreTests::stationRuntimeLoadsStationConfig()
 {
     StationRuntime runtime;
@@ -866,7 +1058,7 @@ void CoreTests::stationRuntimeLoadsStationConfig()
     VariableResolverOptions options;
     options.sequenceFilePath = examplePath("stations/basic_station.json");
     options.projectDir = projectRootPath();
-    options.variables.insert("DMM1_ADDRESS", "USB0::0x0957::0x0607::MY59001234::INSTR");
+    options.variables.insert("DMM1_RESOURCE", "USB0::0x0957::0x0607::MY59001234::INSTR");
 
     const auto result = runtime.loadStationConfigFile(examplePath("stations/basic_station.json"), options);
     QVERIFY(result.ok());
@@ -4448,7 +4640,7 @@ void CoreTests::sequenceCompilerRunsDmmCanAdapterExampleFile()
     VariableResolverOptions stationOptions;
     stationOptions.sequenceFilePath = examplePath("stations/basic_station.json");
     stationOptions.projectDir = projectRootPath();
-    stationOptions.variables.insert("DMM1_ADDRESS", "USB0::FAKE::INSTR");
+    stationOptions.variables.insert("DMM1_RESOURCE", "USB0::FAKE::INSTR");
     const auto station = loadStationConfigFile(examplePath("stations/basic_station.json"), stationOptions);
     QVERIFY(station.ok());
 

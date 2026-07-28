@@ -18,7 +18,8 @@
       "deviceId": "DMM1",
       "deviceType": "DMM",
       "driverId": "fake.dmm",
-      "address": "${DMM1_ADDRESS}",
+      "connectionKind": "visa",
+      "resource": "${DMM1_RESOURCE}",
       "lifetime": "Station",
       "options": {
         "defaultFunction": "DCV",
@@ -29,7 +30,8 @@
       "deviceId": "CAN1",
       "deviceType": "CAN",
       "driverId": "fake.can",
-      "address": "${PROJECT_DIR}/virtual/can1",
+      "connectionKind": "manual",
+      "resource": "${PROJECT_DIR}/virtual/can1",
       "lifetime": "Run",
       "options": {
         "channel": 0,
@@ -40,7 +42,8 @@
       "deviceId": "SPARE_PSU",
       "deviceType": "PSU",
       "driverId": "fake.psu",
-      "address": "GPIB0::5::INSTR",
+      "connectionKind": "visa",
+      "resource": "GPIB0::5::INSTR",
       "enabled": false
     }
   ]

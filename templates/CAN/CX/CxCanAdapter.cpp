@@ -210,6 +210,7 @@ Plugin::Json pluginDescription()
     return {
         {"name", "CX USB-CAN"},
         {"category", "CAN"},
+        {"connectionKinds", Json::array({"canSerial"})},
         {"functions", Json::array({
             {
                 {"id", "open"},

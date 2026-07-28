@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PluginCatalog.h"
+#include "PicoATE/Core/DeviceDiscovery.h"
 
 #include <QHash>
 #include <QPointer>
@@ -14,6 +15,7 @@ class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
+class QPushButton;
 class QSpinBox;
 class QTabWidget;
 
@@ -58,6 +60,10 @@ private:
     void loadStation();
     void loadDevice();
     void reloadPluginChoices(const QString& selectedModuleId = {});
+    void reloadConnectionKinds(const QString& selectedKind = {});
+    void refreshResources();
+    void finishResourceDiscovery(
+        const PicoATE::Core::DeviceDiscoveryResult& result);
     void rebuildChannelSwitches();
     void rebuildOptionEditors();
     void updateLogicalIdPreview();
@@ -87,8 +93,11 @@ private:
     QLineEdit* m_deviceIdEdit = nullptr;
     QComboBox* m_deviceTypeCombo = nullptr;
     QComboBox* m_pluginCombo = nullptr;
+    QComboBox* m_connectionKindCombo = nullptr;
     QLabel* m_addressLabel = nullptr;
-    QLineEdit* m_addressEdit = nullptr;
+    QComboBox* m_resourceCombo = nullptr;
+    QPushButton* m_refreshResourceButton = nullptr;
+    QLabel* m_resourceStatus = nullptr;
     QSpinBox* m_timeoutSpin = nullptr;
     QComboBox* m_lifetimeCombo = nullptr;
     QLabel* m_channelsLabel = nullptr;
@@ -107,6 +116,7 @@ private:
     bool m_editable = true;
     bool m_loading = false;
     bool m_pendingChanges = false;
+    bool m_resourceDiscoveryBusy = false;
     QVector<PluginManifest> m_plugins;
 };
 
