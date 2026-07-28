@@ -121,6 +121,23 @@ DeviceSessionOpenResult DeviceSessionManager::openSession(
     }
 
     const auto& config = configIt.value();
+    if (config.options.value(QStringLiteral("__picoateUnavailable")).toBool()) {
+        const auto reason = config.options
+                                .value(QStringLiteral("__picoateUnavailableReason"))
+                                .toString().trimmed();
+        result.error = makeError(
+            deviceId,
+            QStringLiteral("DeviceUnavailable"),
+            reason.isEmpty()
+                ? QStringLiteral("Device is not available: %1").arg(deviceId)
+                : reason,
+            QStringLiteral("Configure the device resource in TEST Devices or Station Config"));
+        publishState(deviceId,
+                     DeviceConnectionState::Error,
+                     result.error.message,
+                     result.error.errorCode);
+        return result;
+    }
     if (!existing) {
         const auto factoryIt = m_factories.constFind(config.driverId);
         if (factoryIt == m_factories.constEnd()) {

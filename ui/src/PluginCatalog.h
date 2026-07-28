@@ -76,6 +76,7 @@ struct PluginManifest {
     QString category;
     QString vendor;
     QString version;
+    QStringList connectionKinds;
     QVector<PluginFunctionDefinition> functions;
     QJsonObject description;
 };

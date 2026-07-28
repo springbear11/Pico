@@ -23,6 +23,17 @@ QString baseDeviceId(const QString& deviceId)
     return result;
 }
 
+QString persistedResource(const QJsonObject& object)
+{
+    auto resource = object.value(QStringLiteral("resource")).toString().trimmed();
+    if (!resource.isEmpty()) return resource;
+    resource = object.value(QStringLiteral("address")).toString(
+        object.value(QStringLiteral("visaAddress")).toString()).trimmed();
+    if (!resource.isEmpty()) return resource;
+    return object.value(QStringLiteral("options")).toObject()
+        .value(QStringLiteral("serialNumber")).toString().trimmed();
+}
+
 DeviceDiscoveryResult serialPorts()
 {
     DeviceDiscoveryResult result;
@@ -157,6 +168,81 @@ DeviceDiscoveryResult canDevices(const DeviceDiscoveryRequest& request)
 
 } // namespace
 
+QString deviceConnectionKindName(DeviceConnectionKind kind)
+{
+    switch (kind) {
+    case DeviceConnectionKind::CanSerial: return QStringLiteral("canSerial");
+    case DeviceConnectionKind::Visa: return QStringLiteral("visa");
+    case DeviceConnectionKind::SerialPort: return QStringLiteral("serialPort");
+    case DeviceConnectionKind::TcpIp: return QStringLiteral("tcpIp");
+    case DeviceConnectionKind::Manual: return QStringLiteral("manual");
+    }
+    return QStringLiteral("manual");
+}
+
+std::optional<DeviceConnectionKind> deviceConnectionKindFromString(
+    const QString& value)
+{
+    auto normalized = value.trimmed().toLower();
+    normalized.remove('-');
+    normalized.remove('_');
+    normalized.remove(' ');
+    if (normalized == QStringLiteral("canserial") || normalized == QStringLiteral("can")) {
+        return DeviceConnectionKind::CanSerial;
+    }
+    if (normalized == QStringLiteral("visa") || normalized == QStringLiteral("visaresource")) {
+        return DeviceConnectionKind::Visa;
+    }
+    if (normalized == QStringLiteral("serial") || normalized == QStringLiteral("serialport") ||
+        normalized == QStringLiteral("com")) {
+        return DeviceConnectionKind::SerialPort;
+    }
+    if (normalized == QStringLiteral("tcp") || normalized == QStringLiteral("tcpip") ||
+        normalized == QStringLiteral("ip")) {
+        return DeviceConnectionKind::TcpIp;
+    }
+    if (normalized == QStringLiteral("manual") || normalized == QStringLiteral("custom")) {
+        return DeviceConnectionKind::Manual;
+    }
+    return std::nullopt;
+}
+
+DeviceConnectionKind inferDeviceConnectionKind(const QString& deviceType,
+                                               const QString& resource)
+{
+    const auto type = deviceType.trimmed().toUpper();
+    const auto value = resource.trimmed();
+    if (type == QStringLiteral("CAN")) return DeviceConnectionKind::CanSerial;
+    if (value.contains(QStringLiteral("::"), Qt::CaseInsensitive) ||
+        type == QStringLiteral("DMM") || type == QStringLiteral("PSU") ||
+        type == QStringLiteral("SCOPE")) {
+        return DeviceConnectionKind::Visa;
+    }
+    static const QRegularExpression comPort(
+        QStringLiteral("^COM\\d+$"), QRegularExpression::CaseInsensitiveOption);
+    if (comPort.match(value).hasMatch() || type == QStringLiteral("SERIAL")) {
+        return DeviceConnectionKind::SerialPort;
+    }
+    static const QRegularExpression ipAddress(
+        QStringLiteral("^(?:\\d{1,3}\\.){3}\\d{1,3}(?::\\d+)?$"));
+    if (ipAddress.match(value).hasMatch()) return DeviceConnectionKind::TcpIp;
+    return DeviceConnectionKind::Manual;
+}
+
+std::optional<DeviceDiscoveryKind> discoveryKindForConnection(
+    DeviceConnectionKind kind)
+{
+    switch (kind) {
+    case DeviceConnectionKind::CanSerial: return DeviceDiscoveryKind::CanDevice;
+    case DeviceConnectionKind::Visa: return DeviceDiscoveryKind::VisaResource;
+    case DeviceConnectionKind::SerialPort: return DeviceDiscoveryKind::SerialPort;
+    case DeviceConnectionKind::TcpIp:
+    case DeviceConnectionKind::Manual:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 DeviceDiscoveryResult SystemDeviceDiscoveryService::discover(
     const DeviceDiscoveryRequest& request)
 {
@@ -195,9 +281,15 @@ QVector<StationFieldDevice> stationFieldDevices(const QJsonObject& station)
             device.logicalId = logicalId;
             device.deviceType = object.value(QStringLiteral("deviceType")).toString().trimmed().toUpper();
             device.driverId = object.value(QStringLiteral("driverId")).toString().trimmed();
-            device.address = object.value(QStringLiteral("address")).toString().trimmed();
-            device.serialNumber = object.value(QStringLiteral("options")).toObject()
-                                      .value(QStringLiteral("serialNumber")).toString().trimmed();
+            device.resource = persistedResource(object);
+            auto kind = deviceConnectionKindFromString(
+                object.value(QStringLiteral("connectionKind")).toString());
+            if (!kind) kind = inferDeviceConnectionKind(device.deviceType, device.resource);
+            device.connectionKind = deviceConnectionKindName(*kind);
+            device.address = device.connectionKind == QStringLiteral("canSerial")
+                ? QString() : device.resource;
+            device.serialNumber = device.connectionKind == QStringLiteral("canSerial")
+                ? device.resource : QString();
             result.push_back(std::move(device));
             position = result.size() - 1;
             positions.insert(logicalId, position);
@@ -209,6 +301,19 @@ QVector<StationFieldDevice> stationFieldDevices(const QJsonObject& station)
 
 bool applyStationFieldBinding(QJsonObject& station,
                               const QString& logicalId,
+                              const QString& resourceId,
+                              QString* errorMessage)
+{
+    const auto devices = stationFieldDevices(station);
+    const auto found = std::find_if(devices.cbegin(), devices.cend(),
+        [&logicalId](const auto& device) { return device.logicalId == logicalId; });
+    const auto kind = found == devices.cend() ? QString() : found->connectionKind;
+    return applyStationFieldBinding(station, logicalId, kind, resourceId, errorMessage);
+}
+
+bool applyStationFieldBinding(QJsonObject& station,
+                              const QString& logicalId,
+                              const QString& connectionKind,
                               const QString& resourceId,
                               QString* errorMessage)
 {
@@ -224,14 +329,16 @@ bool applyStationFieldBinding(QJsonObject& station,
         }
         found = true;
         const auto type = object.value(QStringLiteral("deviceType")).toString().trimmed().toUpper();
-        if (type == QStringLiteral("CAN")) {
-            auto options = object.value(QStringLiteral("options")).toObject();
-            options.insert(QStringLiteral("serialNumber"), resourceId.trimmed());
-            options.remove(QStringLiteral("deviceIndex"));
-            object.insert(QStringLiteral("options"), options);
-        } else {
-            object.insert(QStringLiteral("address"), resourceId.trimmed());
-        }
+        auto kind = deviceConnectionKindFromString(connectionKind);
+        if (!kind) kind = inferDeviceConnectionKind(type, resourceId);
+        object.insert(QStringLiteral("connectionKind"), deviceConnectionKindName(*kind));
+        object.insert(QStringLiteral("resource"), resourceId.trimmed());
+        object.remove(QStringLiteral("address"));
+        object.remove(QStringLiteral("visaAddress"));
+        auto options = object.value(QStringLiteral("options")).toObject();
+        options.remove(QStringLiteral("serialNumber"));
+        options.remove(QStringLiteral("deviceIndex"));
+        object.insert(QStringLiteral("options"), options);
         devices[index] = object;
     }
     if (!found) {
@@ -255,16 +362,27 @@ QJsonObject effectiveStationSnapshot(
             continue;
         }
         auto object = devices[index].toObject();
-        if (object.value(QStringLiteral("deviceType")).toString()
-                .compare(QStringLiteral("CAN"), Qt::CaseInsensitive) != 0) {
-            continue;
-        }
+        const auto type = object.value(QStringLiteral("deviceType")).toString().trimmed().toUpper();
+        const auto resource = persistedResource(object);
+        auto kind = deviceConnectionKindFromString(
+            object.value(QStringLiteral("connectionKind")).toString());
+        if (!kind) kind = inferDeviceConnectionKind(type, resource);
+        object.insert(QStringLiteral("connectionKind"), deviceConnectionKindName(*kind));
+        object.insert(QStringLiteral("resource"), resource);
+        object.remove(QStringLiteral("visaAddress"));
         auto options = object.value(QStringLiteral("options")).toObject();
         options.remove(QStringLiteral("deviceIndex"));
-        const auto logicalId = baseDeviceId(object.value(QStringLiteral("deviceId")).toString());
-        const auto deviceIndex = canDeviceIndices.constFind(logicalId);
-        if (deviceIndex != canDeviceIndices.constEnd()) {
-            options.insert(QStringLiteral("deviceIndex"), deviceIndex.value());
+        options.remove(QStringLiteral("serialNumber"));
+        if (*kind == DeviceConnectionKind::CanSerial) {
+            object.remove(QStringLiteral("address"));
+            options.insert(QStringLiteral("serialNumber"), resource);
+            const auto logicalId = baseDeviceId(object.value(QStringLiteral("deviceId")).toString());
+            const auto deviceIndex = canDeviceIndices.constFind(logicalId);
+            if (deviceIndex != canDeviceIndices.constEnd()) {
+                options.insert(QStringLiteral("deviceIndex"), deviceIndex.value());
+            }
+        } else {
+            object.insert(QStringLiteral("address"), resource);
         }
         object.insert(QStringLiteral("options"), options);
         devices[index] = object;

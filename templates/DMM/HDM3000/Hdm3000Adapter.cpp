@@ -20,6 +20,7 @@ Plugin::Json pluginDescription()
   "moduleId": "plugin.dmm.hdm3000",
   "name": "Hantek HDM3000 VISA DMM",
   "category": "DMM",
+  "connectionKinds": ["visa"],
   "vendor": "Hantek",
   "version": "1.0.0",
   "functions": [

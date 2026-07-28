@@ -3,8 +3,13 @@
 #include "OnOffControl.h"
 #include "StationDocument.h"
 
+#include "PicoATE/Core/DeviceDiscovery.h"
+
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QFont>
 #include <QFormLayout>
@@ -16,9 +21,12 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QPointer>
+#include <QPushButton>
 #include <QScrollArea>
 #include <QSpinBox>
 #include <QTabWidget>
+#include <QThread>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -96,8 +104,51 @@ bool isTopLevelDeviceField(const QString& key)
 {
     return key == QStringLiteral("deviceId") ||
            key == QStringLiteral("channelIndex") ||
+           key == QStringLiteral("connectionKind") ||
+           key == QStringLiteral("resource") ||
            key == QStringLiteral("address") ||
            key == QStringLiteral("visaAddress");
+}
+
+QString persistedResource(const QJsonObject& device)
+{
+    auto resource = device.value(QStringLiteral("resource")).toString().trimmed();
+    if (resource.isEmpty()) {
+        resource = valueWithAlias(device, QStringLiteral("address"),
+                                  QStringLiteral("visaAddress")).trimmed();
+    }
+    if (resource.isEmpty()) {
+        resource = device.value(QStringLiteral("options")).toObject()
+                       .value(QStringLiteral("serialNumber")).toString().trimmed();
+    }
+    return resource;
+}
+
+QString connectionKindLabel(const QString& kind)
+{
+    if (kind == QStringLiteral("canSerial")) return QObject::tr("CAN Serial Number");
+    if (kind == QStringLiteral("visa")) return QObject::tr("VISA Resource");
+    if (kind == QStringLiteral("serialPort")) return QObject::tr("COM Port");
+    if (kind == QStringLiteral("tcpIp")) return QObject::tr("TCP / IP");
+    return QObject::tr("Manual Resource");
+}
+
+QStringList defaultConnectionKinds(const QString& type)
+{
+    const auto normalized = type.trimmed().toUpper();
+    if (normalized == QStringLiteral("CAN")) return {QStringLiteral("canSerial")};
+    if (normalized == QStringLiteral("DMM") ||
+        normalized == QStringLiteral("PSU") ||
+        normalized == QStringLiteral("SCOPE")) {
+        return {QStringLiteral("visa")};
+    }
+    if (normalized == QStringLiteral("SERIAL")) {
+        return {QStringLiteral("serialPort")};
+    }
+    if (normalized == QStringLiteral("MODBUS")) {
+        return {QStringLiteral("serialPort"), QStringLiteral("tcpIp")};
+    }
+    return {QStringLiteral("manual")};
 }
 
 QWidget* scrollPage(QWidget* content, QWidget* parent)
@@ -165,6 +216,7 @@ StationPropertyEditor::StationPropertyEditor(StationDocument* document,
                     return;
                 }
                 reloadPluginChoices();
+                reloadConnectionKinds();
                 updateAddressPresentation();
                 rebuildChannelSwitches();
                 rebuildOptionEditors();
@@ -176,12 +228,23 @@ StationPropertyEditor::StationPropertyEditor(StationDocument* document,
                 if (m_loading) {
                     return;
                 }
+                reloadConnectionKinds();
                 rebuildChannelSwitches();
                 rebuildOptionEditors();
                 markPendingChanges();
             });
-    connect(m_addressEdit, &QLineEdit::textEdited,
-            this, &StationPropertyEditor::markPendingChanges);
+    connect(m_connectionKindCombo, &QComboBox::currentIndexChanged,
+            this, [this] {
+                if (m_loading) return;
+                updateAddressPresentation();
+                markPendingChanges();
+            });
+    connect(m_resourceCombo, &QComboBox::editTextChanged,
+            this, [this] {
+                if (!m_loading) markPendingChanges();
+            });
+    connect(m_refreshResourceButton, &QPushButton::clicked,
+            this, &StationPropertyEditor::refreshResources);
     connect(m_timeoutSpin, &QSpinBox::valueChanged,
             this, &StationPropertyEditor::markPendingChanges);
     connect(m_lifetimeCombo, &QComboBox::currentIndexChanged,
@@ -260,10 +323,31 @@ void StationPropertyEditor::buildDevicePage()
     m_pluginCombo->setObjectName(QStringLiteral("devicePluginCombo"));
     form->addRow(tr("Driver / Model"), m_pluginCombo);
 
-    m_addressEdit = new QLineEdit(content);
-    m_addressEdit->setObjectName(QStringLiteral("deviceAddressEdit"));
-    m_addressLabel = new QLabel(tr("Address"), content);
-    form->addRow(m_addressLabel, m_addressEdit);
+    m_connectionKindCombo = new QComboBox(content);
+    m_connectionKindCombo->setObjectName(QStringLiteral("deviceConnectionKindCombo"));
+    form->addRow(tr("Connection"), m_connectionKindCombo);
+
+    auto* resourceRow = new QWidget(content);
+    auto* resourceLayout = new QHBoxLayout(resourceRow);
+    resourceLayout->setContentsMargins(0, 0, 0, 0);
+    resourceLayout->setSpacing(6);
+    m_resourceCombo = new QComboBox(resourceRow);
+    m_resourceCombo->setObjectName(QStringLiteral("deviceResourceCombo"));
+    m_resourceCombo->setEditable(true);
+    m_resourceCombo->lineEdit()->setObjectName(QStringLiteral("deviceAddressEdit"));
+    m_resourceCombo->setInsertPolicy(QComboBox::NoInsert);
+    resourceLayout->addWidget(m_resourceCombo, 1);
+    m_refreshResourceButton = new QPushButton(tr("Refresh"), resourceRow);
+    m_refreshResourceButton->setObjectName(QStringLiteral("deviceResourceRefreshButton"));
+    resourceLayout->addWidget(m_refreshResourceButton);
+    m_addressLabel = new QLabel(tr("Resource"), content);
+    form->addRow(m_addressLabel, resourceRow);
+    m_resourceStatus = new QLabel(content);
+    m_resourceStatus->setObjectName(QStringLiteral("deviceResourceStatus"));
+    m_resourceStatus->setWordWrap(true);
+    m_resourceStatus->setStyleSheet(QStringLiteral("color: #667085;"));
+    m_resourceStatus->hide();
+    form->addRow(QString{}, m_resourceStatus);
 
     m_timeoutSpin = new QSpinBox(content);
     m_timeoutSpin->setObjectName(QStringLiteral("deviceTimeoutMsSpin"));
@@ -391,9 +475,12 @@ bool StationPropertyEditor::focusField(const QString& path)
                path.endsWith(QStringLiteral(".driver")) ||
                path.endsWith(QStringLiteral("pluginPath"))) {
         field = m_pluginCombo;
-    } else if (path.endsWith(QStringLiteral("address")) ||
+    } else if (path.endsWith(QStringLiteral("connectionKind"))) {
+        field = m_connectionKindCombo;
+    } else if (path.endsWith(QStringLiteral("resource")) ||
+               path.endsWith(QStringLiteral("address")) ||
                path.endsWith(QStringLiteral("visaAddress"))) {
-        field = m_addressEdit;
+        field = m_resourceCombo;
     } else if (path.endsWith(QStringLiteral("lifetime"))) {
         field = m_lifetimeCombo;
     } else if (path.endsWith(QStringLiteral("timeoutMs"))) {
@@ -472,8 +559,15 @@ void StationPropertyEditor::loadDevice()
     }
     m_deviceTypeCombo->setCurrentIndex(typeIndex < 0 ? 0 : typeIndex);
     reloadPluginChoices(m_loadedDriverId);
-    m_addressEdit->setText(valueWithAlias(
-        device, QStringLiteral("address"), QStringLiteral("visaAddress")));
+    auto kind = device.value(QStringLiteral("connectionKind")).toString();
+    if (!PicoATE::Core::deviceConnectionKindFromString(kind)) {
+        kind = PicoATE::Core::deviceConnectionKindName(
+            PicoATE::Core::inferDeviceConnectionKind(
+                m_loadedDeviceType, persistedResource(device)));
+    }
+    reloadConnectionKinds(kind);
+    m_resourceCombo->clear();
+    m_resourceCombo->setEditText(persistedResource(device));
     updateAddressPresentation();
     m_timeoutSpin->setValue(
         device.value(QStringLiteral("timeoutMs")).toInt(30000));
@@ -485,8 +579,9 @@ void StationPropertyEditor::loadDevice()
     rebuildOptionEditors();
     updateLogicalIdPreview();
 
-    const std::array<QWidget*, 6> fields = {
-        m_deviceIdEdit, m_deviceTypeCombo, m_pluginCombo, m_addressEdit,
+    const std::array<QWidget*, 8> fields = {
+        m_deviceIdEdit, m_deviceTypeCombo, m_pluginCombo,
+        m_connectionKindCombo, m_resourceCombo, m_refreshResourceButton,
         m_timeoutSpin, m_lifetimeCombo};
     for (auto* widget : fields) {
         widget->setEnabled(m_editable && valid);
@@ -494,6 +589,114 @@ void StationPropertyEditor::loadDevice()
     m_deviceIdEdit->setReadOnly(true);
     m_deviceError->hide();
     m_loading = false;
+}
+
+void StationPropertyEditor::reloadConnectionKinds(const QString& selectedKind)
+{
+    const bool wasLoading = m_loading;
+    m_loading = true;
+    auto selected = selectedKind.isEmpty()
+        ? m_connectionKindCombo->currentData().toString()
+        : selectedKind;
+    QStringList kinds;
+    if (const auto* plugin = selectedPlugin()) {
+        kinds = plugin->connectionKinds;
+    }
+    if (kinds.isEmpty()) {
+        kinds = defaultConnectionKinds(m_deviceTypeCombo->currentData().toString());
+    }
+    m_connectionKindCombo->clear();
+    for (const auto& candidate : kinds) {
+        const auto parsed = PicoATE::Core::deviceConnectionKindFromString(candidate);
+        if (!parsed) continue;
+        const auto canonical = PicoATE::Core::deviceConnectionKindName(*parsed);
+        if (m_connectionKindCombo->findData(canonical) < 0) {
+            m_connectionKindCombo->addItem(connectionKindLabel(canonical), canonical);
+        }
+    }
+    if (m_connectionKindCombo->count() == 0) {
+        m_connectionKindCombo->addItem(connectionKindLabel(QStringLiteral("manual")),
+                                       QStringLiteral("manual"));
+    }
+    const auto parsedSelected = PicoATE::Core::deviceConnectionKindFromString(selected);
+    if (parsedSelected) selected = PicoATE::Core::deviceConnectionKindName(*parsedSelected);
+    const int index = m_connectionKindCombo->findData(selected);
+    m_connectionKindCombo->setCurrentIndex(index >= 0 ? index : 0);
+    m_connectionKindCombo->setEnabled(m_editable && !m_currentRows.isEmpty());
+    m_loading = wasLoading;
+}
+
+void StationPropertyEditor::refreshResources()
+{
+    if (m_resourceDiscoveryBusy || m_currentRows.isEmpty()) return;
+    const auto parsed = PicoATE::Core::deviceConnectionKindFromString(
+        m_connectionKindCombo->currentData().toString());
+    if (!parsed) return;
+    const auto discoveryKind = PicoATE::Core::discoveryKindForConnection(*parsed);
+    if (!discoveryKind) {
+        m_resourceStatus->setText(tr("This connection uses a manually entered resource."));
+        m_resourceStatus->show();
+        return;
+    }
+    PicoATE::Core::DeviceDiscoveryRequest request;
+    request.kind = *discoveryKind;
+    request.timeoutMs = qMin(m_timeoutSpin->value(), 12000);
+    if (*parsed == PicoATE::Core::DeviceConnectionKind::CanSerial) {
+        const auto* plugin = selectedPlugin();
+        if (!plugin) {
+            showDeviceError(tr("Select a CAN driver before scanning devices."));
+            return;
+        }
+        request.driverId = plugin->moduleId;
+        request.pluginDllPath = plugin->dllPath;
+        request.nativeHostProgram = QDir(QCoreApplication::applicationDirPath())
+                                        .absoluteFilePath(QStringLiteral("PicoATE.NativeHost.exe"));
+    }
+    m_resourceDiscoveryBusy = true;
+    m_refreshResourceButton->setEnabled(false);
+    m_resourceStatus->setText(tr("Scanning resources..."));
+    m_resourceStatus->show();
+    const QPointer<StationPropertyEditor> guard(this);
+    auto* thread = QThread::create([guard, request] {
+        PicoATE::Core::SystemDeviceDiscoveryService service;
+        const auto result = service.discover(request);
+        if (guard) {
+            QMetaObject::invokeMethod(guard, [guard, result] {
+                if (guard) guard->finishResourceDiscovery(result);
+            }, Qt::QueuedConnection);
+        }
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
+}
+
+void StationPropertyEditor::finishResourceDiscovery(
+    const PicoATE::Core::DeviceDiscoveryResult& result)
+{
+    m_resourceDiscoveryBusy = false;
+    const auto previous = m_resourceCombo->currentText().trimmed();
+    m_loading = true;
+    m_resourceCombo->clear();
+    for (const auto& resource : result.resources) {
+        m_resourceCombo->addItem(resource.displayName.isEmpty()
+                                     ? resource.resourceId
+                                     : resource.displayName,
+                                 resource.resourceId);
+    }
+    const int previousIndex = m_resourceCombo->findData(previous);
+    if (previousIndex >= 0) {
+        m_resourceCombo->setCurrentIndex(previousIndex);
+    } else {
+        m_resourceCombo->setEditText(previous);
+    }
+    m_loading = false;
+    m_refreshResourceButton->setEnabled(m_editable && !m_currentRows.isEmpty());
+    m_resourceStatus->setText(result.ok()
+        ? tr("Found %1 resource(s). You may also enter one manually.")
+              .arg(result.resources.size())
+        : tr("Scan failed: %1. Manual input is still available.")
+              .arg(result.errorMessage));
+    m_resourceStatus->show();
 }
 
 void StationPropertyEditor::reloadPluginChoices(const QString& selectedModuleId)
@@ -764,32 +967,26 @@ void StationPropertyEditor::updateLogicalIdPreview()
 
 void StationPropertyEditor::updateAddressPresentation()
 {
-    const auto type = m_deviceTypeCombo->currentData()
-                          .toString().trimmed().toUpper();
-    const bool visible = type != QStringLiteral("CAN");
-    m_addressLabel->setVisible(visible);
-    m_addressEdit->setVisible(visible);
-    if (type == QStringLiteral("SERIAL")) {
-        m_addressLabel->setText(tr("Port"));
-        m_addressEdit->setPlaceholderText(tr("For example: COM3"));
-    } else if (type == QStringLiteral("MODBUS")) {
-        m_addressLabel->setText(tr("Port / IP"));
-        m_addressEdit->setPlaceholderText(
-            tr("For example: COM3 or 192.168.1.20"));
-    } else if (type == QStringLiteral("DMM") ||
-               type == QStringLiteral("PSU") ||
-               type == QStringLiteral("SCOPE")) {
-        m_addressLabel->setText(tr("Resource / Address"));
-        m_addressEdit->setPlaceholderText(
-            tr("VISA resource, IP address, or serial port"));
-    } else if (type == QStringLiteral("MCU")) {
-        m_addressLabel->setText(tr("Port / Address"));
-        m_addressEdit->setPlaceholderText(
-            tr("Serial port, IP, or USB identifier"));
+    const auto kind = m_connectionKindCombo->currentData().toString();
+    m_addressLabel->setText(tr("Resource"));
+    auto* edit = m_resourceCombo->lineEdit();
+    if (kind == QStringLiteral("canSerial")) {
+        edit->setPlaceholderText(tr("Select or enter the device serial number"));
+    } else if (kind == QStringLiteral("visa")) {
+        edit->setPlaceholderText(tr("For example: USB0::...::INSTR"));
+    } else if (kind == QStringLiteral("serialPort")) {
+        edit->setPlaceholderText(tr("For example: COM3"));
+    } else if (kind == QStringLiteral("tcpIp")) {
+        edit->setPlaceholderText(tr("For example: 192.168.1.20:502"));
     } else {
-        m_addressLabel->setText(tr("Address"));
-        m_addressEdit->setPlaceholderText({});
+        edit->setPlaceholderText(tr("Enter a driver-specific connection string"));
     }
+    const auto parsed = PicoATE::Core::deviceConnectionKindFromString(kind);
+    const bool enumerable = parsed &&
+        PicoATE::Core::discoveryKindForConnection(*parsed).has_value();
+    m_refreshResourceButton->setVisible(enumerable);
+    m_refreshResourceButton->setText(kind == QStringLiteral("canSerial")
+                                         ? tr("Scan Devices") : tr("Refresh"));
 }
 
 bool StationPropertyEditor::commitStation()
@@ -861,6 +1058,12 @@ bool StationPropertyEditor::commitDevice()
         showDeviceError(optionError);
         return false;
     }
+    const bool selectedEnumeratedResource = m_resourceCombo->currentIndex() >= 0 &&
+        m_resourceCombo->currentText() ==
+            m_resourceCombo->itemText(m_resourceCombo->currentIndex());
+    const auto resource = selectedEnumeratedResource
+        ? m_resourceCombo->currentData().toString().trimmed()
+        : m_resourceCombo->currentText().trimmed();
 
     auto makeDevice = [&](int channel, bool enabled) {
         auto device = original;
@@ -878,14 +1081,11 @@ bool StationPropertyEditor::commitDevice()
             device.remove(QStringLiteral("driverId"));
             device.remove(QStringLiteral("driver"));
         }
-        if (m_addressEdit->isVisible()) {
-            device.insert(QStringLiteral("address"),
-                          m_addressEdit->text().trimmed());
-            device.remove(QStringLiteral("visaAddress"));
-        } else {
-            device.remove(QStringLiteral("address"));
-            device.remove(QStringLiteral("visaAddress"));
-        }
+        device.insert(QStringLiteral("connectionKind"),
+                      m_connectionKindCombo->currentData().toString());
+        device.insert(QStringLiteral("resource"), resource);
+        device.remove(QStringLiteral("address"));
+        device.remove(QStringLiteral("visaAddress"));
         device.insert(QStringLiteral("lifetime"),
                       m_lifetimeCombo->currentData().toString());
         device.insert(QStringLiteral("timeoutMs"), m_timeoutSpin->value());
@@ -893,6 +1093,8 @@ bool StationPropertyEditor::commitDevice()
         auto effectiveOptions = channelOptions.value(channel, sharedOptions);
         effectiveOptions.remove(QStringLiteral("address"));
         effectiveOptions.remove(QStringLiteral("visaAddress"));
+        effectiveOptions.remove(QStringLiteral("serialNumber"));
+        effectiveOptions.remove(QStringLiteral("deviceIndex"));
         for (const auto& item : m_optionEditors) {
             if (item.channelIndex < 0 && sharedOptions.contains(item.definition.key)) {
                 effectiveOptions.insert(item.definition.key,

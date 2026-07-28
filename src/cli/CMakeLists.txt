@@ -145,7 +145,7 @@ add_test(
 
 set_tests_properties(PicoATECliStationConfigExample
     PROPERTIES
-        ENVIRONMENT "DMM1_ADDRESS=USB0::0x0957::0x0607::MY59001234::INSTR"
+        ENVIRONMENT "DMM1_RESOURCE=USB0::0x0957::0x0607::MY59001234::INSTR"
 )
 
 add_test(
@@ -160,5 +160,5 @@ add_test(
 
 set_tests_properties(PicoATECliDmmCanAdapterExample
     PROPERTIES
-        ENVIRONMENT "DMM1_ADDRESS=USB0::0x0957::0x0607::MY59001234::INSTR"
+        ENVIRONMENT "DMM1_RESOURCE=USB0::0x0957::0x0607::MY59001234::INSTR"
 )

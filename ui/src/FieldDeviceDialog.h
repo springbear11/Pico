@@ -1,5 +1,6 @@
 #pragma once
 
+#include "PluginCatalog.h"
 #include "PicoATE/Core/DeviceDiscovery.h"
 
 #include <QDialog>
@@ -8,7 +9,6 @@
 
 class QComboBox;
 class QLabel;
-class QLineEdit;
 class QListWidget;
 class QPushButton;
 class QTimer;
@@ -22,23 +22,19 @@ class FieldDeviceDialog final : public QDialog
 public:
     explicit FieldDeviceDialog(QString stationPath, QWidget* parent = nullptr);
 
-    void resolveEffectiveStation(bool requireCanBindings = false);
-
 signals:
     void stationSaved();
-    void effectiveStationReady(const QByteArray& stationJson,
-                               const QString& errorMessage);
 
 private:
     void buildUi();
     bool loadStation(QString* errorMessage = nullptr);
     void reloadDevices();
     void selectDevice(int row);
+    void reloadConnectionKinds();
     void updateEditor();
     void refreshResources();
     void scanCanDevices();
-    void startDiscovery(const PicoATE::Core::DeviceDiscoveryRequest& request,
-                        bool effectiveStationScan);
+    void startDiscovery(const PicoATE::Core::DeviceDiscoveryRequest& request);
     void finishResourceDiscovery(const PicoATE::Core::DeviceDiscoveryResult& result);
     void applyAndSave();
     QString pluginDllPath(const QString& driverId) const;
@@ -48,12 +44,12 @@ private:
     QJsonObject m_station;
     QVector<PicoATE::Core::StationFieldDevice> m_devices;
     QVector<PicoATE::Core::DiscoveredDeviceResource> m_resources;
+    QVector<PluginManifest> m_plugins;
     int m_selectedRow = -1;
     bool m_busy = false;
     QListWidget* m_deviceList = nullptr;
     QComboBox* m_connectionKind = nullptr;
     QComboBox* m_resourceCombo = nullptr;
-    QLineEdit* m_manualAddress = nullptr;
     QLabel* m_statusLabel = nullptr;
     QPushButton* m_refreshButton = nullptr;
     QPushButton* m_applyButton = nullptr;

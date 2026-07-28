@@ -1,5 +1,7 @@
 #include "PluginCatalog.h"
 
+#include "PicoATE/Core/DeviceDiscovery.h"
+
 #include "PicoATE/Core/VariableResolver.h"
 
 #include <QDirIterator>
@@ -275,6 +277,44 @@ PluginManifestResult PluginCatalog::parse(const QByteArray& json,
     result.manifest.category = requiredString(root, QStringLiteral("category"), {}, result.errors);
     result.manifest.vendor = root.value(QStringLiteral("vendor")).toString().trimmed();
     result.manifest.version = root.value(QStringLiteral("version")).toString().trimmed();
+    const auto connectionKinds = root.value(QStringLiteral("connectionKinds"));
+    if (!connectionKinds.isUndefined() && !connectionKinds.isArray()) {
+        addError(result.errors, QStringLiteral("connectionKinds"),
+                 QStringLiteral("Expected array"));
+    } else if (connectionKinds.isArray()) {
+        for (int index = 0; index < connectionKinds.toArray().size(); ++index) {
+            const auto value = connectionKinds.toArray()[index];
+            const auto kind = PicoATE::Core::deviceConnectionKindFromString(
+                value.toString());
+            if (!value.isString() || !kind) {
+                addError(result.errors,
+                         QStringLiteral("connectionKinds[%1]").arg(index),
+                         QStringLiteral("Use canSerial, visa, serialPort, tcpIp, or manual"));
+                continue;
+            }
+            const auto name = PicoATE::Core::deviceConnectionKindName(*kind);
+            if (!result.manifest.connectionKinds.contains(name)) {
+                result.manifest.connectionKinds.push_back(name);
+            }
+        }
+    }
+    if (result.manifest.connectionKinds.isEmpty()) {
+        const auto category = result.manifest.category.trimmed().toUpper();
+        if (category == QStringLiteral("CAN")) {
+            result.manifest.connectionKinds = {QStringLiteral("canSerial")};
+        } else if (category == QStringLiteral("DMM") ||
+                   category == QStringLiteral("PSU") ||
+                   category == QStringLiteral("SCOPE")) {
+            result.manifest.connectionKinds = {QStringLiteral("visa")};
+        } else if (category == QStringLiteral("SERIAL")) {
+            result.manifest.connectionKinds = {QStringLiteral("serialPort")};
+        } else if (category == QStringLiteral("MODBUS")) {
+            result.manifest.connectionKinds = {
+                QStringLiteral("serialPort"), QStringLiteral("tcpIp")};
+        } else {
+            result.manifest.connectionKinds = {QStringLiteral("manual")};
+        }
+    }
 
     const auto functionsValue = root.value(QStringLiteral("functions"));
     if (!functionsValue.isArray() || functionsValue.toArray().isEmpty()) {
@@ -582,6 +622,26 @@ QVector<PluginBindingDiagnostic> PluginCatalog::validateStationBindings(
                               QStringLiteral("Plugin DLL does not exist: %1")
                                   .arg(plugin->dllPath),
                               QStringLiteral("Copy the DLL into plugins and run Scan Plugins"),
+                              false});
+        }
+        auto connectionKind = device.value(QStringLiteral("connectionKind"))
+                                  .toString().trimmed();
+        if (connectionKind.isEmpty()) {
+            const auto resource = device.value(QStringLiteral("resource")).toString(
+                device.value(QStringLiteral("address")).toString());
+            connectionKind = PicoATE::Core::deviceConnectionKindName(
+                PicoATE::Core::inferDeviceConnectionKind(
+                    device.value(QStringLiteral("deviceType")).toString(), resource));
+        }
+        const auto parsedKind = PicoATE::Core::deviceConnectionKindFromString(connectionKind);
+        const auto canonicalKind = parsedKind
+            ? PicoATE::Core::deviceConnectionKindName(*parsedKind) : connectionKind;
+        if (!plugin->connectionKinds.isEmpty() &&
+            !plugin->connectionKinds.contains(canonicalKind)) {
+            result.push_back({basePath + QStringLiteral(".connectionKind"),
+                              QStringLiteral("Driver %1 does not support connection kind %2")
+                                  .arg(driverId, canonicalKind),
+                              QStringLiteral("Select a connection kind declared by the plugin"),
                               false});
         }
     }

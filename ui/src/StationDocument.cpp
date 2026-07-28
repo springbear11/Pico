@@ -1,6 +1,7 @@
 #include "StationDocument.h"
 
 #include "PicoATE/Core/StationConfig.h"
+#include "PicoATE/Core/DeviceDiscovery.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -255,7 +256,8 @@ bool StationDocument::insertDevice(int row, QJsonObject device)
         device.insert("deviceId", nextDeviceIdForType(type));
         device.insert("deviceType", type);
         device.insert("driverId", "");
-        device.insert("address", "");
+        device.insert("connectionKind", "manual");
+        device.insert("resource", "");
         device.insert("lifetime", "Station");
         device.insert("enabled", false);
         device.insert("options", QJsonObject{});
@@ -327,7 +329,8 @@ bool StationDocument::moveDeviceConfiguration(int sourceRow, int targetRow)
     cleared.insert(QStringLiteral("deviceId"), deviceId(source));
     cleared.insert(QStringLiteral("deviceType"), deviceType(source));
     cleared.insert(QStringLiteral("driverId"), QString());
-    cleared.insert(QStringLiteral("address"), QString());
+    cleared.insert(QStringLiteral("connectionKind"), QStringLiteral("manual"));
+    cleared.insert(QStringLiteral("resource"), QString());
     cleared.insert(QStringLiteral("timeoutMs"), 30000);
     cleared.insert(QStringLiteral("lifetime"), QStringLiteral("Station"));
     cleared.insert(QStringLiteral("enabled"), false);
@@ -448,6 +451,7 @@ bool StationDocument::isDeviceSlotEmpty(int row) const
                device.value(QStringLiteral("driver")).toString()).trimmed().isEmpty() &&
            device.value(QStringLiteral("address")).toString(
                device.value(QStringLiteral("visaAddress")).toString()).trimmed().isEmpty() &&
+           device.value(QStringLiteral("resource")).toString().trimmed().isEmpty() &&
            device.value(QStringLiteral("options")).toObject().isEmpty();
 }
 
@@ -499,16 +503,34 @@ void StationDocument::acceptRoot(QJsonObject root, QString filePath)
         auto device = devices[index].toObject();
         device.remove(QStringLiteral("pluginPath"));
         auto options = device.value(QStringLiteral("options")).toObject();
-        if (device.value(QStringLiteral("address")).toString().isEmpty()) {
-            const auto optionAddress = options.value(QStringLiteral("address"))
-                                           .toString(options.value(
-                                               QStringLiteral("visaAddress")).toString());
-            if (!optionAddress.isEmpty()) {
-                device.insert(QStringLiteral("address"), optionAddress);
-            }
+        auto resource = device.value(QStringLiteral("resource")).toString().trimmed();
+        if (resource.isEmpty()) {
+            resource = device.value(QStringLiteral("address")).toString(
+                device.value(QStringLiteral("visaAddress")).toString()).trimmed();
         }
+        if (resource.isEmpty()) {
+            resource = options.value(QStringLiteral("serialNumber")).toString().trimmed();
+        }
+        if (resource.isEmpty()) {
+            resource = options.value(QStringLiteral("address"))
+                           .toString(options.value(QStringLiteral("visaAddress")).toString())
+                           .trimmed();
+        }
+        auto kind = PicoATE::Core::deviceConnectionKindFromString(
+            device.value(QStringLiteral("connectionKind")).toString());
+        if (!kind) {
+            kind = PicoATE::Core::inferDeviceConnectionKind(
+                deviceType(device), resource);
+        }
+        device.insert(QStringLiteral("connectionKind"),
+                      PicoATE::Core::deviceConnectionKindName(*kind));
+        device.insert(QStringLiteral("resource"), resource);
+        device.remove(QStringLiteral("address"));
+        device.remove(QStringLiteral("visaAddress"));
         options.remove(QStringLiteral("address"));
         options.remove(QStringLiteral("visaAddress"));
+        options.remove(QStringLiteral("serialNumber"));
+        options.remove(QStringLiteral("deviceIndex"));
         device.insert(QStringLiteral("options"), options);
         devices[index] = device;
     }

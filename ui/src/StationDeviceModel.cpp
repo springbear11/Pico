@@ -173,8 +173,9 @@ QVariant StationDeviceModel::data(const QModelIndex& index, int role) const
     case DriverIdColumn:
         return role == Qt::EditRole ? driver : pluginDisplayName(driver);
     case AddressColumn:
-        return valueWithAlias(device, QStringLiteral("address"),
-                              QStringLiteral("visaAddress"));
+        return device.value(QStringLiteral("resource")).toString(
+            valueWithAlias(device, QStringLiteral("address"),
+                           QStringLiteral("visaAddress")));
     case LifetimeColumn:
         return device.value(QStringLiteral("lifetime"))
             .toString(QStringLiteral("Station"));
@@ -245,7 +246,7 @@ QVariant StationDeviceModel::headerData(int section,
     case DeviceIdColumn: return tr("Logical ID");
     case DeviceTypeColumn: return tr("Type");
     case DriverIdColumn: return tr("Driver / Model");
-    case AddressColumn: return tr("Address");
+    case AddressColumn: return tr("Resource");
     case LifetimeColumn: return tr("Lifetime");
     case ConnectionColumn: return tr("Connection");
     case EnabledColumn: return tr("Enable");

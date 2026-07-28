@@ -7,6 +7,8 @@
 #include <QVariantMap>
 #include <QVector>
 
+#include <optional>
+
 namespace PicoATE::Core {
 
 enum class DeviceDiscoveryKind {
@@ -14,6 +16,22 @@ enum class DeviceDiscoveryKind {
     VisaResource,
     CanDevice
 };
+
+enum class DeviceConnectionKind {
+    CanSerial,
+    Visa,
+    SerialPort,
+    TcpIp,
+    Manual
+};
+
+QString deviceConnectionKindName(DeviceConnectionKind kind);
+std::optional<DeviceConnectionKind> deviceConnectionKindFromString(
+    const QString& value);
+DeviceConnectionKind inferDeviceConnectionKind(const QString& deviceType,
+                                               const QString& resource);
+std::optional<DeviceDiscoveryKind> discoveryKindForConnection(
+    DeviceConnectionKind kind);
 
 struct DeviceDiscoveryRequest {
     DeviceDiscoveryKind kind = DeviceDiscoveryKind::SerialPort;
@@ -55,6 +73,9 @@ struct StationFieldDevice {
     QString logicalId;
     QString deviceType;
     QString driverId;
+    QString connectionKind;
+    QString resource;
+    // Compatibility projections for older UI consumers.
     QString address;
     QString serialNumber;
     QStringList memberDeviceIds;
@@ -64,6 +85,12 @@ QVector<StationFieldDevice> stationFieldDevices(const QJsonObject& station);
 
 bool applyStationFieldBinding(QJsonObject& station,
                               const QString& logicalId,
+                              const QString& resourceId,
+                              QString* errorMessage = nullptr);
+
+bool applyStationFieldBinding(QJsonObject& station,
+                              const QString& logicalId,
+                              const QString& connectionKind,
                               const QString& resourceId,
                               QString* errorMessage = nullptr);
 

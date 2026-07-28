@@ -893,6 +893,24 @@ void ExecutionViewModelTests::startupSupportDiscoversSequencesAndValidatesDailyP
     station.write(R"({
         "stationId": "station-test",
         "devices": [{
+            "deviceId": "DMM1",
+            "deviceType": "DMM",
+            "driverId": "fake.dmm",
+            "connectionKind": "visa",
+            "resource": "",
+            "enabled": true
+        }]
+    })");
+    station.close();
+    const auto unboundTestStation = StartupSupport::validateSelection(
+        UiMode::Test, sequencePath, stationPath);
+    QVERIFY2(unboundTestStation.ok(),
+             qPrintable(unboundTestStation.errors.join(QStringLiteral("\n"))));
+
+    QVERIFY(station.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    station.write(R"({
+        "stationId": "station-test",
+        "devices": [{
             "deviceId": "CAN1",
             "deviceType": "CAN",
             "enabled": true,

@@ -1428,7 +1428,7 @@ void MainWindowLifecycleTests::stationEditorFeedsCompileSnapshot()
     QTest::keyClicks(addressEdit, QStringLiteral("TCPIP::snapshot"));
     QVERIFY(propertyEditor.hasPendingChanges());
     QVERIFY(propertyEditor.commitPendingChanges());
-    QCOMPARE(stationDocument.deviceAt(0).value("address").toString(),
+    QCOMPARE(stationDocument.deviceAt(0).value("resource").toString(),
              QString("TCPIP::snapshot"));
     QCOMPARE(stationDocument.deviceAt(0).value("x-device").toInt(), 42);
     QVERIFY(stationDocument.isModified());
@@ -1728,10 +1728,13 @@ void MainWindowLifecycleTests::stationPropertyEditorUsesTypedIdsAndFilteredDrive
         QStringLiteral("devicePluginCombo"));
     auto* address = editor.findChild<QLineEdit*>(
         QStringLiteral("deviceAddressEdit"));
+    auto* resourceCombo = editor.findChild<QComboBox*>(
+        QStringLiteral("deviceResourceCombo"));
     QVERIFY(deviceIdEdit);
     QVERIFY(typeCombo);
     QVERIFY(pluginCombo);
     QVERIFY(address);
+    QVERIFY(resourceCombo);
     QVERIFY(deviceIdEdit->isReadOnly());
     QCOMPARE(deviceIdEdit->text(), QStringLiteral("CAN1 (No active channel)"));
     QCOMPARE(typeCombo->currentData().toString(), QStringLiteral("CAN"));
@@ -1742,7 +1745,7 @@ void MainWindowLifecycleTests::stationPropertyEditorUsesTypedIdsAndFilteredDrive
     QVERIFY(!editor.findChild<QAbstractButton*>(
         QStringLiteral("deviceEnabledSwitch")));
     QVERIFY(pluginCombo->findData(QStringLiteral("plugin.dmm.keysight")) < 0);
-    QVERIFY(address->isHidden());
+    QVERIFY(!address->isHidden());
 
     auto* channel1 = editor.findChild<QAbstractButton*>(
         QStringLiteral("deviceChannel1Switch"));
@@ -1760,6 +1763,9 @@ void MainWindowLifecycleTests::stationPropertyEditorUsesTypedIdsAndFilteredDrive
     QVERIFY(!channel2->isChecked());
     channel2->setChecked(true);
     QCOMPARE(deviceIdEdit->text(), QStringLiteral("CAN1.CH2"));
+    resourceCombo->addItem(QStringLiteral("GCAN-SN-001 | USBCAN-II"),
+                           QStringLiteral("GCAN-SN-001"));
+    resourceCombo->setCurrentIndex(resourceCombo->count() - 1);
 
     auto* timeout = editor.findChild<QSpinBox*>(
         QStringLiteral("deviceTimeoutMsSpin"));
@@ -1781,6 +1787,10 @@ void MainWindowLifecycleTests::stationPropertyEditorUsesTypedIdsAndFilteredDrive
              QStringLiteral("CAN"));
     QCOMPARE(saved.value(QStringLiteral("driverId")).toString(),
              QStringLiteral("plugin.can.gcan"));
+    QCOMPARE(saved.value(QStringLiteral("connectionKind")).toString(),
+             QStringLiteral("canSerial"));
+    QCOMPARE(saved.value(QStringLiteral("resource")).toString(),
+             QStringLiteral("GCAN-SN-001"));
     QCOMPARE(saved.value(QStringLiteral("timeoutMs")).toInt(), 45000);
     QCOMPARE(saved.value(QStringLiteral("options")).toObject()
                  .value(QStringLiteral("bitrate")).toInt(),
@@ -2204,7 +2214,7 @@ void MainWindowLifecycleTests::stationCtrlSaveCommitsDraftAndClearsWindowMarker(
     QVERIFY(!editor->hasPendingChanges());
     QVERIFY(!stationDocument->isModified());
     QVERIFY(!window.windowTitle().contains(QLatin1Char('*')));
-    QCOMPARE(stationDocument->deviceAt(0).value(QStringLiteral("address")).toString(),
+    QCOMPARE(stationDocument->deviceAt(0).value(QStringLiteral("resource")).toString(),
              QStringLiteral("USB::1"));
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("Station saved")));
@@ -2217,7 +2227,7 @@ void MainWindowLifecycleTests::stationCtrlSaveCommitsDraftAndClearsWindowMarker(
     QVERIFY(saved.open(QIODevice::ReadOnly));
     QCOMPARE(QJsonDocument::fromJson(saved.readAll()).object()
                  .value(QStringLiteral("devices")).toArray().first().toObject()
-                 .value(QStringLiteral("address")).toString(),
+                 .value(QStringLiteral("resource")).toString(),
              QStringLiteral("USB::1"));
 }
 
@@ -2271,7 +2281,7 @@ void MainWindowLifecycleTests::switchingStationDevicesCanDiscardCurrentDraft()
     view->setCurrentIndex(model->index(1, 0));
     QCOMPARE(editor->currentDeviceRow(), 1);
     QVERIFY(!editor->hasPendingChanges());
-    QCOMPARE(document->deviceAt(0).value(QStringLiteral("address")).toString(),
+    QCOMPARE(document->deviceAt(0).value(QStringLiteral("resource")).toString(),
              QStringLiteral("USB::0"));
     QCOMPARE(address->text(), QStringLiteral("USB::1"));
 }
@@ -2436,8 +2446,8 @@ void MainWindowLifecycleTests::compileFailureFocusesDiagnosticAndExplainsDisable
 
 void MainWindowLifecycleTests::stationConnectionActionUpdatesStatus()
 {
-    const auto oldAddress = qgetenv("DMM1_ADDRESS");
-    qputenv("DMM1_ADDRESS", QByteArray("USB0::TEST::INSTR"));
+    const auto oldAddress = qgetenv("DMM1_RESOURCE");
+    qputenv("DMM1_RESOURCE", QByteArray("USB0::TEST::INSTR"));
     const QString projectDir = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR);
 
     MainWindow window;
@@ -2484,9 +2494,9 @@ void MainWindowLifecycleTests::stationConnectionActionUpdatesStatus()
     QVERIFY(window.close());
 
     if (oldAddress.isNull()) {
-        qunsetenv("DMM1_ADDRESS");
+        qunsetenv("DMM1_RESOURCE");
     } else {
-        qputenv("DMM1_ADDRESS", oldAddress);
+        qputenv("DMM1_RESOURCE", oldAddress);
     }
 }
 
