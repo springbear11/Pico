@@ -286,9 +286,19 @@ ReportExportResult ReportExporter::saveText(
     const PicoATE::Core::ExecutionReport& report)
 {
     QByteArray text("\xEF\xBB\xBF");
+    for (const auto& step : report.sessionSteps) {
+        if (step.phase == PicoATE::Core::ExecutionPhase::Setup) {
+            appendStepText(text, step, 0);
+        }
+    }
     for (const auto& uut : report.uuts) {
         text += QStringLiteral("UUT:%1\r\n").arg(uut.uutId).toUtf8();
         for (const auto& step : uut.steps) {
+            appendStepText(text, step, 0);
+        }
+    }
+    for (const auto& step : report.sessionSteps) {
+        if (step.phase == PicoATE::Core::ExecutionPhase::Cleanup) {
             appendStepText(text, step, 0);
         }
     }
@@ -300,8 +310,18 @@ ReportExportResult ReportExporter::saveCsv(
     const PicoATE::Core::ExecutionReport& report)
 {
     QByteArray csv = csvHeader();
+    for (const auto& step : report.sessionSteps) {
+        if (step.phase == PicoATE::Core::ExecutionPhase::Setup) {
+            appendStepCsv(csv, step);
+        }
+    }
     for (const auto& uut : report.uuts) {
         for (const auto& step : uut.steps) {
+            appendStepCsv(csv, step);
+        }
+    }
+    for (const auto& step : report.sessionSteps) {
+        if (step.phase == PicoATE::Core::ExecutionPhase::Cleanup) {
             appendStepCsv(csv, step);
         }
     }
@@ -321,8 +341,18 @@ ReportExportResult ReportExporter::saveXlsx(
                      QStringLiteral("Test Result"),
                      QStringLiteral("Duration Ms")},
                     XlsxRowStyle::Header});
+    for (const auto& step : report.sessionSteps) {
+        if (step.phase == PicoATE::Core::ExecutionPhase::Setup) {
+            appendStepXlsx(rows, step);
+        }
+    }
     for (const auto& uut : report.uuts) {
         for (const auto& step : uut.steps) {
+            appendStepXlsx(rows, step);
+        }
+    }
+    for (const auto& step : report.sessionSteps) {
+        if (step.phase == PicoATE::Core::ExecutionPhase::Cleanup) {
             appendStepXlsx(rows, step);
         }
     }

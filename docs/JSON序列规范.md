@@ -14,8 +14,66 @@ present with the wrong JSON type, compilation fails with a path-specific error.
 | `name` | string | yes | empty | Human-readable name. |
 | `version` | string | no | `0.1.0` | Used in generated plan id. |
 | `metadata` | object | no | `{}` | Copied into `SequenceDef::metadata`. |
+| `variables` | array | no | `[]` | 流程级类型化变量，可配置共享值或每个 UUT 的独立值。 |
 | `moduleBindings` | array | no | `[]` | Runtime module transport bindings. |
 | `groups` | array | yes | none | Array of group objects. |
+
+## 序列变量
+
+`variables` 保存在 Sequence JSON 根节点中，用来管理 CAN ID、MODBUS 地址、产品型号、
+超时时间等随项目或 UUT 变化的测试参数。它不保存设备端口、VISA 地址或 CAN 设备 SN；
+这些连接信息仍属于 `StationSystem.json`。
+
+```json
+{
+  "variables": [
+    {
+      "name": "CAN_ID",
+      "type": "hex",
+      "scope": "perUut",
+      "values": ["0x101", "0x102", "0x103", "0x104"],
+      "description": "每个治具位置使用的 CAN ID"
+    },
+    {
+      "name": "REQUEST_TIMEOUT_MS",
+      "type": "integer",
+      "scope": "shared",
+      "value": 1500
+    }
+  ]
+}
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `name` | string | yes | 变量名；只能使用字母、数字和下划线，首字符不能是数字。 |
+| `type` | string | no | `string`、`integer`、`hex`、`double` 或 `bool`，默认 `string`。 |
+| `scope` | string | no | `shared` 或 `perUut`，默认 `shared`。 |
+| `value` | typed value | shared 时 yes | 所有 UUT 共用的值。 |
+| `values` | array | perUut 时 yes | 按 UUT1、UUT2、UUT3、UUT4 顺序保存独立值。 |
+| `description` | string | no | 给工程师看的用途说明，不参与执行。 |
+
+Step 的 `inputs`、`parameters`、Limit 条件和 Loop 条件都可以通过统一表达式引用：
+
+```json
+{
+  "inputs": {
+    "canId": "${var.CAN_ID}",
+    "timeoutMs": "${var.REQUEST_TIMEOUT_MS}"
+  }
+}
+```
+
+运行时由 Core 根据当前 UUT 自动选择 `values` 中对应位置：UUT1 使用 `values[0]`，
+UUT2 使用 `values[1]`，以此类推。脚本中不要写 `CAN_ID[i]`，也不需要手工传入数组下标。
+完整变量表达式会保留原始类型，因此 `hex`/`integer` 不会先变成普通字符串再交给插件。
+
+当实际运行的 UUT 没有对应值、值为 `null`、类型不匹配、名称重复或名称非法时，
+编译/运行准备会返回带变量路径的错误，不会退回 UUT1 的值。UI 与 CLI 调用同一个 Core
+绑定函数，二者行为一致。当前 UUT 的内置信息还可使用 `${uut.index}`（从 0 开始）、
+`${uut.number}` / `${uut.slot}`（从 1 开始）和 `${uut.id}`。
+
+完整示例见 `examples/sequence_variables.json`。
 
 ## Module Binding Object
 
@@ -213,6 +271,7 @@ Esc 和标题栏关闭都不能误确认；Stop/Abort 仍可取消等待并进�
     "mode": "confirm",
     "title": "连接工装",
     "message": "请连接产品和工装，然后点击继续。",
+    "image": "fixture_connection.png",
     "confirmText": "继续",
     "timeoutMs": 60000
   }
@@ -245,11 +304,37 @@ Flow Editor 的 `Close after step` 使用可编辑下拉框：第一项是“下
 }
 ```
 
+### 在弹窗中显示运行值
+
+`message` 和 `title` 会在 MessageBox 执行前经过统一运行时变量解析。Flow Editor 的
+Message 多行编辑框右侧提供 `fx` 菜单，可以在当前光标位置插入 SN、UUT、Attempt、
+Sequence 变量或前序 Step 输出，不会覆盖已经写好的提示文字。
+
+```json
+{
+  "id": "show-result",
+  "kind": "operatorPrompt",
+  "prompt": {
+    "mode": "confirm",
+    "title": "${uut.id} 测量结果",
+    "message": "SN: ${sn}\n电压: ${step:read-voltage.outputs.value} V\n目标: ${var.targetVoltage} V",
+    "confirmText": "确认",
+    "timeoutMs": 60000
+  }
+}
+```
+
+嵌入文字中的值统一转换为可读字符串；布尔值显示为 `true/false`，数组和对象显示为
+紧凑 JSON。前序 Step 引用会在编译期生成数据依赖边，并检查节点存在性和先后顺序。
+运行时找不到变量、Step 未成功或输出字段不存在时，MessageBox Step 返回
+`RuntimeVariableResolutionError`，不会弹出带有旧值或未替换占位符的误导信息。
+
 | prompt 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `mode` | string | no | `confirm` | `confirm` 或 `notice` |
 | `title` | string | no | `Operator Action Required` | 弹窗标题 |
 | `message` | string | yes | empty | 给操作员看的明确动作说明 |
+| `image` | string | no | empty | 可选 PNG/JPG/JPEG 文件名；默认从程序根目录的 `image` 文件夹加载 |
 | `confirmText` | string | confirm 模式 | `OK` | 确认按钮文字 |
 | `closeOnStep` | string | no | 下一正常 Step | notice 模式关闭目标；该 Step 完成全部 Retry 并进入最终状态后关闭弹窗 |
 | `timeoutMs` | number | no | `60000` | confirm 等待超时；0 表示不限制。notice 用于确认 UI 已成功显示，内部最多等待 5 秒 |
@@ -257,6 +342,15 @@ Flow Editor 的 `Close after step` 使用可编辑下拉框：第一项是“下
 CLI 或其他没有注册交互响应器的运行环境会立即返回
 `OperatorPromptResponderUnavailable`，不会无期限卡住。完整示例见
 `examples/operator_prompt_sequence.json`。
+
+图片使用规则：
+
+- Flow Editor 的 `Image (optional)` 下拉框自动读取 `PicoATE.UI.exe` 同级 `image` 文件夹。
+- 工程开发目录中的 `image` 会在 UI 编译后复制到 Debug/Release 程序目录。
+- Sequence 推荐只保存文件名，例如 `fixture_connection.png`，整个工具包换电脑后仍可使用。
+- 支持 `.png`、`.jpg`、`.jpeg`，其他扩展名在编译阶段报错。
+- 图片缺失或损坏时仍显示文字和确认按钮，同时在弹窗中提示图片不可用；不会把测试项判为 Error。
+- 大图片按比例缩小到弹窗可视范围，小图片不会强制拉伸。
 
 Runtime placeholders are allowed inside action `parameters` and `inputs`.
 Supported forms include `${var.NAME}`, `${loop.index}`, `${loop.value}`,
@@ -280,6 +374,36 @@ placeholders preserve type, while embedded placeholders produce strings:
 
 See `docs/变量与结果引用.md` for the split between configuration-time and
 runtime variables.
+
+## 文本解析的多命名输出
+
+内置 `splitText` 和 `regexCapture` 默认保持单值输出。需要一次拆出多个值时，配置
+`resultMode: "multiple"`，并使用 `fields` 声明每个输出的来源、名称和类型：
+
+```json
+{
+  "id": "parse-response",
+  "kind": "action",
+  "moduleId": "builtin.data-parser",
+  "function": "splitText",
+  "inputs": {
+    "source": "BTSN001,812.5,0x1A",
+    "delimiter": ",",
+    "resultMode": "multiple",
+    "fields": [
+      { "index": 0, "name": "SN1", "type": "string" },
+      { "index": 1, "name": "voltage", "type": "number" },
+      { "index": 2, "name": "status", "type": "hex" }
+    ]
+  }
+}
+```
+
+后续节点分别通过 `${step:parse-response.outputs.fields.SN1}`、
+`${step:parse-response.outputs.fields.voltage}` 等表达式读取。Flow Editor 会根据
+`fields` 自动把这些名称加入 `fx` 菜单。正则多捕获使用相同结构，但将 `index`
+替换为 `group`。完整规则和示例见 `docs/通用数据解析.md` 与
+`examples/named_text_fields_sequence.json`。
 
 ## Limit 比较节点
 
@@ -763,3 +887,57 @@ Potential future strict mode:
 [变量与结果引用](变量与结果引用.md)，可运行示例见
 `examples/scoped_result_sequence.json`。
 
+# 资源区间（跨 Step 持锁）
+
+当多台 UUT 共用同一台仪器，并且一段连续操作必须作为完整事务执行时，可以在首尾 Step 上设置资源区间：
+
+```json
+{
+  "id": "006",
+  "name": "CAN Send",
+  "kind": "action",
+  "resourceRegionStart": {
+    "id": "resource-region-001",
+    "resources": [
+      {
+        "resourceId": "CAN1.CH1",
+        "mode": "exclusive"
+      }
+    ]
+  }
+},
+{
+  "id": "010",
+  "name": "CAN Check",
+  "kind": "limit",
+  "resourceRegionEnd": "resource-region-001"
+}
+```
+
+运行时会在 `006` 开始前获取 `CAN1.CH1`，执行到 `010` 结束后再释放。其他 UUT 在进入点等待，因此可以得到 `UUT-1 Send -> Read -> Check` 完成后再运行 `UUT-2 Send -> Read -> Check` 的顺序。区间内 Step 原有的同名节点资源会被视为已由区间持有，不会重复加锁。
+
+如果要让一个 TestItem 的全部子步骤和整体 Retry 共用同一把锁，应将起止标记同时放在 TestItem 本身：
+
+```json
+{
+  "id": "001",
+  "name": "CAN Transaction",
+  "kind": "testItem",
+  "retry": { "maxAttempts": 3 },
+  "resourceRegionStart": {
+    "id": "resource-region-001",
+    "resources": [
+      {
+        "resourceId": "CAN1.CH1",
+        "mode": "exclusive"
+      }
+    ]
+  },
+  "resourceRegionEnd": "resource-region-001",
+  "steps": []
+}
+```
+
+这种单项 TestItem 锁只申请一次。TestItem 整体 Retry 时继续持有原租约，直到最终通过、重试耗尽、停止或异常收口后才释放，其他 UUT 在此期间不能进入。若把 `LOCK` 和 `UNLOCK` 分别放在 TestItem 内部的两个子 Step 上，则锁只覆盖每轮执行的该子区间，TestItem 整体 Retry 之间允许其他 UUT 使用资源。
+
+当前约束：`LOCK` 和 `UNLOCK` 必须位于同一父级；普通区间的 `UNLOCK` 必须晚于 `LOCK`；单项锁允许起止点为同一 Step 或 TestItem。区间不可交叉、嵌套、缺少一端，也不可包含 Barrier。失败、Stop 或跳过 `UNLOCK` 时，调度器仍会释放租约。复制 Step 时不会复制资源区间标记，避免生成重复区间 ID。

@@ -62,11 +62,19 @@ set_target_properties(PicoATEUiRuntime
         FOLDER "Libraries/UI"
 )
 
+set(PICOATE_UI_PLATFORM_RESOURCES)
+if(WIN32)
+    list(APPEND PICOATE_UI_PLATFORM_RESOURCES PicoATE.rc)
+endif()
+
 qt_add_executable(PicoATEUi WIN32
+    ${PICOATE_UI_PLATFORM_RESOURCES}
     FieldDeviceDialog.cpp
     FieldDeviceDialog.h
     FlowTargetSelector.cpp
     FlowTargetSelector.h
+    LoadingSpinner.cpp
+    LoadingSpinner.h
     LoginDialog.cpp
     LoginDialog.h
     Main.cpp
@@ -74,6 +82,7 @@ qt_add_executable(PicoATEUi WIN32
     MainWindow.h
     OnOffControl.cpp
     OnOffControl.h
+    PicoATE.qrc
     OperatorPromptPresenter.cpp
     OperatorPromptPresenter.h
     ProductionWindow.cpp
@@ -82,6 +91,8 @@ qt_add_executable(PicoATEUi WIN32
     ProportionalHeaderView.h
     ScanDialog.cpp
     ScanDialog.h
+    SequenceVariablesDialog.cpp
+    SequenceVariablesDialog.h
     StepPropertyEditor.cpp
     StepPropertyEditor.h
     StationPropertyEditor.cpp
@@ -99,6 +110,7 @@ target_link_libraries(PicoATEUi
 
 set_target_properties(PicoATEUi
     PROPERTIES
+        AUTORCC ON
         OUTPUT_NAME "PicoATE.UI"
         FOLDER "Applications/UI"
         VS_DEBUGGER_WORKING_DIRECTORY "${PICOATE_ROOT_DIR}"
@@ -115,6 +127,15 @@ add_custom_command(TARGET PicoATEUi POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
             "$<TARGET_FILE_DIR:PicoATEUi>/plugins"
     COMMENT "Ensuring the shared plugins directory exists"
+)
+
+add_custom_command(TARGET PicoATEUi POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:PicoATEUi>/image"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${PICOATE_ROOT_DIR}/image"
+            "$<TARGET_FILE_DIR:PicoATEUi>/image"
+    COMMENT "Deploying MessageBox images beside PicoATE.UI"
 )
 
 if(TARGET PicoATENativeHost)

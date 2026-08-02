@@ -46,6 +46,7 @@ enum class ActivationState {
     Created,
     WaitingForDependency,
     WaitingForResource,
+    WaitingForTimer,
     WaitingAtBarrier,
     Ready,
     Running,
@@ -91,6 +92,7 @@ struct NodeResult {
 
 struct NodeAttempt {
     AttemptId id;
+    RequestId requestId;
     ActivationId activationId;
     int attemptIndex = 0;
     LoopIterationContext loopIteration;

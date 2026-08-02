@@ -1,0 +1,73 @@
+{
+  "id": "sequence-variables-example",
+  "name": "Sequence Variables Example",
+  "version": "1.0.0",
+  "variables": [
+    {
+      "name": "CAN_ID",
+      "type": "hex",
+      "scope": "perUut",
+      "values": ["0x101", "0x102", "0x103", "0x104"],
+      "description": "CAN identifier assigned to each fixture slot"
+    },
+    {
+      "name": "EXPECTED_CAN_ID",
+      "type": "hex",
+      "scope": "perUut",
+      "values": ["0x101", "0x102", "0x103", "0x104"]
+    },
+    {
+      "name": "PRODUCT_FAMILY",
+      "type": "string",
+      "scope": "shared",
+      "value": "PICO-DEMO"
+    }
+  ],
+  "groups": [
+    {
+      "id": "setup",
+      "name": "Setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "001",
+          "name": "Prepare Fixture",
+          "kind": "noop"
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "name": "Main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "002",
+          "name": "Check Per-UUT CAN ID",
+          "kind": "limit",
+          "inputs": {
+            "actual": "${var.CAN_ID}"
+          },
+          "parameters": {
+            "comparison": "equal",
+            "expected": "${var.EXPECTED_CAN_ID}",
+            "measurementName": "CAN_ID",
+            "unit": "id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "name": "Cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "003",
+          "name": "Release Fixture",
+          "kind": "cleanup"
+        }
+      ]
+    }
+  ]
+}

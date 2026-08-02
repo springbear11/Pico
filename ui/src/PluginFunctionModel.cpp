@@ -353,6 +353,26 @@ void PluginFunctionModel::rebuild()
         basicSectionPointer->children.push_back(std::move(function));
     }
 
+    const auto parserManifest = builtInDataParserManifest();
+    auto parserCategory = std::make_unique<Item>();
+    parserCategory->kind = ItemKind::Category;
+    parserCategory->text = tr("Data Parsing");
+    parserCategory->tooltip = tr(
+        "Decode binary payloads, Modbus registers, and structured text");
+    parserCategory->parent = basicSectionPointer;
+    auto* parserCategoryPointer = parserCategory.get();
+    basicSectionPointer->children.push_back(std::move(parserCategory));
+    for (const auto& definition : parserManifest.functions) {
+        auto function = std::make_unique<Item>();
+        function->kind = ItemKind::Function;
+        function->text = definition.name;
+        function->tooltip = definition.description;
+        function->stepTemplate = PluginCatalog::createStep(
+            parserManifest, definition, {});
+        function->parent = parserCategoryPointer;
+        parserCategoryPointer->children.push_back(std::move(function));
+    }
+
     auto pluginSection = std::make_unique<Item>();
     pluginSection->kind = ItemKind::Section;
     pluginSection->text = tr("Plugin Functions");

@@ -39,8 +39,11 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/FieldDeviceDialog.h
     ../src/FlowTargetSelector.cpp
     ../src/FlowTargetSelector.h
+    ../src/LoadingSpinner.cpp
+    ../src/LoadingSpinner.h
     ../src/LoginDialog.cpp
     ../src/LoginDialog.h
+    ../src/PicoATE.qrc
     ../src/ProductionWindow.cpp
     ../src/ProductionWindow.h
     ../src/ProportionalHeaderView.cpp
@@ -51,6 +54,8 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/OperatorPromptPresenter.h
     ../src/ScanDialog.cpp
     ../src/ScanDialog.h
+    ../src/SequenceVariablesDialog.cpp
+    ../src/SequenceVariablesDialog.h
     MainWindowLifecycleTests.cpp
     ../src/MainWindow.cpp
     ../src/MainWindow.h
@@ -77,6 +82,7 @@ target_compile_definitions(PicoATEUiWindowTests
 
 set_target_properties(PicoATEUiWindowTests
     PROPERTIES
+        AUTORCC ON
         FOLDER "Tests/UI"
 )
 

@@ -5,11 +5,16 @@
 #include <QDialog>
 
 class QComboBox;
+class QFrame;
 class QLabel;
 class QLineEdit;
+class QMouseEvent;
 class QPushButton;
+class QToolButton;
 
 namespace PicoATE::Ui {
+
+class LoadingSpinner;
 
 struct StartupSelection {
     UiMode mode = UiMode::Test;
@@ -30,6 +35,9 @@ public:
     StartupSelection selection() const;
     void setInitialSequencePath(const QString& filePath);
 
+protected:
+    void mousePressEvent(QMouseEvent* event) override;
+
 private slots:
     void updateModeUi();
     void updateStationPath();
@@ -38,15 +46,25 @@ private slots:
 private:
     void populateSequences();
     void showError(const QString& message);
+    void setBusy(bool busy, const QString& message = {});
+    void setPasswordError(bool invalid);
+    void updateDialogGeometry();
+    UiMode selectedMode() const;
 
     QString m_sequenceRootDirectory;
     StartupSelection m_selection;
-    QComboBox* m_modeCombo = nullptr;
     QComboBox* m_sequenceCombo = nullptr;
-    QLabel* m_passwordLabel = nullptr;
+    QFrame* m_header = nullptr;
+    QToolButton* m_testModeButton = nullptr;
+    QToolButton* m_adminModeButton = nullptr;
     QLineEdit* m_passwordEdit = nullptr;
     QLabel* m_errorLabel = nullptr;
+    LoadingSpinner* m_spinner = nullptr;
+    QLabel* m_statusLabel = nullptr;
     QPushButton* m_loginButton = nullptr;
+    QToolButton* m_closeButton = nullptr;
+    bool m_busy = false;
+    bool m_passwordError = false;
 };
 
 } // namespace PicoATE::Ui

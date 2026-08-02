@@ -16,6 +16,7 @@ struct StepLoopReport {
 
 struct AttemptReport {
     int index = 0;
+    RequestId requestId;
     NodeOutcome outcome = NodeOutcome::Unknown;
     qint64 durationMs = -1;
     QString errorCode;
@@ -43,7 +44,9 @@ struct StepReport {
 
 struct UutReport {
     UutId uutId;
+    bool completed = false;
     bool hasError = false;
+    NodeOutcome outcome = NodeOutcome::Unknown;
     QVector<StepReport> steps;
 };
 
@@ -54,6 +57,8 @@ struct ExecutionReport {
     ExecutionState state = ExecutionState::Idle;
     bool completed = false;
     bool hasError = false;
+    bool sessionHasError = false;
+    QVector<StepReport> sessionSteps;
     QVector<UutReport> uuts;
 };
 

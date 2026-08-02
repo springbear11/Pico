@@ -25,6 +25,7 @@ public:
         NameColumn,
         KindColumn,
         IdColumn,
+        ResourceRegionColumn,
         BreakpointColumn,
         EnabledColumn,
         InspectionColumn,
@@ -35,7 +36,10 @@ public:
         ItemTypeRole = Qt::UserRole + 1,
         JsonPathRole,
         EffectiveEnabledRole,
-        DisabledByAncestorRole
+        DisabledByAncestorRole,
+        ResourceRegionIdRole,
+        ResourceMarkerRole,
+        ResourceBoundaryEligibleRole
     };
 
     enum class ItemType {
@@ -102,6 +106,9 @@ private:
         QString localPath;
         bool effectiveEnabled = true;
         bool disabledByAncestor = false;
+        enum class ResourceMarker { None, Entry, Exit, SingleItem };
+        ResourceMarker resourceMarker = ResourceMarker::None;
+        QString resourceRegionId;
         Item* parent = nullptr;
         std::vector<std::unique_ptr<Item>> children;
     };

@@ -197,6 +197,148 @@ bool mutateStepInRoot(
     return true;
 }
 
+struct ResourceRegionLocation {
+    QString id;
+    int groupIndex = -1;
+    QVector<int> parentSteps;
+    int entryRow = -1;
+    int exitRow = -1;
+};
+
+void collectResourceRegionLocations(const QJsonArray& steps,
+                                    int groupIndex,
+                                    const QVector<int>& parentSteps,
+                                    QVector<ResourceRegionLocation>& locations,
+                                    int& nextNumber)
+{
+    for (int row = 0; row < steps.size(); ++row) {
+        if (!steps[row].isObject()) {
+            continue;
+        }
+        const auto step = steps[row].toObject();
+        const auto start = step.value(QStringLiteral("resourceRegionStart"))
+                               .toObject();
+        const auto regionId = start.value(QStringLiteral("id")).toString();
+        if (!regionId.isEmpty()) {
+            ResourceRegionLocation location;
+            location.id = regionId;
+            location.groupIndex = groupIndex;
+            location.parentSteps = parentSteps;
+            location.entryRow = row;
+            location.exitRow = step.value(QStringLiteral("resourceRegionEnd"))
+                                       .toString() == regionId
+                ? row
+                : -1;
+            for (int candidate = row + 1;
+                 location.exitRow < 0 && candidate < steps.size(); ++candidate) {
+                if (steps[candidate].toObject()
+                        .value(QStringLiteral("resourceRegionEnd"))
+                        .toString() == regionId) {
+                    location.exitRow = candidate;
+                    break;
+                }
+            }
+            locations.push_back(std::move(location));
+            const auto suffix = regionId.section(QLatin1Char('-'), -1).toInt();
+            nextNumber = qMax(nextNumber, suffix + 1);
+        }
+
+        auto childParent = parentSteps;
+        childParent.push_back(row);
+        collectResourceRegionLocations(step.value(QStringLiteral("steps")).toArray(),
+                                       groupIndex,
+                                       childParent,
+                                       locations,
+                                       nextNumber);
+    }
+}
+
+QVector<ResourceRegionLocation> resourceRegionLocations(const QJsonObject& root,
+                                                        int* nextNumber = nullptr)
+{
+    QVector<ResourceRegionLocation> locations;
+    int number = 1;
+    const auto groups = root.value(QStringLiteral("groups")).toArray();
+    for (int groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+        collectResourceRegionLocations(
+            groups[groupIndex].toObject().value(QStringLiteral("steps")).toArray(),
+            groupIndex,
+            {},
+            locations,
+            number);
+    }
+    if (nextNumber) {
+        *nextNumber = number;
+    }
+    return locations;
+}
+
+SequenceItemPath resourceRegionPath(const ResourceRegionLocation& location,
+                                    int row)
+{
+    SequenceItemPath path;
+    path.groupIndex = location.groupIndex;
+    path.stepIndices = location.parentSteps;
+    path.stepIndices.push_back(row);
+    return path;
+}
+
+bool sameResourceRegionParent(const SequenceItemPath& path,
+                              const ResourceRegionLocation& location)
+{
+    if (path.groupIndex != location.groupIndex || path.stepIndices.isEmpty()) {
+        return false;
+    }
+    auto parentSteps = path.stepIndices;
+    parentSteps.removeLast();
+    return parentSteps == location.parentSteps;
+}
+
+bool pathFallsInsideResourceRegion(const SequenceItemPath& path,
+                                   const ResourceRegionLocation& location)
+{
+    if (path.groupIndex != location.groupIndex ||
+        path.stepIndices.size() <= location.parentSteps.size()) {
+        return false;
+    }
+    for (int depth = 0; depth < location.parentSteps.size(); ++depth) {
+        if (path.stepIndices[depth] != location.parentSteps[depth]) {
+            return false;
+        }
+    }
+    const int branchRow = path.stepIndices[location.parentSteps.size()];
+    if (location.exitRow == location.entryRow) {
+        return branchRow == location.entryRow;
+    }
+    if (location.exitRow < 0) {
+        return branchRow >= location.entryRow;
+    }
+    if (path.stepIndices.size() == location.parentSteps.size() + 1) {
+        return branchRow >= location.entryRow && branchRow <= location.exitRow;
+    }
+    // The UNLOCK row releases after its own node; its child subtree is a
+    // separate execution scope and is not painted as part of the interval.
+    return branchRow >= location.entryRow && branchRow < location.exitRow;
+}
+
+void stripResourceRegionMarkers(QJsonObject& step)
+{
+    step.remove(QStringLiteral("resourceRegionStart"));
+    step.remove(QStringLiteral("resourceRegionEnd"));
+    auto children = step.value(QStringLiteral("steps")).toArray();
+    for (int index = 0; index < children.size(); ++index) {
+        if (!children[index].isObject()) {
+            continue;
+        }
+        auto child = children[index].toObject();
+        stripResourceRegionMarkers(child);
+        children[index] = child;
+    }
+    if (step.contains(QStringLiteral("steps"))) {
+        step.insert(QStringLiteral("steps"), children);
+    }
+}
+
 bool removeStepFromRoot(QJsonObject& root, const SequenceItemPath& path)
 {
     auto groups = root.value(QStringLiteral("groups")).toArray();
@@ -410,6 +552,11 @@ QJsonObject SequenceDocument::rootObject() const
     return m_root;
 }
 
+QJsonArray SequenceDocument::sequenceVariables() const
+{
+    return m_root.value(QStringLiteral("variables")).toArray();
+}
+
 QVector<UiDiagnostic> SequenceDocument::diagnostics() const
 {
     return m_diagnostics;
@@ -474,6 +621,23 @@ bool SequenceDocument::replaceRootObject(QJsonObject root)
         return false;
     }
     return commitRoot(std::move(root), tr("Update Sequence References"));
+}
+
+bool SequenceDocument::setSequenceVariables(QJsonArray variables)
+{
+    if (m_root.isEmpty()) {
+        return false;
+    }
+    auto root = m_root;
+    if (variables.isEmpty()) {
+        root.remove(QStringLiteral("variables"));
+    } else {
+        root.insert(QStringLiteral("variables"), std::move(variables));
+    }
+    if (root == m_root) {
+        return true;
+    }
+    return commitRoot(std::move(root), tr("Edit Sequence Variables"));
 }
 
 bool SequenceDocument::load(const QString& filePath)
@@ -861,6 +1025,7 @@ bool SequenceDocument::pasteSteps(
     copies.reserve(sourceSteps.size());
     for (const auto& source : sourceSteps) {
         auto copy = source;
+        stripResourceRegionMarkers(copy);
         const auto originalName = copy.value(QStringLiteral("name")).toString(
             copy.value(QStringLiteral("id")).toString());
         assignCopiedRootId(copy,
@@ -980,6 +1145,7 @@ bool SequenceDocument::duplicateSteps(QVector<SequenceItemPath> paths)
         auto parentPath = path;
         parentPath.stepIndices.removeLast();
         auto copy = objectAtRoot(m_root, path);
+        stripResourceRegionMarkers(copy);
         const auto originalName = copy.value(QStringLiteral("name")).toString(
             copy.value(QStringLiteral("id")).toString());
         assignCopiedRootId(copy, nextId(parentPath));
@@ -1257,6 +1423,274 @@ bool SequenceDocument::replaceItemObject(const SequenceItemPath& path,
 
     root.insert("groups", groups);
     return commitRoot(std::move(root), tr("Apply Properties"));
+}
+
+QString SequenceDocument::pendingResourceRegionId() const
+{
+    for (const auto& location : resourceRegionLocations(m_root)) {
+        if (location.exitRow < 0) {
+            return location.id;
+        }
+    }
+    return {};
+}
+
+bool SequenceDocument::placeNextResourceRegionBoundary(
+    const SequenceItemPath& path,
+    const QString& resourceId,
+    bool* placedEntry,
+    QString* errorMessage)
+{
+    if (placedEntry) {
+        *placedEntry = false;
+    }
+    const auto fail = [errorMessage](const QString& message) {
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    };
+    if (!path.isValid() || path.stepIndices.isEmpty()) {
+        return fail(tr("Select a Step for LOCK or UNLOCK"));
+    }
+
+    auto root = m_root;
+    const auto selected = objectAt(path);
+    if (selected.isEmpty()) {
+        return fail(tr("The selected sequence step no longer exists"));
+    }
+    const auto selectedStart = selected.value(QStringLiteral("resourceRegionStart"))
+                                   .toObject();
+    const auto selectedEnd = selected.value(QStringLiteral("resourceRegionEnd"))
+                                 .toString();
+
+    int nextNumber = 1;
+    const auto locations = resourceRegionLocations(root, &nextNumber);
+    QVector<ResourceRegionLocation> pendingLocations;
+    for (const auto& location : locations) {
+        if (location.exitRow < 0) {
+            pendingLocations.push_back(location);
+        }
+    }
+    if (pendingLocations.size() > 1) {
+        return fail(tr("The sequence contains more than one unfinished resource region"));
+    }
+    const bool completesSingleItem = pendingLocations.size() == 1 &&
+        selectedEnd.isEmpty() && !selectedStart.isEmpty() &&
+        sameResourceRegionParent(path, pendingLocations.first()) &&
+        path.stepIndices.last() == pendingLocations.first().entryRow &&
+        selectedStart.value(QStringLiteral("id")).toString() ==
+            pendingLocations.first().id;
+    if ((selected.contains(QStringLiteral("resourceRegionStart")) ||
+         selected.contains(QStringLiteral("resourceRegionEnd"))) &&
+        !completesSingleItem) {
+        return fail(tr("The selected step already contains LOCK or UNLOCK"));
+    }
+
+    QJsonObject updated = selected;
+    if (pendingLocations.isEmpty()) {
+        for (const auto& location : locations) {
+            if (pathFallsInsideResourceRegion(path, location)) {
+                return fail(tr("Nested or overlapping LOCK/UNLOCK intervals are not supported"));
+            }
+        }
+        const auto regionId = QStringLiteral("resource-region-%1")
+                                  .arg(nextNumber, 3, 10, QLatin1Char('0'));
+        QJsonArray resources;
+        const auto normalizedResource = resourceId.trimmed();
+        if (!normalizedResource.isEmpty()) {
+            resources.push_back(QJsonObject{
+                {QStringLiteral("resourceId"), normalizedResource},
+                {QStringLiteral("mode"), QStringLiteral("exclusive")}});
+        }
+        updated.insert(
+            QStringLiteral("resourceRegionStart"),
+            QJsonObject{{QStringLiteral("id"), regionId},
+                        {QStringLiteral("resources"), resources}});
+        if (placedEntry) {
+            *placedEntry = true;
+        }
+    } else {
+        const auto& pending = pendingLocations.first();
+        if (!sameResourceRegionParent(path, pending)) {
+            return fail(tr("UNLOCK must be a sibling of LOCK under the same parent"));
+        }
+        const int selectedRow = path.stepIndices.last();
+        if (selectedRow < pending.entryRow ||
+            (selectedRow == pending.entryRow && !completesSingleItem)) {
+            return fail(tr("UNLOCK must be placed on LOCK itself or a later sibling step"));
+        }
+        updated.insert(QStringLiteral("resourceRegionEnd"), pending.id);
+    }
+
+    if (!mutateStepInRoot(root, path, [&](QJsonObject& step) {
+            step = updated;
+            return true;
+        })) {
+        return fail(tr("The selected sequence step no longer exists"));
+    }
+    return commitRoot(std::move(root), tr("Place Resource Boundary"));
+}
+
+QStringList SequenceDocument::resourceRegionResources(const QString& regionId) const
+{
+    QStringList result;
+    for (const auto& location : resourceRegionLocations(m_root)) {
+        if (location.id != regionId) {
+            continue;
+        }
+        const auto start = objectAt(resourceRegionPath(location, location.entryRow))
+                               .value(QStringLiteral("resourceRegionStart"))
+                               .toObject();
+        for (const auto& resourceValue :
+             start.value(QStringLiteral("resources")).toArray()) {
+            const auto resourceId = resourceValue.toObject()
+                                        .value(QStringLiteral("resourceId"))
+                                        .toString().trimmed();
+            if (!resourceId.isEmpty() && !result.contains(resourceId)) {
+                result.push_back(resourceId);
+            }
+        }
+        return result;
+    }
+    return result;
+}
+
+bool SequenceDocument::setResourceRegionResources(const QString& regionId,
+                                                   const QStringList& resourceIds,
+                                                   QString* errorMessage)
+{
+    const auto fail = [errorMessage](const QString& message) {
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    };
+    QStringList normalized;
+    for (const auto& resourceId : resourceIds) {
+        const auto value = resourceId.trimmed();
+        if (!value.isEmpty() && !normalized.contains(value, Qt::CaseInsensitive)) {
+            normalized.push_back(value);
+        }
+    }
+    if (normalized.isEmpty()) {
+        return fail(tr("Select at least one hardware resource"));
+    }
+
+    const auto locations = resourceRegionLocations(m_root);
+    const auto location = std::find_if(
+        locations.cbegin(), locations.cend(), [&](const ResourceRegionLocation& value) {
+            return value.id == regionId;
+        });
+    if (location == locations.cend()) {
+        return fail(tr("The resource region no longer exists"));
+    }
+
+    QJsonArray resources;
+    for (const auto& resourceId : normalized) {
+        resources.push_back(QJsonObject{
+            {QStringLiteral("resourceId"), resourceId},
+            {QStringLiteral("mode"), QStringLiteral("exclusive")}});
+    }
+    auto root = m_root;
+    if (!mutateStepInRoot(root,
+                          resourceRegionPath(*location, location->entryRow),
+                          [&](QJsonObject& step) {
+                              auto start = step.value(
+                                  QStringLiteral("resourceRegionStart")).toObject();
+                              start.insert(QStringLiteral("resources"), resources);
+                              step.insert(QStringLiteral("resourceRegionStart"), start);
+                              return true;
+                          })) {
+        return fail(tr("The resource region no longer exists"));
+    }
+    if (root == m_root) {
+        return true;
+    }
+    return commitRoot(std::move(root), tr("Set Resource Region Hardware"));
+}
+
+bool SequenceDocument::removeResourceRegionEndAt(const SequenceItemPath& path,
+                                                  QString* errorMessage)
+{
+    const auto fail = [errorMessage](const QString& message) {
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    };
+    if (!path.isValid() || path.stepIndices.isEmpty()) {
+        return fail(tr("Select an UNLOCK marker"));
+    }
+    const auto selected = objectAt(path);
+    if (selected.value(QStringLiteral("resourceRegionEnd")).toString().isEmpty()) {
+        return fail(tr("The selected step is not an UNLOCK marker"));
+    }
+    auto root = m_root;
+    if (!mutateStepInRoot(root, path, [](QJsonObject& step) {
+            step.remove(QStringLiteral("resourceRegionEnd"));
+            return true;
+        })) {
+        return fail(tr("The selected sequence step no longer exists"));
+    }
+    return commitRoot(std::move(root), tr("Remove Resource Region End"));
+}
+
+bool SequenceDocument::clearResourceRegionAt(const SequenceItemPath& path,
+                                             QString* errorMessage)
+{
+    const auto fail = [errorMessage](const QString& message) {
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    };
+    if (!path.isValid() || path.stepIndices.isEmpty()) {
+        return fail(tr("Select a step inside the resource region"));
+    }
+
+    const auto selected = objectAt(path);
+    QString regionId = selected.value(QStringLiteral("resourceRegionStart"))
+                           .toObject().value(QStringLiteral("id")).toString();
+    if (regionId.isEmpty()) {
+        regionId = selected.value(QStringLiteral("resourceRegionEnd")).toString();
+    }
+    const auto locations = resourceRegionLocations(m_root);
+    auto location = locations.cend();
+    if (!regionId.isEmpty()) {
+        location = std::find_if(
+            locations.cbegin(), locations.cend(), [&](const ResourceRegionLocation& value) {
+                return value.id == regionId;
+            });
+    } else {
+        location = std::find_if(
+            locations.cbegin(), locations.cend(), [&](const ResourceRegionLocation& value) {
+                return pathFallsInsideResourceRegion(path, value);
+            });
+    }
+    if (location == locations.cend()) {
+        return fail(tr("The selected step is not inside a resource region"));
+    }
+
+    auto root = m_root;
+    if (!mutateStepInRoot(root,
+                          resourceRegionPath(*location, location->entryRow),
+                          [](QJsonObject& step) {
+                              step.remove(QStringLiteral("resourceRegionStart"));
+                              return true;
+                          })) {
+        return fail(tr("The resource region entry no longer exists"));
+    }
+    if (location->exitRow >= 0 &&
+        !mutateStepInRoot(root,
+                          resourceRegionPath(*location, location->exitRow),
+                          [](QJsonObject& step) {
+                              step.remove(QStringLiteral("resourceRegionEnd"));
+                              return true;
+                          })) {
+        return fail(tr("The resource region exit no longer exists"));
+    }
+    return commitRoot(std::move(root), tr("Remove Resource Region"));
 }
 
 bool SequenceDocument::mutateSteps(const SequenceItemPath& parentPath,

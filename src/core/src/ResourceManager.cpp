@@ -30,6 +30,15 @@ void ResourceManager::release(const ResourceLeaseId& leaseId)
     m_activeLeases.remove(leaseId);
 }
 
+void ResourceManager::cancelRequest(const ResourceRequestId& requestId)
+{
+    for (qsizetype index = m_waiters.size() - 1; index >= 0; --index) {
+        if (m_waiters[index].requestId == requestId) {
+            m_waiters.removeAt(index);
+        }
+    }
+}
+
 void ResourceManager::releaseByNode(const UutId& uutId,
                                     const FrameId& frameId,
                                     const NodeId& nodeId)

@@ -1,0 +1,176 @@
+{
+  "id": "data-parser-sequence",
+  "name": "Built-in Data Parser Example",
+  "version": "1.0",
+  "groups": [
+    {
+      "id": "setup",
+      "name": "Setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "parser-ready",
+          "name": "Parser Ready",
+          "kind": "noop"
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "name": "Main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "decode-can-voltage",
+          "name": "Decode CAN Float Voltage",
+          "kind": "action",
+          "moduleId": "builtin.data-parser",
+          "function": "decodeBinary",
+          "inputs": {
+            "source": [65, 72, 0, 0],
+            "offset": 0,
+            "length": 4,
+            "unit": "byte",
+            "dataType": "float32",
+            "byteOrder": "big"
+          }
+        },
+        {
+          "id": "check-can-voltage",
+          "name": "Check CAN Voltage",
+          "kind": "limit",
+          "inputs": {
+            "actual": "${step:decode-can-voltage.outputs.value}"
+          },
+          "parameters": {
+            "comparison": "between",
+            "expected": 12.5,
+            "tolerance": 0.01,
+            "measurementName": "CAN_VOLTAGE",
+            "unit": "V"
+          }
+        },
+        {
+          "id": "extract-serial-number",
+          "name": "Extract Serial Number",
+          "kind": "action",
+          "moduleId": "builtin.data-parser",
+          "function": "extractBetween",
+          "inputs": {
+            "source": "SN:1234567890\r\n",
+            "startMarker": "SN:",
+            "endMarker": "\\r\\n",
+            "outputType": "string"
+          }
+        },
+        {
+          "id": "check-serial-number",
+          "name": "Check Serial Number",
+          "kind": "limit",
+          "inputs": {
+            "actual": "${step:extract-serial-number.outputs.value}"
+          },
+          "parameters": {
+            "comparison": "equal",
+            "expected": "1234567890",
+            "measurementName": "SERIAL_NUMBER"
+          }
+        },
+        {
+          "id": "decode-modbus-power",
+          "name": "Decode Modbus Float Power",
+          "kind": "action",
+          "moduleId": "builtin.data-parser",
+          "function": "decodeRegisters",
+          "inputs": {
+            "source": [16712, 0],
+            "registerOffset": 0,
+            "dataType": "float32",
+            "layout": "normal"
+          }
+        },
+        {
+          "id": "check-modbus-power",
+          "name": "Check Modbus Power",
+          "kind": "limit",
+          "inputs": {
+            "actual": "${step:decode-modbus-power.outputs.value}"
+          },
+          "parameters": {
+            "comparison": "equal",
+            "expected": 12.5,
+            "measurementName": "MODBUS_POWER",
+            "unit": "kW"
+          }
+        },
+        {
+          "id": "split-visa-value",
+          "name": "Split VISA Text Value",
+          "kind": "action",
+          "moduleId": "builtin.data-parser",
+          "function": "splitText",
+          "inputs": {
+            "source": "OK,25.75,V",
+            "delimiter": ",",
+            "fieldIndex": 1,
+            "outputType": "number"
+          }
+        },
+        {
+          "id": "check-visa-value",
+          "name": "Check VISA Text Value",
+          "kind": "limit",
+          "inputs": {
+            "actual": "${step:split-visa-value.outputs.value}"
+          },
+          "parameters": {
+            "comparison": "equal",
+            "expected": 25.75,
+            "measurementName": "VISA_VALUE",
+            "unit": "V"
+          }
+        },
+        {
+          "id": "capture-second-temperature",
+          "name": "Capture Second Temperature",
+          "kind": "action",
+          "moduleId": "builtin.data-parser",
+          "function": "regexCapture",
+          "inputs": {
+            "source": "TEMP=27.5C;TEMP=28.0C",
+            "pattern": "TEMP=([0-9.]+)C",
+            "captureGroup": 1,
+            "occurrence": 2,
+            "outputType": "number"
+          }
+        },
+        {
+          "id": "check-second-temperature",
+          "name": "Check Second Temperature",
+          "kind": "limit",
+          "inputs": {
+            "actual": "${step:capture-second-temperature.outputs.value}"
+          },
+          "parameters": {
+            "comparison": "equal",
+            "expected": 28.0,
+            "measurementName": "SECOND_TEMPERATURE",
+            "unit": "degC"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "name": "Cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "parser-finished",
+          "name": "Parser Finished",
+          "kind": "noop"
+        }
+      ]
+    }
+  ]
+}

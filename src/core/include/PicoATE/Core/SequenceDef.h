@@ -50,6 +50,11 @@ struct ResourceRequirementDef {
     ResourceRequirement toRuntimeRequirement() const;
 };
 
+struct ResourceRegionStartDef {
+    ResourceRegionId id;
+    QVector<ResourceRequirementDef> resources;
+};
+
 struct RetryPolicyDef {
     int maxAttempts = 1;
     int delayMs = 0;
@@ -112,6 +117,7 @@ struct OperatorPromptDef {
     QString mode = "confirm";
     QString title;
     QString message;
+    QString image;
     QString confirmText = "OK";
     QString closeOnStep;
     int timeoutMs = 60000;
@@ -129,6 +135,8 @@ struct StepDef {
     ModuleFunction functionName;
     QVariantMap inputs;
     QVector<ResourceRequirementDef> resources;
+    std::optional<ResourceRegionStartDef> resourceRegionStart;
+    ResourceRegionId resourceRegionEnd;
     RetryPolicyDef retry;
     TimeoutPolicyDef timeout;
     ErrorPolicyDef errorPolicy;
@@ -171,6 +179,7 @@ struct SequenceDef {
     QString version = "0.1.0";
     QVector<StepGroupDef> groups;
     QVector<ModuleBindingDef> moduleBindings;
+    QVector<SequenceVariableDefinition> variables;
     QVariantMap metadata;
 
     void addGroup(const StepGroupDef& group);

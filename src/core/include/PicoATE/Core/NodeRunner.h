@@ -16,6 +16,7 @@ struct NodeExecutionContext {
     UutId uutId;
     FrameId frameId;
     AttemptId attemptId;
+    RequestId requestId;
     NodeId currentNodeId;
     int attemptIndex = 0;
     QVariantMap variables;

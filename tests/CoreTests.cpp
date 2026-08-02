@@ -1,6 +1,7 @@
 #include <QtTest/QtTest>
 
 #include "PicoATE/Core/BarrierController.h"
+#include "PicoATE/Core/DataParserModule.h"
 #include "PicoATE/Core/DeviceSessionManager.h"
 #include "PicoATE/Core/DeviceDiscovery.h"
 #include "PicoATE/Core/DeviceTransportSession.h"
@@ -77,6 +78,28 @@ const StepReport* findStep(const UutReport& uut, const NodeId& stepId)
         return nullptr;
     };
     for (const auto& step : uut.steps) {
+        if (const auto* found = findRecursive(step, findRecursive)) {
+            return found;
+        }
+    }
+    return nullptr;
+}
+
+const StepReport* findStep(const QVector<StepReport>& steps, const NodeId& stepId)
+{
+    const auto findRecursive = [&](const StepReport& step,
+                                   const auto& findRef) -> const StepReport* {
+        if (step.stepId == stepId) {
+            return &step;
+        }
+        for (const auto& child : step.children) {
+            if (const auto* found = findRef(child, findRef)) {
+                return found;
+            }
+        }
+        return nullptr;
+    };
+    for (const auto& step : steps) {
         if (const auto* found = findRecursive(step, findRecursive)) {
             return found;
         }
@@ -199,6 +222,64 @@ public:
                                                       context.inputs.value("unit").toString()));
         return result;
     }
+};
+
+class MultiUutLifecycleModule final : public IModule {
+public:
+    ModuleId moduleId() const override
+    {
+        return "test.multi-uut-lifecycle";
+    }
+
+    ModuleResult execute(const ModuleFunction& functionName,
+                         const ModuleExecutionContext& context) override
+    {
+        calls.push_back(QString("%1:%2").arg(functionName, context.uutId));
+        if (context.logSink) {
+            ModuleLogRecord log;
+            log.timestampUtc = QDateTime::currentDateTimeUtc();
+            log.message = calls.last();
+            context.logSink->publishModuleLog(log);
+        }
+
+        ModuleResult result;
+        if (functionName == "fail-uut-2" && context.uutId == "UUT-2") {
+            result.outcome = ModuleOutcome::Failed;
+            result.errorCode = "IntentionalUutFailure";
+            result.errorMessage = "UUT-2 failed for isolation verification";
+        }
+        return result;
+    }
+
+    QVector<QString> calls;
+};
+
+class TestItemRetryLockModule final : public IModule {
+public:
+    ModuleId moduleId() const override
+    {
+        return "test.test-item-retry-lock";
+    }
+
+    ModuleResult execute(const ModuleFunction&,
+                         const ModuleExecutionContext& context) override
+    {
+        auto& attempt = attemptsByUut[context.uutId];
+        ++attempt;
+        calls.push_back(QString("%1:%2").arg(context.uutId).arg(attempt));
+
+        ModuleResult result;
+        result.outcome = ModuleOutcome::Passed;
+        if (context.uutId == QStringLiteral("UUT-1") && attempt == 1) {
+            result.outcome = ModuleOutcome::Failed;
+            result.errorCode = QStringLiteral("IntentionalFirstAttemptFailure");
+            result.errorMessage = QStringLiteral("UUT-1 fails its first TestItem attempt");
+        }
+        return result;
+    }
+
+    QVector<QString> calls;
+    QHash<UutId, int> attemptsByUut;
 };
 
 class FakeModuleTransport final : public IModuleTransport {
@@ -492,6 +573,9 @@ private slots:
     void planCacheKeepsRunningPlanAlive();
     void nodeRunnerRunsRegisteredModuleAndMapsModuleResult();
     void nodeRunnerReportsMissingModule();
+    void dataParserDecodesBinaryAndModbusValues();
+    void dataParserExtractsStructuredTextAndReportsFailures();
+    void dataParserExtractsMultipleNamedFields();
     void moduleTransportJsonSerializesRequestAndResponse();
     void pluginLogHandlesEmptyCallbackAndMixedValues();
     void variableResolverResolvesBuiltInsExplicitVariablesAndEnvironment();
@@ -534,9 +618,18 @@ private slots:
     void schedulerRetriesAndRunsCleanup();
     void executionSessionReleasesBarrierAcrossUuts();
     void executionSessionDropsFailedUutBeforeBarrier();
+    void executionSessionRunsSetupCleanupOnceAndIsolatesFailedUut();
+    void executionSessionKeepsResourceAcrossUutTransaction();
+    void executionSessionReleasesResourceRegionAfterUutFailure();
+    void sequenceCompilerRunsNestedResourceRegionAcrossUuts();
+    void sequenceCompilerRunsSingleItemResourceRegionAcrossUuts();
+    void singleItemTestItemResourceRegionStaysLockedAcrossRetry();
+    void sequenceCompilerRejectsCrossParentResourceRegion();
+    void sequenceCompilerRejectsIncompleteResourceRegion();
     void executionSessionStopRunsCleanupOnly();
     void stopTokenEscalatesAtomically();
     void executionSessionConsumesCrossThreadStopToken();
+    void executionSessionWaitDoesNotBlockOtherUuts();
     void executionSessionPausesAtNodeBoundaryAndResumes();
     void executionSessionPausePreservesMultiUutBarrierState();
     void executionSessionStopWakesPausedRunAndRunsCleanup();
@@ -558,7 +651,10 @@ private slots:
     void planBuilderBuildsLoopRegion();
     void planBuilderPlanRunsInExecutionSession();
     void sequenceCompilerCompilesJsonToExecutablePlan();
+    void sequenceCompilerBindsTypedVariablesPerUut();
+    void sequenceCompilerRejectsInvalidSequenceVariables();
     void operatorPromptsConfirmAndCloseOnCompletedStep();
+    void operatorPromptInterpolatesRuntimeValues();
     void operatorPromptWaitsForFinalRetryAttemptBeforeClosing();
     void operatorPromptWithoutResponderFailsWithoutBlocking();
     void sequenceCompilerRejectsInvalidOperatorPrompt();
@@ -571,6 +667,7 @@ private slots:
     void sequenceCompilerReportsModuleBindingErrors();
     void sequenceCompilerRunsSimpleExampleFile();
     void sequenceCompilerRunsBasicExampleFile();
+    void sequenceCompilerRunsDataParserExampleFile();
     void sequenceCompilerRunsCustomDisabledExampleFile();
     void sequenceCompilerRunsExternalEchoExampleFile();
     void sequenceCompilerRunsPythonEchoExampleFile();
@@ -1218,31 +1315,276 @@ void CoreTests::nodeRunnerReportsMissingModule()
     QVERIFY(result.errorMessage.contains("missing.module"));
 }
 
+void CoreTests::dataParserDecodesBinaryAndModbusValues()
+{
+    DataParserModule parser;
+    CollectingModuleLogSink logs;
+    ModuleExecutionContext context;
+    context.logSink = &logs;
+
+    context.inputs = {
+        {QStringLiteral("source"), QVariantList{0x41, 0x48, 0x00, 0x00}},
+        {QStringLiteral("sourceFormat"), QStringLiteral("auto")},
+        {QStringLiteral("offset"), 0},
+        {QStringLiteral("length"), 4},
+        {QStringLiteral("unit"), QStringLiteral("byte")},
+        {QStringLiteral("dataType"), QStringLiteral("float32")},
+        {QStringLiteral("byteOrder"), QStringLiteral("big")}
+    };
+    auto result = parser.execute(QStringLiteral("decodeBinary"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QVERIFY(qAbs(result.outputs.value(QStringLiteral("value")).toDouble() - 12.5) < 0.0001);
+    QCOMPARE(result.outputs.value(QStringLiteral("rawHex")).toString(),
+             QStringLiteral("41 48 00 00"));
+
+    context.inputs = {
+        {QStringLiteral("source"), QVariantList{0x9C, 0xFF}},
+        {QStringLiteral("offset"), 0},
+        {QStringLiteral("length"), 2},
+        {QStringLiteral("unit"), QStringLiteral("byte")},
+        {QStringLiteral("dataType"), QStringLiteral("signed")},
+        {QStringLiteral("byteOrder"), QStringLiteral("little")}
+    };
+    result = parser.execute(QStringLiteral("decodeBinary"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("value")).toLongLong(), qint64(-100));
+
+    context.inputs = {
+        {QStringLiteral("source"), QVariantList{0xB6}},
+        {QStringLiteral("offset"), 1},
+        {QStringLiteral("length"), 3},
+        {QStringLiteral("unit"), QStringLiteral("bit")},
+        {QStringLiteral("bitOrder"), QStringLiteral("lsb0")},
+        {QStringLiteral("dataType"), QStringLiteral("unsigned")}
+    };
+    result = parser.execute(QStringLiteral("decodeBinary"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("value")).toULongLong(), quint64(3));
+
+    context.inputs = {
+        {QStringLiteral("source"), QVariantList{0x4148, 0x0000}},
+        {QStringLiteral("registerOffset"), 0},
+        {QStringLiteral("dataType"), QStringLiteral("float32")},
+        {QStringLiteral("layout"), QStringLiteral("normal")}
+    };
+    result = parser.execute(QStringLiteral("decodeRegisters"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QVERIFY(qAbs(result.outputs.value(QStringLiteral("value")).toDouble() - 12.5) < 0.0001);
+
+    context.inputs.insert(QStringLiteral("registerOffset"), 1);
+    result = parser.execute(QStringLiteral("decodeRegisters"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Error);
+    QCOMPARE(result.errorCode, QStringLiteral("ParserRangeError"));
+    QVERIFY(logs.records().size() >= 5);
+}
+
+void CoreTests::dataParserExtractsStructuredTextAndReportsFailures()
+{
+    DataParserModule parser;
+    CollectingModuleLogSink logs;
+    ModuleExecutionContext context;
+    context.logSink = &logs;
+
+    context.inputs = {
+        {QStringLiteral("source"), QStringLiteral("SN:1234567890\r\n")},
+        {QStringLiteral("startMarker"), QStringLiteral("SN:")},
+        {QStringLiteral("endMarker"), QStringLiteral("\\r\\n")},
+        {QStringLiteral("outputType"), QStringLiteral("string")}
+    };
+    auto result = parser.execute(QStringLiteral("extractBetween"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("value")).toString(),
+             QStringLiteral("1234567890"));
+
+    context.inputs = {
+        {QStringLiteral("source"), QStringLiteral("OK,25.75,V")},
+        {QStringLiteral("delimiter"), QStringLiteral(",")},
+        {QStringLiteral("fieldIndex"), 1},
+        {QStringLiteral("outputType"), QStringLiteral("number")}
+    };
+    result = parser.execute(QStringLiteral("splitText"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("value")).toDouble(), 25.75);
+    QCOMPARE(result.outputs.value(QStringLiteral("fieldCount")).toInt(), 3);
+
+    context.inputs = {
+        {QStringLiteral("source"), QStringLiteral("ID=10;ID=20")},
+        {QStringLiteral("pattern"), QStringLiteral("ID=(\\d+)")},
+        {QStringLiteral("captureGroup"), 1},
+        {QStringLiteral("occurrence"), 2},
+        {QStringLiteral("outputType"), QStringLiteral("unsigned")}
+    };
+    result = parser.execute(QStringLiteral("regexCapture"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("value")).toULongLong(), quint64(20));
+
+    context.inputs.insert(QStringLiteral("occurrence"), 3);
+    result = parser.execute(QStringLiteral("regexCapture"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Error);
+    QCOMPARE(result.errorCode, QStringLiteral("ParserPatternNotFound"));
+
+    context.inputs = {
+        {QStringLiteral("source"), QStringLiteral("NO_SERIAL_HERE")},
+        {QStringLiteral("startMarker"), QStringLiteral("SN:")},
+        {QStringLiteral("endMarker"), QStringLiteral("\\r\\n")}
+    };
+    result = parser.execute(QStringLiteral("extractBetween"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Error);
+    QCOMPARE(result.errorCode, QStringLiteral("ParserMarkerNotFound"));
+    const auto records = logs.records();
+    QVERIFY(std::any_of(records.cbegin(), records.cend(),
+                        [](const ModuleLogRecord& record) {
+        return record.message.contains(QStringLiteral("PARSER_ERROR"));
+    }));
+}
+
+void CoreTests::dataParserExtractsMultipleNamedFields()
+{
+    DataParserModule parser;
+    ModuleExecutionContext context;
+    context.inputs = {
+        {QStringLiteral("source"),
+         QStringLiteral("BTSN001, 812.5, 0x1A")},
+        {QStringLiteral("delimiter"), QStringLiteral(",")},
+        {QStringLiteral("resultMode"), QStringLiteral("multiple")},
+        {QStringLiteral("fields"), QVariantList{
+             QVariantMap{{QStringLiteral("index"), 0},
+                         {QStringLiteral("name"), QStringLiteral("SN1")},
+                         {QStringLiteral("type"), QStringLiteral("string")}},
+             QVariantMap{{QStringLiteral("index"), 1},
+                         {QStringLiteral("name"), QStringLiteral("voltage")},
+                         {QStringLiteral("type"), QStringLiteral("number")}},
+             QVariantMap{{QStringLiteral("index"), -1},
+                         {QStringLiteral("name"), QStringLiteral("status")},
+                         {QStringLiteral("type"), QStringLiteral("hex")}}
+         }}
+    };
+    auto result = parser.execute(QStringLiteral("splitText"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    const auto splitFields = result.outputs.value(QStringLiteral("fields")).toMap();
+    QCOMPARE(splitFields.value(QStringLiteral("SN1")).toString(),
+             QStringLiteral("BTSN001"));
+    QCOMPARE(splitFields.value(QStringLiteral("voltage")).toDouble(), 812.5);
+    QCOMPARE(splitFields.value(QStringLiteral("status")).toString(),
+             QStringLiteral("0x1A"));
+    QCOMPARE(result.outputs.value(QStringLiteral("fieldCount")).toInt(), 3);
+    QCOMPARE(result.outputs.value(QStringLiteral("namedFieldCount")).toInt(), 3);
+
+    auto outOfRangeFields = context.inputs.value(QStringLiteral("fields")).toList();
+    auto outOfRange = outOfRangeFields[0].toMap();
+    outOfRange.insert(QStringLiteral("index"), 3);
+    outOfRangeFields[0] = outOfRange;
+    const auto validSplitInputs = context.inputs;
+    context.inputs.insert(QStringLiteral("fields"), outOfRangeFields);
+    result = parser.execute(QStringLiteral("splitText"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Error);
+    QCOMPARE(result.errorCode, QStringLiteral("ParserRangeError"));
+    context.inputs = validSplitInputs;
+
+    context.inputs = {
+        {QStringLiteral("source"),
+         QStringLiteral("SN=BTSN009,V=799.5,OK=1")},
+        {QStringLiteral("pattern"),
+         QStringLiteral("SN=([^,]+),V=([0-9.]+),OK=(\\d+)")},
+        {QStringLiteral("resultMode"), QStringLiteral("multiple")},
+        {QStringLiteral("fields"), QVariantList{
+             QVariantMap{{QStringLiteral("group"), 1},
+                         {QStringLiteral("name"), QStringLiteral("serialNumber")},
+                         {QStringLiteral("type"), QStringLiteral("string")}},
+             QVariantMap{{QStringLiteral("group"), 2},
+                         {QStringLiteral("name"), QStringLiteral("voltage")},
+                         {QStringLiteral("type"), QStringLiteral("number")}},
+             QVariantMap{{QStringLiteral("group"), 3},
+                         {QStringLiteral("name"), QStringLiteral("ok")},
+                         {QStringLiteral("type"), QStringLiteral("boolean")}}
+         }}
+    };
+    result = parser.execute(QStringLiteral("regexCapture"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    const auto regexFields = result.outputs.value(QStringLiteral("fields")).toMap();
+    QCOMPARE(regexFields.value(QStringLiteral("serialNumber")).toString(),
+             QStringLiteral("BTSN009"));
+    QCOMPARE(regexFields.value(QStringLiteral("voltage")).toDouble(), 799.5);
+    QCOMPARE(regexFields.value(QStringLiteral("ok")).toBool(), true);
+
+    auto invalidFields = context.inputs.value(QStringLiteral("fields")).toList();
+    auto duplicate = invalidFields[1].toMap();
+    duplicate.insert(QStringLiteral("name"), QStringLiteral("SERIALNUMBER"));
+    invalidFields[1] = duplicate;
+    context.inputs.insert(QStringLiteral("fields"), invalidFields);
+    result = parser.execute(QStringLiteral("regexCapture"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Error);
+    QCOMPARE(result.errorCode, QStringLiteral("ParserConfigurationError"));
+    QVERIFY(result.errorMessage.contains(QStringLiteral("duplicates")));
+
+    const auto sequence = QJsonDocument::fromJson(R"json({
+      "id":"named-parser","name":"Named Parser","groups":[
+        {"id":"main","kind":"main","steps":[
+          {"id":"parse","kind":"action","moduleId":"builtin.data-parser",
+           "function":"splitText","inputs":{
+             "source":"BTSN100,800.0","delimiter":",","resultMode":"multiple",
+             "fields":[
+               {"index":0,"name":"SN1","type":"string"},
+               {"index":1,"name":"voltage","type":"number"}
+             ]}},
+          {"id":"check-sn","kind":"limit",
+           "inputs":{"actual":"${step:parse.outputs.fields.SN1}"},
+           "parameters":{"comparison":"equal","expected":"BTSN100"}},
+          {"id":"check-voltage","kind":"limit",
+           "inputs":{"actual":"${step:parse.outputs.fields.voltage}"},
+           "parameters":{"comparison":"equal","expected":800.0}}
+        ]}
+      ]
+    })json").object();
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(sequence);
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QStringLiteral("compile failed") : compiled.errors.first().message));
+    ExecutionSession session(compiled.plan);
+    session.addUut(QStringLiteral("uut-1"));
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QCOMPARE(run.state, ExecutionState::Completed);
+    QCOMPARE(run.nodeResults.size(), 3);
+    QVERIFY(std::all_of(run.nodeResults.cbegin(), run.nodeResults.cend(),
+                        [](const NodeResult& node) {
+        return node.outcome == NodeOutcome::Passed;
+    }));
+}
+
 void CoreTests::moduleTransportJsonSerializesRequestAndResponse()
 {
     ModuleTransportRequest request;
+    request.requestId = "request-17";
     request.traceId = "trace-1";
     request.moduleId = "external.dmm";
     request.functionName = "measureVoltage";
     request.context.uutId = "uut-1";
     request.context.frameId = "root";
     request.context.attemptId = "attempt-2";
+    request.context.requestId = request.requestId;
     request.context.attemptIndex = 2;
     request.context.inputs.insert("range", "10V");
     request.context.parameters.insert("aperture", "NPLC1");
     request.context.variables.insert("station", "A");
 
     const auto requestJson = moduleTransportRequestToJson(request);
+    QCOMPARE(requestJson.value("requestId").toString(), QString("request-17"));
     QCOMPARE(requestJson.value("traceId").toString(), QString("trace-1"));
     QCOMPARE(requestJson.value("moduleId").toString(), QString("external.dmm"));
     QCOMPARE(requestJson.value("function").toString(), QString("measureVoltage"));
 
     const auto contextJson = requestJson.value("context").toObject();
+    QCOMPARE(contextJson.value("requestId").toString(), QString("request-17"));
     QCOMPARE(contextJson.value("uutId").toString(), QString("uut-1"));
     QCOMPARE(contextJson.value("attemptIndex").toInt(), 2);
     QCOMPARE(contextJson.value("inputs").toObject().value("range").toString(), QString("10V"));
     QCOMPARE(contextJson.value("parameters").toObject().value("aperture").toString(), QString("NPLC1"));
     QCOMPARE(contextJson.value("variables").toObject().value("station").toString(), QString("A"));
+
+    const auto parsedRequest = moduleTransportRequestFromJson(requestJson);
+    QCOMPARE(parsedRequest.requestId, request.requestId);
+    QCOMPARE(parsedRequest.context.requestId, request.requestId);
 
     ModuleTransportResponse response;
     response.outcome = ModuleOutcome::Failed;
@@ -2448,6 +2790,8 @@ void CoreTests::executionSessionPublishesPluginLogsWithAttemptContext()
     QCOMPARE(logs[0].nodeId, QString("001"));
     QCOMPARE(logs[0].nodeDisplayName, QString("CAN Request"));
     QVERIFY(!logs[0].attemptId.isEmpty());
+    QVERIFY(!logs[0].requestId.isEmpty());
+    QCOMPARE(logs[1].requestId, logs[0].requestId);
     QCOMPARE(logs[0].attemptIndex, 1);
     QCOMPARE(logs[0].message, QString("send: 01 02 03 04"));
     QVERIFY(logs[0].sequenceNumber < logs[1].sequenceNumber);
@@ -2741,6 +3085,504 @@ void CoreTests::executionSessionDropsFailedUutBeforeBarrier()
     QCOMPARE(passed->outcomeOf("after-barrier"), NodeOutcome::Passed);
 }
 
+void CoreTests::executionSessionRunsSetupCleanupOnceAndIsolatesFailedUut()
+{
+    ExecutionPlan plan;
+    plan.id = "plan-four-uut-session-lifecycle";
+
+    auto action = [](const NodeId& id,
+                     const QString& function,
+                     ExecutionPhase phase) {
+        ExecNode node;
+        node.id = id;
+        node.localId = id;
+        node.displayName = id;
+        node.kind = ExecNodeKind::Action;
+        node.phase = phase;
+        node.payload.insert("moduleId", "test.multi-uut-lifecycle");
+        node.payload.insert("function", function);
+        return node;
+    };
+
+    auto setup = action("session-setup", "setup", ExecutionPhase::Setup);
+    auto first = action("first", "fail-uut-2", ExecutionPhase::Main);
+    first.errorPolicy.onFail = ErrorAction::StopUut;
+    first.errorPolicy.cleanupRegionId = "session-cleanup";
+    auto second = action("second", "after-failure", ExecutionPhase::Main);
+    auto cleanup = action("session-cleanup", "cleanup", ExecutionPhase::Cleanup);
+    cleanup.alwaysRun = true;
+
+    QVERIFY(plan.addNode(setup));
+    QVERIFY(plan.addNode(first));
+    QVERIFY(plan.addNode(second));
+    QVERIFY(plan.addNode(cleanup));
+    plan.addEdge({"setup-main", "session-setup", "first", EdgeKind::Control,
+                  EdgeTrigger::OnSuccess, {}, 0});
+    plan.addEdge({"main-next", "first", "second", EdgeKind::Control,
+                  EdgeTrigger::OnSuccess, {}, 0});
+    plan.addEdge({"main-cleanup", "second", "session-cleanup", EdgeKind::Finally,
+                  EdgeTrigger::Finally, {}, 0});
+
+    CleanupRegion cleanupRegion;
+    cleanupRegion.id = "session-cleanup";
+    cleanupRegion.entryNodes = {"session-cleanup"};
+    cleanupRegion.exitNodes = {"session-cleanup"};
+    cleanupRegion.bestEffort = true;
+    plan.cleanupRegions.push_back(cleanupRegion);
+
+    CollectingRuntimeEventSink events;
+    ExecutionSession session(plan, {}, &events);
+    auto module = std::make_shared<MultiUutLifecycleModule>();
+    QVERIFY(session.registerModule(module));
+    for (int index = 1; index <= 4; ++index) {
+        session.addUut(QString("UUT-%1").arg(index));
+    }
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(result.state, ExecutionState::CompletedWithError);
+    QCOMPARE(result.uutResults.size(), 4);
+    QCOMPARE(result.sessionNodeResults.size(), 2);
+
+    QCOMPARE(module->calls.count("setup:"), 1);
+    QCOMPARE(module->calls.count("cleanup:"), 1);
+    QCOMPARE(module->calls.count("fail-uut-2:UUT-1"), 1);
+    QCOMPARE(module->calls.count("fail-uut-2:UUT-2"), 1);
+    QCOMPARE(module->calls.count("fail-uut-2:UUT-3"), 1);
+    QCOMPARE(module->calls.count("fail-uut-2:UUT-4"), 1);
+    QVERIFY(!module->calls.contains("after-failure:UUT-2"));
+    QVERIFY(module->calls.contains("after-failure:UUT-1"));
+    QVERIFY(module->calls.contains("after-failure:UUT-3"));
+    QVERIFY(module->calls.contains("after-failure:UUT-4"));
+    QCOMPARE(module->calls.last(), QString("cleanup:"));
+
+    for (const auto& uutResult : result.uutResults) {
+        QVERIFY(uutResult.completed);
+        QCOMPARE(uutResult.hasError, uutResult.uutId == "UUT-2");
+    }
+
+    const auto report = session.report();
+    QCOMPARE(report.sessionSteps.size(), 2);
+    QCOMPARE(report.uuts.size(), 4);
+    for (const auto& uut : report.uuts) {
+        QCOMPARE(uut.steps.size(), 2);
+        QVERIFY(uut.completed);
+        QCOMPARE(uut.hasError, uut.uutId == "UUT-2");
+        QCOMPARE(uut.outcome,
+                 uut.uutId == "UUT-2" ? NodeOutcome::Failed : NodeOutcome::Passed);
+    }
+
+    QHash<UutId, int> logsByUut;
+    for (const auto& event : events.records()) {
+        if (event.kind == RuntimeEventKind::ModuleLog) {
+            logsByUut[event.uutId] += 1;
+        }
+    }
+    QCOMPARE(logsByUut.value({}), 2);
+    QCOMPARE(logsByUut.value("UUT-1"), 2);
+    QCOMPARE(logsByUut.value("UUT-2"), 1);
+    QCOMPARE(logsByUut.value("UUT-3"), 2);
+    QCOMPARE(logsByUut.value("UUT-4"), 2);
+}
+
+void CoreTests::executionSessionKeepsResourceAcrossUutTransaction()
+{
+    ExecutionPlan plan;
+    plan.id = "plan-resource-region-order";
+
+    auto action = [](const NodeId& id, const QString& function) {
+        ExecNode node;
+        node.id = id;
+        node.localId = id;
+        node.displayName = id;
+        node.kind = ExecNodeKind::Action;
+        node.phase = ExecutionPhase::Main;
+        node.payload.insert("moduleId", "test.multi-uut-lifecycle");
+        node.payload.insert("function", function);
+        node.resources.push_back({"CAN1", ResourceMode::Exclusive, 1, 0, 30000});
+        return node;
+    };
+
+    QVERIFY(plan.addNode(action("transaction-start", "start")));
+    QVERIFY(plan.addNode(action("transaction-body", "body")));
+    QVERIFY(plan.addNode(action("transaction-end", "end")));
+    plan.addEdge({"region-1", "transaction-start", "transaction-body",
+                  EdgeKind::Control, EdgeTrigger::OnSuccess, {}, 0});
+    plan.addEdge({"region-2", "transaction-body", "transaction-end",
+                  EdgeKind::Control, EdgeTrigger::OnSuccess, {}, 0});
+    plan.resourceRegions.push_back({"can-transaction",
+                                    "transaction-start",
+                                    "transaction-end",
+                                    {{"CAN1", ResourceMode::Exclusive, 1, 0, 30000}}});
+    plan.entryNodeId = "transaction-start";
+    plan.exitNodeId = "transaction-end";
+
+    ExecutionSession session(plan);
+    auto module = std::make_shared<MultiUutLifecycleModule>();
+    QVERIFY(session.registerModule(module));
+    for (int index = 1; index <= 4; ++index) {
+        session.addUut(QString("UUT-%1").arg(index));
+    }
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(!result.hasError);
+    QCOMPARE(module->calls,
+             QVector<QString>({"start:UUT-1", "body:UUT-1", "end:UUT-1",
+                               "start:UUT-2", "body:UUT-2", "end:UUT-2",
+                               "start:UUT-3", "body:UUT-3", "end:UUT-3",
+                               "start:UUT-4", "body:UUT-4", "end:UUT-4"}));
+}
+
+void CoreTests::executionSessionReleasesResourceRegionAfterUutFailure()
+{
+    ExecutionPlan plan;
+    plan.id = "plan-resource-region-failure";
+
+    auto action = [](const NodeId& id, const QString& function) {
+        ExecNode node;
+        node.id = id;
+        node.localId = id;
+        node.displayName = id;
+        node.kind = ExecNodeKind::Action;
+        node.phase = ExecutionPhase::Main;
+        node.payload.insert("moduleId", "test.multi-uut-lifecycle");
+        node.payload.insert("function", function);
+        return node;
+    };
+
+    auto begin = action("begin", "begin");
+    auto check = action("check", "fail-uut-2");
+    check.errorPolicy.onFail = ErrorAction::StopUut;
+    auto finish = action("finish", "finish");
+    QVERIFY(plan.addNode(begin));
+    QVERIFY(plan.addNode(check));
+    QVERIFY(plan.addNode(finish));
+    plan.addEdge({"failure-region-1", "begin", "check", EdgeKind::Control,
+                  EdgeTrigger::OnSuccess, {}, 0});
+    plan.addEdge({"failure-region-2", "check", "finish", EdgeKind::Control,
+                  EdgeTrigger::OnSuccess, {}, 0});
+    plan.resourceRegions.push_back({"failure-region", "begin", "finish",
+                                    {{"CAN1", ResourceMode::Exclusive, 1, 0, 30000}}});
+    plan.entryNodeId = "begin";
+    plan.exitNodeId = "finish";
+
+    ExecutionSession session(plan);
+    auto module = std::make_shared<MultiUutLifecycleModule>();
+    QVERIFY(session.registerModule(module));
+    session.addUut("UUT-1");
+    session.addUut("UUT-2");
+    session.addUut("UUT-3");
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(module->calls,
+             QVector<QString>({"begin:UUT-1", "fail-uut-2:UUT-1", "finish:UUT-1",
+                               "begin:UUT-2", "fail-uut-2:UUT-2",
+                               "begin:UUT-3", "fail-uut-2:UUT-3", "finish:UUT-3"}));
+    QCOMPARE(session.uuts()[1].stateOf("finish"), ActivationState::Skipped);
+}
+
+void CoreTests::sequenceCompilerRunsNestedResourceRegionAcrossUuts()
+{
+    const QByteArray json = R"json({
+        "id": "nested-resource-region",
+        "name": "Nested Resource Region",
+        "groups": [{
+            "id": "main",
+            "kind": "main",
+            "steps": [{
+                "id": "001",
+                "key": "transaction",
+                "name": "CAN Transaction",
+                "kind": "testItem",
+                "steps": [{
+                    "id": "01",
+                    "key": "send",
+                    "name": "Send",
+                    "kind": "action",
+                    "moduleId": "test.multi-uut-lifecycle",
+                    "function": "start",
+                    "resourceRegionStart": {
+                        "id": "can-transaction",
+                        "resources": [{
+                            "resourceId": "CAN1",
+                            "mode": "exclusive"
+                        }]
+                    }
+                }, {
+                    "id": "02",
+                    "key": "read",
+                    "name": "Read",
+                    "kind": "action",
+                    "moduleId": "test.multi-uut-lifecycle",
+                    "function": "body"
+                }, {
+                    "id": "03",
+                    "key": "check",
+                    "name": "Check",
+                    "kind": "action",
+                    "moduleId": "test.multi-uut-lifecycle",
+                    "function": "end",
+                    "resourceRegionEnd": "can-transaction"
+                }]
+            }]
+        }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QStringLiteral("unknown compile error")
+        : compiled.errors.first().message));
+    QCOMPARE(compiled.plan.resourceRegions.size(), 1);
+    QCOMPARE(compiled.plan.resourceRegions.first().entryNodeId,
+             QStringLiteral("001.send"));
+    QCOMPARE(compiled.plan.resourceRegions.first().exitNodeId,
+             QStringLiteral("001.check"));
+    QCOMPARE(compiled.plan.resourceRegions.first().requirements.size(), 1);
+    QCOMPARE(compiled.plan.resourceRegions.first().requirements.first().resourceId,
+             QStringLiteral("CAN1"));
+
+    ExecutionSession session(compiled.plan);
+    auto module = std::make_shared<MultiUutLifecycleModule>();
+    QVERIFY(session.registerModule(module));
+    session.addUut(QStringLiteral("UUT-1"));
+    session.addUut(QStringLiteral("UUT-2"));
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(!result.hasError);
+    QCOMPARE(module->calls,
+             QVector<QString>({QStringLiteral("start:UUT-1"),
+                               QStringLiteral("body:UUT-1"),
+                               QStringLiteral("end:UUT-1"),
+                               QStringLiteral("start:UUT-2"),
+                               QStringLiteral("body:UUT-2"),
+                               QStringLiteral("end:UUT-2")}));
+}
+
+void CoreTests::sequenceCompilerRunsSingleItemResourceRegionAcrossUuts()
+{
+    const QByteArray json = R"json({
+        "id": "single-item-resource-region",
+        "name": "Single TestItem Resource Region",
+        "groups": [{
+            "id": "main",
+            "kind": "main",
+            "steps": [{
+                "id": "001",
+                "key": "transaction",
+                "name": "CAN Transaction",
+                "kind": "testItem",
+                "resourceRegionStart": {
+                    "id": "single-can-transaction",
+                    "resources": [{
+                        "resourceId": "CAN1",
+                        "mode": "exclusive"
+                    }]
+                },
+                "resourceRegionEnd": "single-can-transaction",
+                "steps": [{
+                    "id": "01",
+                    "key": "send",
+                    "name": "Send",
+                    "kind": "action",
+                    "moduleId": "test.multi-uut-lifecycle",
+                    "function": "start"
+                }, {
+                    "id": "02",
+                    "key": "settle",
+                    "name": "Settle",
+                    "kind": "wait",
+                    "ms": 5
+                }, {
+                    "id": "03",
+                    "key": "read",
+                    "name": "Read",
+                    "kind": "action",
+                    "moduleId": "test.multi-uut-lifecycle",
+                    "function": "end"
+                }]
+            }]
+        }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QStringLiteral("unknown compile error")
+        : compiled.errors.first().message));
+    QCOMPARE(compiled.plan.resourceRegions.size(), 1);
+    QCOMPARE(compiled.plan.resourceRegions.first().entryNodeId,
+             QStringLiteral("001"));
+    QCOMPARE(compiled.plan.resourceRegions.first().exitNodeId,
+             QStringLiteral("001"));
+
+    ExecutionSession session(compiled.plan);
+    auto module = std::make_shared<MultiUutLifecycleModule>();
+    QVERIFY(session.registerModule(module));
+    session.addUut(QStringLiteral("UUT-1"));
+    session.addUut(QStringLiteral("UUT-2"));
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(!result.hasError);
+    QCOMPARE(module->calls,
+             QVector<QString>({QStringLiteral("start:UUT-1"),
+                               QStringLiteral("end:UUT-1"),
+                               QStringLiteral("start:UUT-2"),
+                               QStringLiteral("end:UUT-2")}));
+}
+
+void CoreTests::singleItemTestItemResourceRegionStaysLockedAcrossRetry()
+{
+    const QByteArray json = R"json({
+        "id": "single-test-item-lock-retry",
+        "name": "Single TestItem Lock Retry",
+        "groups": [{
+            "id": "main",
+            "kind": "main",
+            "steps": [{
+                "id": "001",
+                "key": "transaction",
+                "name": "Retried CAN Transaction",
+                "kind": "testItem",
+                "retry": { "maxAttempts": 2 },
+                "resourceRegionStart": {
+                    "id": "single-test-item-can-lock",
+                    "resources": [{
+                        "resourceId": "CAN1",
+                        "mode": "exclusive"
+                    }]
+                },
+                "resourceRegionEnd": "single-test-item-can-lock",
+                "steps": [{
+                    "id": "01",
+                    "key": "work",
+                    "name": "CAN Work",
+                    "kind": "action",
+                    "moduleId": "test.test-item-retry-lock",
+                    "function": "run"
+                }]
+            }]
+        }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QStringLiteral("unknown compile error")
+        : compiled.errors.first().message));
+    QCOMPARE(compiled.plan.resourceRegions.size(), 1);
+    QCOMPARE(compiled.plan.resourceRegions.first().entryNodeId,
+             QStringLiteral("001"));
+    QCOMPARE(compiled.plan.resourceRegions.first().exitNodeId,
+             QStringLiteral("001"));
+
+    ExecutionSession session(compiled.plan);
+    auto module = std::make_shared<TestItemRetryLockModule>();
+    QVERIFY(session.registerModule(module));
+    session.addUut(QStringLiteral("UUT-1"));
+    session.addUut(QStringLiteral("UUT-2"));
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(!result.hasError);
+    QCOMPARE(module->calls,
+             QVector<QString>({QStringLiteral("UUT-1:1"),
+                               QStringLiteral("UUT-1:2"),
+                               QStringLiteral("UUT-2:1")}));
+    QCOMPARE(session.uuts()[0].activations.value(QStringLiteral("001")).attempts.size(), 2);
+    QCOMPARE(session.uuts()[1].activations.value(QStringLiteral("001")).attempts.size(), 1);
+}
+
+void CoreTests::sequenceCompilerRejectsCrossParentResourceRegion()
+{
+    const QByteArray json = R"json({
+        "id": "cross-parent-resource-region",
+        "name": "Cross Parent Resource Region",
+        "groups": [{
+            "id": "main",
+            "kind": "main",
+            "steps": [{
+                "id": "001",
+                "name": "Transaction",
+                "kind": "testItem",
+                "steps": [{
+                    "id": "01",
+                    "name": "Nested Start",
+                    "kind": "noop",
+                    "resourceRegionStart": {
+                        "id": "bad-region",
+                        "resources": [{"resourceId": "CAN1"}]
+                    }
+                }, {
+                    "id": "02",
+                    "name": "Nested Body",
+                    "kind": "noop"
+                }]
+            }, {
+                "id": "002",
+                "name": "Top Level End",
+                "kind": "noop",
+                "resourceRegionEnd": "bad-region"
+            }]
+        }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY(!compiled.ok());
+    QVERIFY(std::any_of(compiled.errors.cbegin(), compiled.errors.cend(),
+                        [](const CompileError& error) {
+                            return error.message.contains("no exit marker",
+                                                          Qt::CaseInsensitive) ||
+                                   error.message.contains("no matching entry",
+                                                          Qt::CaseInsensitive);
+                        }));
+}
+
+void CoreTests::sequenceCompilerRejectsIncompleteResourceRegion()
+{
+    const QByteArray json = R"json({
+        "id": "incomplete-resource-region",
+        "name": "Incomplete Resource Region",
+        "groups": [{
+            "id": "main",
+            "kind": "main",
+            "steps": [{
+                "id": "001",
+                "name": "Start",
+                "kind": "noop",
+                "resourceRegionStart": {
+                    "id": "region-001",
+                    "resources": [{"resourceId": "CAN1", "mode": "exclusive"}]
+                }
+            }, {
+                "id": "002",
+                "name": "Still Running",
+                "kind": "noop"
+            }]
+        }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto result = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(!result.ok());
+    QVERIFY(std::any_of(result.errors.cbegin(), result.errors.cend(),
+                        [](const CompileError& error) {
+                            return error.message.contains("no exit marker",
+                                                          Qt::CaseInsensitive);
+                        }));
+}
+
 void CoreTests::executionSessionStopRunsCleanupOnly()
 {
     ExecutionPlan plan;
@@ -2750,6 +3592,7 @@ void CoreTests::executionSessionStopRunsCleanupOnly()
     action.id = "normal-action";
     action.displayName = "Normal Action";
     action.kind = ExecNodeKind::Action;
+    action.alwaysRun = true;
     QVERIFY(plan.addNode(action));
 
     ExecNode cleanup;
@@ -2775,7 +3618,7 @@ void CoreTests::executionSessionStopRunsCleanupOnly()
 
     const auto& uut = session.uuts().first();
     QCOMPARE(uut.outcomeOf("normal-action"), NodeOutcome::Skipped);
-    QCOMPARE(uut.outcomeOf("power-off"), NodeOutcome::Passed);
+    QCOMPARE(session.report().sessionSteps.first().outcome, NodeOutcome::Passed);
 }
 
 void CoreTests::stopTokenEscalatesAtomically()
@@ -2805,7 +3648,7 @@ void CoreTests::executionSessionConsumesCrossThreadStopToken()
         wait.id = QString("wait-%1").arg(index);
         wait.displayName = wait.id;
         wait.kind = ExecNodeKind::Wait;
-        wait.payload.insert("ms", 100);
+        wait.payload.insert("ms", 5000);
         QVERIFY(plan.addNode(wait));
         if (index > 1) {
             plan.addEdge({QString("edge-%1").arg(index),
@@ -2836,6 +3679,8 @@ void CoreTests::executionSessionConsumesCrossThreadStopToken()
     session.addUut("uut-1");
 
     ExecutionSessionResult result;
+    QElapsedTimer elapsed;
+    elapsed.start();
     std::thread runner([&session, &result] {
         result = session.run();
     });
@@ -2844,13 +3689,92 @@ void CoreTests::executionSessionConsumesCrossThreadStopToken()
     stopToken->requestStop();
     runner.join();
 
+    QVERIFY2(elapsed.elapsed() < 1500, "Stop should cancel a pending timer without waiting for its deadline");
     QVERIFY(result.completed);
     QCOMPARE(result.state, ExecutionState::Completed);
     const auto& uut = session.uuts().first();
-    QCOMPARE(uut.outcomeOf("wait-1"), NodeOutcome::Passed);
+    QCOMPARE(uut.outcomeOf("wait-1"), NodeOutcome::Skipped);
     QCOMPARE(uut.outcomeOf("wait-2"), NodeOutcome::Skipped);
     QCOMPARE(uut.outcomeOf("wait-3"), NodeOutcome::Skipped);
-    QCOMPARE(uut.outcomeOf("cleanup"), NodeOutcome::Passed);
+    QCOMPARE(session.snapshot().sessionExecution.outcomeOf("cleanup"), NodeOutcome::Passed);
+}
+
+void CoreTests::executionSessionWaitDoesNotBlockOtherUuts()
+{
+    ExecutionPlan plan;
+    plan.id = "plan-nonblocking-wait";
+
+    ExecNode wait;
+    wait.id = "settle";
+    wait.displayName = "Settle";
+    wait.kind = ExecNodeKind::Wait;
+    wait.payload.insert("ms", 100);
+    QVERIFY(plan.addNode(wait));
+
+    ExecNode after;
+    after.id = "after";
+    after.displayName = "After";
+    after.kind = ExecNodeKind::Noop;
+    QVERIFY(plan.addNode(after));
+    plan.addEdge({"settle-after",
+                  "settle",
+                  "after",
+                  EdgeKind::Dependency,
+                  EdgeTrigger::OnSuccess,
+                  {},
+                  0});
+
+    CollectingRuntimeEventSink events;
+    ExecutionSession session(plan, {}, &events);
+    session.addUut("uut-1");
+    session.addUut("uut-2");
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QCOMPARE(result.state, ExecutionState::Completed);
+    QCOMPARE(session.uuts()[0].outcomeOf("settle"), NodeOutcome::Passed);
+    QCOMPARE(session.uuts()[1].outcomeOf("settle"), NodeOutcome::Passed);
+
+    int uut1Started = -1;
+    int uut2Started = -1;
+    int uut1Completed = -1;
+    RequestId uut1RequestId;
+    RequestId uut2RequestId;
+    const auto records = events.records();
+    for (int index = 0; index < records.size(); ++index) {
+        const auto& event = records[index];
+        if (event.nodeId != "settle") {
+            continue;
+        }
+        if (event.kind == RuntimeEventKind::AttemptStarted && event.uutId == "uut-1") {
+            uut1Started = index;
+            uut1RequestId = event.requestId;
+        } else if (event.kind == RuntimeEventKind::AttemptStarted && event.uutId == "uut-2") {
+            uut2Started = index;
+            uut2RequestId = event.requestId;
+        } else if (event.kind == RuntimeEventKind::AttemptCompleted && event.uutId == "uut-1") {
+            uut1Completed = index;
+            QCOMPARE(event.requestId, uut1RequestId);
+        }
+    }
+
+    QVERIFY(uut1Started >= 0);
+    QVERIFY(uut2Started > uut1Started);
+    QVERIFY(uut1Completed > uut2Started);
+    QVERIFY(!uut1RequestId.isEmpty());
+    QVERIFY(!uut2RequestId.isEmpty());
+    QVERIFY(uut1RequestId != uut2RequestId);
+
+    const auto report = session.report();
+    QCOMPARE(report.uuts.size(), 2);
+    const auto* uut1Wait = findStep(report.uuts[0], "settle");
+    const auto* uut2Wait = findStep(report.uuts[1], "settle");
+    QVERIFY(uut1Wait);
+    QVERIFY(uut2Wait);
+    QCOMPARE(uut1Wait->attempts.size(), 1);
+    QCOMPARE(uut2Wait->attempts.size(), 1);
+    QCOMPARE(uut1Wait->attempts.first().requestId, uut1RequestId);
+    QCOMPARE(uut2Wait->attempts.first().requestId, uut2RequestId);
 }
 
 void CoreTests::executionSessionPausesAtNodeBoundaryAndResumes()
@@ -3020,7 +3944,7 @@ void CoreTests::executionSessionStopWakesPausedRunAndRunsCleanup()
     const auto& uut = session.uuts().first();
     QCOMPARE(uut.outcomeOf("first"), NodeOutcome::Passed);
     QCOMPARE(uut.outcomeOf("second"), NodeOutcome::Skipped);
-    QCOMPARE(uut.outcomeOf("cleanup"), NodeOutcome::Passed);
+    QCOMPARE(session.snapshot().sessionExecution.outcomeOf("cleanup"), NodeOutcome::Passed);
 }
 
 void CoreTests::breakpointAddressResolvesNestedLocalPaths()
@@ -3196,7 +4120,8 @@ void CoreTests::executionSessionStepIntoRunsOneNodeAndPausesAgain()
     ExecNode first;
     first.id = "first";
     first.displayName = "First";
-    first.kind = ExecNodeKind::Noop;
+    first.kind = ExecNodeKind::Wait;
+    first.payload.insert("ms", 50);
     QVERIFY(plan.addNode(first));
 
     ExecNode second;
@@ -3820,9 +4745,10 @@ void CoreTests::planBuilderPlanRunsInExecutionSession()
     QVERIFY(run.completed);
     QCOMPARE(run.state, ExecutionState::Completed);
     const auto& uut = session.uuts().first();
-    QCOMPARE(uut.outcomeOf("open-fixture"), NodeOutcome::Passed);
     QCOMPARE(uut.outcomeOf("measure"), NodeOutcome::Passed);
-    QCOMPARE(uut.outcomeOf("power-off"), NodeOutcome::Passed);
+    const auto& sessionExecution = session.snapshot().sessionExecution;
+    QCOMPARE(sessionExecution.outcomeOf("open-fixture"), NodeOutcome::Passed);
+    QCOMPARE(sessionExecution.outcomeOf("power-off"), NodeOutcome::Passed);
 }
 
 void CoreTests::sequenceCompilerCompilesJsonToExecutablePlan()
@@ -3915,6 +4841,137 @@ void CoreTests::sequenceCompilerCompilesJsonToExecutablePlan()
     const auto run = session.run();
     QVERIFY(run.completed);
     QCOMPARE(run.state, ExecutionState::Completed);
+}
+
+void CoreTests::sequenceCompilerBindsTypedVariablesPerUut()
+{
+    const auto document = QJsonDocument::fromJson(R"json(
+    {
+      "id": "per-uut-variables",
+      "name": "Per UUT Variables",
+      "variables": [
+        {
+          "name": "CAN_ID",
+          "type": "hex",
+          "scope": "perUut",
+          "values": ["0x101", "0x102", null, "0x104"]
+        },
+        {
+          "name": "MODBUS_SLAVE_ID",
+          "type": "integer",
+          "scope": "perUut",
+          "values": [1, 2, 3, 4]
+        },
+        {
+          "name": "TIMEOUT_MS",
+          "type": "integer",
+          "scope": "shared",
+          "value": 1500
+        }
+      ],
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [{
+          "id": "echo",
+          "name": "Echo CAN ID",
+          "kind": "action",
+          "moduleId": "test.echo",
+          "function": "echo",
+          "inputs": {
+            "value": "${var.CAN_ID}",
+            "unit": "id"
+          }
+        }]
+      }]
+    }
+    )json");
+    QVERIFY(document.isObject());
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(document.object());
+    QVERIFY2(compiled.ok(),
+             compiled.errors.isEmpty() ? "compile failed"
+                                       : qPrintable(compiled.errors.first().message));
+    QCOMPARE(compiled.sequence.variables.size(), 3);
+    QCOMPARE(compiled.plan.variables.size(), 3);
+
+    const auto uut1 = bindSequenceVariablesForUut(
+        compiled.plan.variables, 0, QStringLiteral("SN-A"));
+    const auto uut2 = bindSequenceVariablesForUut(
+        compiled.plan.variables, 1, QStringLiteral("SN-B"));
+    QVERIFY(uut1.ok());
+    QVERIFY(uut2.ok());
+    QCOMPARE(uut1.variables.value("CAN_ID").toULongLong(), qulonglong(0x101));
+    QCOMPARE(uut2.variables.value("CAN_ID").toULongLong(), qulonglong(0x102));
+    QCOMPARE(uut2.variables.value("MODBUS_SLAVE_ID").toLongLong(), qlonglong(2));
+    QCOMPARE(uut2.variables.value("TIMEOUT_MS").toLongLong(), qlonglong(1500));
+    QCOMPARE(uut2.variables.value("uut").toMap().value("index").toInt(), 1);
+    QCOMPARE(uut2.variables.value("uut").toMap().value("slot").toInt(), 2);
+    QCOMPARE(uut2.variables.value("sn").toString(), QString("SN-B"));
+
+    const auto missing = bindSequenceVariablesForUut(
+        compiled.plan.variables, 2, QStringLiteral("SN-C"));
+    QVERIFY(!missing.ok());
+    QVERIFY(std::any_of(missing.errors.cbegin(), missing.errors.cend(),
+                        [](const UutVariableBindingDiagnostic& diagnostic) {
+                            return diagnostic.variableName == "CAN_ID";
+                        }));
+
+    QVariantMap overrides;
+    overrides.insert(QStringLiteral("CAN_ID"), 0x555);
+    const auto overridden = bindSequenceVariablesForUut(
+        compiled.plan.variables, 0, QStringLiteral("SN-A"), overrides);
+    QVERIFY(overridden.ok());
+    QCOMPARE(overridden.variables.value("CAN_ID").toInt(), 0x555);
+
+    ExecutionSession session(compiled.plan);
+    auto& first = session.addUut(QStringLiteral("SN-A"));
+    first.variables = uut1.variables;
+    auto& second = session.addUut(QStringLiteral("SN-B"));
+    second.variables = uut2.variables;
+    QVERIFY(session.registerModule(std::make_shared<EchoModule>()));
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    const auto firstResult = session.results().latest("SN-A", "root", "echo");
+    const auto secondResult = session.results().latest("SN-B", "root", "echo");
+    QVERIFY(firstResult.has_value());
+    QVERIFY(secondResult.has_value());
+    QCOMPARE(firstResult->result.outputs.value("inputValue").toULongLong(),
+             qulonglong(0x101));
+    QCOMPARE(secondResult->result.outputs.value("inputValue").toULongLong(),
+             qulonglong(0x102));
+}
+
+void CoreTests::sequenceCompilerRejectsInvalidSequenceVariables()
+{
+    const auto document = QJsonDocument::fromJson(R"json(
+    {
+      "id": "invalid-variables",
+      "name": "Invalid Variables",
+      "variables": [
+        {"name":"9BAD", "type":"integer", "scope":"shared", "value":1},
+        {"name":"DUP", "type":"hex", "scope":"perUut", "values":[true]},
+        {"name":"DUP", "type":"bool", "scope":"shared", "value":"yes"}
+      ],
+      "groups":[{"id":"main","kind":"main","steps":[{"id":"noop","kind":"noop"}]}]
+    }
+    )json");
+    QVERIFY(document.isObject());
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(document.object());
+    QVERIFY(!compiled.ok());
+    const auto hasPath = [&compiled](const QString& path) {
+        return std::any_of(compiled.errors.cbegin(), compiled.errors.cend(),
+                           [&path](const CompileError& error) {
+                               return error.path == path;
+                           });
+    };
+    QVERIFY(hasPath(QStringLiteral("variables[0].name")));
+    QVERIFY(hasPath(QStringLiteral("variables[1].values[0]")));
+    QVERIFY(hasPath(QStringLiteral("variables[2].name")));
+    QVERIFY(hasPath(QStringLiteral("variables[2].value")));
 }
 
 void CoreTests::sequenceCompilerReportsUnsupportedStepKind()
@@ -4258,10 +5315,11 @@ void CoreTests::sequenceCompilerRunsSimpleExampleFile()
     QVERIFY(run.completed);
     QCOMPARE(run.state, ExecutionState::Completed);
     const auto& uut = session.uuts().first();
-    QCOMPARE(uut.outcomeOf("open-fixture"), NodeOutcome::Passed);
-    QCOMPARE(uut.outcomeOf("wait-100ms"), NodeOutcome::Passed);
     QCOMPARE(uut.outcomeOf("measure"), NodeOutcome::Passed);
-    QCOMPARE(uut.outcomeOf("power-off"), NodeOutcome::Passed);
+    QCOMPARE(uut.outcomeOf("wait-100ms"), NodeOutcome::Passed);
+    const auto& sessionExecution = session.snapshot().sessionExecution;
+    QCOMPARE(sessionExecution.outcomeOf("open-fixture"), NodeOutcome::Passed);
+    QCOMPARE(sessionExecution.outcomeOf("power-off"), NodeOutcome::Passed);
 }
 
 void CoreTests::sequenceCompilerRunsBasicExampleFile()
@@ -4296,13 +5354,69 @@ void CoreTests::sequenceCompilerRunsBasicExampleFile()
     for (const auto& uut : session.uuts()) {
         QCOMPARE(uut.outcomeOf("batch-ready"), NodeOutcome::Passed);
         QCOMPARE(uut.outcomeOf("measure-voltage"), NodeOutcome::Passed);
-        QCOMPARE(uut.outcomeOf("power-off"), NodeOutcome::Passed);
-        QCOMPARE(uut.outcomeOf("close-fixture"), NodeOutcome::Passed);
         const auto& measureActivation = uut.activations.value("measure-voltage");
         QVERIFY(!measureActivation.attempts.isEmpty());
         const auto outputs = measureActivation.attempts.last().result.outputs;
         QCOMPARE(outputs.value("actualVoltage").toDouble(), 4.999);
         QCOMPARE(outputs.value("measurements").toMap().value("unit").toString(), QString("V"));
+    }
+    const auto& sessionExecution = session.snapshot().sessionExecution;
+    QCOMPARE(sessionExecution.outcomeOf("power-off"), NodeOutcome::Passed);
+    QCOMPARE(sessionExecution.outcomeOf("close-fixture"), NodeOutcome::Passed);
+}
+
+void CoreTests::sequenceCompilerRunsDataParserExampleFile()
+{
+    QFile file(examplePath(QStringLiteral("data_parser_sequence.json")));
+    QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.errorString()));
+
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    QCOMPARE(parseError.error, QJsonParseError::NoError);
+    QVERIFY(document.isObject());
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(document.object());
+    QVERIFY2(compiled.ok(),
+             qPrintable(compiled.errors.isEmpty()
+                            ? QStringLiteral("Compilation failed without diagnostics")
+                            : compiled.errors.first().message));
+    const auto* parserNode = compiled.plan.node(QStringLiteral("decode-can-voltage"));
+    QVERIFY(parserNode != nullptr);
+    QCOMPARE(parserNode->payload.value(QStringLiteral("moduleId")).toString(),
+             QStringLiteral("builtin.data-parser"));
+
+    ExecutionSession session(compiled.plan);
+    session.addUut(QStringLiteral("uut-1"));
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(!run.hasError);
+    QCOMPARE(run.state, ExecutionState::Completed);
+
+    const auto canValue = session.results().latest(
+        QStringLiteral("uut-1"), QStringLiteral("root"),
+        QStringLiteral("decode-can-voltage"));
+    QVERIFY(canValue.has_value());
+    QVERIFY(qAbs(canValue->result.outputs.value(QStringLiteral("value")).toDouble()
+                 - 12.5) < 0.0001);
+
+    const auto serialNumber = session.results().latest(
+        QStringLiteral("uut-1"), QStringLiteral("root"),
+        QStringLiteral("extract-serial-number"));
+    QVERIFY(serialNumber.has_value());
+    QCOMPARE(serialNumber->result.outputs.value(QStringLiteral("value")).toString(),
+             QStringLiteral("1234567890"));
+
+    for (const auto& stepId : {
+             QStringLiteral("check-can-voltage"),
+             QStringLiteral("check-serial-number"),
+             QStringLiteral("check-modbus-power"),
+             QStringLiteral("check-visa-value"),
+             QStringLiteral("check-second-temperature")}) {
+        const auto checked = session.results().latest(
+            QStringLiteral("uut-1"), QStringLiteral("root"), stepId);
+        QVERIFY2(checked.has_value(), qPrintable(stepId));
+        QCOMPARE(checked->result.outcome, NodeOutcome::Passed);
     }
 }
 
@@ -4344,11 +5458,12 @@ void CoreTests::sequenceCompilerRunsCustomDisabledExampleFile()
     const auto report = session.report();
     QCOMPARE(report.uuts.size(), 1);
     const auto& uut = report.uuts.first();
-    QCOMPARE(uut.steps.size(), 4);
-    QCOMPARE(uut.steps[0].stepId, QString("open-fixture"));
-    QCOMPARE(uut.steps[1].stepId, QString("measure"));
-    QCOMPARE(uut.steps[2].stepId, QString("operator-confirm"));
-    QCOMPARE(uut.steps[3].stepId, QString("power-off"));
+    QCOMPARE(uut.steps.size(), 2);
+    QCOMPARE(uut.steps[0].stepId, QString("measure"));
+    QCOMPARE(uut.steps[1].stepId, QString("operator-confirm"));
+    QCOMPARE(report.sessionSteps.size(), 2);
+    QCOMPARE(report.sessionSteps[0].stepId, QString("open-fixture"));
+    QCOMPARE(report.sessionSteps[1].stepId, QString("power-off"));
 }
 
 void CoreTests::sequenceCompilerRunsExternalEchoExampleFile()
@@ -4416,7 +5531,12 @@ void CoreTests::sequenceCompilerRunsPythonEchoExampleFile()
 
     const auto run = session.run();
     QVERIFY(run.completed);
-    QVERIFY(!run.hasError);
+    const auto runError = run.nodeResults.isEmpty()
+        ? QStringLiteral("Python echo produced no node result")
+        : QStringLiteral("%1: %2")
+              .arg(run.nodeResults.first().errorCode,
+                   run.nodeResults.first().errorMessage);
+    QVERIFY2(!run.hasError, qPrintable(runError));
     QCOMPARE(run.state, ExecutionState::Completed);
     QCOMPARE(run.nodeResults.size(), 1);
     QCOMPARE(run.nodeResults.first().outcome, NodeOutcome::Passed);
@@ -4579,19 +5699,21 @@ void CoreTests::sequenceCompilerRunsPersistentInstrumentExampleFile()
     QCOMPARE(run.state, ExecutionState::Completed);
 
     const auto& uut = session.uuts().first();
-    const auto nodeResult = [&](const NodeId& nodeId) -> const NodeResult* {
-        const auto it = uut.activations.constFind(nodeId);
-        if (it == uut.activations.constEnd() || it.value().attempts.isEmpty()) {
+    const auto snapshot = session.snapshot();
+    const auto nodeResult = [](const UutExecution& execution,
+                               const NodeId& nodeId) -> const NodeResult* {
+        const auto it = execution.activations.constFind(nodeId);
+        if (it == execution.activations.constEnd() || it.value().attempts.isEmpty()) {
             return nullptr;
         }
         return &it.value().attempts.last().result;
     };
 
-    const auto* open = nodeResult("open-dmm");
-    const auto* read1 = nodeResult("read-dmm-1");
-    const auto* read2 = nodeResult("read-dmm-2");
-    const auto* statusNode = nodeResult("status-dmm");
-    const auto* close = nodeResult("close-dmm");
+    const auto* open = nodeResult(uut, "open-dmm");
+    const auto* read1 = nodeResult(uut, "read-dmm-1");
+    const auto* read2 = nodeResult(uut, "read-dmm-2");
+    const auto* statusNode = nodeResult(uut, "status-dmm");
+    const auto* close = nodeResult(snapshot.sessionExecution, "close-dmm");
     QVERIFY(open != nullptr);
     QVERIFY(read1 != nullptr);
     QVERIFY(read2 != nullptr);
@@ -4653,19 +5775,21 @@ void CoreTests::sequenceCompilerRunsDmmCanAdapterExampleFile()
     QCOMPARE(run.state, ExecutionState::Completed);
 
     const auto& uut = session.uuts().first();
-    const auto nodeResult = [&](const NodeId& nodeId) -> const NodeResult* {
-        const auto it = uut.activations.constFind(nodeId);
-        if (it == uut.activations.constEnd() || it.value().attempts.isEmpty()) {
+    const auto snapshot = session.snapshot();
+    const auto nodeResult = [](const UutExecution& execution,
+                               const NodeId& nodeId) -> const NodeResult* {
+        const auto it = execution.activations.constFind(nodeId);
+        if (it == execution.activations.constEnd() || it.value().attempts.isEmpty()) {
             return nullptr;
         }
         return &it.value().attempts.last().result;
     };
 
-    const auto* configureDmm = nodeResult("configure-dmm-dcv");
-    const auto* readDmm = nodeResult("read-dmm");
-    const auto* readCan = nodeResult("read-can-frame");
-    const auto* disconnectDmm = nodeResult("disconnect-dmm");
-    const auto* disconnectCan = nodeResult("disconnect-can");
+    const auto* configureDmm = nodeResult(uut, "configure-dmm-dcv");
+    const auto* readDmm = nodeResult(uut, "read-dmm");
+    const auto* readCan = nodeResult(uut, "read-can-frame");
+    const auto* disconnectDmm = nodeResult(snapshot.sessionExecution, "disconnect-dmm");
+    const auto* disconnectCan = nodeResult(snapshot.sessionExecution, "disconnect-can");
     QVERIFY(configureDmm != nullptr);
     QVERIFY(readDmm != nullptr);
     QVERIFY(readCan != nullptr);
@@ -4757,13 +5881,14 @@ void CoreTests::sequenceCompilerRunsForLoopExampleFile()
     const auto report = session.report();
     QCOMPARE(report.uuts.size(), 1);
     const auto& steps = report.uuts.first().steps;
-    QCOMPARE(steps.size(), 4);
-    QCOMPARE(steps[0].stepId, QString("open-fixture"));
-    QCOMPARE(steps[1].stepId, QString("repeat-measurements"));
-    QCOMPARE(steps[1].children.size(), 1);
-    QCOMPARE(steps[1].children[0].stepId, QString("measure-sample"));
-    QCOMPARE(steps[2].stepId, QString("after-loop"));
-    QCOMPARE(steps[3].stepId, QString("power-off"));
+    QCOMPARE(steps.size(), 2);
+    QCOMPARE(steps[0].stepId, QString("repeat-measurements"));
+    QCOMPARE(steps[0].children.size(), 1);
+    QCOMPARE(steps[0].children[0].stepId, QString("measure-sample"));
+    QCOMPARE(steps[1].stepId, QString("after-loop"));
+    QCOMPARE(report.sessionSteps.size(), 2);
+    QCOMPARE(report.sessionSteps[0].stepId, QString("open-fixture"));
+    QCOMPARE(report.sessionSteps[1].stepId, QString("power-off"));
 
     const auto* measure = findStep(report.uuts.first(), "measure-sample");
     QVERIFY(measure != nullptr);
@@ -5089,7 +6214,7 @@ void CoreTests::executionSessionJsonFailureRunsCleanup()
     const auto& uut = session.uuts().first();
     QCOMPARE(uut.outcomeOf("measure"), NodeOutcome::Failed);
     QCOMPARE(uut.outcomeOf("after-fail"), NodeOutcome::Skipped);
-    QCOMPARE(uut.outcomeOf("power-off"), NodeOutcome::Passed);
+    QCOMPARE(session.snapshot().sessionExecution.outcomeOf("power-off"), NodeOutcome::Passed);
 }
 
 void CoreTests::executionSessionJsonRetryAttemptsAreRecorded()
@@ -5141,7 +6266,7 @@ void CoreTests::executionSessionJsonRetryAttemptsAreRecorded()
     QCOMPARE(uut.activations.value("measure").attempts.size(), 2);
     QCOMPARE(uut.activations.value("measure").attempts[0].result.outcome, NodeOutcome::Failed);
     QCOMPARE(uut.activations.value("measure").attempts[1].result.outcome, NodeOutcome::Passed);
-    QCOMPARE(uut.outcomeOf("power-off"), NodeOutcome::Passed);
+    QCOMPARE(session.snapshot().sessionExecution.outcomeOf("power-off"), NodeOutcome::Passed);
 }
 
 void CoreTests::executionSessionReportCapturesRetryAttempts()
@@ -5196,9 +6321,9 @@ void CoreTests::executionSessionReportCapturesRetryAttempts()
 
     const auto& uut = report.uuts.first();
     QVERIFY(!uut.hasError);
-    QCOMPARE(uut.steps.size(), 2);
+    QCOMPARE(uut.steps.size(), 1);
     QCOMPARE(uut.steps[0].stepId, QString("measure"));
-    QCOMPARE(uut.steps[1].stepId, QString("power-off"));
+    QCOMPARE(report.sessionSteps.size(), 1);
 
     const auto* measure = findStep(uut, "measure");
     QVERIFY(measure != nullptr);
@@ -5216,7 +6341,7 @@ void CoreTests::executionSessionReportCapturesRetryAttempts()
     QCOMPARE(measure->attempts[1].outcome, NodeOutcome::Passed);
     QVERIFY(measure->attempts[1].durationMs >= 0);
 
-    const auto* powerOff = findStep(uut, "power-off");
+    const auto* powerOff = findStep(report.sessionSteps, "power-off");
     QVERIFY(powerOff != nullptr);
     QCOMPARE(powerOff->kind, ExecNodeKind::Cleanup);
     QCOMPARE(powerOff->outcome, NodeOutcome::Passed);
@@ -5288,7 +6413,7 @@ void CoreTests::executionSessionReportFlagsErrorsWithoutTreatingSkippedAsError()
     QCOMPARE(skipped->outcome, NodeOutcome::Skipped);
     QVERIFY(!skipped->wasError);
 
-    const auto* cleanup = findStep(uut, "power-off");
+    const auto* cleanup = findStep(report.sessionSteps, "power-off");
     QVERIFY(cleanup != nullptr);
     QCOMPARE(cleanup->state, ActivationState::Passed);
     QCOMPARE(cleanup->outcome, NodeOutcome::Passed);
@@ -5387,7 +6512,9 @@ void CoreTests::testItemStopsRemainingChildrenAfterFailure()
     QCOMPARE(parent->children[0].outcome, NodeOutcome::Failed);
     QCOMPARE(parent->children[1].outcome, NodeOutcome::Skipped);
     QCOMPARE(findStep(uut, "after-parent")->outcome, NodeOutcome::Skipped);
-    QCOMPARE(findStep(uut, "cleanup-step")->outcome, NodeOutcome::Passed);
+    const auto* cleanup = findStep(report.sessionSteps, "cleanup-step");
+    QVERIFY(cleanup != nullptr);
+    QCOMPARE(cleanup->outcome, NodeOutcome::Passed);
 }
 
 void CoreTests::testItemChildContinueRunsRemainingChildren()
@@ -5701,7 +6828,7 @@ void CoreTests::testItemRetryExhaustionKeepsFinalFailure()
     QCOMPARE(uut.activations.value("parent").attempts.size(), 2);
     QCOMPARE(uut.activations.value("parent.always-fails").attempts.size(), 2);
     QCOMPARE(uut.outcomeOf("after"), NodeOutcome::Skipped);
-    QCOMPARE(uut.outcomeOf("cleanup"), NodeOutcome::Passed);
+    QCOMPARE(session.snapshot().sessionExecution.outcomeOf("cleanup"), NodeOutcome::Passed);
 }
 
 void CoreTests::compilerRejectsBarrierInsideRetryingTestItem()
@@ -5754,7 +6881,9 @@ void CoreTests::testItemStopSkipsChildrenAndRunsCleanup()
     QCOMPARE(findStep(uut, "parent")->outcome, NodeOutcome::Skipped);
     QCOMPARE(findStep(uut, "child-a")->outcome, NodeOutcome::Skipped);
     QCOMPARE(findStep(uut, "child-b")->outcome, NodeOutcome::Skipped);
-    QCOMPARE(findStep(uut, "cleanup")->outcome, NodeOutcome::Passed);
+    const auto* cleanup = findStep(report.sessionSteps, "cleanup");
+    QVERIFY(cleanup != nullptr);
+    QCOMPARE(cleanup->outcome, NodeOutcome::Passed);
 }
 
 void CoreTests::cleanupTestItemRunsAllChildren()
@@ -5784,13 +6913,13 @@ void CoreTests::cleanupTestItemRunsAllChildren()
     QVERIFY(run.completed);
     QVERIFY(!run.hasError);
 
-    const auto& execution = session.uuts().first();
+    const auto& execution = session.snapshot().sessionExecution;
     QCOMPARE(execution.outcomeOf("close-all"), NodeOutcome::Passed);
     QCOMPARE(execution.outcomeOf("close-all.close-can"), NodeOutcome::Passed);
     QCOMPARE(execution.outcomeOf("close-all.close-power"), NodeOutcome::Passed);
 
     const auto report = session.report();
-    const auto* cleanup = findStep(report.uuts.first(), "close-all");
+    const auto* cleanup = findStep(report.sessionSteps, "close-all");
     QVERIFY(cleanup != nullptr);
     QCOMPARE(cleanup->children.size(), 2);
     QCOMPARE(cleanup->children[0].outcome, NodeOutcome::Passed);
@@ -5830,11 +6959,11 @@ void CoreTests::cleanupTestItemContinuesAfterChildError()
     QVERIFY(run.completed);
     QVERIFY(run.hasError);
     QCOMPARE(run.state, ExecutionState::CompletedWithError);
-    const auto& uut = session.uuts().first();
-    QCOMPARE(uut.outcomeOf("close-all.output-off"), NodeOutcome::Error);
-    QCOMPARE(uut.outcomeOf("close-all.close-psu"), NodeOutcome::Passed);
-    QCOMPARE(uut.outcomeOf("close-all"), NodeOutcome::Error);
-    QCOMPARE(uut.outcomeOf("close-fixture"), NodeOutcome::Passed);
+    const auto& sessionExecution = session.snapshot().sessionExecution;
+    QCOMPARE(sessionExecution.outcomeOf("close-all.output-off"), NodeOutcome::Error);
+    QCOMPARE(sessionExecution.outcomeOf("close-all.close-psu"), NodeOutcome::Passed);
+    QCOMPARE(sessionExecution.outcomeOf("close-all"), NodeOutcome::Error);
+    QCOMPARE(sessionExecution.outcomeOf("close-fixture"), NodeOutcome::Passed);
 }
 
 void CoreTests::cleanupFailureContinuesBestEffortAndCompletesSession()
@@ -5878,13 +7007,14 @@ void CoreTests::cleanupFailureContinuesBestEffortAndCompletesSession()
     QCOMPARE(run.state, ExecutionState::CompletedWithError);
     QCOMPARE(session.state(), ExecutionState::CompletedWithError);
 
+    const auto& sessionExecution = session.snapshot().sessionExecution;
+    QCOMPARE(sessionExecution.outcomeOf("open-psu"), NodeOutcome::Error);
     const auto& uut = session.uuts().first();
-    QCOMPARE(uut.outcomeOf("open-psu"), NodeOutcome::Error);
     QCOMPARE(uut.outcomeOf("measure"), NodeOutcome::Skipped);
-    QCOMPARE(uut.outcomeOf("output-off"), NodeOutcome::Error);
-    QCOMPARE(uut.outcomeOf("set-ovp"), NodeOutcome::Passed);
-    QCOMPARE(uut.outcomeOf("set-ocp"), NodeOutcome::Passed);
-    QCOMPARE(uut.outcomeOf("close-psu"), NodeOutcome::Passed);
+    QCOMPARE(sessionExecution.outcomeOf("output-off"), NodeOutcome::Error);
+    QCOMPARE(sessionExecution.outcomeOf("set-ovp"), NodeOutcome::Passed);
+    QCOMPARE(sessionExecution.outcomeOf("set-ocp"), NodeOutcome::Passed);
+    QCOMPARE(sessionExecution.outcomeOf("close-psu"), NodeOutcome::Passed);
 
     const auto report = session.report();
     QVERIFY(report.completed);
@@ -5915,11 +7045,11 @@ void CoreTests::cleanupFailureContinuesBestEffortAndCompletesSession()
     QVERIFY(strictRun.hasError);
     QCOMPARE(strictRun.state, ExecutionState::CompletedWithError);
 
-    const auto& strictUut = strictSession.uuts().first();
-    QCOMPARE(strictUut.outcomeOf("output-off"), NodeOutcome::Error);
-    QCOMPARE(strictUut.outcomeOf("set-ovp"), NodeOutcome::Skipped);
-    QCOMPARE(strictUut.outcomeOf("set-ocp"), NodeOutcome::Skipped);
-    QCOMPARE(strictUut.outcomeOf("close-psu"), NodeOutcome::Skipped);
+    const auto& strictExecution = strictSession.snapshot().sessionExecution;
+    QCOMPARE(strictExecution.outcomeOf("output-off"), NodeOutcome::Error);
+    QCOMPARE(strictExecution.outcomeOf("set-ovp"), NodeOutcome::Skipped);
+    QCOMPARE(strictExecution.outcomeOf("set-ocp"), NodeOutcome::Skipped);
+    QCOMPARE(strictExecution.outcomeOf("close-psu"), NodeOutcome::Skipped);
 }
 
 void CoreTests::testItemAggregatesErrorSeverity()
@@ -6798,6 +7928,7 @@ void CoreTests::operatorPromptsConfirmAndCloseOnCompletedStep()
               "mode": "confirm",
               "title": "Connect fixture",
               "message": "Connect the fixture, then click Continue.",
+              "image": "fixture_connection.png",
               "confirmText": "Continue",
               "timeoutMs": 1000
             }
@@ -6817,7 +7948,7 @@ void CoreTests::operatorPromptsConfirmAndCloseOnCompletedStep()
                 "timeoutMs": 1000
               }
             },
-            { "id": "003", "kind": "noop", "name": "Button detected" }
+            { "id": "003", "kind": "wait", "name": "Button detected", "ms": 10 }
           ]
         },
         {
@@ -6835,6 +7966,8 @@ void CoreTests::operatorPromptsConfirmAndCloseOnCompletedStep()
                                            : compiled.errors.first().message));
     QCOMPARE(compiled.plan.node("001")->kind, ExecNodeKind::OperatorPrompt);
     QCOMPARE(compiled.plan.node("002")->kind, ExecNodeKind::OperatorPrompt);
+    QCOMPARE(compiled.plan.node("001")->payload.value("image").toString(),
+             QString("fixture_connection.png"));
 
     auto control = std::make_shared<ExecutionControl>();
     control->operatorPrompts().setResponderAvailable(true);
@@ -6848,9 +7981,14 @@ void CoreTests::operatorPromptsConfirmAndCloseOnCompletedStep()
     int requested = 0;
     int closed = 0;
     bool conditionClosedNotice = false;
+    bool imageForwarded = false;
     for (const auto& event : events.records()) {
         if (event.kind == RuntimeEventKind::OperatorPromptRequested) {
             ++requested;
+            imageForwarded = imageForwarded ||
+                (event.nodeId == "001" &&
+                 event.details.value("image").toString() ==
+                     QStringLiteral("fixture_connection.png"));
         } else if (event.kind == RuntimeEventKind::OperatorPromptClosed) {
             ++closed;
             conditionClosedNotice = conditionClosedNotice ||
@@ -6861,7 +7999,61 @@ void CoreTests::operatorPromptsConfirmAndCloseOnCompletedStep()
     }
     QCOMPARE(requested, 2);
     QCOMPARE(closed, 2);
+    QVERIFY(imageForwarded);
     QVERIFY(conditionClosedNotice);
+}
+
+void CoreTests::operatorPromptInterpolatesRuntimeValues()
+{
+    const auto json = R"json({
+      "id":"operator-prompt-values","name":"Operator Prompt Values","groups":[
+        {"id":"setup","kind":"setup","steps":[
+          {"id":"open","kind":"noop"}
+        ]},
+        {"id":"main","kind":"main","steps":[
+          {"id":"001","name":"Read Voltage","kind":"action",
+           "moduleId":"mock.action","parameters":{"outputs":{
+             "voltage":812.5,"bytes":[1,2,3]
+           }}},
+          {"id":"002","name":"Show Values","kind":"operatorPrompt","prompt":{
+            "mode":"confirm",
+            "title":"Result for ${uut.id}",
+            "message":"Voltage=${step:001.outputs.voltage} V; UUT=${uut.id}; Data=${step:001.outputs.bytes}",
+            "confirmText":"OK","timeoutMs":1000
+          }}
+        ]},
+        {"id":"cleanup","kind":"cleanup","steps":[
+          {"id":"close","kind":"noop"}
+        ]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+                                           ? QString()
+                                           : compiled.errors.first().message));
+
+    auto control = std::make_shared<ExecutionControl>();
+    control->operatorPrompts().setResponderAvailable(true);
+    OperatorPromptResponderSink events(control);
+    ExecutionSession session(compiled.plan, {}, &events, control);
+    session.addUut(QStringLiteral("uut-1"));
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(!run.hasError);
+
+    const auto records = events.records();
+    const auto prompt = std::find_if(
+        records.cbegin(), records.cend(), [](const RuntimeEvent& event) {
+            return event.kind == RuntimeEventKind::OperatorPromptRequested &&
+                   event.nodeId == QStringLiteral("002");
+        });
+    QVERIFY(prompt != records.cend());
+    QCOMPARE(prompt->details.value(QStringLiteral("title")).toString(),
+             QStringLiteral("Result for uut-1"));
+    QCOMPARE(prompt->details.value(QStringLiteral("message")).toString(),
+             QStringLiteral("Voltage=812.5 V; UUT=uut-1; Data=[1,2,3]"));
 }
 
 void CoreTests::operatorPromptWaitsForFinalRetryAttemptBeforeClosing()
@@ -6965,7 +8157,12 @@ void CoreTests::sequenceCompilerRejectsInvalidOperatorPrompt()
         "steps": [{
           "id": "001",
           "kind": "operatorPrompt",
-          "prompt": { "mode": "teleport", "message": "", "timeoutMs": -1 }
+          "prompt": {
+            "mode": "teleport",
+            "message": "",
+            "image": "instruction.gif",
+            "timeoutMs": -1
+          }
         }]
       }]
     })json";
@@ -6979,6 +8176,7 @@ void CoreTests::sequenceCompilerRejectsInvalidOperatorPrompt()
     }();
     QVERIFY(paths.contains("groups[0].steps[0].prompt.mode"));
     QVERIFY(paths.contains("groups[0].steps[0].prompt.message"));
+    QVERIFY(paths.contains("groups[0].steps[0].prompt.image"));
     QVERIFY(paths.contains("groups[0].steps[0].prompt.timeoutMs"));
 }
 

@@ -36,6 +36,8 @@ QString activationStateName(PicoATE::Core::ActivationState state)
         return QStringLiteral("Waiting dependency");
     case ActivationState::WaitingForResource:
         return QStringLiteral("Waiting resource");
+    case ActivationState::WaitingForTimer:
+        return QStringLiteral("Waiting timer");
     case ActivationState::WaitingAtBarrier:
         return QStringLiteral("Waiting barrier");
     case ActivationState::Ready:
@@ -749,6 +751,7 @@ QVariant UutStepModel::data(const QModelIndex& index, int role) const
         using PicoATE::Core::ActivationState;
         switch (step.state) {
         case ActivationState::Running:
+        case ActivationState::WaitingForTimer:
             return QBrush(QColor(QStringLiteral("#fff0a6")));
         case ActivationState::Passed:
             return QBrush(QColor(QStringLiteral("#d9f2c7")));
@@ -879,18 +882,17 @@ void UutStepModel::applyRuntimeEvents(
                                  event.executionState == PicoATE::Core::ExecutionState::Aborted;
             continue;
         }
-        if (event.uutId.isEmpty()) {
-            continue;
-        }
-
-        auto& uut = ensureUut(event.uutId);
+        auto* uut = event.uutId.isEmpty() ? nullptr : &ensureUut(event.uutId);
         if (event.kind == PicoATE::Core::RuntimeEventKind::UutRegistered) {
             continue;
         }
         if (event.kind == PicoATE::Core::RuntimeEventKind::UutCompleted) {
+            if (!uut) {
+                continue;
+            }
             m_completedUuts.insert(event.uutId);
-            uut.hasError = event.details.value("hasError").toBool();
-            m_report.hasError = m_report.hasError || uut.hasError;
+            uut->hasError = event.details.value("hasError").toBool();
+            m_report.hasError = m_report.hasError || uut->hasError;
             continue;
         }
         if (event.nodeId.isEmpty()) {
@@ -918,7 +920,7 @@ void UutStepModel::applyRuntimeEvents(
             continue;
         }
 
-        auto& step = ensureStep(uut, event);
+        auto& step = ensureStep(uut ? uut->steps : m_report.sessionSteps, event);
         if (event.details.contains("durationMs")) {
             step.durationMs = event.details.value("durationMs").toLongLong();
         }
@@ -975,8 +977,13 @@ void UutStepModel::applyRuntimeEvents(
         step.wasError = step.outcome == PicoATE::Core::NodeOutcome::Failed ||
                         step.outcome == PicoATE::Core::NodeOutcome::Error ||
                         step.outcome == PicoATE::Core::NodeOutcome::Timeout;
-        uut.hasError = uut.hasError || step.wasError;
-        m_report.hasError = m_report.hasError || uut.hasError;
+        if (uut) {
+            uut->hasError = uut->hasError || step.wasError;
+            m_report.hasError = m_report.hasError || uut->hasError;
+        } else {
+            m_report.sessionHasError = m_report.sessionHasError || step.wasError;
+            m_report.hasError = m_report.hasError || m_report.sessionHasError;
+        }
     }
     rebuildIndexTree();
     endResetModel();
@@ -1039,7 +1046,7 @@ PicoATE::Core::UutReport& UutStepModel::ensureUut(const PicoATE::Core::UutId& uu
 }
 
 PicoATE::Core::StepReport& UutStepModel::ensureStep(
-    PicoATE::Core::UutReport& uut,
+    QVector<PicoATE::Core::StepReport>& steps,
     const PicoATE::Core::RuntimeEvent& event)
 {
     const auto findStepByPath = [](QVector<PicoATE::Core::StepReport>& steps,
@@ -1075,9 +1082,9 @@ PicoATE::Core::StepReport& UutStepModel::ensureStep(
         }
         return findLegacyStep(steps, id, findLegacyStep);
     };
-    auto* existing = findStep(uut.steps, event.nodeId);
+    auto* existing = findStep(steps, event.nodeId);
     if (!event.parentNodeId.isEmpty()) {
-        auto* parent = findStep(uut.steps, event.parentNodeId);
+        auto* parent = findStep(steps, event.parentNodeId);
         if (!parent) {
             PicoATE::Core::StepReport createdParent;
             createdParent.stepId = event.parentNodeId.section('.', -1);
@@ -1085,8 +1092,8 @@ PicoATE::Core::StepReport& UutStepModel::ensureStep(
             createdParent.displayName = event.parentNodeId;
             createdParent.kind = PicoATE::Core::ExecNodeKind::TestItem;
             createdParent.phase = event.nodePhase;
-            uut.steps.push_back(createdParent);
-            parent = &uut.steps.last();
+            steps.push_back(createdParent);
+            parent = &steps.last();
         }
         parent->phase = event.nodePhase;
         auto* child = findStep(parent->children, event.nodeId);
@@ -1119,8 +1126,8 @@ PicoATE::Core::StepReport& UutStepModel::ensureStep(
     step.displayName = event.nodeDisplayName;
     step.kind = event.nodeKind;
     step.phase = event.nodePhase;
-    uut.steps.push_back(step);
-    return uut.steps.last();
+    steps.push_back(step);
+    return steps.last();
 }
 
 bool UutStepModel::isStepIndex(const QModelIndex& index) const
@@ -1171,8 +1178,11 @@ void UutStepModel::rebuildIndexTree()
             PicoATE::Core::ExecutionPhase::Main,
             PicoATE::Core::ExecutionPhase::Cleanup};
         for (const auto phase : phases) {
+            auto& phaseSteps = phase == PicoATE::Core::ExecutionPhase::Main
+                ? uut.steps
+                : m_report.sessionSteps;
             const bool hasSteps = std::any_of(
-                uut.steps.cbegin(), uut.steps.cend(),
+                phaseSteps.cbegin(), phaseSteps.cend(),
                 [phase](const auto& step) { return step.phase == phase; });
             if (!hasSteps) {
                 continue;
@@ -1185,7 +1195,7 @@ void UutStepModel::rebuildIndexTree()
             auto* rootPointer = root.get();
             m_modelItems.push_back(std::move(root));
             m_rootItems.push_back(rootPointer);
-            for (auto& step : uut.steps) {
+            for (auto& step : phaseSteps) {
                 if (step.phase == phase) {
                     appendModelItem(rootPointer, 0, &step);
                 }
@@ -1236,7 +1246,10 @@ UutStepModel::ModelItem* UutStepModel::findModelItem(
         if (!item->step || item->uutIndex < 0 || item->uutIndex >= m_report.uuts.size()) {
             continue;
         }
-        if (m_report.uuts[item->uutIndex].uutId != uutId) {
+        if (!uutId.isEmpty() && m_report.uuts[item->uutIndex].uutId != uutId) {
+            continue;
+        }
+        if (uutId.isEmpty() && item->step->phase == PicoATE::Core::ExecutionPhase::Main) {
             continue;
         }
         if (item->step->nodePath == stepId) {
@@ -2077,7 +2090,9 @@ QVector<RuntimeLogLine> RuntimeTimelineModel::applyRuntimeEvents(
     QVector<RuntimeLogLine> newLines;
     newLines.reserve(m_rows.size() - firstNewRow);
     for (int row = firstNewRow; row < m_rows.size(); ++row) {
-        newLines.push_back({m_rows[row].timestampUtc, m_rows[row].message});
+        newLines.push_back({m_rows[row].timestampUtc,
+                            m_rows[row].message,
+                            m_rows[row].event.uutId});
     }
     if (m_rows.size() > m_maximumRows) {
         const int removeCount = m_rows.size() - m_maximumRows;

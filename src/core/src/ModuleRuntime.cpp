@@ -1,4 +1,5 @@
 #include "PicoATE/Core/ModuleRuntime.h"
+#include "PicoATE/Core/ExecutionRequest.h"
 
 #include <QUuid>
 #include <utility>
@@ -184,10 +185,14 @@ ModuleResult TransportModuleAdapter::execute(const ModuleFunction& functionName,
     }
 
     ModuleTransportRequest request;
+    request.requestId = context.requestId.isEmpty()
+        ? createRequestId(QStringLiteral("module"))
+        : context.requestId;
     request.traceId = makeTraceId(m_moduleId);
     request.moduleId = m_moduleId;
     request.functionName = functionName;
     request.context = context;
+    request.context.requestId = request.requestId;
 
     ModuleTransportResponse response;
     const auto status = m_transport->call(request, response, m_timeoutMs);

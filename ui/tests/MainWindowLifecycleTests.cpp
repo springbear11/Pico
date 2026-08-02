@@ -13,6 +13,7 @@
 #include "ScanDialog.h"
 #include "SequenceDocument.h"
 #include "SequenceTreeModel.h"
+#include "SequenceVariablesDialog.h"
 #include "StepPropertyEditor.h"
 #include "StationDeviceModel.h"
 #include "StationDocument.h"
@@ -24,7 +25,9 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QColor>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDate>
 #include <QDoubleSpinBox>
 #include <QDialog>
@@ -51,6 +54,7 @@
 #include <QStandardItemModel>
 #include <QSplitter>
 #include <QTableView>
+#include <QTableWidget>
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -110,6 +114,7 @@ private slots:
     void persistsLayoutAndRecentFiles();
     void invalidOrOffscreenGeometryFallsBackToPrimaryScreen();
     void loginDialogDiscoversSequenceAndValidatesAdminPassword();
+    void adminStartupInitializationShowsBusyOverlay();
     void stationScanDialogTogglePersists();
     void scanDialogAcceptsRepeatedBarcodeAndHasNoWindowButtons();
     void adminStartsOnProductionDashboardAndOpensScannerOnDemand();
@@ -122,6 +127,8 @@ private slots:
     void logicalDeviceOpenKeepsStationParametersOutOfStepInputs();
     void pluginPropertyEditorPrefersTypedControlsAndPreservesAdvancedJson();
     void flowEditorAddsAndLocksStandardSequenceGroups();
+    void resourceRegionGutterTogglesBoundariesAndSelectsHardware();
+    void sequenceVariablesToolbarEditsPerUutValuesAndFeedsFxMenu();
     void ctrlSaveCommitsCurrentStepDraftWithoutPrompt();
     void switchingStepsKeepsDraftWithoutPrompt();
     void leavingFlowPromptsOnceAndCanKeepDraft();
@@ -138,6 +145,8 @@ private slots:
     void flowEnableTogglePreservesTreePosition();
     void operatorPromptDialogCannotBeDismissedByKeyboardOrWindowControls();
     void messageBoxPropertyEditorSwitchesConfirmationMode();
+    void messageBoxPropertyEditorInsertsRuntimeValues();
+    void parserPropertyEditorCreatesNamedOutputsForFx();
     void whileLoopPropertyEditorUsesTypedFields();
 
 private:
@@ -1040,6 +1049,434 @@ void MainWindowLifecycleTests::flowEditorAddsAndLocksStandardSequenceGroups()
     QVERIFY(kind->isHidden());
     QVERIFY(enabled->isHidden());
 
+    document->undoStack()->setClean();
+    QVERIFY(window.close());
+}
+
+void MainWindowLifecycleTests::resourceRegionGutterTogglesBoundariesAndSelectsHardware()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("resource-region.json"));
+    QFile sequence(sequencePath);
+    QVERIFY(sequence.open(QIODevice::WriteOnly));
+    sequence.write(R"({
+      "id":"resource-region-ui","name":"Resource Region UI","groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"001","kind":"noop","name":"First"},
+          {"id":"002","kind":"noop","name":"Second"},
+          {"id":"003","kind":"testItem","name":"Third","steps":[
+            {"id":"01","kind":"noop","name":"Third Child Start"},
+            {"id":"02","kind":"noop","name":"Third Child Body"},
+            {"id":"03","kind":"noop","name":"Third Child End"}
+          ]}
+        ]
+      }]
+    })");
+    sequence.close();
+
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(sequencePath));
+    window.resize(1200, 760);
+    window.show();
+    QTest::qWait(20);
+
+    auto* tree = window.findChild<QTreeView*>(QStringLiteral("sequenceTreeView"));
+    auto* model = window.findChild<SequenceTreeModel*>();
+    auto* document = window.findChild<SequenceDocument*>();
+    auto* targetSelector = window.findChild<FlowTargetSelector*>();
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
+    auto* flowPage = window.findChild<QWidget*>(QStringLiteral("sequenceEditorPage"));
+    QVERIFY(tree && model && document && targetSelector && tabs && flowPage);
+    QVERIFY(!window.findChild<QAction*>(QStringLiteral("placeResourceBoundaryAction")));
+    tabs->setCurrentWidget(flowPage);
+    FlowTargetDevice can;
+    can.logicalId = QStringLiteral("CAN1");
+    can.deviceType = QStringLiteral("CAN");
+    can.driverName = QStringLiteral("GCAN");
+    can.moduleId = QStringLiteral("plugin.can.gcan");
+    can.targetIds = {QStringLiteral("CAN1.CH1"), QStringLiteral("CAN1.CH2")};
+    can.channelNames = {QStringLiteral("CH1"), QStringLiteral("CH2")};
+    can.configured = true;
+    FlowTargetDevice can2;
+    can2.logicalId = QStringLiteral("CAN2");
+    can2.deviceType = QStringLiteral("CAN");
+    can2.driverName = QStringLiteral("CX");
+    can2.moduleId = QStringLiteral("plugin.can.cx");
+    can2.targetIds = {QStringLiteral("CAN2.CH1"), QStringLiteral("CAN2.CH2")};
+    can2.channelNames = {QStringLiteral("CH1"), QStringLiteral("CH2")};
+    can2.configured = true;
+    targetSelector->setDevices({can, can2});
+
+    const auto clickBoundary = [tree, model](const QModelIndex& nameIndex) {
+        const auto boundary = nameIndex.siblingAtColumn(
+            SequenceTreeModel::ResourceRegionColumn);
+        QVERIFY(boundary.isValid());
+        tree->setCurrentIndex(nameIndex);
+        tree->scrollTo(boundary);
+        QCoreApplication::processEvents();
+        QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                          tree->visualRect(boundary).center());
+        QCoreApplication::processEvents();
+    };
+    const auto clickBoundaryWithHardware = [&clickBoundary](
+                                               const QModelIndex& index) {
+        bool handled = false;
+        int resourceCount = -1;
+        QTimer timer;
+        QObject::connect(&timer, &QTimer::timeout, &timer, [&] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            if (!dialog || dialog->objectName() !=
+                               QStringLiteral("resourceRegionResourceDialog")) {
+                return;
+            }
+            const auto cards = dialog->findChildren<QToolButton*>(
+                QStringLiteral("resourceRegionResourceCard"));
+            if (cards.isEmpty()) {
+                dialog->reject();
+                handled = true;
+                return;
+            }
+            resourceCount = cards.size();
+            for (auto* card : cards) {
+                card->setChecked(true);
+            }
+            handled = true;
+            dialog->accept();
+        });
+        timer.start(10);
+        clickBoundary(index);
+        timer.stop();
+        QVERIFY(handled);
+        QCOMPARE(resourceCount, 2);
+    };
+
+    auto mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    QVERIFY(mainGroup.isValid());
+    auto entry = model->index(0, SequenceTreeModel::NameColumn, mainGroup);
+    clickBoundary(entry);
+
+    const auto singleId = document->pendingResourceRegionId();
+    QVERIFY(!singleId.isEmpty());
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    entry = model->index(0, SequenceTreeModel::NameColumn, mainGroup);
+    clickBoundaryWithHardware(entry);
+    QVERIFY(document->pendingResourceRegionId().isEmpty());
+    const auto singleObject = document->objectAt(SequenceItemPath{1, {0}});
+    QCOMPARE(singleObject.value(QStringLiteral("resourceRegionStart"))
+                 .toObject().value(QStringLiteral("id")).toString(),
+             singleId);
+    QCOMPARE(singleObject.value(QStringLiteral("resourceRegionEnd")).toString(),
+             singleId);
+    QCOMPARE(document->resourceRegionResources(singleId),
+             QStringList({QStringLiteral("CAN1"), QStringLiteral("CAN2")}));
+
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    auto singleBoundary = model->index(
+        0, SequenceTreeModel::ResourceRegionColumn, mainGroup);
+    QCOMPARE(singleBoundary.data().toString(), QStringLiteral("LOCK/UNLOCK"));
+    QCOMPARE(singleBoundary.data(SequenceTreeModel::ResourceMarkerRole).toInt(), 3);
+    const auto resourceLockScreenshot = qEnvironmentVariable(
+        "PICOATE_RESOURCE_LOCK_SCREENSHOT");
+    if (!resourceLockScreenshot.isEmpty()) {
+        QCoreApplication::processEvents();
+        QVERIFY2(window.grab().save(resourceLockScreenshot),
+                 qPrintable(QStringLiteral("Failed to save resource-lock screenshot: %1")
+                                .arg(resourceLockScreenshot)));
+    }
+
+    // Clicking a completed single-item lock removes both boundaries.
+    clickBoundary(singleBoundary.siblingAtColumn(SequenceTreeModel::NameColumn));
+    QVERIFY(document->objectAt(SequenceItemPath{1, {0}})
+                .value(QStringLiteral("resourceRegionStart")).toObject().isEmpty());
+    QVERIFY(document->objectAt(SequenceItemPath{1, {0}})
+                .value(QStringLiteral("resourceRegionEnd")).toString().isEmpty());
+
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    entry = model->index(0, SequenceTreeModel::NameColumn, mainGroup);
+    clickBoundary(entry);
+
+    const auto pendingId = document->pendingResourceRegionId();
+    QVERIFY(!pendingId.isEmpty());
+    const auto start = document->objectAt(SequenceItemPath{1, {0}})
+                           .value(QStringLiteral("resourceRegionStart"))
+                           .toObject();
+    QVERIFY(start.value(QStringLiteral("resources")).toArray().isEmpty());
+
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    auto exit = model->index(2, SequenceTreeModel::NameColumn, mainGroup);
+    clickBoundaryWithHardware(exit);
+
+    QVERIFY(document->pendingResourceRegionId().isEmpty());
+    QCOMPARE(document->objectAt(SequenceItemPath{1, {2}})
+                 .value(QStringLiteral("resourceRegionEnd")).toString(),
+             pendingId);
+    QCOMPARE(document->resourceRegionResources(pendingId),
+             QStringList({QStringLiteral("CAN1"), QStringLiteral("CAN2")}));
+
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    const auto entryBoundary = model->index(
+        0, SequenceTreeModel::ResourceRegionColumn, mainGroup);
+    const auto middle = model->index(1, SequenceTreeModel::NameColumn, mainGroup);
+    const auto exitBoundary = model->index(
+        2, SequenceTreeModel::ResourceRegionColumn, mainGroup);
+    const auto exitChild = model->index(
+        0, SequenceTreeModel::NameColumn,
+        model->index(2, SequenceTreeModel::NameColumn, mainGroup));
+    QCOMPARE(entryBoundary.data().toString(), QStringLiteral("LOCK"));
+    QCOMPARE(exitBoundary.data().toString(), QStringLiteral("UNLOCK"));
+    QVERIFY(middle.data(Qt::BackgroundRole).isValid());
+    QVERIFY(exitChild.data(Qt::BackgroundRole).isValid());
+
+    // Clicking UNLOCK removes only the end marker and keeps LOCK pending.
+    clickBoundary(exitBoundary.siblingAtColumn(SequenceTreeModel::NameColumn));
+    QCOMPARE(document->pendingResourceRegionId(), pendingId);
+    QVERIFY(document->objectAt(SequenceItemPath{1, {2}})
+                .value(QStringLiteral("resourceRegionEnd")).toString().isEmpty());
+
+    // Replacing a removed UNLOCK with the previously selected hardware keeps
+    // both boundaries intact.
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    exit = model->index(2, SequenceTreeModel::NameColumn, mainGroup);
+    clickBoundaryWithHardware(exit);
+    QVERIFY(document->pendingResourceRegionId().isEmpty());
+    QCOMPARE(document->objectAt(SequenceItemPath{1, {0}})
+                 .value(QStringLiteral("resourceRegionStart"))
+                 .toObject().value(QStringLiteral("id")).toString(),
+             pendingId);
+    QCOMPARE(document->objectAt(SequenceItemPath{1, {2}})
+                 .value(QStringLiteral("resourceRegionEnd")).toString(),
+             pendingId);
+
+    // Return to a pending LOCK for the cancellation rollback scenario.
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    exit = model->index(2, SequenceTreeModel::NameColumn, mainGroup);
+    clickBoundary(exit);
+    QCOMPARE(document->pendingResourceRegionId(), pendingId);
+
+    // Cancelling hardware selection rolls the pending LOCK and new UNLOCK back.
+    bool cancelled = false;
+    QTimer cancelTimer;
+    QObject::connect(&cancelTimer, &QTimer::timeout, &cancelTimer, [&] {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (!dialog || dialog->objectName() !=
+                           QStringLiteral("resourceRegionResourceDialog")) {
+            return;
+        }
+        cancelled = true;
+        dialog->reject();
+    });
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    exit = model->index(2, SequenceTreeModel::NameColumn, mainGroup);
+    cancelTimer.start(10);
+    clickBoundary(exit);
+    cancelTimer.stop();
+    QVERIFY(cancelled);
+    QVERIFY(document->pendingResourceRegionId().isEmpty());
+    QVERIFY(document->objectAt(SequenceItemPath{1, {0}})
+                .value(QStringLiteral("resourceRegionStart")).toObject().isEmpty());
+    QVERIFY(document->objectAt(SequenceItemPath{1, {2}})
+                .value(QStringLiteral("resourceRegionEnd")).toString().isEmpty());
+
+    // A nested interval is allowed between sibling child Steps.
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    auto testItem = model->index(2, SequenceTreeModel::NameColumn, mainGroup);
+    tree->expand(testItem);
+    auto childEntry = model->index(0, SequenceTreeModel::NameColumn, testItem);
+    clickBoundary(childEntry);
+    const auto nestedId = document->pendingResourceRegionId();
+    QVERIFY(!nestedId.isEmpty());
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    testItem = model->index(2, SequenceTreeModel::NameColumn, mainGroup);
+    tree->expand(testItem);
+    auto childExit = model->index(2, SequenceTreeModel::NameColumn, testItem);
+    clickBoundaryWithHardware(childExit);
+    QVERIFY(document->pendingResourceRegionId().isEmpty());
+    QCOMPARE(document->objectAt(SequenceItemPath{1, {2, 0}})
+                 .value(QStringLiteral("resourceRegionStart"))
+                 .toObject().value(QStringLiteral("id")).toString(),
+             nestedId);
+    QCOMPARE(document->objectAt(SequenceItemPath{1, {2, 2}})
+                 .value(QStringLiteral("resourceRegionEnd")).toString(),
+             nestedId);
+    QCOMPARE(document->resourceRegionResources(nestedId),
+             QStringList({QStringLiteral("CAN1"), QStringLiteral("CAN2")}));
+
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    testItem = model->index(2, SequenceTreeModel::NameColumn, mainGroup);
+    tree->expand(testItem);
+    childEntry = model->index(0, SequenceTreeModel::NameColumn, testItem);
+    const auto childMiddle = model->index(1, SequenceTreeModel::NameColumn, testItem);
+    childExit = model->index(2, SequenceTreeModel::NameColumn, testItem);
+    QCOMPARE(childEntry.siblingAtColumn(SequenceTreeModel::ResourceRegionColumn)
+                 .data().toString(), QStringLiteral("LOCK"));
+    QCOMPARE(childExit.siblingAtColumn(SequenceTreeModel::ResourceRegionColumn)
+                 .data().toString(), QStringLiteral("UNLOCK"));
+    QVERIFY(childMiddle.data(Qt::BackgroundRole).isValid());
+
+    // Clicking the nested LOCK removes the complete nested interval.
+    clickBoundary(childEntry);
+    QVERIFY(document->pendingResourceRegionId().isEmpty());
+    QVERIFY(document->objectAt(SequenceItemPath{1, {2, 0}})
+                .value(QStringLiteral("resourceRegionStart")).toObject().isEmpty());
+    QVERIFY(document->objectAt(SequenceItemPath{1, {2, 2}})
+                .value(QStringLiteral("resourceRegionEnd")).toString().isEmpty());
+
+    // A TestItem can be locked as one item; its complete child subtree is covered.
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    testItem = model->index(2, SequenceTreeModel::NameColumn, mainGroup);
+    clickBoundary(testItem);
+    const auto testItemRegionId = document->pendingResourceRegionId();
+    QVERIFY(!testItemRegionId.isEmpty());
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    testItem = model->index(2, SequenceTreeModel::NameColumn, mainGroup);
+    clickBoundaryWithHardware(testItem);
+    QVERIFY(document->pendingResourceRegionId().isEmpty());
+    const auto testItemObject = document->objectAt(SequenceItemPath{1, {2}});
+    QCOMPARE(testItemObject.value(QStringLiteral("resourceRegionEnd")).toString(),
+             testItemRegionId);
+
+    mainGroup = sequenceGroupByKind(model, QStringLiteral("main"));
+    testItem = model->index(2, SequenceTreeModel::NameColumn, mainGroup);
+    tree->expand(testItem);
+    const auto testItemBoundary = testItem.siblingAtColumn(
+        SequenceTreeModel::ResourceRegionColumn);
+    QCOMPARE(testItemBoundary.data().toString(), QStringLiteral("LOCK/UNLOCK"));
+    QCOMPARE(testItemBoundary.data(SequenceTreeModel::ResourceMarkerRole).toInt(), 3);
+    const auto lockedChild = model->index(1, SequenceTreeModel::NameColumn, testItem);
+    QVERIFY(lockedChild.data(Qt::BackgroundRole).isValid());
+
+    clickBoundary(testItem);
+    QVERIFY(document->objectAt(SequenceItemPath{1, {2}})
+                .value(QStringLiteral("resourceRegionStart")).toObject().isEmpty());
+    QVERIFY(document->objectAt(SequenceItemPath{1, {2}})
+                .value(QStringLiteral("resourceRegionEnd")).toString().isEmpty());
+
+    QString saveError;
+    QVERIFY2(document->save(&saveError), qPrintable(saveError));
+    QFile savedSequence(sequencePath);
+    QVERIFY(savedSequence.open(QIODevice::ReadOnly));
+    const auto savedJson = savedSequence.readAll();
+    QVERIFY(!savedJson.contains("resourceRegionStart"));
+    QVERIFY(!savedJson.contains("resourceRegionEnd"));
+
+    document->undoStack()->setClean();
+    QVERIFY(window.close());
+}
+
+void MainWindowLifecycleTests::sequenceVariablesToolbarEditsPerUutValuesAndFeedsFxMenu()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("variables.json"));
+    QFile sequence(sequencePath);
+    QVERIFY(sequence.open(QIODevice::WriteOnly));
+    sequence.write(R"({
+      "id":"variables-ui",
+      "name":"Variables UI",
+      "groups":[{
+        "id":"main",
+        "kind":"main",
+        "steps":[{
+          "id":"001",
+          "name":"Check ID",
+          "kind":"limit",
+          "parameters":{"comparison":"equal","actual":0,"expected":1}
+        }]
+      }]
+    })");
+    sequence.close();
+
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(sequencePath));
+    window.show();
+    QCoreApplication::processEvents();
+
+    auto* action = window.findChild<QAction*>(
+        QStringLiteral("sequenceVariablesAction"));
+    QVERIFY(action);
+    QVERIFY(action->isEnabled());
+    bool handled = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = qobject_cast<SequenceVariablesDialog*>(
+            QApplication::activeModalWidget());
+        QVERIFY(dialog);
+        auto* add = dialog->findChild<QPushButton*>(
+            QStringLiteral("addSequenceVariableButton"));
+        auto* table = dialog->findChild<QTableWidget*>(
+            QStringLiteral("sequenceVariablesTable"));
+        QVERIFY(add);
+        QVERIFY(table);
+        add->click();
+        QCOMPARE(table->rowCount(), 1);
+        table->item(0, 0)->setText(QStringLiteral("CAN_ID"));
+        auto* type = qobject_cast<QComboBox*>(table->cellWidget(0, 1));
+        auto* scope = qobject_cast<QComboBox*>(table->cellWidget(0, 2));
+        QVERIFY(type);
+        QVERIFY(scope);
+        type->setCurrentIndex(type->findData(QStringLiteral("hex")));
+        scope->setCurrentIndex(scope->findData(QStringLiteral("perUut")));
+        table->item(0, 4)->setText(QStringLiteral("0x101"));
+        table->item(0, 5)->setText(QStringLiteral("0x102"));
+        table->item(0, 6)->setText(QStringLiteral("0x103"));
+        table->item(0, 7)->setText(QStringLiteral("0x104"));
+        table->item(0, 8)->setText(QStringLiteral("CAN identifier by fixture slot"));
+        handled = true;
+        dialog->accept();
+    });
+    action->trigger();
+    QVERIFY(handled);
+
+    auto* document = window.findChild<SequenceDocument*>();
+    QVERIFY(document);
+    QCOMPARE(document->sequenceVariables().size(), 1);
+    const auto variable = document->sequenceVariables().first().toObject();
+    QCOMPARE(variable.value("name").toString(), QString("CAN_ID"));
+    QCOMPARE(variable.value("scope").toString(), QString("perUut"));
+    QCOMPARE(variable.value("values").toArray().size(), 4);
+    QVERIFY(document->isModified());
+
+    StepPropertyEditor editor(document);
+    editor.setCurrentItem(SequenceItemPath{0, {0}});
+    QToolButton* expressionButton = nullptr;
+    QMenu* variableMenu = nullptr;
+    for (auto* button : editor.findChildren<QToolButton*>(
+             QStringLiteral("expressionPickerButton"))) {
+        if (!button->menu()) {
+            continue;
+        }
+        QMetaObject::invokeMethod(button->menu(), "aboutToShow",
+                                  Qt::DirectConnection);
+        for (auto* menuAction : button->menu()->actions()) {
+            if (menuAction->menu() &&
+                menuAction->text() == QStringLiteral("Sequence Variables")) {
+                expressionButton = button;
+                variableMenu = menuAction->menu();
+                break;
+            }
+        }
+        if (variableMenu) {
+            break;
+        }
+    }
+    QVERIFY(expressionButton);
+    QVERIFY(variableMenu);
+    QVERIFY(expressionButton->isEnabled());
+    QCOMPARE(variableMenu->actions().size(), 1);
+    variableMenu->actions().first()->trigger();
+    bool expressionInserted = false;
+    for (auto* lineEdit : editor.findChildren<QLineEdit*>()) {
+        if (lineEdit->text() == QStringLiteral("${var.CAN_ID}")) {
+            expressionInserted = true;
+            break;
+        }
+    }
+    QVERIFY(expressionInserted);
+
+    document->undoStack()->undo();
+    QVERIFY(document->sequenceVariables().isEmpty());
+    document->undoStack()->redo();
+    QCOMPARE(document->sequenceVariables().size(), 1);
     document->undoStack()->setClean();
     QVERIFY(window.close());
 }
@@ -2822,41 +3259,121 @@ void MainWindowLifecycleTests::loginDialogDiscoversSequenceAndValidatesAdminPass
     station.close();
 
     LoginDialog dialog(directory.path());
-    auto* mode = dialog.findChild<QComboBox*>(QStringLiteral("loginModeCombo"));
+    auto* modeSelector = dialog.findChild<QFrame*>(
+        QStringLiteral("loginModeSelector"));
+    auto* testMode = dialog.findChild<QToolButton*>(
+        QStringLiteral("loginTestModeButton"));
+    auto* adminMode = dialog.findChild<QToolButton*>(
+        QStringLiteral("loginAdminModeButton"));
     auto* sequences = dialog.findChild<QComboBox*>(
         QStringLiteral("loginSequenceCombo"));
     auto* password = dialog.findChild<QLineEdit*>(
         QStringLiteral("loginAdminPassword"));
     auto* login = dialog.findChild<QPushButton*>(QStringLiteral("loginButton"));
     auto* error = dialog.findChild<QLabel*>(QStringLiteral("loginErrorLabel"));
-    QVERIFY(mode);
+    auto* brand = dialog.findChild<QLabel*>(QStringLiteral("loginBrand"));
+    auto* close = dialog.findChild<QToolButton*>(
+        QStringLiteral("loginCloseButton"));
+    auto* spinner = dialog.findChild<QWidget*>(
+        QStringLiteral("loginLoadingSpinner"));
+    QVERIFY(modeSelector);
+    QVERIFY(testMode);
+    QVERIFY(adminMode);
     QVERIFY(sequences);
     QVERIFY(password);
     QVERIFY(login);
     QVERIFY(error);
+    QVERIFY(brand);
+    QCOMPARE(brand->accessibleName(), QStringLiteral("PICO"));
+    QVERIFY(!brand->pixmap().isNull());
+    QCOMPARE(brand->alignment(), Qt::AlignCenter);
+    QVERIFY(close);
+    QVERIFY(spinner);
+    dialog.show();
+    QApplication::processEvents();
+    QVERIFY(dialog.windowFlags().testFlag(Qt::FramelessWindowHint));
     QVERIFY(!dialog.findChild<QLabel*>(QStringLiteral("loginStationPath")));
-    QCOMPARE(UiMode(mode->currentData().toInt()), UiMode::Test);
+    QVERIFY(testMode->isChecked());
+    QVERIFY(!adminMode->isChecked());
+    QCOMPARE(testMode->accessibleName(), QStringLiteral("Test mode"));
+    QCOMPARE(adminMode->accessibleName(), QStringLiteral("Admin mode"));
     QCOMPARE(sequences->count(), 1);
     QVERIFY(password->isHidden());
+    const auto brandIsAboveFields = [&] {
+        const int brandBottom = brand->mapTo(
+            &dialog, QPoint(0, brand->height())).y();
+        const int modeTop = modeSelector->mapTo(&dialog, QPoint()).y();
+        return brandBottom < modeTop;
+    };
+    const int testHeight = dialog.height();
+    QVERIFY(brandIsAboveFields());
 
     login->click();
+    QApplication::processEvents();
     QVERIFY(!error->isHidden());
+    QVERIFY(dialog.height() > testHeight);
+    QVERIFY(brandIsAboveFields());
     QCOMPARE(dialog.result(), 0);
 
-    mode->setCurrentIndex(1);
+    adminMode->click();
+    QApplication::processEvents();
+    QVERIFY(adminMode->isChecked());
+    QVERIFY(!testMode->isChecked());
     QVERIFY(!password->isHidden());
+    const int adminHeight = dialog.minimumHeight();
+    QCOMPARE(dialog.maximumHeight(), adminHeight);
+    QVERIFY(adminHeight > testHeight);
+    QVERIFY(brandIsAboveFields());
     password->setText(QStringLiteral("-1"));
+    const QPoint adminPosition = dialog.pos();
     login->click();
-    QVERIFY(!error->isHidden());
+    QApplication::processEvents();
+    QVERIFY(error->isHidden());
+    QCOMPARE(dialog.minimumHeight(), adminHeight);
+    QCOMPARE(dialog.maximumHeight(), adminHeight);
+    QCOMPARE(dialog.pos(), adminPosition);
+    QCOMPARE(password->text(), QStringLiteral("Admin 密码错误"));
+    QCOMPARE(password->echoMode(), QLineEdit::Normal);
+    QVERIFY(password->property("invalid").toBool());
+    QVERIFY(password->hasFocus());
+    QVERIFY(brandIsAboveFields());
     QCOMPARE(dialog.result(), 0);
+
+    QTest::keyClicks(password, QStringLiteral("7"));
+    QCOMPARE(password->text(), QStringLiteral("7"));
+    QCOMPARE(password->echoMode(), QLineEdit::Password);
+    QVERIFY(!password->property("invalid").toBool());
 
     password->setText(QString::number(StartupSupport::dailyAdminPassword()));
     login->click();
-    QCOMPARE(dialog.result(), int(QDialog::Accepted));
+    QVERIFY(!login->isEnabled());
+    QVERIFY(!spinner->isHidden());
+    QTRY_COMPARE(dialog.result(), int(QDialog::Accepted));
     QCOMPARE(dialog.selection().mode, UiMode::Admin);
     QCOMPARE(dialog.selection().sequencePath,
              QFileInfo(sequencePath).absoluteFilePath());
     QVERIFY(dialog.selection().scanDialogEnabled);
+}
+
+void MainWindowLifecycleTests::adminStartupInitializationShowsBusyOverlay()
+{
+    MainWindow window;
+    auto* overlay = window.findChild<QWidget*>(
+        QStringLiteral("adminStartupOverlay"));
+    auto* spinner = window.findChild<QWidget*>(
+        QStringLiteral("adminStartupSpinner"));
+    auto* status = window.findChild<QLabel*>(
+        QStringLiteral("adminStartupStatus"));
+    QVERIFY(overlay);
+    QVERIFY(spinner);
+    QVERIFY(status);
+    QVERIFY(overlay->isHidden());
+
+    window.initializeAdminWorkspace();
+    QVERIFY(!overlay->isHidden());
+    QVERIFY(!spinner->isHidden());
+    QVERIFY(status->text().contains(QStringLiteral("Admin")));
+    QTRY_VERIFY_WITH_TIMEOUT(overlay->isHidden(), 5000);
 }
 
 void MainWindowLifecycleTests::stationScanDialogTogglePersists()
@@ -3469,10 +3986,13 @@ void MainWindowLifecycleTests::productionWindowShowsSkippedStepsAndCleanupAfterF
     };
     const auto failed = findStep(QStringLiteral("failed-item"));
     const auto skipped = findStep(QStringLiteral("not-run"));
-    const auto cleanup = findStep(QStringLiteral("close-device"));
+    const auto cleanup = std::find_if(
+        report.sessionSteps.cbegin(), report.sessionSteps.cend(), [](const auto& step) {
+            return step.stepId == QStringLiteral("close-device");
+        });
     QVERIFY(failed != steps.cend());
     QVERIFY(skipped != steps.cend());
-    QVERIFY(cleanup != steps.cend());
+    QVERIFY(cleanup != report.sessionSteps.cend());
     QCOMPARE(failed->state, PicoATE::Core::ActivationState::Failed);
     QCOMPARE(skipped->state, PicoATE::Core::ActivationState::Skipped);
     QCOMPARE(cleanup->state, PicoATE::Core::ActivationState::Passed);
@@ -3484,6 +4004,15 @@ void MainWindowLifecycleTests::productionWindowShowsSkippedStepsAndCleanupAfterF
 
 void MainWindowLifecycleTests::operatorPromptDialogCannotBeDismissedByKeyboardOrWindowControls()
 {
+    const auto imageDirectory = QDir(QCoreApplication::applicationDirPath())
+        .filePath(QStringLiteral("image"));
+    QVERIFY(QDir().mkpath(imageDirectory));
+    const auto imagePath = QDir(imageDirectory).filePath(
+        QStringLiteral("picoate_prompt_presenter_test.png"));
+    QPixmap sourceImage(80, 40);
+    sourceImage.fill(QColor(QStringLiteral("#2f7ed8")));
+    QVERIFY(sourceImage.save(imagePath, "PNG"));
+
     QWidget owner;
     owner.show();
     ExecutionViewModel viewModel;
@@ -3497,6 +4026,7 @@ void MainWindowLifecycleTests::operatorPromptDialogCannotBeDismissedByKeyboardOr
         {QStringLiteral("mode"), QStringLiteral("confirm")},
         {QStringLiteral("title"), QStringLiteral("Operator Action")},
         {QStringLiteral("message"), QStringLiteral("Press the product button")},
+        {QStringLiteral("image"), QStringLiteral("picoate_prompt_presenter_test.png")},
         {QStringLiteral("confirmText"), QStringLiteral("Continue")},
     };
     presenter.applyRuntimeEvents({requested});
@@ -3507,6 +4037,10 @@ void MainWindowLifecycleTests::operatorPromptDialogCannotBeDismissedByKeyboardOr
     QVERIFY(!dialog->windowFlags().testFlag(Qt::WindowCloseButtonHint));
     QVERIFY(!dialog->windowFlags().testFlag(Qt::WindowMinimizeButtonHint));
     QVERIFY(!dialog->windowFlags().testFlag(Qt::WindowMaximizeButtonHint));
+    auto* image = dialog->findChild<QLabel*>(
+        QStringLiteral("operatorPromptImage"));
+    QVERIFY(image);
+    QVERIFY(!image->pixmap(Qt::ReturnByValue).isNull());
 
     QTest::keyClick(dialog, Qt::Key_Return);
     QVERIFY(dialog->isVisible());
@@ -3520,10 +4054,20 @@ void MainWindowLifecycleTests::operatorPromptDialogCannotBeDismissedByKeyboardOr
     presenter.applyRuntimeEvents({closed});
     QTRY_VERIFY(!dialog->isVisible());
     viewModel.shutdown();
+    QVERIFY(QFile::remove(imagePath));
 }
 
 void MainWindowLifecycleTests::messageBoxPropertyEditorSwitchesConfirmationMode()
 {
+    const auto imageDirectory = QDir(QCoreApplication::applicationDirPath())
+        .filePath(QStringLiteral("image"));
+    QVERIFY(QDir().mkpath(imageDirectory));
+    const auto imageFileName = QStringLiteral("picoate_prompt_editor_test.jpg");
+    const auto imagePath = QDir(imageDirectory).filePath(imageFileName);
+    QPixmap sourceImage(60, 30);
+    sourceImage.fill(QColor(QStringLiteral("#d7ecff")));
+    QVERIFY(sourceImage.save(imagePath, "PNG"));
+
     const auto path = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
         + QStringLiteral("/examples/operator_prompt_sequence.json");
     SequenceDocument document;
@@ -3535,9 +4079,12 @@ void MainWindowLifecycleTests::messageBoxPropertyEditorSwitchesConfirmationMode(
         QStringLiteral("propertyPromptConfirmTextEdit"));
     auto* closeOnStep = editor.findChild<QComboBox*>(
         QStringLiteral("propertyPromptCloseOnStepCombo"));
+    auto* image = editor.findChild<QComboBox*>(
+        QStringLiteral("propertyPromptImageCombo"));
     QVERIFY(mode);
     QVERIFY(buttonText);
     QVERIFY(closeOnStep);
+    QVERIFY(image);
 
     const SequenceItemPath promptPath{0, {0}};
     editor.setCurrentItem(promptPath);
@@ -3555,6 +4102,9 @@ void MainWindowLifecycleTests::messageBoxPropertyEditorSwitchesConfirmationMode(
     QVERIFY(closeOnStep->itemText(targetIndex).contains(
         QStringLiteral("Button State Detected")));
     closeOnStep->setCurrentIndex(targetIndex);
+    const int imageIndex = image->findData(imageFileName);
+    QVERIFY(imageIndex > 0);
+    image->setCurrentIndex(imageIndex);
     QVERIFY(editor.commitPendingChanges());
 
     const auto prompt = document.objectAt(promptPath)
@@ -3563,7 +4113,188 @@ void MainWindowLifecycleTests::messageBoxPropertyEditorSwitchesConfirmationMode(
              QStringLiteral("notice"));
     QCOMPARE(prompt.value(QStringLiteral("closeOnStep")).toString(),
              QStringLiteral("003"));
+    QCOMPARE(prompt.value(QStringLiteral("image")).toString(), imageFileName);
     QVERIFY(!prompt.contains(QStringLiteral("confirmText")));
+    QVERIFY(QFile::remove(imagePath));
+}
+
+void MainWindowLifecycleTests::messageBoxPropertyEditorInsertsRuntimeValues()
+{
+    const auto path = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+        + QStringLiteral("/examples/operator_prompt_sequence.json");
+    SequenceDocument document;
+    QVERIFY(document.load(path));
+    QVERIFY(document.setSequenceVariables(QJsonArray{
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("targetVoltage")},
+                    {QStringLiteral("type"), QStringLiteral("number")},
+                    {QStringLiteral("scope"), QStringLiteral("shared")},
+                    {QStringLiteral("value"), 800.0}}
+    }));
+
+    StepPropertyEditor editor(&document);
+    const SequenceItemPath promptPath{0, {0}};
+    editor.setCurrentItem(promptPath);
+
+    auto* message = editor.findChild<QPlainTextEdit*>(
+        QStringLiteral("propertyPromptMessageEdit"));
+    auto* picker = editor.findChild<QToolButton*>(
+        QStringLiteral("promptValuePickerButton"));
+    QVERIFY(message);
+    QVERIFY(picker);
+    QVERIFY(picker->menu());
+    QVERIFY(QMetaObject::invokeMethod(
+        picker->menu(), "aboutToShow", Qt::DirectConnection));
+
+    const auto findExpression = [](QMenu* root, const QString& expression,
+                                   const auto& self) -> QAction* {
+        if (!root) {
+            return nullptr;
+        }
+        for (auto* action : root->actions()) {
+            if (action->data().toString() == expression) {
+                return action;
+            }
+            if (auto* child = action->menu()) {
+                if (auto* found = self(child, expression, self)) {
+                    return found;
+                }
+            }
+        }
+        return nullptr;
+    };
+    auto* uutAction = findExpression(
+        picker->menu(), QStringLiteral("${uut.id}"), findExpression);
+    auto* variableAction = findExpression(
+        picker->menu(), QStringLiteral("${var.targetVoltage}"), findExpression);
+    QVERIFY(uutAction);
+    QVERIFY(variableAction);
+
+    message->moveCursor(QTextCursor::End);
+    message->insertPlainText(QStringLiteral("\nUUT: "));
+    uutAction->trigger();
+    message->insertPlainText(QStringLiteral("; Target: "));
+    variableAction->trigger();
+    QVERIFY(message->toPlainText().endsWith(
+        QStringLiteral("UUT: ${uut.id}; Target: ${var.targetVoltage}")));
+    QVERIFY(editor.commitPendingChanges());
+
+    const auto prompt = document.objectAt(promptPath)
+        .value(QStringLiteral("prompt")).toObject();
+    QVERIFY(prompt.value(QStringLiteral("message")).toString().endsWith(
+        QStringLiteral("UUT: ${uut.id}; Target: ${var.targetVoltage}")));
+}
+
+void MainWindowLifecycleTests::parserPropertyEditorCreatesNamedOutputsForFx()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(
+        QStringLiteral("named_parser_editor.json"));
+    QFile sequenceFile(sequencePath);
+    QVERIFY(sequenceFile.open(QIODevice::WriteOnly));
+    sequenceFile.write(R"json({
+      "id":"named-parser-editor","name":"Named Parser Editor","groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"parse","name":"Parse SN List","kind":"action",
+           "moduleId":"builtin.data-parser","function":"splitText",
+           "inputs":{"source":"SN001,812.5","delimiter":","}},
+          {"id":"check","name":"Check Voltage","kind":"limit",
+           "inputs":{"actual":""},
+           "parameters":{"comparison":"equal","expected":812.5}}
+        ]
+      }]
+    })json");
+    sequenceFile.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(sequencePath));
+    StepPropertyEditor editor(&document);
+    editor.setPluginRegistry({});
+    editor.setCurrentItem(SequenceItemPath{0, {0}});
+    editor.show();
+    QTest::qWait(20);
+
+    auto* mode = editor.findChild<QComboBox*>(
+        QStringLiteral("pluginInput_resultMode"));
+    auto* table = editor.findChild<QTableWidget*>(
+        QStringLiteral("parserNamedFieldsTable"));
+    auto* add = editor.findChild<QToolButton*>(
+        QStringLiteral("parserNamedFieldAddButton"));
+    QVERIFY(mode);
+    QVERIFY(table);
+    QVERIFY(add);
+    QVERIFY(!table->isVisible());
+
+    mode->setCurrentIndex(mode->findData(QStringLiteral("multiple")));
+    QVERIFY(!table->isHidden());
+    QCOMPARE(table->rowCount(), 1);
+    auto* firstIndex = qobject_cast<QSpinBox*>(table->cellWidget(0, 0));
+    auto* firstName = qobject_cast<QLineEdit*>(table->cellWidget(0, 1));
+    auto* firstType = qobject_cast<QComboBox*>(table->cellWidget(0, 2));
+    QVERIFY(firstIndex);
+    QVERIFY(firstName);
+    QVERIFY(firstType);
+    firstIndex->setValue(0);
+    firstName->setText(QStringLiteral("SN1"));
+
+    add->click();
+    QCOMPARE(table->rowCount(), 2);
+    auto* secondIndex = qobject_cast<QSpinBox*>(table->cellWidget(1, 0));
+    auto* secondName = qobject_cast<QLineEdit*>(table->cellWidget(1, 1));
+    auto* secondType = qobject_cast<QComboBox*>(table->cellWidget(1, 2));
+    QVERIFY(secondIndex);
+    QVERIFY(secondName);
+    QVERIFY(secondType);
+    secondIndex->setValue(1);
+    secondName->setText(QStringLiteral("sn1"));
+    secondType->setCurrentIndex(
+        secondType->findData(QStringLiteral("number")));
+    QVERIFY(!editor.commitPendingChanges());
+    auto* error = editor.findChild<QLabel*>(
+        QStringLiteral("propertyErrorLabel"));
+    QVERIFY(error);
+    QVERIFY(error->isVisible());
+    QVERIFY(error->text().contains(QStringLiteral("duplicated")));
+
+    secondName->setText(QStringLiteral("voltage"));
+    QVERIFY(editor.commitPendingChanges());
+
+    const auto parserInputs = document.objectAt(SequenceItemPath{0, {0}})
+                                  .value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(parserInputs.value(QStringLiteral("resultMode")).toString(),
+             QStringLiteral("multiple"));
+    QCOMPARE(parserInputs.value(QStringLiteral("fields")).toArray().size(), 2);
+    QVERIFY(!parserInputs.contains(QStringLiteral("fieldIndex")));
+    QVERIFY(!parserInputs.contains(QStringLiteral("outputType")));
+
+    editor.setCurrentItem(SequenceItemPath{0, {1}});
+    auto* actual = editor.findChild<QLineEdit*>(
+        QStringLiteral("propertyLimitActualEdit"));
+    QVERIFY(actual);
+    auto* picker = actual->parentWidget()->findChild<QToolButton*>(
+        QStringLiteral("expressionPickerButton"));
+    QVERIFY(picker);
+    QVERIFY(picker->menu());
+    QVERIFY(QMetaObject::invokeMethod(
+        picker->menu(), "aboutToShow", Qt::DirectConnection));
+
+    QAction* voltageAction = nullptr;
+    for (auto* sourceAction : picker->menu()->actions()) {
+        if (!sourceAction->menu()) {
+            continue;
+        }
+        for (auto* outputAction : sourceAction->menu()->actions()) {
+            if (outputAction->text().startsWith(QStringLiteral("voltage "))) {
+                voltageAction = outputAction;
+                break;
+            }
+        }
+    }
+    QVERIFY(voltageAction);
+    voltageAction->trigger();
+    QCOMPARE(actual->text(),
+             QStringLiteral("${step:parse.outputs.fields.voltage}"));
+    QVERIFY(editor.commitPendingChanges());
 }
 
 void MainWindowLifecycleTests::whileLoopPropertyEditorUsesTypedFields()

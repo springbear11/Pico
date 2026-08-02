@@ -2,6 +2,106 @@
 
 namespace PicoATE::Core {
 
+UutVariableBindingResult bindSequenceVariablesForUut(
+    const QVector<SequenceVariableDefinition>& definitions,
+    int uutIndex,
+    const UutId& uutId,
+    const QVariantMap& overrides)
+{
+    UutVariableBindingResult result;
+    if (uutIndex < 0) {
+        result.errors.push_back(
+            {QStringLiteral("uut.index"), QStringLiteral("UUT index must not be negative")});
+        return result;
+    }
+
+    QSet<QString> boundNames;
+    for (const auto& definition : definitions) {
+        const auto name = definition.name.trimmed();
+        if (name.isEmpty()) {
+            result.errors.push_back(
+                {{}, QStringLiteral("Sequence variable name must not be empty")});
+            continue;
+        }
+        if (boundNames.contains(name)) {
+            result.errors.push_back(
+                {name, QStringLiteral("Sequence variable is defined more than once")});
+            continue;
+        }
+        boundNames.insert(name);
+
+        QVariant value;
+        if (definition.scope == SequenceVariableScope::Shared) {
+            value = definition.value;
+        } else if (uutIndex < definition.values.size()) {
+            value = definition.values[uutIndex];
+        }
+        if (!value.isValid() || value.isNull()) {
+            result.errors.push_back(
+                {name,
+                 QStringLiteral("No value is configured for UUT%1").arg(uutIndex + 1)});
+            continue;
+        }
+        result.variables.insert(name, value);
+    }
+
+    for (auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
+        result.variables.insert(it.key(), it.value());
+    }
+
+    if (!result.variables.contains(QStringLiteral("sn"))) {
+        result.variables.insert(QStringLiteral("sn"), uutId);
+    }
+    if (!result.variables.contains(QStringLiteral("serialNumber"))) {
+        result.variables.insert(QStringLiteral("serialNumber"), uutId);
+    }
+    auto uut = result.variables.value(QStringLiteral("uut")).toMap();
+    uut.insert(QStringLiteral("id"), uutId);
+    uut.insert(QStringLiteral("index"), uutIndex);
+    uut.insert(QStringLiteral("number"), uutIndex + 1);
+    uut.insert(QStringLiteral("slot"), uutIndex + 1);
+    if (!uut.contains(QStringLiteral("sn"))) {
+        uut.insert(QStringLiteral("sn"), result.variables.value(QStringLiteral("sn")));
+    }
+    if (!uut.contains(QStringLiteral("serialNumber"))) {
+        uut.insert(QStringLiteral("serialNumber"),
+                   result.variables.value(QStringLiteral("serialNumber")));
+    }
+    result.variables.insert(QStringLiteral("uut"), uut);
+    return result;
+}
+
+QString sequenceVariableTypeName(SequenceVariableType type)
+{
+    switch (type) {
+    case SequenceVariableType::String:
+        return QStringLiteral("string");
+    case SequenceVariableType::Integer:
+        return QStringLiteral("integer");
+    case SequenceVariableType::Hex:
+        return QStringLiteral("hex");
+    case SequenceVariableType::Double:
+        return QStringLiteral("double");
+    case SequenceVariableType::Boolean:
+        return QStringLiteral("bool");
+    }
+    return QStringLiteral("string");
+}
+
+QString sequenceVariableScopeName(SequenceVariableScope scope)
+{
+    return scope == SequenceVariableScope::PerUut
+        ? QStringLiteral("perUut")
+        : QStringLiteral("shared");
+}
+
+ExecutionPhase executionPhaseOf(const ExecNode& node)
+{
+    return node.kind == ExecNodeKind::Cleanup
+        ? ExecutionPhase::Cleanup
+        : node.phase;
+}
+
 bool ExecutionPlan::addNode(const ExecNode& execNode)
 {
     if (execNode.id.isEmpty() || nodes.contains(execNode.id)) {
@@ -91,6 +191,26 @@ std::optional<TestItemRegion> ExecutionPlan::testItemRegionForChild(const NodeId
 {
     for (const auto& region : testItemRegions) {
         if (region.childNodeIds.contains(nodeId)) {
+            return region;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<ResourceRegion> ExecutionPlan::resourceRegionStartingAt(const NodeId& nodeId) const
+{
+    for (const auto& region : resourceRegions) {
+        if (region.entryNodeId == nodeId) {
+            return region;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<ResourceRegion> ExecutionPlan::resourceRegionEndingAt(const NodeId& nodeId) const
+{
+    for (const auto& region : resourceRegions) {
+        if (region.exitNodeId == nodeId) {
             return region;
         }
     }

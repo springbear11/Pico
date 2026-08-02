@@ -6,6 +6,8 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QIcon>
+#include <QTimer>
 
 int main(int argc, char* argv[])
 {
@@ -13,6 +15,7 @@ int main(int argc, char* argv[])
     QCoreApplication::setApplicationName(QStringLiteral("PicoATE UI"));
     QCoreApplication::setApplicationVersion(QStringLiteral("0.2.0"));
     QCoreApplication::setOrganizationName(QStringLiteral("PicoATE"));
+    application.setWindowIcon(QIcon(QStringLiteral(":/branding/PicoATE.png")));
 
     const auto arguments = application.arguments();
     QString sequenceRoot = QCoreApplication::applicationDirPath();
@@ -45,5 +48,8 @@ int main(int argc, char* argv[])
     window.openStationFile(selection.stationPath);
     window.showRunPage();
     window.showMaximized();
+    QTimer::singleShot(0, &window, [&window] {
+        window.initializeAdminWorkspace();
+    });
     return application.exec();
 }

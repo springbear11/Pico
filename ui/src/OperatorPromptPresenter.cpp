@@ -3,10 +3,14 @@
 #include "ExecutionViewModel.h"
 
 #include <QCloseEvent>
+#include <QCoreApplication>
 #include <QDialog>
+#include <QDir>
+#include <QFileInfo>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QPointer>
+#include <QPixmap>
 #include <QPushButton>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -15,11 +19,49 @@ namespace PicoATE::Ui {
 
 namespace {
 
+QString resolvePromptImagePath(const QString& configuredImage)
+{
+    const auto configured = configuredImage.trimmed();
+    if (configured.isEmpty()) {
+        return {};
+    }
+
+    const QFileInfo direct(configured);
+    if (direct.isAbsolute()) {
+        return direct.absoluteFilePath();
+    }
+
+    const auto normalized = QDir::fromNativeSeparators(configured);
+    const bool includesImageFolder =
+        normalized.compare(QStringLiteral("image"), Qt::CaseInsensitive) == 0 ||
+        normalized.startsWith(QStringLiteral("image/"), Qt::CaseInsensitive);
+    const QStringList roots = {
+        QCoreApplication::applicationDirPath(),
+        QDir::currentPath(),
+    };
+
+    QString firstCandidate;
+    for (const auto& root : roots) {
+        const auto candidate = QDir(root).absoluteFilePath(
+            includesImageFolder
+                ? normalized
+                : QStringLiteral("image/%1").arg(normalized));
+        if (firstCandidate.isEmpty()) {
+            firstCandidate = candidate;
+        }
+        if (QFileInfo::exists(candidate)) {
+            return candidate;
+        }
+    }
+    return firstCandidate;
+}
+
 class OperatorPromptDialog final : public QDialog
 {
 public:
     OperatorPromptDialog(const QString& title,
                          const QString& message,
+                         const QString& image,
                          const QString& confirmText,
                          bool showConfirmButton,
                          QWidget* parent)
@@ -42,6 +84,35 @@ public:
         messageLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
         layout->addWidget(messageLabel);
 
+        if (!image.trimmed().isEmpty()) {
+            const auto imagePath = resolvePromptImagePath(image);
+            QPixmap pixmap(imagePath);
+            auto* imageLabel = new QLabel(this);
+            imageLabel->setAlignment(Qt::AlignCenter);
+            if (!pixmap.isNull()) {
+                imageLabel->setObjectName(QStringLiteral("operatorPromptImage"));
+                constexpr int maximumImageWidth = 760;
+                constexpr int maximumImageHeight = 420;
+                if (pixmap.width() > maximumImageWidth ||
+                    pixmap.height() > maximumImageHeight) {
+                    pixmap = pixmap.scaled(maximumImageWidth,
+                                           maximumImageHeight,
+                                           Qt::KeepAspectRatio,
+                                           Qt::SmoothTransformation);
+                }
+                imageLabel->setPixmap(pixmap);
+                imageLabel->setToolTip(imagePath);
+            } else {
+                imageLabel->setObjectName(
+                    QStringLiteral("operatorPromptImageError"));
+                imageLabel->setWordWrap(true);
+                imageLabel->setText(
+                    tr("Image unavailable: %1").arg(image.trimmed()));
+                imageLabel->setToolTip(imagePath);
+            }
+            layout->addWidget(imageLabel, 0, Qt::AlignCenter);
+        }
+
         if (showConfirmButton) {
             m_confirmButton = new QPushButton(
                 confirmText.isEmpty() ? tr("OK") : confirmText, this);
@@ -59,6 +130,8 @@ public:
         setStyleSheet(QStringLiteral(
             "QDialog#operatorPromptDialog { background: #ffffff; }"
             "QLabel#operatorPromptMessage { color: #172033; font-size: 15px; }"
+            "QLabel#operatorPromptImage { background: #f5f7fa; border: 1px solid #dce2e8; }"
+            "QLabel#operatorPromptImageError { color: #b42318; font-size: 12px; }"
             "QLabel#operatorPromptWaitingLabel { color: #5f6b7a; font-size: 12px; }"
             "QPushButton#operatorPromptConfirmButton { min-width: 96px; min-height: 34px; "
             "background: #2f7ed8; color: white; border: 0; border-radius: 4px; padding: 0 18px; }"
@@ -150,6 +223,7 @@ void OperatorPromptPresenter::showPrompt(const PicoATE::Core::RuntimeEvent& even
     auto* dialog = new OperatorPromptDialog(
         event.details.value("title").toString(),
         event.details.value("message", event.message).toString(),
+        event.details.value("image").toString(),
         event.details.value("confirmText", QStringLiteral("OK")).toString(),
         !notice,
         m_owner);

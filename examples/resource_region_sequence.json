@@ -1,0 +1,65 @@
+{
+  "id": "resource-region-example",
+  "name": "Multi-UUT Resource Region Example",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "setup",
+      "name": "Setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "001",
+          "name": "Prepare Shared Fixture",
+          "kind": "noop"
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "name": "Main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "002",
+          "name": "Transaction Start",
+          "kind": "noop",
+          "resourceRegionStart": {
+            "id": "resource-region-001",
+            "resources": [
+              {
+                "resourceId": "SHARED_FIXTURE",
+                "mode": "exclusive"
+              }
+            ]
+          }
+        },
+        {
+          "id": "003",
+          "name": "Transaction Work",
+          "kind": "wait",
+          "ms": 10
+        },
+        {
+          "id": "004",
+          "name": "Transaction End",
+          "kind": "noop",
+          "resourceRegionEnd": "resource-region-001"
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "name": "Cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "005",
+          "name": "Release Shared Fixture",
+          "kind": "cleanup",
+          "alwaysRun": true
+        }
+      ]
+    }
+  ]
+}

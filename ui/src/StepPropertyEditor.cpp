@@ -3,12 +3,17 @@
 #include "OnOffControl.h"
 
 #include <QAbstractButton>
+#include <QAbstractItemView>
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
+#include <QCoreApplication>
+#include <QDir>
 #include <QDoubleSpinBox>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -23,6 +28,7 @@
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTextCursor>
 #include <QTimer>
 #include <QToolButton>
@@ -533,6 +539,15 @@ void StepPropertyEditor::setEditable(bool editable)
 
 void StepPropertyEditor::setPluginRegistry(QVector<PluginManifest> plugins)
 {
+    const auto hasDataParser = std::any_of(
+        plugins.cbegin(), plugins.cend(), [](const PluginManifest& plugin) {
+            return plugin.moduleId.compare(
+                       QStringLiteral("builtin.data-parser"),
+                       Qt::CaseInsensitive) == 0;
+        });
+    if (!hasDataParser) {
+        plugins.push_back(builtInDataParserManifest());
+    }
     m_plugins = std::move(plugins);
     rebuildFunctionChoices();
     rebuildDeviceChoices();
@@ -628,6 +643,7 @@ bool StepPropertyEditor::focusField(const QString& fieldPath)
         if (nested == "mode") widget = m_promptModeCombo;
         else if (nested == "title") widget = m_promptTitleEdit;
         else if (nested == "message") widget = m_promptMessageEdit;
+        else if (nested == "image") widget = m_promptImageCombo;
         else if (nested == "confirmText") widget = m_promptConfirmTextEdit;
         else if (nested == "closeOnStep") widget = m_promptCloseOnStepCombo;
         else if (nested == "timeoutMs") widget = m_promptTimeoutSpin;
@@ -897,8 +913,16 @@ void StepPropertyEditor::buildDataPage()
     m_promptMessageEdit = new QPlainTextEdit(content);
     m_promptMessageEdit->setObjectName(QStringLiteral("propertyPromptMessageEdit"));
     m_promptMessageEdit->setMinimumHeight(90);
-    m_promptMessageEdit->setPlaceholderText(tr("Tell the operator what to do"));
-    m_dataForm->addRow(tr("Message"), m_promptMessageEdit);
+    m_promptMessageEdit->setPlaceholderText(
+        tr("Tell the operator what to do. Runtime values can be inserted with fx."));
+    m_promptMessageField = wrapPromptMessageEditor(m_promptMessageEdit);
+    m_dataForm->addRow(tr("Message"), m_promptMessageField);
+    m_promptImageCombo = new QComboBox(content);
+    m_promptImageCombo->setObjectName(QStringLiteral("propertyPromptImageCombo"));
+    m_promptImageCombo->setInsertPolicy(QComboBox::NoInsert);
+    m_promptImageCombo->setToolTip(
+        tr("Optional PNG/JPG image from the image folder beside PicoATE.UI.exe"));
+    m_dataForm->addRow(tr("Image (optional)"), m_promptImageCombo);
     m_promptConfirmTextEdit = new QLineEdit(content);
     m_promptConfirmTextEdit->setObjectName(QStringLiteral("propertyPromptConfirmTextEdit"));
     m_dataForm->addRow(tr("Button text"), m_promptConfirmTextEdit);
@@ -1179,6 +1203,7 @@ void StepPropertyEditor::loadCurrentObject()
     m_promptTitleEdit->setText(
         prompt.value("title").toString(tr("Message")));
     m_promptMessageEdit->setPlainText(prompt.value("message").toString());
+    rebuildPromptImageChoices(prompt.value("image").toString());
     m_promptConfirmTextEdit->setText(
         prompt.value("confirmText").toString(QStringLiteral("OK")));
     rebuildPromptCloseStepChoices(prompt.value("closeOnStep").toString());
@@ -1290,7 +1315,8 @@ void StepPropertyEditor::updateKindRows()
     setFormRowVisible(m_dataForm, m_waitMsSpin, kind == "wait");
     setFormRowVisible(m_dataForm, m_promptModeCombo, operatorPrompt);
     setFormRowVisible(m_dataForm, m_promptTitleEdit, operatorPrompt);
-    setFormRowVisible(m_dataForm, m_promptMessageEdit, operatorPrompt);
+    setFormRowVisible(m_dataForm, m_promptMessageField, operatorPrompt);
+    setFormRowVisible(m_dataForm, m_promptImageCombo, operatorPrompt);
     setFormRowVisible(m_dataForm, m_promptConfirmTextEdit,
                       operatorPrompt && !noticePrompt);
     setFormRowVisible(m_dataForm, m_promptCloseOnStepCombo, noticePrompt);
@@ -1657,6 +1683,10 @@ void StepPropertyEditor::rebuildPluginInputEditors()
         }
     }
     m_pluginInputEditors.clear();
+    m_parserFieldsField = nullptr;
+    m_parserFieldsTable = nullptr;
+    m_parserFieldAddButton = nullptr;
+    m_parserFieldRemoveButton = nullptr;
 
     const auto* function = currentPluginFunction();
     const auto kind = m_kindCombo->currentData().toString();
@@ -1809,8 +1839,117 @@ void StepPropertyEditor::rebuildPluginInputEditors()
             }
         }
         m_pluginInputsForm->addRow(label, fieldWidget);
-        m_pluginInputEditors.push_back({definition, editor, inheritedFromStation});
+        m_pluginInputEditors.push_back(
+            {definition, editor, fieldWidget, inheritedFromStation});
         observeDraftWidget(editor);
+    }
+
+    if (!parserFieldSourceKey().isEmpty()) {
+        m_parserFieldsField = new QWidget(m_pluginInputsGroup);
+        auto* mappingLayout = new QVBoxLayout(m_parserFieldsField);
+        mappingLayout->setContentsMargins(0, 0, 0, 0);
+        mappingLayout->setSpacing(4);
+
+        m_parserFieldsTable = new QTableWidget(m_parserFieldsField);
+        m_parserFieldsTable->setObjectName(
+            QStringLiteral("parserNamedFieldsTable"));
+        m_parserFieldsTable->setColumnCount(3);
+        m_parserFieldsTable->setHorizontalHeaderLabels(
+            {parserFieldSourceKey() == QStringLiteral("group")
+                 ? tr("Capture Group") : tr("Field Index"),
+             tr("Output Name"), tr("Output Type")});
+        m_parserFieldsTable->horizontalHeader()->setSectionResizeMode(
+            0, QHeaderView::ResizeToContents);
+        m_parserFieldsTable->horizontalHeader()->setSectionResizeMode(
+            1, QHeaderView::Stretch);
+        m_parserFieldsTable->horizontalHeader()->setSectionResizeMode(
+            2, QHeaderView::ResizeToContents);
+        m_parserFieldsTable->verticalHeader()->hide();
+        m_parserFieldsTable->setSelectionBehavior(
+            QAbstractItemView::SelectRows);
+        m_parserFieldsTable->setSelectionMode(
+            QAbstractItemView::SingleSelection);
+        m_parserFieldsTable->setMinimumHeight(128);
+        m_parserFieldsTable->setMaximumHeight(220);
+        mappingLayout->addWidget(m_parserFieldsTable);
+
+        auto* buttonLayout = new QHBoxLayout;
+        buttonLayout->setContentsMargins(0, 0, 0, 0);
+        m_parserFieldAddButton = new QToolButton(m_parserFieldsField);
+        m_parserFieldAddButton->setObjectName(
+            QStringLiteral("parserNamedFieldAddButton"));
+        m_parserFieldAddButton->setText(QStringLiteral("+"));
+        m_parserFieldAddButton->setToolTip(tr("Add named output"));
+        m_parserFieldAddButton->setFixedSize(28, 28);
+        m_parserFieldRemoveButton = new QToolButton(m_parserFieldsField);
+        m_parserFieldRemoveButton->setObjectName(
+            QStringLiteral("parserNamedFieldRemoveButton"));
+        m_parserFieldRemoveButton->setText(QStringLiteral("-"));
+        m_parserFieldRemoveButton->setToolTip(tr("Remove selected output"));
+        m_parserFieldRemoveButton->setFixedSize(28, 28);
+        buttonLayout->addWidget(m_parserFieldAddButton);
+        buttonLayout->addWidget(m_parserFieldRemoveButton);
+        buttonLayout->addStretch(1);
+        mappingLayout->addLayout(buttonLayout);
+
+        for (const auto& value : currentInputs
+                                      .value(QStringLiteral("fields"))
+                                      .toArray()) {
+            if (!value.isObject()) {
+                continue;
+            }
+            const auto field = value.toObject();
+            appendParserFieldMappingRow(
+                field.value(parserFieldSourceKey()).toInt(),
+                field.value(QStringLiteral("name")).toString(),
+                field.value(QStringLiteral("type"))
+                    .toString(QStringLiteral("string")));
+        }
+
+        connect(m_parserFieldAddButton, &QToolButton::clicked, this, [this] {
+            if (!m_parserFieldsTable || m_parserFieldsTable->rowCount() >= 128) {
+                return;
+            }
+            const int row = m_parserFieldsTable->rowCount();
+            appendParserFieldMappingRow(
+                row, QStringLiteral("field%1").arg(row + 1),
+                QStringLiteral("string"));
+            m_parserFieldsTable->selectRow(row);
+            markDraftDirty();
+        });
+        connect(m_parserFieldRemoveButton, &QToolButton::clicked, this, [this] {
+            if (!m_parserFieldsTable) {
+                return;
+            }
+            const int row = m_parserFieldsTable->currentRow();
+            if (row < 0) {
+                return;
+            }
+            m_parserFieldsTable->removeRow(row);
+            m_parserFieldRemoveButton->setEnabled(
+                m_editable && m_parserFieldsTable->rowCount() > 0);
+            markDraftDirty();
+        });
+        connect(m_parserFieldsTable, &QTableWidget::currentCellChanged,
+                this, [this](int currentRow) {
+            if (m_parserFieldRemoveButton) {
+                m_parserFieldRemoveButton->setEnabled(
+                    m_editable && currentRow >= 0);
+            }
+        });
+        m_pluginInputsForm->addRow(tr("Named Outputs"), m_parserFieldsField);
+
+        for (const auto& item : std::as_const(m_pluginInputEditors)) {
+            if (item.definition.key != QStringLiteral("resultMode")) {
+                continue;
+            }
+            if (auto* combo = qobject_cast<QComboBox*>(item.widget)) {
+                connect(combo, &QComboBox::currentIndexChanged, this,
+                        [this] { updateParserFieldMappingVisibility(); });
+            }
+            break;
+        }
+        updateParserFieldMappingVisibility();
     }
     if (canFunction) {
         for (const auto& item : std::as_const(m_pluginInputEditors)) {
@@ -1828,6 +1967,199 @@ void StepPropertyEditor::rebuildPluginInputEditors()
         refreshCanIdentifierHints();
     }
     m_pluginInputsGroup->show();
+}
+
+QString StepPropertyEditor::parserFieldSourceKey() const
+{
+    if (!m_moduleIdEdit || !m_functionEdit ||
+        m_moduleIdEdit->text().trimmed().compare(
+            QStringLiteral("builtin.data-parser"),
+            Qt::CaseInsensitive) != 0) {
+        return {};
+    }
+    const auto function = m_functionEdit->currentData().toString();
+    if (function.compare(QStringLiteral("splitText"),
+                         Qt::CaseInsensitive) == 0) {
+        return QStringLiteral("index");
+    }
+    if (function.compare(QStringLiteral("regexCapture"),
+                         Qt::CaseInsensitive) == 0) {
+        return QStringLiteral("group");
+    }
+    return {};
+}
+
+bool StepPropertyEditor::isMultipleFieldParserFunction() const
+{
+    if (parserFieldSourceKey().isEmpty()) {
+        return false;
+    }
+    for (const auto& item : m_pluginInputEditors) {
+        if (item.definition.key != QStringLiteral("resultMode")) {
+            continue;
+        }
+        if (const auto* combo = qobject_cast<const QComboBox*>(item.widget)) {
+            return combo->currentData().toString().compare(
+                       QStringLiteral("multiple"),
+                       Qt::CaseInsensitive) == 0;
+        }
+    }
+    return false;
+}
+
+void StepPropertyEditor::appendParserFieldMappingRow(
+    int sourceIndex, const QString& name, const QString& outputType)
+{
+    if (!m_parserFieldsTable) {
+        return;
+    }
+    const int row = m_parserFieldsTable->rowCount();
+    m_parserFieldsTable->insertRow(row);
+
+    auto* source = new QSpinBox(m_parserFieldsTable);
+    source->setObjectName(
+        QStringLiteral("parserNamedFieldSource_%1").arg(row));
+    if (parserFieldSourceKey() == QStringLiteral("group")) {
+        source->setRange(0, 1000);
+    } else {
+        source->setRange(-100000, 100000);
+    }
+    source->setValue(sourceIndex);
+    source->setToolTip(parserFieldSourceKey() == QStringLiteral("group")
+        ? tr("Regular-expression capture group; group 0 is the full match")
+        : tr("Zero-based field index; negative values count from the end"));
+
+    auto* outputName = new QLineEdit(m_parserFieldsTable);
+    outputName->setObjectName(
+        QStringLiteral("parserNamedFieldName_%1").arg(row));
+    outputName->setPlaceholderText(tr("Example: SN1"));
+    outputName->setText(name);
+    outputName->setToolTip(
+        tr("Starts with a letter or underscore; use letters, digits, and underscores"));
+
+    auto* type = new QComboBox(m_parserFieldsTable);
+    type->setObjectName(
+        QStringLiteral("parserNamedFieldType_%1").arg(row));
+    type->addItem(tr("String"), QStringLiteral("string"));
+    type->addItem(tr("Signed Integer"), QStringLiteral("integer"));
+    type->addItem(tr("Unsigned Integer"), QStringLiteral("unsigned"));
+    type->addItem(tr("Number"), QStringLiteral("number"));
+    type->addItem(tr("Boolean"), QStringLiteral("boolean"));
+    type->addItem(tr("Hex Number"), QStringLiteral("hex"));
+    const int selectedType = type->findData(outputType.trimmed().toLower());
+    type->setCurrentIndex(selectedType >= 0 ? selectedType : 0);
+
+    m_parserFieldsTable->setCellWidget(row, 0, source);
+    m_parserFieldsTable->setCellWidget(row, 1, outputName);
+    m_parserFieldsTable->setCellWidget(row, 2, type);
+    observeDraftWidget(source);
+    observeDraftWidget(outputName);
+    observeDraftWidget(type);
+    if (m_parserFieldAddButton) {
+        m_parserFieldAddButton->setEnabled(
+            m_editable && m_parserFieldsTable->rowCount() < 128);
+    }
+}
+
+void StepPropertyEditor::updateParserFieldMappingVisibility()
+{
+    if (!m_pluginInputsForm || parserFieldSourceKey().isEmpty()) {
+        return;
+    }
+    const bool multiple = isMultipleFieldParserFunction();
+    for (const auto& item : std::as_const(m_pluginInputEditors)) {
+        const bool singleOnly = item.definition.key == QStringLiteral("fieldIndex") ||
+                                item.definition.key == QStringLiteral("captureGroup") ||
+                                item.definition.key == QStringLiteral("outputType");
+        if (singleOnly) {
+            setFormRowVisible(m_pluginInputsForm, item.fieldWidget, !multiple);
+        }
+    }
+    setFormRowVisible(m_pluginInputsForm, m_parserFieldsField, multiple);
+    if (multiple && m_parserFieldsTable &&
+        m_parserFieldsTable->rowCount() == 0) {
+        appendParserFieldMappingRow(0, QStringLiteral("field1"),
+                                    QStringLiteral("string"));
+    }
+    if (m_parserFieldAddButton) {
+        m_parserFieldAddButton->setEnabled(
+            m_editable && multiple && m_parserFieldsTable &&
+            m_parserFieldsTable->rowCount() < 128);
+    }
+    if (m_parserFieldRemoveButton) {
+        m_parserFieldRemoveButton->setEnabled(
+            m_editable && multiple && m_parserFieldsTable &&
+            m_parserFieldsTable->currentRow() >= 0);
+    }
+}
+
+bool StepPropertyEditor::mergeParserFieldMappings(
+    QJsonObject& inputs, QString& errorMessage, QWidget** invalidWidget) const
+{
+    const auto sourceKey = parserFieldSourceKey();
+    if (sourceKey.isEmpty()) {
+        return true;
+    }
+    if (!isMultipleFieldParserFunction()) {
+        inputs.remove(QStringLiteral("fields"));
+        return true;
+    }
+    inputs.remove(sourceKey == QStringLiteral("group")
+                      ? QStringLiteral("captureGroup")
+                      : QStringLiteral("fieldIndex"));
+    inputs.remove(QStringLiteral("outputType"));
+    if (!m_parserFieldsTable || m_parserFieldsTable->rowCount() == 0) {
+        errorMessage = tr("Add at least one named output");
+        if (invalidWidget) {
+            *invalidWidget = m_parserFieldsField;
+        }
+        return false;
+    }
+
+    static const QRegularExpression namePattern(
+        QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+    QSet<QString> names;
+    QJsonArray mappings;
+    for (int row = 0; row < m_parserFieldsTable->rowCount(); ++row) {
+        const auto* source = qobject_cast<const QSpinBox*>(
+            m_parserFieldsTable->cellWidget(row, 0));
+        const auto* nameEdit = qobject_cast<const QLineEdit*>(
+            m_parserFieldsTable->cellWidget(row, 1));
+        const auto* type = qobject_cast<const QComboBox*>(
+            m_parserFieldsTable->cellWidget(row, 2));
+        if (!source || !nameEdit || !type) {
+            errorMessage = tr("Named output row %1 is incomplete").arg(row + 1);
+            if (invalidWidget) {
+                *invalidWidget = m_parserFieldsTable;
+            }
+            return false;
+        }
+        const auto name = nameEdit->text().trimmed();
+        if (!namePattern.match(name).hasMatch()) {
+            errorMessage = tr(
+                "Output name '%1' must start with a letter or underscore and "
+                "contain only letters, digits, or underscores").arg(name);
+            if (invalidWidget) {
+                *invalidWidget = const_cast<QLineEdit*>(nameEdit);
+            }
+            return false;
+        }
+        const auto nameKey = name.toCaseFolded();
+        if (names.contains(nameKey)) {
+            errorMessage = tr("Output name '%1' is duplicated").arg(name);
+            if (invalidWidget) {
+                *invalidWidget = const_cast<QLineEdit*>(nameEdit);
+            }
+            return false;
+        }
+        names.insert(nameKey);
+        mappings.push_back(QJsonObject{
+            {sourceKey, source->value()},
+            {QStringLiteral("name"), name},
+            {QStringLiteral("type"), type->currentData().toString()}});
+    }
+    inputs.insert(QStringLiteral("fields"), mappings);
+    return true;
 }
 
 void StepPropertyEditor::refreshCanIdentifierHints()
@@ -1874,7 +2206,7 @@ QWidget* StepPropertyEditor::wrapExpressionEditor(QLineEdit* editor)
     auto* button = new QToolButton(container);
     button->setObjectName(QStringLiteral("expressionPickerButton"));
     button->setText(QStringLiteral("fx"));
-    button->setToolTip(tr("Insert an output from a previous step"));
+    button->setToolTip(tr("Insert a sequence variable or previous Step output"));
     button->setPopupMode(QToolButton::InstantPopup);
     button->setFixedSize(28, 28);
     auto* menu = new QMenu(button);
@@ -1892,6 +2224,40 @@ void StepPropertyEditor::rebuildExpressionMenu(QMenu* menu, QLineEdit* editor)
         return;
     }
     menu->clear();
+    int variableCount = 0;
+    if (m_document) {
+        const auto definitions = m_document->sequenceVariables();
+        QMenu* variableMenu = nullptr;
+        for (const auto& value : definitions) {
+            if (!value.isObject()) {
+                continue;
+            }
+            const auto definition = value.toObject();
+            const auto name = definition.value(QStringLiteral("name"))
+                                  .toString().trimmed();
+            if (name.isEmpty()) {
+                continue;
+            }
+            if (!variableMenu) {
+                variableMenu = menu->addMenu(tr("Sequence Variables"));
+            }
+            const auto type = definition.value(QStringLiteral("type"))
+                                  .toString(QStringLiteral("string"));
+            const auto scope = definition.value(QStringLiteral("scope"))
+                                   .toString(QStringLiteral("shared"));
+            auto* action = variableMenu->addAction(
+                QStringLiteral("%1  [%2 / %3]").arg(name, type, scope));
+            action->setToolTip(
+                definition.value(QStringLiteral("description")).toString());
+            connect(action, &QAction::triggered, editor,
+                    [editor, expression = QStringLiteral("${var.%1}").arg(name)] {
+                        editor->setText(expression);
+                        editor->setFocus();
+                        editor->selectAll();
+                    });
+            ++variableCount;
+        }
+    }
     const auto candidates = m_document
         ? buildStepOutputExpressionCandidates(
               m_document->rootObject(), m_path, m_plugins, m_pluginByDeviceId)
@@ -1920,7 +2286,126 @@ void StepPropertyEditor::rebuildExpressionMenu(QMenu* menu, QLineEdit* editor)
                 });
     }
     if (auto* button = qobject_cast<QToolButton*>(menu->parentWidget())) {
-        button->setEnabled(m_editable && !candidates.isEmpty());
+        button->setEnabled(m_editable &&
+                           (variableCount > 0 || !candidates.isEmpty()));
+    }
+}
+
+QWidget* StepPropertyEditor::wrapPromptMessageEditor(QPlainTextEdit* editor)
+{
+    auto* container = new QWidget(editor->parentWidget());
+    auto* layout = new QHBoxLayout(container);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+    layout->addWidget(editor, 1);
+
+    auto* button = new QToolButton(container);
+    button->setObjectName(QStringLiteral("promptValuePickerButton"));
+    button->setText(QStringLiteral("fx"));
+    button->setToolTip(tr("Insert a runtime value at the message cursor"));
+    button->setPopupMode(QToolButton::InstantPopup);
+    button->setFixedSize(28, 28);
+    auto* menu = new QMenu(button);
+    rebuildPromptExpressionMenu(menu, editor);
+    connect(menu, &QMenu::aboutToShow, this,
+            [this, menu, editor] {
+                rebuildPromptExpressionMenu(menu, editor);
+            });
+    button->setMenu(menu);
+    layout->addWidget(button, 0, Qt::AlignTop);
+    return container;
+}
+
+void StepPropertyEditor::rebuildPromptExpressionMenu(
+    QMenu* menu, QPlainTextEdit* editor)
+{
+    if (!menu || !editor) {
+        return;
+    }
+    menu->clear();
+
+    const auto addExpression = [editor](QMenu* target,
+                                        const QString& label,
+                                        const QString& expression,
+                                        const QString& tooltip = {}) {
+        auto* action = target->addAction(label);
+        action->setData(expression);
+        action->setToolTip(tooltip);
+        QObject::connect(action, &QAction::triggered, editor,
+                         [editor, expression] {
+            auto cursor = editor->textCursor();
+            cursor.insertText(expression);
+            editor->setTextCursor(cursor);
+            editor->setFocus();
+        });
+    };
+
+    auto* runtimeMenu = menu->addMenu(tr("Runtime Values"));
+    addExpression(runtimeMenu, tr("Serial Number (SN)"),
+                  QStringLiteral("${sn}"));
+    addExpression(runtimeMenu, tr("UUT ID"),
+                  QStringLiteral("${uut.id}"));
+    addExpression(runtimeMenu, tr("Frame ID"),
+                  QStringLiteral("${frame.id}"));
+    addExpression(runtimeMenu, tr("Attempt Number"),
+                  QStringLiteral("${attempt.number}"));
+
+    if (m_document) {
+        QMenu* variableMenu = nullptr;
+        for (const auto& value : m_document->sequenceVariables()) {
+            if (!value.isObject()) {
+                continue;
+            }
+            const auto definition = value.toObject();
+            const auto name = definition.value(QStringLiteral("name"))
+                                  .toString().trimmed();
+            if (name.isEmpty()) {
+                continue;
+            }
+            if (!variableMenu) {
+                variableMenu = menu->addMenu(tr("Sequence Variables"));
+            }
+            const auto type = definition.value(QStringLiteral("type"))
+                                  .toString(QStringLiteral("string"));
+            const auto scope = definition.value(QStringLiteral("scope"))
+                                   .toString(QStringLiteral("shared"));
+            addExpression(
+                variableMenu,
+                QStringLiteral("%1  [%2 / %3]").arg(name, type, scope),
+                QStringLiteral("${var.%1}").arg(name),
+                definition.value(QStringLiteral("description")).toString());
+        }
+    }
+
+    const auto candidates = m_document
+        ? buildStepOutputExpressionCandidates(
+              m_document->rootObject(), m_path, m_plugins, m_pluginByDeviceId)
+        : QVector<StepOutputExpressionCandidate>{};
+    if (!candidates.isEmpty()) {
+        auto* outputsMenu = menu->addMenu(tr("Previous Step Outputs"));
+        QHash<QString, QMenu*> sourceMenus;
+        for (const auto& candidate : candidates) {
+            auto* sourceMenu = sourceMenus.value(candidate.stepPath, nullptr);
+            if (!sourceMenu) {
+                sourceMenu = outputsMenu->addMenu(
+                    QStringLiteral("%1 - %2")
+                        .arg(candidate.stepPath, candidate.stepName));
+                sourceMenus.insert(candidate.stepPath, sourceMenu);
+            }
+            auto tooltip = pluginParameterTypeName(candidate.type);
+            if (!candidate.unit.isEmpty()) {
+                tooltip += QStringLiteral(" / %1").arg(candidate.unit);
+            }
+            addExpression(sourceMenu,
+                          QStringLiteral("%1 [%2]")
+                              .arg(candidate.outputName, candidate.outputKey),
+                          candidate.expression,
+                          tooltip);
+        }
+    }
+
+    if (auto* button = qobject_cast<QToolButton*>(menu->parentWidget())) {
+        button->setEnabled(m_editable && !m_previewing);
     }
 }
 
@@ -1979,6 +2464,73 @@ QString StepPropertyEditor::selectedPromptCloseStep() const
            data.isValid()
         ? data.toString().trimmed()
         : m_promptCloseOnStepCombo->currentText().trimmed();
+}
+
+void StepPropertyEditor::rebuildPromptImageChoices(const QString& selectedImage)
+{
+    if (!m_promptImageCombo) {
+        return;
+    }
+
+    const QSignalBlocker blocker(m_promptImageCombo);
+    m_promptImageCombo->clear();
+    m_promptImageCombo->addItem(tr("No image"), QString{});
+
+    QStringList roots = {
+        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("image")),
+        QDir(QDir::currentPath()).filePath(QStringLiteral("image")),
+    };
+    QSet<QString> seenRoots;
+    QSet<QString> seenFiles;
+    for (const auto& root : roots) {
+        const auto absoluteRoot = QFileInfo(root).absoluteFilePath();
+        const auto rootKey = QDir::cleanPath(absoluteRoot).toLower();
+        if (seenRoots.contains(rootKey)) {
+            continue;
+        }
+        seenRoots.insert(rootKey);
+
+        const QDir directory(absoluteRoot);
+        const auto files = directory.entryList(
+            {QStringLiteral("*.png"), QStringLiteral("*.jpg"),
+             QStringLiteral("*.jpeg")},
+            QDir::Files | QDir::Readable,
+            QDir::Name | QDir::IgnoreCase);
+        for (const auto& file : files) {
+            const auto fileKey = file.toLower();
+            if (seenFiles.contains(fileKey)) {
+                continue;
+            }
+            seenFiles.insert(fileKey);
+            m_promptImageCombo->addItem(file, file);
+            m_promptImageCombo->setItemData(
+                m_promptImageCombo->count() - 1,
+                directory.absoluteFilePath(file),
+                Qt::ToolTipRole);
+        }
+    }
+
+    const auto requested = selectedImage.trimmed();
+    int selectedIndex = requested.isEmpty()
+        ? 0
+        : m_promptImageCombo->findData(requested);
+    if (selectedIndex < 0) {
+        m_promptImageCombo->addItem(
+            tr("%1 (not found)").arg(requested), requested);
+        selectedIndex = m_promptImageCombo->count() - 1;
+        m_promptImageCombo->setItemData(
+            selectedIndex,
+            tr("The configured image is not currently available in the image folder"),
+            Qt::ToolTipRole);
+    }
+    m_promptImageCombo->setCurrentIndex(selectedIndex);
+}
+
+QString StepPropertyEditor::selectedPromptImage() const
+{
+    return m_promptImageCombo && m_promptImageCombo->currentIndex() >= 0
+        ? m_promptImageCombo->currentData().toString().trimmed()
+        : QString{};
 }
 
 bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
@@ -2082,6 +2634,9 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
     const auto* function = currentPluginFunction();
     if (!function) {
         return true;
+    }
+    if (!mergeParserFieldMappings(inputs, errorMessage, invalidWidget)) {
+        return false;
     }
     const bool canFunction = std::any_of(
         m_plugins.cbegin(), m_plugins.cend(), [function](const auto& plugin) {
@@ -2372,6 +2927,7 @@ bool StepPropertyEditor::commitPendingChanges()
             prompt.insert("mode", mode);
             insertOrRemove(prompt, "title", m_promptTitleEdit->text());
             prompt.insert("message", message);
+            insertOrRemove(prompt, "image", selectedPromptImage());
             if (mode == QStringLiteral("confirm")) {
                 const auto buttonText = m_promptConfirmTextEdit->text().trimmed();
                 if (buttonText.isEmpty()) {

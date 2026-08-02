@@ -83,6 +83,95 @@ void appendBuiltInOutputs(const QJsonObject& step,
     }
 }
 
+PluginParameterType parserFieldType(QString type)
+{
+    type = type.trimmed().toLower();
+    if (type == QStringLiteral("integer") || type == QStringLiteral("signed") ||
+        type == QStringLiteral("unsigned")) {
+        return PluginParameterType::Integer;
+    }
+    if (type == QStringLiteral("number") || type == QStringLiteral("double") ||
+        type == QStringLiteral("float")) {
+        return PluginParameterType::Number;
+    }
+    if (type == QStringLiteral("boolean") || type == QStringLiteral("bool")) {
+        return PluginParameterType::Boolean;
+    }
+    return PluginParameterType::String;
+}
+
+bool appendNamedParserOutputs(
+    const QJsonObject& step,
+    const QString& nodePath,
+    const QString& stepName,
+    QVector<StepOutputExpressionCandidate>& candidates)
+{
+    if (step.value(QStringLiteral("moduleId")).toString().compare(
+            QStringLiteral("builtin.data-parser"), Qt::CaseInsensitive) != 0) {
+        return false;
+    }
+    const auto inputs = step.value(QStringLiteral("inputs")).toObject();
+    if (inputs.value(QStringLiteral("resultMode")).toString().compare(
+            QStringLiteral("multiple"), Qt::CaseInsensitive) != 0) {
+        return false;
+    }
+    const auto function = step.value(QStringLiteral("function")).toString();
+    const bool split = function.compare(QStringLiteral("splitText"),
+                                        Qt::CaseInsensitive) == 0;
+    const bool regex = function.compare(QStringLiteral("regexCapture"),
+                                        Qt::CaseInsensitive) == 0;
+    if (!split && !regex) {
+        return false;
+    }
+
+    for (const auto& value : inputs.value(QStringLiteral("fields")).toArray()) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const auto field = value.toObject();
+        const auto name = field.value(QStringLiteral("name")).toString().trimmed();
+        if (name.isEmpty()) {
+            continue;
+        }
+        const auto outputPath = QStringLiteral("fields.%1").arg(name);
+        candidates.push_back({
+            nodePath,
+            stepName,
+            outputPath,
+            name,
+            QStringLiteral("${step:%1.outputs.%2}").arg(nodePath, outputPath),
+            parserFieldType(field.value(QStringLiteral("type"))
+                                .toString(QStringLiteral("string"))),
+            {}});
+    }
+
+    const auto appendMetadata = [&](const QString& key,
+                                    const QString& name,
+                                    PluginParameterType type) {
+        candidates.push_back({
+            nodePath,
+            stepName,
+            key,
+            name,
+            QStringLiteral("${step:%1.outputs.%2}").arg(nodePath, key),
+            type,
+            {}});
+    };
+    appendMetadata(QStringLiteral("namedFieldCount"),
+                   QStringLiteral("Named Field Count"),
+                   PluginParameterType::Integer);
+    if (split) {
+        appendMetadata(QStringLiteral("fieldCount"),
+                       QStringLiteral("Source Field Count"),
+                       PluginParameterType::Integer);
+    } else {
+        appendMetadata(QStringLiteral("match"),
+                       QStringLiteral("Full Match"),
+                       PluginParameterType::String);
+    }
+    return true;
+}
+
 bool collectOutputCandidates(
     const QJsonArray& steps,
     int groupIndex,
@@ -114,20 +203,25 @@ bool collectOutputCandidates(
         if (enabled && !nodePath.isEmpty()) {
             const auto stepName = step.value(QStringLiteral("name"))
                                       .toString(step.value(QStringLiteral("id")).toString());
-            if (const auto* function = findPluginFunction(
-                    step, plugins, pluginByDeviceId)) {
-                for (const auto& output : function->outputs) {
-                    if (output.key.trimmed().isEmpty()) {
-                        continue;
+            const bool namedParser = appendNamedParserOutputs(
+                step, nodePath, stepName, candidates);
+            if (!namedParser) {
+                if (const auto* function = findPluginFunction(
+                        step, plugins, pluginByDeviceId)) {
+                    for (const auto& output : function->outputs) {
+                        if (output.key.trimmed().isEmpty()) {
+                            continue;
+                        }
+                        candidates.push_back({
+                            nodePath,
+                            stepName,
+                            output.key,
+                            output.name.isEmpty() ? output.key : output.name,
+                            QStringLiteral("${step:%1.outputs.%2}")
+                                .arg(nodePath, output.key),
+                            output.type,
+                            output.unit});
                     }
-                    candidates.push_back({
-                        nodePath,
-                        stepName,
-                        output.key,
-                        output.name.isEmpty() ? output.key : output.name,
-                        QStringLiteral("${step:%1.outputs.%2}").arg(nodePath, output.key),
-                        output.type,
-                        output.unit});
                 }
             }
             appendBuiltInOutputs(step, nodePath, stepName, candidates);

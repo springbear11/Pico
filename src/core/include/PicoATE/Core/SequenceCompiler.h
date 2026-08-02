@@ -41,8 +41,12 @@ private:
                       const QString& path,
                       QVector<CompileError>& errors) const;
     QVector<ModuleBindingDef> parseModuleBindings(const QJsonArray& array,
-                                                  const QString& path,
-                                                  QVector<CompileError>& errors) const;
+                                                   const QString& path,
+                                                   QVector<CompileError>& errors) const;
+    QVector<SequenceVariableDefinition> parseVariables(
+        const QJsonArray& array,
+        const QString& path,
+        QVector<CompileError>& errors) const;
 
     QVector<ResourceRequirementDef> parseResources(const QJsonArray& array,
                                                    const QString& path,

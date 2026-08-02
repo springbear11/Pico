@@ -162,6 +162,17 @@ std::string fixedString(const char* value, std::size_t size)
     return std::string(value, end);
 }
 
+int channelCountFromBoardInfo(std::uint8_t value)
+{
+    const auto zero = static_cast<std::uint8_t>('0');
+    const auto nine = static_cast<std::uint8_t>('9');
+    if (value >= zero && value <= nine) {
+        return static_cast<int>(value - zero);
+    }
+
+    return static_cast<int>(value);
+}
+
 std::string errorCodeText(std::uint32_t code)
 {
     if (code == 0) {
@@ -524,11 +535,12 @@ DiscoveryResult GCanAdapter::findDevices(const DiscoveryOptions& options)
             if (boardStatus == StatusOk) {
                 const auto serial = fixedString(board.serialNumber, sizeof(board.serialNumber));
                 const auto model = fixedString(board.hardwareType, sizeof(board.hardwareType));
+                const auto channelCount = channelCountFromBoardInfo(board.canChannelCount);
                 PicoATE_Log("VENDOR GCAN discovered index={} serial={} model={} channels={}",
-                            deviceIndex, serial, model, board.canChannelCount);
+                            deviceIndex, serial, model, channelCount);
                 if (!serial.empty()) {
                     result.devices.push_back(
-                        {serial, model, deviceType, deviceIndex, board.canChannelCount});
+                        {serial, model, deviceType, deviceIndex, channelCount});
                 }
             }
             PicoATE_Log("VENDOR GCAN CloseDevice(type={}, device={}) after discovery",
@@ -606,10 +618,7 @@ OperationResult GCanAdapter::open(const OpenOptions& options)
                                                             &board);
             PicoATE_Log("VENDOR GCAN ReadBoardInfo return={}", boardStatus);
             if (boardStatus == StatusOk) {
-                const auto channels = board.canChannelCount >= '0' &&
-                                              board.canChannelCount <= '9'
-                    ? board.canChannelCount - '0'
-                    : board.canChannelCount;
+                const auto channels = channelCountFromBoardInfo(board.canChannelCount);
                 state.channelCount = channels;
                 state.description = std::format(
                     "GCAN type={} {} SN={} channels={}",

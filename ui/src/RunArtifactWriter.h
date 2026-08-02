@@ -13,6 +13,7 @@ namespace PicoATE::Ui {
 struct RuntimeLogLine {
     QDateTime timestampUtc;
     QString message;
+    PicoATE::Core::UutId uutId;
 };
 
 struct RunArtifactSettings {

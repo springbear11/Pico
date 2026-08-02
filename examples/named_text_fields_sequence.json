@@ -1,0 +1,96 @@
+{
+  "id": "named-text-fields",
+  "name": "Named Text Fields Example",
+  "version": "1.0",
+  "groups": [
+    {
+      "id": "setup",
+      "name": "Setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "parser-ready",
+          "name": "Parser Ready",
+          "kind": "noop"
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "name": "Main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "parse-sensor-response",
+          "name": "Parse Sensor Response",
+          "kind": "action",
+          "moduleId": "builtin.data-parser",
+          "function": "splitText",
+          "inputs": {
+            "source": "BTSN001,812.5,0x1A",
+            "delimiter": ",",
+            "resultMode": "multiple",
+            "trim": true,
+            "fields": [
+              {
+                "index": 0,
+                "name": "SN1",
+                "type": "string"
+              },
+              {
+                "index": 1,
+                "name": "voltage",
+                "type": "number"
+              },
+              {
+                "index": 2,
+                "name": "status",
+                "type": "hex"
+              }
+            ]
+          }
+        },
+        {
+          "id": "check-serial-number",
+          "name": "Check Serial Number",
+          "kind": "limit",
+          "inputs": {
+            "actual": "${step:parse-sensor-response.outputs.fields.SN1}"
+          },
+          "parameters": {
+            "comparison": "equal",
+            "expected": "BTSN001",
+            "measurementName": "SERIAL_NUMBER"
+          }
+        },
+        {
+          "id": "check-voltage",
+          "name": "Check Voltage",
+          "kind": "limit",
+          "inputs": {
+            "actual": "${step:parse-sensor-response.outputs.fields.voltage}"
+          },
+          "parameters": {
+            "comparison": "between",
+            "expected": 812.5,
+            "tolerance": 0.1,
+            "measurementName": "VOLTAGE",
+            "unit": "V"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "name": "Cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "parser-finished",
+          "name": "Parser Finished",
+          "kind": "noop"
+        }
+      ]
+    }
+  ]
+}

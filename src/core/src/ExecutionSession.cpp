@@ -160,7 +160,7 @@ StepReport makeStepReport(const ExecutionPlan& plan, const UutExecution& uut, co
         report.stepId = node->localId.isEmpty() ? nodeId : node->localId;
         report.displayName = node->displayName;
         report.kind = node->kind;
-        report.phase = node->phase;
+        report.phase = executionPhaseOf(*node);
         report.resultRecording = node->resultRecording;
     }
 
@@ -195,6 +195,7 @@ StepReport makeStepReport(const ExecutionPlan& plan, const UutExecution& uut, co
     for (const auto& attempt : activation.attempts) {
         AttemptReport attemptReport;
         attemptReport.index = attempt.attemptIndex + 1;
+        attemptReport.requestId = attempt.requestId;
         attemptReport.outcome = attempt.result.outcome;
         if (attempt.result.startedAt.isValid() && attempt.result.finishedAt.isValid()) {
             attemptReport.durationMs = qMax<qint64>(
@@ -382,33 +383,128 @@ ExecutionSessionResult ExecutionSession::run()
     QSet<UutId> uutIds;
     for (const auto& uut : m_uuts) {
         uutIds.insert(uut.uutId);
+        ExecutionSessionResult::UutResult uutResult;
+        uutResult.uutId = uut.uutId;
+        result.uutResults.push_back(std::move(uutResult));
     }
     m_scheduler->setCohortUuts(uutIds);
+
+    auto appendSessionStep = [&result](const SchedulerStepResult& step) {
+        result.sessionNodeResults += step.nodeResults;
+        result.nodeResults += step.nodeResults;
+        result.hasError = result.hasError || step.hasError;
+    };
+    auto appendUutStep = [&result](const UutId& uutId, const SchedulerStepResult& step) {
+        result.nodeResults += step.nodeResults;
+        result.hasError = result.hasError || step.hasError;
+        auto it = std::find_if(
+            result.uutResults.begin(), result.uutResults.end(),
+            [&uutId](const ExecutionSessionResult::UutResult& candidate) {
+                return candidate.uutId == uutId;
+            });
+        if (it != result.uutResults.end()) {
+            it->nodeResults += step.nodeResults;
+            it->hasError = it->hasError || step.hasError;
+        }
+    };
 
     if (!m_stopToken->isStopRequested()) {
         m_state = ExecutionState::Running;
         publishSessionState("session running");
     }
 
-    bool progressed = true;
-    while (progressed) {
+    while (!phaseComplete(m_sessionExecution, ExecutionPhase::Setup)) {
         prepareStopIfRequested();
+        if (m_executionControl->state() == ExecutionControlState::PauseRequested &&
+            m_scheduler->hasPendingRequestForUut(m_sessionExecution.uutId)) {
+            const auto step = m_scheduler->pumpPendingRequestOnce(
+                m_sessionExecution,
+                QStringLiteral("session-setup"),
+                ExecutionPhase::Setup);
+            appendSessionStep(step);
+            if (!step.progressed) {
+                m_scheduler->waitForPendingRequest();
+            }
+            continue;
+        }
         pauseAtSafePointIfRequested();
         prepareStopIfRequested();
-        progressed = false;
+        pauseAtBreakpointIfNeeded(
+            m_sessionExecution,
+            QStringLiteral("session-setup"),
+            ExecutionPhase::Setup);
+        prepareStopIfRequested();
+        const auto step = m_scheduler->pumpOnce(
+            m_sessionExecution, QStringLiteral("session-setup"), ExecutionPhase::Setup);
+        appendSessionStep(step);
+        pauseAfterDebugStepIfNeeded(
+            m_sessionExecution, step, QStringLiteral("session-setup"));
+        if (!step.progressed) {
+            if (m_scheduler->hasPendingRequestForUut(m_sessionExecution.uutId)) {
+                m_scheduler->waitForPendingRequest();
+                continue;
+            }
+            break;
+        }
+    }
 
+    // A stop can be requested before run() or while an empty Setup phase is crossed.
+    prepareStopIfRequested();
+
+    const bool setupComplete = phaseComplete(m_sessionExecution, ExecutionPhase::Setup);
+    const bool setupHasError = phaseHasError(m_sessionExecution, ExecutionPhase::Setup);
+    result.hasError = result.hasError || setupHasError;
+    if (!setupComplete || setupHasError) {
+        const auto reason = setupHasError
+            ? QStringLiteral("skipped because session setup failed")
+            : QStringLiteral("skipped because session setup did not complete");
         for (auto& uut : m_uuts) {
+            m_scheduler->skipPendingNonAlwaysRun(
+                uut, QStringLiteral("root"), ExecutionPhase::Main, reason, true);
+        }
+    }
+
+    const bool runMain = setupComplete && !setupHasError && !m_stopToken->isStopRequested();
+    while (runMain) {
+        prepareStopIfRequested();
+        if (m_executionControl->state() == ExecutionControlState::PauseRequested &&
+            m_scheduler->hasPendingRequests()) {
+            bool completedPendingRequest = false;
+            for (auto& uut : m_uuts) {
+                if (!m_scheduler->hasPendingRequestForUut(uut.uutId)) {
+                    continue;
+                }
+                const auto step = m_scheduler->pumpPendingRequestOnce(
+                    uut, QStringLiteral("root"), ExecutionPhase::Main);
+                appendUutStep(uut.uutId, step);
+                completedPendingRequest = completedPendingRequest || step.progressed;
+            }
+            m_scheduler->applyBarrierReleases(uutPointers());
+            publishCompletedUuts();
+            if (m_scheduler->hasPendingRequests()) {
+                if (!completedPendingRequest) {
+                    m_scheduler->waitForPendingRequest();
+                }
+                continue;
+            }
+        }
+        pauseAtSafePointIfRequested();
+        prepareStopIfRequested();
+        bool progressed = false;
+        for (auto& uut : m_uuts) {
+            if (uutComplete(uut)) {
+                continue;
+            }
+            if (m_executionControl->state() == ExecutionControlState::PauseRequested) {
+                break;
+            }
             pauseAtSafePointIfRequested();
             prepareStopIfRequested();
             pauseAtBreakpointIfNeeded(uut);
             prepareStopIfRequested();
-            auto step = m_scheduler->pumpOnce(uut);
-            if (!step.nodeResults.isEmpty()) {
-                result.nodeResults += step.nodeResults;
-            }
-            if (step.hasError) {
-                result.hasError = true;
-            }
+            auto step = m_scheduler->pumpOnce(
+                uut, QStringLiteral("root"), ExecutionPhase::Main);
+            appendUutStep(uut.uutId, step);
             if (step.progressed) {
                 progressed = true;
             }
@@ -421,9 +517,78 @@ ExecutionSessionResult ExecutionSession::run()
         if (allUutsComplete()) {
             break;
         }
+        if (!progressed) {
+            if (m_scheduler->hasPendingRequests()) {
+                m_scheduler->waitForPendingRequest();
+                continue;
+            }
+            break;
+        }
     }
 
-    result.completed = allUutsComplete();
+    publishCompletedUuts();
+    for (const auto& uut : m_uuts) {
+        m_scheduler->releaseAllResourceRegions(uut.uutId, QStringLiteral("root"));
+    }
+    if (allUutsComplete()) {
+        m_state = ExecutionState::CleaningUp;
+        publishSessionState("session cleanup running");
+        m_scheduler->activateAllCleanup(m_sessionExecution);
+
+        while (!phaseComplete(m_sessionExecution, ExecutionPhase::Cleanup)) {
+            prepareStopIfRequested();
+            if (m_executionControl->state() == ExecutionControlState::PauseRequested &&
+                m_scheduler->hasPendingRequestForUut(m_sessionExecution.uutId)) {
+                const auto step = m_scheduler->pumpPendingRequestOnce(
+                    m_sessionExecution,
+                    QStringLiteral("session-cleanup"),
+                    ExecutionPhase::Cleanup);
+                appendSessionStep(step);
+                if (!step.progressed) {
+                    m_scheduler->waitForPendingRequest();
+                }
+                continue;
+            }
+            pauseAtBreakpointIfNeeded(
+                m_sessionExecution,
+                QStringLiteral("session-cleanup"),
+                ExecutionPhase::Cleanup);
+            prepareStopIfRequested();
+            const auto step = m_scheduler->pumpOnce(
+                m_sessionExecution,
+                QStringLiteral("session-cleanup"),
+                ExecutionPhase::Cleanup);
+            appendSessionStep(step);
+            pauseAfterDebugStepIfNeeded(
+                m_sessionExecution, step, QStringLiteral("session-cleanup"));
+            if (!step.progressed) {
+                if (m_scheduler->hasPendingRequestForUut(m_sessionExecution.uutId)) {
+                    m_scheduler->waitForPendingRequest();
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+
+    const bool cleanupComplete = phaseComplete(m_sessionExecution, ExecutionPhase::Cleanup);
+    const bool cleanupHasError = phaseHasError(m_sessionExecution, ExecutionPhase::Cleanup);
+    result.hasError = result.hasError || cleanupHasError;
+
+    for (auto& uutResult : result.uutResults) {
+        const auto uut = std::find_if(
+            m_uuts.cbegin(), m_uuts.cend(),
+            [&uutResult](const UutExecution& candidate) {
+                return candidate.uutId == uutResult.uutId;
+            });
+        if (uut == m_uuts.cend()) {
+            continue;
+        }
+        uutResult.completed = uutComplete(*uut);
+        uutResult.hasError = uutResult.hasError || phaseHasError(*uut, ExecutionPhase::Main);
+    }
+
+    result.completed = setupComplete && allUutsComplete() && cleanupComplete;
     if (m_stopToken->isStopRequested() &&
         m_stopToken->requestedMode() == StopMode::Abort) {
         m_state = ExecutionState::Aborted;
@@ -451,23 +616,45 @@ ExecutionReport ExecutionSession::report() const
     report.sequenceId = m_plan.sequenceId;
     report.sequenceVersion = m_plan.sequenceVersion;
     report.state = m_state;
-    report.completed = sessionStateIsTerminal(m_state) || allUutsComplete();
+    report.completed = sessionStateIsTerminal(m_state) ||
+        (phaseComplete(m_sessionExecution, ExecutionPhase::Setup) &&
+         allUutsComplete() &&
+         phaseComplete(m_sessionExecution, ExecutionPhase::Cleanup));
 
     const auto nodeIds = orderedNodeIds(m_plan);
+    for (const auto& nodeId : nodeIds) {
+        const auto* node = m_plan.node(nodeId);
+        if (!node || executionPhaseOf(*node) == ExecutionPhase::Main ||
+            m_plan.structuralParentOf(nodeId)) {
+            continue;
+        }
+        auto stepReport = makeStepReportTree(m_plan, m_sessionExecution, nodeId);
+        report.sessionHasError = report.sessionHasError || stepReportHasError(stepReport);
+        report.sessionSteps.push_back(std::move(stepReport));
+    }
+    report.hasError = report.sessionHasError;
+
     report.uuts.reserve(m_uuts.size());
     for (const auto& uut : m_uuts) {
         UutReport uutReport;
         uutReport.uutId = uut.uutId;
+        uutReport.completed = uutComplete(uut);
         uutReport.steps.reserve(nodeIds.size());
 
         for (const auto& nodeId : nodeIds) {
-            if (m_plan.structuralParentOf(nodeId)) {
+            const auto* node = m_plan.node(nodeId);
+            if (!node || executionPhaseOf(*node) != ExecutionPhase::Main ||
+                m_plan.structuralParentOf(nodeId)) {
                 continue;
             }
             auto stepReport = makeStepReportTree(m_plan, uut, nodeId);
             uutReport.hasError = uutReport.hasError || stepReportHasError(stepReport);
             uutReport.steps.push_back(stepReport);
         }
+
+        uutReport.outcome = uutReport.completed
+            ? (uutReport.hasError ? NodeOutcome::Failed : NodeOutcome::Passed)
+            : NodeOutcome::Unknown;
 
         report.hasError = report.hasError || uutReport.hasError;
         report.uuts.push_back(uutReport);
@@ -481,6 +668,7 @@ ExecutionSessionSnapshot ExecutionSession::snapshot() const
     ExecutionSessionSnapshot snapshot;
     snapshot.rootPlanId = m_plan.id;
     snapshot.state = m_state;
+    snapshot.sessionExecution = m_sessionExecution;
     snapshot.uuts = m_uuts;
     snapshot.resources = m_resources.snapshot();
     snapshot.barriers = m_barriers.snapshot();
@@ -511,21 +699,35 @@ bool ExecutionSession::allUutsComplete() const
     return true;
 }
 
-bool ExecutionSession::uutComplete(const UutExecution& uut) const
+bool ExecutionSession::phaseComplete(const UutExecution& execution,
+                                     ExecutionPhase phase) const
 {
     for (auto it = m_plan.nodes.constBegin(); it != m_plan.nodes.constEnd(); ++it) {
-        const auto& node = it.value();
-        if (node.kind == ExecNodeKind::Cleanup &&
-            !uut.activations.contains(node.id) &&
-            m_plan.incomingEdges(node.id).isEmpty()) {
+        if (executionPhaseOf(it.value()) != phase) {
             continue;
         }
-
-        if (!isTerminalActivation(uut.stateOf(node.id))) {
+        if (!isTerminalActivation(execution.stateOf(it.key()))) {
             return false;
         }
     }
     return true;
+}
+
+bool ExecutionSession::phaseHasError(const UutExecution& execution,
+                                     ExecutionPhase phase) const
+{
+    for (auto it = m_plan.nodes.constBegin(); it != m_plan.nodes.constEnd(); ++it) {
+        if (executionPhaseOf(it.value()) == phase &&
+            outcomeWasError(execution.outcomeOf(it.key()))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ExecutionSession::uutComplete(const UutExecution& uut) const
+{
+    return phaseComplete(uut, ExecutionPhase::Main);
 }
 
 QVector<UutExecution*> ExecutionSession::uutPointers()
@@ -550,16 +752,29 @@ void ExecutionSession::prepareStopIfRequested()
     publishSessionState(m_state == ExecutionState::Aborted
                             ? "abort requested"
                             : "graceful stop requested");
+    m_scheduler->skipPendingNonAlwaysRun(
+        m_sessionExecution,
+        QStringLiteral("session-setup"),
+        ExecutionPhase::Setup,
+        QStringLiteral("skipped after session stop"),
+        true);
     for (auto& uut : m_uuts) {
-        m_scheduler->skipPendingNonAlwaysRun(uut);
-        m_scheduler->activateAllCleanup(uut);
+        m_scheduler->skipPendingNonAlwaysRun(
+            uut,
+            QStringLiteral("root"),
+            ExecutionPhase::Main,
+            QStringLiteral("skipped after session stop"),
+            true);
     }
+    m_scheduler->activateAllCleanup(m_sessionExecution);
     m_stopPrepared = true;
 }
 
 void ExecutionSession::pauseAtSafePointIfRequested()
 {
-    if (m_stopToken->isStopRequested() || !m_executionControl->enterPausedState()) {
+    if (m_stopToken->isStopRequested() ||
+        (m_scheduler && m_scheduler->hasPendingRequests()) ||
+        !m_executionControl->enterPausedState()) {
         return;
     }
 
@@ -575,14 +790,17 @@ void ExecutionSession::pauseAtSafePointIfRequested()
     }
 }
 
-void ExecutionSession::pauseAtBreakpointIfNeeded(UutExecution& uut, const FrameId& frameId)
+void ExecutionSession::pauseAtBreakpointIfNeeded(
+    UutExecution& uut,
+    const FrameId& frameId,
+    ExecutionPhase phase)
 {
     if (m_stopToken->isStopRequested() ||
         m_executionControl->state() != ExecutionControlState::Running) {
         return;
     }
 
-    const auto nextNodeId = m_scheduler->nextReadyNodeId(uut);
+    const auto nextNodeId = m_scheduler->nextReadyNodeId(uut, phase);
     if (!nextNodeId) {
         return;
     }
@@ -711,7 +929,7 @@ bool ExecutionSession::shouldPauseForActiveDebugStep(const UutExecution& uut,
                                                      const SchedulerStepResult& step) const
 {
     if (m_activeDebugStepMode == DebugStepMode::Into) {
-        return true;
+        return isTerminalActivation(uut.stateOf(step.nodeId));
     }
     if (m_activeDebugStepMode != DebugStepMode::Over) {
         return false;
@@ -724,7 +942,7 @@ bool ExecutionSession::shouldPauseForActiveDebugStep(const UutExecution& uut,
         m_plan.loopRegionForController(m_debugStepRootNodeId).has_value() ||
         m_plan.testItemRegionForController(m_debugStepRootNodeId).has_value();
     if (!structuralRoot) {
-        return true;
+        return isTerminalActivation(uut.stateOf(m_debugStepRootNodeId));
     }
     return isTerminalActivation(uut.stateOf(m_debugStepRootNodeId));
 }

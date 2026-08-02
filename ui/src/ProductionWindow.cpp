@@ -667,7 +667,7 @@ void ProductionWindow::applyRuntimeEvents(
                    !isTerminal(m_nodeStates.value(event.nodeId))) {
             m_nodeStates.insert(event.nodeId, event.activationState);
         }
-        if (!event.uutId.isEmpty() && !event.nodeId.isEmpty()) {
+        if (!event.nodeId.isEmpty()) {
             const auto index = m_resultModel->indexForStep(event.uutId, event.nodeId);
             if (index.isValid() && event.activationState == PicoATE::Core::ActivationState::Running) {
                 m_resultView->setCurrentIndex(index);

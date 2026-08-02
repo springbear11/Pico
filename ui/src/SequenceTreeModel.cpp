@@ -230,6 +230,17 @@ QVariant SequenceTreeModel::data(const QModelIndex& modelIndex, int role) const
     if (role == DisabledByAncestorRole) {
         return item->disabledByAncestor;
     }
+    if (role == ResourceRegionIdRole) {
+        return item->resourceRegionId;
+    }
+    if (role == ResourceMarkerRole) {
+        return static_cast<int>(item->resourceMarker);
+    }
+    if (role == ResourceBoundaryEligibleRole) {
+        return item->type == ItemType::Step &&
+               (item->resourceRegionId.isEmpty() ||
+                item->resourceMarker != Item::ResourceMarker::None);
+    }
     if (role == Qt::CheckStateRole && modelIndex.column() == EnabledColumn) {
         if (item->type == ItemType::Group) {
             return {};
@@ -257,6 +268,9 @@ QVariant SequenceTreeModel::data(const QModelIndex& modelIndex, int role) const
     if (role == Qt::ForegroundRole && !item->effectiveEnabled) {
         return QColor(QStringLiteral("#737d87"));
     }
+    if (role == Qt::BackgroundRole && !item->effectiveEnabled) {
+        return QColor(QStringLiteral("#eef1f3"));
+    }
     if (role == Qt::BackgroundRole && modelIndex.column() == InspectionColumn &&
         !m_inspectionField.isEmpty()) {
         const auto value = displayJsonValue(
@@ -266,8 +280,8 @@ QVariant SequenceTreeModel::data(const QModelIndex& modelIndex, int role) const
                                             QColor(QStringLiteral("#dceeff")));
         }
     }
-    if (role == Qt::BackgroundRole && !item->effectiveEnabled) {
-        return QColor(QStringLiteral("#eef1f3"));
+    if (role == Qt::BackgroundRole && !item->resourceRegionId.isEmpty()) {
+        return QColor(QStringLiteral("#dceeff"));
     }
     if (role == Qt::ToolTipRole) {
         if (modelIndex.column() == InspectionColumn &&
@@ -277,6 +291,31 @@ QVariant SequenceTreeModel::data(const QModelIndex& modelIndex, int role) const
             return value.isEmpty()
                 ? tr("Field '%1' is not set on this item").arg(m_inspectionField)
                 : tr("%1 = %2").arg(m_inspectionField, value);
+        }
+        if (modelIndex.column() == ResourceRegionColumn &&
+            !item->resourceRegionId.isEmpty()) {
+            if (item->resourceMarker == Item::ResourceMarker::SingleItem) {
+                const bool isTestItem = item->object.value(QStringLiteral("kind"))
+                                            .toString()
+                                            .compare(QStringLiteral("testItem"),
+                                                     Qt::CaseInsensitive) == 0;
+                if (isTestItem) {
+                    return tr("TESTITEM LOCK: hold %1 through all retries and release it only after the final result")
+                        .arg(item->resourceRegionId);
+                }
+                return tr("ITEM LOCK: acquire %1 before this item and release it after completion")
+                    .arg(item->resourceRegionId);
+            }
+            if (item->resourceMarker == Item::ResourceMarker::Entry) {
+                return tr("LOCK: acquire %1 before this step")
+                    .arg(item->resourceRegionId);
+            }
+            if (item->resourceMarker == Item::ResourceMarker::Exit) {
+                return tr("UNLOCK: release %1 after this step")
+                    .arg(item->resourceRegionId);
+            }
+            return tr("Resource %1 remains locked on this step")
+                .arg(item->resourceRegionId);
         }
         if (item->disabledByAncestor) {
             return tr("Inactive because a parent TestItem or Loop is disabled");
@@ -313,6 +352,17 @@ QVariant SequenceTreeModel::data(const QModelIndex& modelIndex, int role) const
         const auto key = item->object.value("key").toString();
         return key.isEmpty() ? id : QString("%1 / %2").arg(id, key);
     }
+    case ResourceRegionColumn:
+        if (item->resourceMarker == Item::ResourceMarker::SingleItem) {
+            return tr("LOCK/UNLOCK");
+        }
+        if (item->resourceMarker == Item::ResourceMarker::Entry) {
+            return tr("LOCK");
+        }
+        if (item->resourceMarker == Item::ResourceMarker::Exit) {
+            return tr("UNLOCK");
+        }
+        return {};
     case BreakpointColumn:
         if (item->type != ItemType::Step) {
             return {};
@@ -416,6 +466,8 @@ QVariant SequenceTreeModel::headerData(int section,
         return tr("Kind");
     case IdColumn:
         return tr("ID / Key");
+    case ResourceRegionColumn:
+        return {};
     case BreakpointColumn:
         return tr("BP");
     case EnabledColumn:
@@ -698,6 +750,66 @@ void SequenceTreeModel::rebuild()
                         {},
                         {},
                         group->effectiveEnabled);
+            const auto markRegion = [&](Item& item,
+                                        const QString& regionId,
+                                        const auto& markRef) -> void {
+                item.resourceRegionId = regionId;
+                for (auto& child : item.children) {
+                    markRef(*child, regionId, markRef);
+                }
+            };
+            const std::function<void(Item&)> markSiblingRegions =
+                [&](Item& parent) {
+                    for (int entryRow = 0;
+                         entryRow < parent.children.size(); ++entryRow) {
+                        auto& entry = parent.children[entryRow];
+                        const auto start = entry->object
+                                               .value(QStringLiteral("resourceRegionStart"))
+                                               .toObject();
+                        const auto regionId = start.value(QStringLiteral("id"))
+                                                  .toString();
+                        if (regionId.isEmpty()) {
+                            continue;
+                        }
+
+                        entry->resourceMarker = Item::ResourceMarker::Entry;
+                        entry->resourceRegionId = regionId;
+                        int exitRow = entry->object
+                                              .value(QStringLiteral("resourceRegionEnd"))
+                                              .toString() == regionId
+                            ? entryRow
+                            : -1;
+                        for (int candidate = entryRow + 1;
+                             exitRow < 0 &&
+                             candidate < parent.children.size(); ++candidate) {
+                            if (parent.children[candidate]->object
+                                    .value(QStringLiteral("resourceRegionEnd"))
+                                    .toString() == regionId) {
+                                exitRow = candidate;
+                                break;
+                            }
+                        }
+                        if (exitRow < 0) {
+                            continue;
+                        }
+
+                        markRegion(*entry, regionId, markRegion);
+                        if (exitRow == entryRow) {
+                            entry->resourceMarker = Item::ResourceMarker::SingleItem;
+                            continue;
+                        }
+                        for (int row = entryRow + 1; row < exitRow; ++row) {
+                            markRegion(*parent.children[row], regionId, markRegion);
+                        }
+                        auto& exit = parent.children[exitRow];
+                        markRegion(*exit, regionId, markRegion);
+                        exit->resourceMarker = Item::ResourceMarker::Exit;
+                    }
+                    for (auto& child : parent.children) {
+                        markSiblingRegions(*child);
+                    }
+                };
+            markSiblingRegions(*group);
             m_root->children.push_back(std::move(group));
         }
     }
