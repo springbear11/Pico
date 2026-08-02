@@ -90,12 +90,14 @@ QJsonObject moduleTransportRequestToJson(const ModuleTransportRequest& request)
     context.insert("uutId", request.context.uutId);
     context.insert("frameId", request.context.frameId);
     context.insert("attemptId", request.context.attemptId);
+    context.insert("requestId", request.context.requestId);
     context.insert("attemptIndex", request.context.attemptIndex);
     context.insert("inputs", mapToJsonObject(request.context.inputs));
     context.insert("parameters", mapToJsonObject(request.context.parameters));
     context.insert("variables", mapToJsonObject(request.context.variables));
 
     QJsonObject json;
+    json.insert("requestId", request.requestId);
     json.insert("traceId", request.traceId);
     json.insert("moduleId", request.moduleId);
     json.insert("function", request.functionName);
@@ -106,6 +108,7 @@ QJsonObject moduleTransportRequestToJson(const ModuleTransportRequest& request)
 ModuleTransportRequest moduleTransportRequestFromJson(const QJsonObject& json)
 {
     ModuleTransportRequest request;
+    request.requestId = json.value("requestId").toString();
     request.traceId = json.value("traceId").toString();
     request.moduleId = json.value("moduleId").toString();
     request.functionName = json.value("function").toString();
@@ -114,6 +117,7 @@ ModuleTransportRequest moduleTransportRequestFromJson(const QJsonObject& json)
     request.context.uutId = context.value("uutId").toString();
     request.context.frameId = context.value("frameId").toString();
     request.context.attemptId = context.value("attemptId").toString();
+    request.context.requestId = context.value("requestId").toString(request.requestId);
     request.context.attemptIndex = context.value("attemptIndex").toInt();
     request.context.inputs = mapFromJsonObject(context.value("inputs").toObject());
     request.context.parameters = mapFromJsonObject(context.value("parameters").toObject());

@@ -4,6 +4,7 @@
 #include <QHash>
 #include <QSet>
 #include <QString>
+#include <QVariant>
 #include <QVariantMap>
 #include <QVector>
 
@@ -19,12 +20,14 @@ using UutId = QString;
 using FrameId = QString;
 using ActivationId = QString;
 using AttemptId = QString;
+using RequestId = QString;
 using ResourceId = QString;
 using ResourceLeaseId = QString;
 using ResourceRequestId = QString;
 using BarrierInstanceId = QString;
 using CleanupRegionId = QString;
 using LoopId = QString;
+using ResourceRegionId = QString;
 
 enum class ExecNodeKind {
     Noop,
@@ -106,12 +109,61 @@ enum class ErrorAction {
     Abort
 };
 
+enum class SequenceVariableType {
+    String,
+    Integer,
+    Hex,
+    Double,
+    Boolean
+};
+
+enum class SequenceVariableScope {
+    Shared,
+    PerUut
+};
+
+struct SequenceVariableDefinition {
+    QString name;
+    SequenceVariableType type = SequenceVariableType::String;
+    SequenceVariableScope scope = SequenceVariableScope::Shared;
+    QVariant value;
+    QVector<QVariant> values;
+    QString description;
+};
+
+struct UutVariableBindingDiagnostic {
+    QString variableName;
+    QString message;
+};
+
+struct UutVariableBindingResult {
+    QVariantMap variables;
+    QVector<UutVariableBindingDiagnostic> errors;
+
+    bool ok() const { return errors.isEmpty(); }
+};
+
+UutVariableBindingResult bindSequenceVariablesForUut(
+    const QVector<SequenceVariableDefinition>& definitions,
+    int uutIndex,
+    const UutId& uutId = {},
+    const QVariantMap& overrides = {});
+QString sequenceVariableTypeName(SequenceVariableType type);
+QString sequenceVariableScopeName(SequenceVariableScope scope);
+
 struct ResourceRequirement {
     ResourceId resourceId;
     ResourceMode mode = ResourceMode::Exclusive;
     int count = 1;
     int priority = 0;
     int acquireTimeoutMs = 30000;
+};
+
+struct ResourceRegion {
+    ResourceRegionId id;
+    NodeId entryNodeId;
+    NodeId exitNodeId;
+    QVector<ResourceRequirement> requirements;
 };
 
 struct RetryPolicy {
@@ -150,6 +202,10 @@ struct ExecNode {
     QStringList tags;
     ExecutionPhase phase = ExecutionPhase::Main;
 };
+
+// Cleanup was represented by the node kind before explicit phases existed.
+// Keep hand-built and persisted legacy plans compatible at the phase boundary.
+ExecutionPhase executionPhaseOf(const ExecNode& node);
 
 struct ExecEdge {
     EdgeId id;
@@ -220,6 +276,8 @@ struct ExecutionPlan {
     QVector<CleanupRegion> cleanupRegions;
     QVector<LoopRegion> loopRegions;
     QVector<TestItemRegion> testItemRegions;
+    QVector<ResourceRegion> resourceRegions;
+    QVector<SequenceVariableDefinition> variables;
     NodeId entryNodeId;
     NodeId exitNodeId;
 
@@ -234,6 +292,8 @@ struct ExecutionPlan {
     std::optional<LoopRegion> loopRegionForBodyNode(const NodeId& nodeId) const;
     std::optional<TestItemRegion> testItemRegionForController(const NodeId& nodeId) const;
     std::optional<TestItemRegion> testItemRegionForChild(const NodeId& nodeId) const;
+    std::optional<ResourceRegion> resourceRegionStartingAt(const NodeId& nodeId) const;
+    std::optional<ResourceRegion> resourceRegionEndingAt(const NodeId& nodeId) const;
     std::optional<NodeId> structuralParentOf(const NodeId& nodeId) const;
     bool isInsideTestItem(const NodeId& nodeId) const;
 };

@@ -135,5 +135,6 @@ public:
 };
 
 QString pluginParameterTypeName(PluginParameterType type);
+PluginManifest builtInDataParserManifest();
 
 } // namespace PicoATE::Ui

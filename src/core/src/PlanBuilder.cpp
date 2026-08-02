@@ -123,6 +123,7 @@ PlanBuildResult PlanBuilder::build(const SequenceDef& sequence) const
     result.plan.id = QString("plan:%1:%2").arg(sequence.id, sequence.version);
     result.plan.sequenceId = sequence.id;
     result.plan.sequenceVersion = sequence.version;
+    result.plan.variables = sequence.variables;
 
     const CleanupRegionId cleanupRegionId = "main-cleanup";
     QVector<GroupBuildInfo> setupGroups;
@@ -184,6 +185,7 @@ PlanBuildResult PlanBuilder::build(const SequenceDef& sequence) const
     }
 
     addCleanupRegion(cleanupGroups, cleanupRegionId, result.plan);
+    addResourceRegions(sequence, result.plan, result);
 
     auto firstNonEmpty = [](const QVector<GroupBuildInfo>& groups) -> NodeId {
         for (const auto& group : groups) {
@@ -236,6 +238,38 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
 
     if (sequence.groups.isEmpty()) {
         result.errors.push_back({"At least one step group is required", "Add a Main group"});
+    }
+
+    QSet<QString> variableNames;
+    static const QRegularExpression variableNamePattern(
+        QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+    for (const auto& variable : sequence.variables) {
+        const auto name = variable.name.trimmed();
+        if (!variableNamePattern.match(name).hasMatch()) {
+            result.errors.push_back({
+                "Invalid sequence variable name",
+                QString("Change variable '%1' to letters, numbers, and underscores")
+                    .arg(name)});
+            continue;
+        }
+        if (variableNames.contains(name)) {
+            result.errors.push_back({
+                "Duplicate sequence variable name",
+                QString("Keep only one definition for %1").arg(name)});
+        }
+        variableNames.insert(name);
+        if (variable.scope == SequenceVariableScope::Shared &&
+            (!variable.value.isValid() || variable.value.isNull())) {
+            result.errors.push_back({
+                "Shared sequence variable has no value",
+                QString("Set a value for %1").arg(name)});
+        }
+        if (variable.scope == SequenceVariableScope::PerUut &&
+            variable.values.isEmpty()) {
+            result.errors.push_back({
+                "Per-UUT sequence variable has no values",
+                QString("Set at least the UUT1 value for %1").arg(name)});
+        }
     }
 
     bool hasEnabledStep = false;
@@ -677,6 +711,160 @@ void PlanBuilder::addCleanupRegion(const QVector<GroupBuildInfo>& cleanupGroups,
     plan.cleanupRegions.push_back(region);
 }
 
+void PlanBuilder::addResourceRegions(const SequenceDef& sequence,
+                                     ExecutionPlan& plan,
+                                     PlanBuildResult& result) const
+{
+    QSet<ResourceRegionId> regionIds;
+    const auto containsBarrier = [](const StepDef& step, const auto& self) -> bool {
+        if (step.kind == StepKind::Barrier) {
+            return true;
+        }
+        for (const auto& child : step.steps) {
+            if (child.enabled && self(child, self)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto nodeIdForStep = [](const StepDef& step, const NodeId& parentPath) {
+        const auto segment = parentPath.isEmpty() || step.key.isEmpty()
+            ? step.id
+            : step.key;
+        return parentPath.isEmpty()
+            ? segment
+            : QString("%1.%2").arg(parentPath, segment);
+    };
+    const auto rejectDisabledMarkers = [&](const StepDef& step,
+                                           const auto& self) -> void {
+        if (step.resourceRegionStart || !step.resourceRegionEnd.isEmpty()) {
+            result.errors.push_back({
+                QString("Disabled step contains a resource region marker: %1")
+                    .arg(step.id),
+                "Enable the step or remove its resource region marker"});
+        }
+        for (const auto& child : step.steps) {
+            self(child, self);
+        }
+    };
+
+    struct OpenRegion {
+        ResourceRegionStartDef definition;
+        NodeId entryNodeId;
+        bool containsBarrier = false;
+    };
+
+    const auto processSiblings = [&](const QVector<StepDef>& steps,
+                                     const NodeId& parentPath,
+                                     bool insideAncestorRegion,
+                                     const auto& self) -> void {
+        std::optional<OpenRegion> open;
+        for (const auto& step : steps) {
+            if (!step.enabled) {
+                rejectDisabledMarkers(step, rejectDisabledMarkers);
+                continue;
+            }
+
+            const auto nodeId = nodeIdForStep(step, parentPath);
+            const bool hasStart = step.resourceRegionStart.has_value();
+            const bool hasEnd = !step.resourceRegionEnd.isEmpty();
+            const bool nestedMarker = insideAncestorRegion && (hasStart || hasEnd);
+            if (nestedMarker) {
+                result.errors.push_back({
+                    QString("Nested resource region marker is not supported: %1")
+                        .arg(nodeId),
+                    "Place LOCK/UNLOCK on siblings outside the enclosing interval"});
+            } else if (hasStart) {
+                const auto& definition = *step.resourceRegionStart;
+                if (open) {
+                    result.errors.push_back({
+                        QString("Resource region %1 starts before %2 is closed")
+                            .arg(definition.id, open->definition.id),
+                        "Place the pending exit marker before starting another region"});
+                } else if (definition.id.trimmed().isEmpty()) {
+                    result.errors.push_back({
+                        QString("Resource region entry on %1 has no id").arg(nodeId),
+                        "Assign a stable resource region id"});
+                } else if (definition.resources.isEmpty()) {
+                    result.errors.push_back({
+                        QString("Resource region %1 has no resource").arg(definition.id),
+                        "Select at least one shared resource for the interval"});
+                } else if (regionIds.contains(definition.id)) {
+                    result.errors.push_back({
+                        QString("Duplicate resource region id: %1").arg(definition.id),
+                        "Use a unique id for every resource interval"});
+                } else {
+                    regionIds.insert(definition.id);
+                    open = OpenRegion{definition, nodeId, containsBarrier(step, containsBarrier)};
+                }
+            } else if (!insideAncestorRegion && open &&
+                       containsBarrier(step, containsBarrier)) {
+                open->containsBarrier = true;
+            }
+
+            bool singleNodeRegion = false;
+            if (!nestedMarker && hasEnd) {
+                if (!open) {
+                    result.errors.push_back({
+                        QString("Resource region exit on %1 has no matching entry")
+                            .arg(nodeId),
+                        "Place an entry marker before this exit under the same parent"});
+                } else if (step.resourceRegionEnd != open->definition.id) {
+                    result.errors.push_back({
+                        QString("Resource region exit %1 does not match open region %2")
+                            .arg(step.resourceRegionEnd, open->definition.id),
+                        "Use the same region id on the entry and exit markers"});
+                    open.reset();
+                } else {
+                    singleNodeRegion = nodeId == open->entryNodeId;
+                    open->containsBarrier = open->containsBarrier ||
+                        containsBarrier(step, containsBarrier);
+                    if (open->containsBarrier) {
+                        result.errors.push_back({
+                            QString("Resource region %1 contains a Barrier")
+                                .arg(open->definition.id),
+                            "Move the Barrier outside the locked interval to avoid multi-UUT deadlock"});
+                    } else {
+                        ResourceRegion region;
+                        region.id = open->definition.id;
+                        region.entryNodeId = open->entryNodeId;
+                        region.exitNodeId = nodeId;
+                        for (const auto& resource : open->definition.resources) {
+                            region.requirements.push_back(
+                                resource.toRuntimeRequirement());
+                        }
+                        plan.resourceRegions.push_back(std::move(region));
+                    }
+                    open.reset();
+                }
+            }
+
+            // Children below an UNLOCK row are outside the completed interval.
+            self(step.steps,
+                 nodeId,
+                 insideAncestorRegion || open.has_value() || singleNodeRegion,
+                 self);
+        }
+
+        if (open) {
+            result.errors.push_back({
+                QString("Resource region %1 has no exit marker")
+                    .arg(open->definition.id),
+                "Place UNLOCK on the same step or a later sibling under the same parent"});
+        }
+    };
+
+    for (const auto& group : sequence.groups) {
+        if (!group.enabled) {
+            for (const auto& step : group.steps) {
+                rejectDisabledMarkers(step, rejectDisabledMarkers);
+            }
+            continue;
+        }
+        processSiblings(group.steps, {}, false, processSiblings);
+    }
+}
+
 void PlanBuilder::addDataReferenceEdges(ExecutionPlan& plan, PlanBuildResult& result) const
 {
     QVector<ExecEdge> dataEdges;
@@ -776,6 +964,20 @@ bool PlanBuilder::validatePlanReferences(const ExecutionPlan& plan, PlanBuildRes
                 result.errors.push_back({QString("Test item references missing child node: %1")
                                              .arg(childNode), {}});
             }
+        }
+    }
+
+    for (const auto& region : plan.resourceRegions) {
+        if (!plan.node(region.entryNodeId) || !plan.node(region.exitNodeId)) {
+            result.errors.push_back({
+                QString("Resource region references a missing boundary node: %1")
+                    .arg(region.id),
+                "Recreate the entry and exit markers"});
+        }
+        if (region.requirements.isEmpty()) {
+            result.errors.push_back({
+                QString("Resource region has no requirements: %1").arg(region.id),
+                "Select at least one resource"});
         }
     }
 

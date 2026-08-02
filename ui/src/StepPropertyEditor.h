@@ -18,6 +18,7 @@ class QMenu;
 class QPlainTextEdit;
 class QSpinBox;
 class QTabWidget;
+class QTableWidget;
 class QToolButton;
 
 namespace PicoATE::Ui {
@@ -58,14 +59,27 @@ private:
     void rebuildFunctionChoices(const QString& selectedFunction = {});
     void rebuildDeviceChoices();
     void rebuildPluginInputEditors();
+    void appendParserFieldMappingRow(int sourceIndex,
+                                     const QString& name,
+                                     const QString& outputType);
+    void updateParserFieldMappingVisibility();
+    bool mergeParserFieldMappings(QJsonObject& inputs,
+                                  QString& errorMessage,
+                                  QWidget** invalidWidget) const;
+    bool isMultipleFieldParserFunction() const;
+    QString parserFieldSourceKey() const;
     void refreshCanIdentifierHints();
     void observeDraftWidget(QWidget* widget);
     void markDraftDirty();
     void setDraftDirty(bool dirty);
     QWidget* wrapExpressionEditor(QLineEdit* editor);
     void rebuildExpressionMenu(QMenu* menu, QLineEdit* editor);
+    QWidget* wrapPromptMessageEditor(QPlainTextEdit* editor);
+    void rebuildPromptExpressionMenu(QMenu* menu, QPlainTextEdit* editor);
     void rebuildPromptCloseStepChoices(const QString& selectedPath);
     QString selectedPromptCloseStep() const;
+    void rebuildPromptImageChoices(const QString& selectedImage);
+    QString selectedPromptImage() const;
     const PluginFunctionDefinition* currentPluginFunction() const;
     bool mergePluginInputValues(QJsonObject& inputs,
                                 QString& errorMessage,
@@ -89,6 +103,7 @@ private:
     struct PluginInputEditor {
         PluginParameterDefinition definition;
         QWidget* widget = nullptr;
+        QWidget* fieldWidget = nullptr;
         bool inheritedFromStation = false;
     };
     QVector<PluginInputEditor> m_pluginInputEditors;
@@ -115,6 +130,10 @@ private:
     QComboBox* m_deviceIdCombo = nullptr;
     QGroupBox* m_pluginInputsGroup = nullptr;
     QFormLayout* m_pluginInputsForm = nullptr;
+    QWidget* m_parserFieldsField = nullptr;
+    QTableWidget* m_parserFieldsTable = nullptr;
+    QToolButton* m_parserFieldAddButton = nullptr;
+    QToolButton* m_parserFieldRemoveButton = nullptr;
     QToolButton* m_advancedJsonToggle = nullptr;
     QWidget* m_advancedJsonContent = nullptr;
     QFormLayout* m_advancedJsonForm = nullptr;
@@ -145,6 +164,8 @@ private:
     QComboBox* m_promptModeCombo = nullptr;
     QLineEdit* m_promptTitleEdit = nullptr;
     QPlainTextEdit* m_promptMessageEdit = nullptr;
+    QWidget* m_promptMessageField = nullptr;
+    QComboBox* m_promptImageCombo = nullptr;
     QLineEdit* m_promptConfirmTextEdit = nullptr;
     QComboBox* m_promptCloseOnStepCombo = nullptr;
     QSpinBox* m_promptTimeoutSpin = nullptr;

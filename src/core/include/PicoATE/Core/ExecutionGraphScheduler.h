@@ -9,6 +9,9 @@
 #include "PicoATE/Core/ResourceManager.h"
 #include "PicoATE/Core/RuntimeEvent.h"
 #include "PicoATE/Core/StopToken.h"
+#include "PicoATE/Core/TimerService.h"
+
+#include <chrono>
 
 namespace PicoATE::Core {
 
@@ -40,18 +43,53 @@ public:
                             const StopToken* stopToken = nullptr);
 
     SchedulerResult run(UutExecution& uut, const FrameId& frameId = "root");
-    SchedulerStepResult pumpOnce(UutExecution& uut, const FrameId& frameId = "root");
-    std::optional<NodeId> nextReadyNodeId(const UutExecution& uut) const;
+    SchedulerStepResult pumpOnce(UutExecution& uut,
+                                 const FrameId& frameId = "root",
+                                 std::optional<ExecutionPhase> phase = std::nullopt);
+    SchedulerStepResult pumpPendingRequestOnce(
+        UutExecution& uut,
+        const FrameId& frameId = "root",
+        std::optional<ExecutionPhase> phase = std::nullopt);
+    std::optional<NodeId> nextReadyNodeId(
+        const UutExecution& uut,
+        std::optional<ExecutionPhase> phase = std::nullopt) const;
     void setCohortUuts(const QSet<UutId>& uutIds);
     void releaseBarrierNodes(const BarrierReleaseDecision& decision);
     void applyBarrierReleases(const QVector<UutExecution*>& uuts);
     void activateAllCleanup(UutExecution& uut);
-    void skipPendingNonAlwaysRun(UutExecution& uut, const FrameId& frameId = "root");
+    void skipPendingNonAlwaysRun(UutExecution& uut,
+                                 const FrameId& frameId = "root",
+                                 std::optional<ExecutionPhase> phase = std::nullopt,
+                                 const QString& reason = QStringLiteral("skipped after stop policy"),
+                                 bool includeAlwaysRun = false);
     void closeAllOperatorPrompts(const QString& reason);
+    void releaseAllResourceRegions(const UutId& uutId,
+                                   const FrameId& frameId = "root");
+    bool hasPendingRequests() const;
+    bool hasPendingRequestForUut(const UutId& uutId) const;
+    bool waitForPendingRequest(
+        std::chrono::milliseconds maximumWait = std::chrono::milliseconds(20));
 
 private:
-    QVector<NodeId> findReadyNodes(const UutExecution& uut) const;
-    bool dependenciesSatisfied(const UutExecution& uut, const ExecNode& node) const;
+    QVector<NodeId> findReadyNodes(
+        const UutExecution& uut,
+        std::optional<ExecutionPhase> phase = std::nullopt) const;
+    bool dependenciesSatisfied(const UutExecution& uut,
+                               const ExecNode& node,
+                               std::optional<ExecutionPhase> phase = std::nullopt) const;
+    NodeResult scheduleWaitNode(UutExecution& uut,
+                                const ExecNode& node,
+                                const FrameId& frameId,
+                                const ResourceLeaseId& leaseId);
+    std::optional<NodeResult> completeReadyWait(
+        UutExecution& uut,
+        const FrameId& frameId,
+        std::optional<ExecutionPhase> phase = std::nullopt);
+    bool cancelPendingWait(UutExecution& uut,
+                           const ExecNode& node,
+                           const FrameId& frameId,
+                           const QString& reason);
+    void discardObsoletePendingWaits(UutExecution& uut);
     NodeResult executeNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
     NodeResult executeBarrierNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
     NodeResult executeLoopNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
@@ -124,12 +162,31 @@ private:
                                      const QString& instanceId,
                                      const QString& reason,
                                      const NodeId& closedByNodeId = {});
+    bool acquireResourceRegionForNode(UutExecution& uut,
+                                      const ExecNode& node,
+                                      const FrameId& frameId);
+    void releaseCompletedResourceRegions(const UutExecution& uut,
+                                         const FrameId& frameId);
+    QSet<ResourceId> activeRegionResourceIds(const UutId& uutId,
+                                             const FrameId& frameId) const;
+    QString resourceRegionLeaseKey(const UutId& uutId,
+                                   const FrameId& frameId,
+                                   const ResourceRegionId& regionId) const;
 
     struct ActiveOperatorPrompt {
         QString instanceId;
         UutId uutId;
         NodeId sourceNodeId;
         NodeId closeTargetNodeId;
+    };
+
+    struct PendingWait {
+        RequestId requestId;
+        UutId uutId;
+        FrameId frameId;
+        NodeId nodeId;
+        AttemptId attemptId;
+        ResourceLeaseId leaseId;
     };
 
     const ExecutionPlan& m_plan;
@@ -147,6 +204,15 @@ private:
     QHash<NodeId, BarrierInstanceId> m_barrierByNode;
     QHash<BarrierInstanceId, NodeId> m_nodeByBarrier;
     QVector<ActiveOperatorPrompt> m_activeOperatorPrompts;
+    TimerService m_timers;
+    QHash<RequestId, PendingWait> m_pendingWaits;
+    struct ActiveResourceRegion {
+        ResourceRegionId regionId;
+        UutId uutId;
+        FrameId frameId;
+        ResourceLease lease;
+    };
+    QHash<QString, ActiveResourceRegion> m_activeResourceRegions;
 };
 
 } // namespace PicoATE::Core

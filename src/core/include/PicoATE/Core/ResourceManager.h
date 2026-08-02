@@ -63,6 +63,7 @@ class ResourceManager {
 public:
     std::optional<ResourceLease> tryAcquire(const ResourceRequest& request);
     void release(const ResourceLeaseId& leaseId);
+    void cancelRequest(const ResourceRequestId& requestId);
     void releaseByNode(const UutId& uutId, const FrameId& frameId, const NodeId& nodeId);
 
     ResourceSnapshot snapshot() const;

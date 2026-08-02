@@ -67,6 +67,9 @@ private:
     void addCleanupRegion(const QVector<GroupBuildInfo>& cleanupGroups,
                           const CleanupRegionId& cleanupRegionId,
                           ExecutionPlan& plan) const;
+    void addResourceRegions(const SequenceDef& sequence,
+                            ExecutionPlan& plan,
+                            PlanBuildResult& result) const;
     void addDataReferenceEdges(ExecutionPlan& plan, PlanBuildResult& result) const;
     bool validatePlanReferences(const ExecutionPlan& plan, PlanBuildResult& result) const;
 };

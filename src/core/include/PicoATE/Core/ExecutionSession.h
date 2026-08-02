@@ -14,9 +14,19 @@
 namespace PicoATE::Core {
 
 struct ExecutionSessionResult {
+    struct UutResult {
+        UutId uutId;
+        bool completed = false;
+        bool hasError = false;
+        QVector<NodeResult> nodeResults;
+    };
+
     bool completed = false;
     bool hasError = false;
     ExecutionState state = ExecutionState::Idle;
+    QVector<NodeResult> sessionNodeResults;
+    QVector<UutResult> uutResults;
+    // Compatibility aggregate. New consumers should use sessionNodeResults and uutResults.
     QVector<NodeResult> nodeResults;
 };
 
@@ -53,12 +63,17 @@ public:
                                          std::optional<BreakpointHit> breakpoint = std::nullopt) const;
 
 private:
+    bool phaseComplete(const UutExecution& execution, ExecutionPhase phase) const;
+    bool phaseHasError(const UutExecution& execution, ExecutionPhase phase) const;
     bool allUutsComplete() const;
     bool uutComplete(const UutExecution& uut) const;
     QVector<UutExecution*> uutPointers();
     void prepareStopIfRequested();
     void pauseAtSafePointIfRequested();
-    void pauseAtBreakpointIfNeeded(UutExecution& uut, const FrameId& frameId = "root");
+    void pauseAtBreakpointIfNeeded(
+        UutExecution& execution,
+        const FrameId& frameId = "root",
+        ExecutionPhase phase = ExecutionPhase::Main);
     void consumeDebugStepCommand();
     void beginDebugStepIfNeeded(const UutExecution& uut,
                                 const NodeId& nodeId,
@@ -80,6 +95,7 @@ private:
     ExecutionPlan m_plan;
     ExecutionResultStore m_results;
     RuntimeEventEmitter m_events;
+    UutExecution m_sessionExecution;
     QVector<UutExecution> m_uuts;
     ExecutionState m_state = ExecutionState::Idle;
     std::shared_ptr<StopToken> m_stopToken;

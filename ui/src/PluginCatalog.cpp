@@ -687,4 +687,271 @@ QString pluginParameterTypeName(PluginParameterType type)
     return {};
 }
 
+PluginManifest builtInDataParserManifest()
+{
+    const auto input = [](QString key, QString name, PluginParameterType type,
+                          QVariant defaultValue = {}, bool required = false,
+                          std::optional<double> minimum = {},
+                          std::optional<double> maximum = {}) {
+        PluginParameterDefinition value;
+        value.key = std::move(key);
+        value.name = std::move(name);
+        value.type = type;
+        value.required = required;
+        value.defaultValue = std::move(defaultValue);
+        value.minimum = minimum;
+        value.maximum = maximum;
+        return value;
+    };
+    const auto enumeration = [&input](
+                                 QString key, QString name, QString defaultValue,
+                                 std::initializer_list<PluginParameterOption> options) {
+        auto value = input(std::move(key), std::move(name),
+                           PluginParameterType::Enumeration,
+                           std::move(defaultValue));
+        value.options = QVector<PluginParameterOption>(options);
+        return value;
+    };
+    const auto output = [](QString key, QString name,
+                           PluginParameterType type = PluginParameterType::String) {
+        PluginOutputDefinition value;
+        value.key = std::move(key);
+        value.name = std::move(name);
+        value.type = type;
+        return value;
+    };
+    const auto textConversionInputs = [&]() {
+        return QVector<PluginParameterDefinition>{
+            input(QStringLiteral("source"), QStringLiteral("Source"),
+                  PluginParameterType::String, {}, true),
+            input(QStringLiteral("trim"), QStringLiteral("Trim Whitespace"),
+                  PluginParameterType::Boolean, true),
+            enumeration(QStringLiteral("outputType"), QStringLiteral("Output Type"),
+                        QStringLiteral("string"),
+                        {{QStringLiteral("String"), QStringLiteral("string")},
+                         {QStringLiteral("Signed Integer"), QStringLiteral("integer")},
+                         {QStringLiteral("Unsigned Integer"), QStringLiteral("unsigned")},
+                         {QStringLiteral("Number"), QStringLiteral("number")},
+                         {QStringLiteral("Boolean"), QStringLiteral("boolean")},
+                         {QStringLiteral("Hex Number"), QStringLiteral("hex")}}),
+            enumeration(QStringLiteral("numberBase"), QStringLiteral("Number Base"),
+                        QStringLiteral("auto"),
+                        {{QStringLiteral("Auto"), QStringLiteral("auto")},
+                         {QStringLiteral("Decimal"), QStringLiteral("10")},
+                         {QStringLiteral("Hexadecimal"), QStringLiteral("16")},
+                         {QStringLiteral("Binary"), QStringLiteral("2")}}),
+            enumeration(QStringLiteral("encoding"), QStringLiteral("Text Encoding"),
+                        QStringLiteral("utf8"),
+                        {{QStringLiteral("UTF-8"), QStringLiteral("utf8")},
+                         {QStringLiteral("Latin-1"), QStringLiteral("latin1")},
+                         {QStringLiteral("ASCII"), QStringLiteral("ascii")}})
+        };
+    };
+
+    PluginManifest manifest;
+    manifest.abiVersion = 1;
+    manifest.moduleId = QStringLiteral("builtin.data-parser");
+    manifest.name = QStringLiteral("Data Parsing");
+    manifest.category = QStringLiteral("BASIC");
+    manifest.version = QStringLiteral("1");
+
+    PluginFunctionDefinition binary;
+    binary.id = QStringLiteral("decodeBinary");
+    binary.name = QStringLiteral("Decode Binary Field");
+    binary.description = QStringLiteral(
+        "Decode byte or bit fields from CAN frames and other binary payloads.");
+    binary.inputs = {
+        input(QStringLiteral("source"), QStringLiteral("Source"),
+              PluginParameterType::String, {}, true),
+        enumeration(QStringLiteral("sourceFormat"), QStringLiteral("Source Format"),
+                    QStringLiteral("auto"),
+                    {{QStringLiteral("Auto"), QStringLiteral("auto")},
+                     {QStringLiteral("Hex Bytes"), QStringLiteral("hex")},
+                     {QStringLiteral("Text"), QStringLiteral("text")}}),
+        input(QStringLiteral("offset"), QStringLiteral("Offset"),
+              PluginParameterType::Integer, 0, false, 0),
+        input(QStringLiteral("length"), QStringLiteral("Length (0 = Auto)"),
+              PluginParameterType::Integer, 0, false, 0, 64),
+        enumeration(QStringLiteral("unit"), QStringLiteral("Offset Unit"),
+                    QStringLiteral("byte"),
+                    {{QStringLiteral("Byte"), QStringLiteral("byte")},
+                     {QStringLiteral("Bit"), QStringLiteral("bit")}}),
+        enumeration(QStringLiteral("dataType"), QStringLiteral("Data Type"),
+                    QStringLiteral("unsigned"),
+                    {{QStringLiteral("Unsigned Integer"), QStringLiteral("unsigned")},
+                     {QStringLiteral("Signed Integer"), QStringLiteral("signed")},
+                     {QStringLiteral("Float 32"), QStringLiteral("float32")},
+                     {QStringLiteral("Float 64"), QStringLiteral("float64")},
+                     {QStringLiteral("Boolean"), QStringLiteral("boolean")},
+                     {QStringLiteral("Hex Bytes"), QStringLiteral("hex")},
+                     {QStringLiteral("Text"), QStringLiteral("text")},
+                     {QStringLiteral("BCD"), QStringLiteral("bcd")}}),
+        enumeration(QStringLiteral("byteOrder"), QStringLiteral("Byte Order"),
+                    QStringLiteral("big"),
+                    {{QStringLiteral("Big Endian"), QStringLiteral("big")},
+                     {QStringLiteral("Little Endian"), QStringLiteral("little")}}),
+        enumeration(QStringLiteral("bitOrder"), QStringLiteral("Bit Numbering"),
+                    QStringLiteral("lsb0"),
+                    {{QStringLiteral("LSB = Bit 0"), QStringLiteral("lsb0")},
+                     {QStringLiteral("MSB = Bit 0"), QStringLiteral("msb0")}}),
+        enumeration(QStringLiteral("encoding"), QStringLiteral("Text Encoding"),
+                    QStringLiteral("utf8"),
+                    {{QStringLiteral("UTF-8"), QStringLiteral("utf8")},
+                     {QStringLiteral("Latin-1"), QStringLiteral("latin1")},
+                     {QStringLiteral("ASCII"), QStringLiteral("ascii")}}),
+        input(QStringLiteral("scale"), QStringLiteral("Scale"),
+              PluginParameterType::Number, 1.0),
+        input(QStringLiteral("valueOffset"), QStringLiteral("Value Offset"),
+              PluginParameterType::Number, 0.0)
+    };
+    binary.outputs = {
+        output(QStringLiteral("value"), QStringLiteral("Decoded Value")),
+        output(QStringLiteral("rawValue"), QStringLiteral("Raw Value")),
+        output(QStringLiteral("rawHex"), QStringLiteral("Raw Hex")),
+        output(QStringLiteral("sourceLength"), QStringLiteral("Source Length"),
+               PluginParameterType::Integer)
+    };
+    manifest.functions.push_back(std::move(binary));
+
+    PluginFunctionDefinition registers;
+    registers.id = QStringLiteral("decodeRegisters");
+    registers.name = QStringLiteral("Decode Modbus Registers");
+    registers.description = QStringLiteral(
+        "Decode typed values from Modbus register arrays.");
+    registers.inputs = {
+        input(QStringLiteral("source"), QStringLiteral("Registers"),
+              PluginParameterType::String, {}, true),
+        input(QStringLiteral("registerOffset"), QStringLiteral("Register Offset"),
+              PluginParameterType::Integer, 0, false, 0),
+        enumeration(QStringLiteral("dataType"), QStringLiteral("Data Type"),
+                    QStringLiteral("uint16"),
+                    {{QStringLiteral("UInt 16"), QStringLiteral("uint16")},
+                     {QStringLiteral("Int 16"), QStringLiteral("int16")},
+                     {QStringLiteral("UInt 32"), QStringLiteral("uint32")},
+                     {QStringLiteral("Int 32"), QStringLiteral("int32")},
+                     {QStringLiteral("Float 32"), QStringLiteral("float32")},
+                     {QStringLiteral("UInt 64"), QStringLiteral("uint64")},
+                     {QStringLiteral("Int 64"), QStringLiteral("int64")},
+                     {QStringLiteral("Float 64"), QStringLiteral("float64")}}),
+        enumeration(QStringLiteral("layout"), QStringLiteral("Register Layout"),
+                    QStringLiteral("normal"),
+                    {{QStringLiteral("Normal (ABCD)"), QStringLiteral("normal")},
+                     {QStringLiteral("Swap Bytes (BADC)"), QStringLiteral("swapBytes")},
+                     {QStringLiteral("Reverse Words (CDAB)"), QStringLiteral("reverseWords")},
+                     {QStringLiteral("Reverse All (DCBA)"), QStringLiteral("reverseAll")}}),
+        input(QStringLiteral("scale"), QStringLiteral("Scale"),
+              PluginParameterType::Number, 1.0),
+        input(QStringLiteral("valueOffset"), QStringLiteral("Value Offset"),
+              PluginParameterType::Number, 0.0)
+    };
+    registers.outputs = {
+        output(QStringLiteral("value"), QStringLiteral("Decoded Value")),
+        output(QStringLiteral("rawValue"), QStringLiteral("Raw Value")),
+        output(QStringLiteral("rawHex"), QStringLiteral("Raw Hex")),
+        output(QStringLiteral("rawRegisters"), QStringLiteral("Raw Registers"))
+    };
+    manifest.functions.push_back(std::move(registers));
+
+    auto betweenInputs = textConversionInputs();
+    betweenInputs.insert(1, input(QStringLiteral("startMarker"),
+                                  QStringLiteral("Start Marker"),
+                                  PluginParameterType::String, QString()));
+    betweenInputs.insert(2, input(QStringLiteral("endMarker"),
+                                  QStringLiteral("End Marker"),
+                                  PluginParameterType::String,
+                                  QStringLiteral("\\r\\n")));
+    betweenInputs.insert(3, input(QStringLiteral("occurrence"),
+                                  QStringLiteral("Occurrence"),
+                                  PluginParameterType::Integer, 1, false, 1));
+    betweenInputs.insert(4, input(QStringLiteral("caseSensitive"),
+                                  QStringLiteral("Case Sensitive"),
+                                  PluginParameterType::Boolean, true));
+    PluginFunctionDefinition between;
+    between.id = QStringLiteral("extractBetween");
+    between.name = QStringLiteral("Extract Text Between");
+    between.description = QStringLiteral(
+        "Extract text between start and end markers, including escaped CR/LF markers.");
+    between.inputs = std::move(betweenInputs);
+    between.outputs = {
+        output(QStringLiteral("value"), QStringLiteral("Converted Value")),
+        output(QStringLiteral("text"), QStringLiteral("Extracted Text")),
+        output(QStringLiteral("startIndex"), QStringLiteral("Start Index"),
+               PluginParameterType::Integer),
+        output(QStringLiteral("endIndex"), QStringLiteral("End Index"),
+               PluginParameterType::Integer)
+    };
+    manifest.functions.push_back(std::move(between));
+
+    auto splitInputs = textConversionInputs();
+    splitInputs.insert(1, input(QStringLiteral("delimiter"),
+                                QStringLiteral("Delimiter"),
+                                PluginParameterType::String,
+                                QStringLiteral(",")));
+    splitInputs.insert(2, enumeration(
+                                QStringLiteral("resultMode"),
+                                QStringLiteral("Parse Mode"),
+                                QStringLiteral("single"),
+                                {{QStringLiteral("Single Field"), QStringLiteral("single")},
+                                 {QStringLiteral("Multiple Named Fields"), QStringLiteral("multiple")}}));
+    splitInputs.insert(3, input(QStringLiteral("fieldIndex"),
+                                QStringLiteral("Field Index"),
+                                PluginParameterType::Integer, 0));
+    splitInputs.insert(4, input(QStringLiteral("caseSensitive"),
+                                QStringLiteral("Case Sensitive"),
+                                PluginParameterType::Boolean, true));
+    PluginFunctionDefinition split;
+    split.id = QStringLiteral("splitText");
+    split.name = QStringLiteral("Split Text Field");
+    split.description = QStringLiteral(
+        "Split text and return either one field or multiple typed, named fields.");
+    split.inputs = std::move(splitInputs);
+    split.outputs = {
+        output(QStringLiteral("value"), QStringLiteral("Converted Value")),
+        output(QStringLiteral("text"), QStringLiteral("Extracted Text")),
+        output(QStringLiteral("fieldIndex"), QStringLiteral("Field Index"),
+               PluginParameterType::Integer),
+        output(QStringLiteral("fieldCount"), QStringLiteral("Field Count"),
+               PluginParameterType::Integer)
+    };
+    manifest.functions.push_back(std::move(split));
+
+    auto regexInputs = textConversionInputs();
+    regexInputs.insert(1, input(QStringLiteral("pattern"),
+                                QStringLiteral("Regular Expression"),
+                                PluginParameterType::String, {}, true));
+    regexInputs.insert(2, enumeration(
+                                QStringLiteral("resultMode"),
+                                QStringLiteral("Parse Mode"),
+                                QStringLiteral("single"),
+                                {{QStringLiteral("Single Capture"), QStringLiteral("single")},
+                                 {QStringLiteral("Multiple Named Captures"), QStringLiteral("multiple")}}));
+    regexInputs.insert(3, input(QStringLiteral("captureGroup"),
+                                QStringLiteral("Capture Group"),
+                                PluginParameterType::Integer, 1, false, 0));
+    regexInputs.insert(4, input(QStringLiteral("occurrence"),
+                                QStringLiteral("Occurrence"),
+                                PluginParameterType::Integer, 1, false, 1));
+    regexInputs.insert(5, input(QStringLiteral("caseSensitive"),
+                                QStringLiteral("Case Sensitive"),
+                                PluginParameterType::Boolean, true));
+    PluginFunctionDefinition regex;
+    regex.id = QStringLiteral("regexCapture");
+    regex.name = QStringLiteral("Regular Expression Capture");
+    regex.description = QStringLiteral(
+        "Capture either one group or multiple typed, named groups from structured text.");
+    regex.inputs = std::move(regexInputs);
+    regex.outputs = {
+        output(QStringLiteral("value"), QStringLiteral("Converted Value")),
+        output(QStringLiteral("text"), QStringLiteral("Captured Text")),
+        output(QStringLiteral("match"), QStringLiteral("Full Match")),
+        output(QStringLiteral("startIndex"), QStringLiteral("Start Index"),
+               PluginParameterType::Integer),
+        output(QStringLiteral("endIndex"), QStringLiteral("End Index"),
+               PluginParameterType::Integer)
+    };
+    manifest.functions.push_back(std::move(regex));
+
+    return manifest;
+}
+
 } // namespace PicoATE::Ui

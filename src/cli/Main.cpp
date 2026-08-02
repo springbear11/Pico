@@ -56,6 +56,8 @@ QString activationStateName(ActivationState state)
         return "WaitingForDependency";
     case ActivationState::WaitingForResource:
         return "WaitingForResource";
+    case ActivationState::WaitingForTimer:
+        return "WaitingForTimer";
     case ActivationState::WaitingAtBarrier:
         return "WaitingAtBarrier";
     case ActivationState::Ready:
@@ -635,8 +637,22 @@ int runCommand(const QCommandLineParser& parser, const QStringList& positional, 
     }
 
     const auto uutPrefix = parser.value("uut-prefix");
-    for (int i = 1; i <= uutCount; ++i) {
-        session.addUut(QString("%1-%2").arg(uutPrefix).arg(i));
+    for (int index = 0; index < uutCount; ++index) {
+        const auto uutId = QString("%1-%2").arg(uutPrefix).arg(index + 1);
+        const auto binding = bindSequenceVariablesForUut(
+            compile.plan.variables, index, uutId);
+        if (!binding.ok()) {
+            for (const auto& diagnostic : binding.errors) {
+                err << "variables."
+                    << (diagnostic.variableName.isEmpty()
+                            ? QStringLiteral("<unknown>")
+                            : diagnostic.variableName)
+                    << ": " << diagnostic.message << '\n';
+            }
+            return 2;
+        }
+        auto& uut = session.addUut(uutId);
+        uut.variables = binding.variables;
     }
 
     ModuleBindingRegistrationOptions bindingOptions;

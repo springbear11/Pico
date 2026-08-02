@@ -2,6 +2,7 @@
 
 #include "ExecutionViewModel.h"
 #include "FlowTargetSelector.h"
+#include "LoadingSpinner.h"
 #include "OnOffControl.h"
 #include "OperatorPromptPresenter.h"
 #include "PluginCatalog.h"
@@ -14,6 +15,7 @@
 #include "ScanDialog.h"
 #include "SequenceDocument.h"
 #include "SequenceTreeModel.h"
+#include "SequenceVariablesDialog.h"
 #include "StationDeviceModel.h"
 #include "StationDocument.h"
 #include "StationPropertyEditor.h"
@@ -25,6 +27,8 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QEvent>
 #include <QFileDialog>
@@ -33,6 +37,7 @@
 #include <QFrame>
 #include <QFormLayout>
 #include <QGuiApplication>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QHash>
 #include <QHBoxLayout>
@@ -53,6 +58,7 @@
 #include <QPointer>
 #include <QRegularExpression>
 #include <QScreen>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSet>
 #include <QSettings>
@@ -65,8 +71,10 @@
 #include <QStyle>
 #include <QTableView>
 #include <QTabWidget>
+#include <QThread>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeView>
 #include <QUndoStack>
 #include <QVBoxLayout>
@@ -358,6 +366,109 @@ private:
     QSet<QString> m_visualBreakpointKeys;
 };
 
+class FlowResourceLockDelegate final : public QStyledItemDelegate
+{
+public:
+    explicit FlowResourceLockDelegate(QTreeView* view)
+        : QStyledItemDelegate(view)
+        , m_view(view)
+    {
+        setObjectName(QStringLiteral("flowResourceLockDelegate"));
+        setProperty("expectUnlock", false);
+    }
+
+    std::function<void(const QModelIndex&)> boundaryClicked;
+
+    void paint(QPainter* painter,
+               const QStyleOptionViewItem& option,
+               const QModelIndex& index) const override
+    {
+        QStyleOptionViewItem baseOption(option);
+        baseOption.text.clear();
+        baseOption.icon = {};
+        QStyledItemDelegate::paint(painter, baseOption, index);
+
+        if (index.column() != SequenceTreeModel::ResourceRegionColumn ||
+            !index.data(SequenceTreeModel::ResourceBoundaryEligibleRole).toBool()) {
+            return;
+        }
+        const int marker = index.data(SequenceTreeModel::ResourceMarkerRole).toInt();
+        const bool hovered = option.state & QStyle::State_MouseOver;
+        if (marker == 0 && !hovered) {
+            return;
+        }
+
+        const bool unlocked = marker == 2 ||
+            (marker == 0 && property("expectUnlock").toBool());
+        const bool singleItem = marker == 3;
+        const QColor color = marker == 0
+            ? QColor(QStringLiteral("#9eb4c2"))
+            : (singleItem ? QColor(QStringLiteral("#476f8b"))
+                          : (unlocked ? QColor(QStringLiteral("#27856f"))
+                                      : QColor(QStringLiteral("#2e75a3"))));
+        const QPointF center = option.rect.center();
+        const QRectF body(center.x() - 6.0, center.y() - 1.0, 12.0, 9.0);
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(QPen(color, 1.7, Qt::SolidLine, Qt::RoundCap));
+        painter->setBrush(marker == 0 ? Qt::NoBrush : color.lighter(175));
+        painter->drawRoundedRect(body, 1.8, 1.8);
+
+        if (unlocked) {
+            const QRectF shackle(center.x() - 2.5, center.y() - 8.0, 9.0, 10.0);
+            painter->drawArc(shackle, 20 * 16, 145 * 16);
+            painter->drawLine(QPointF(center.x() - 2.5, center.y() - 3.0),
+                              QPointF(center.x() - 2.5, center.y() - 0.5));
+        } else {
+            const QRectF shackle(center.x() - 4.5, center.y() - 8.0, 9.0, 10.0);
+            painter->drawArc(shackle, 0, 180 * 16);
+            painter->drawLine(QPointF(center.x() - 4.5, center.y() - 3.0),
+                              QPointF(center.x() - 4.5, center.y() - 0.5));
+            painter->drawLine(QPointF(center.x() + 4.5, center.y() - 3.0),
+                              QPointF(center.x() + 4.5, center.y() - 0.5));
+        }
+        if (singleItem) {
+            painter->setBrush(Qt::NoBrush);
+            painter->setPen(QPen(color, 1.25, Qt::SolidLine, Qt::RoundCap));
+            const QRectF cycle(center.x() - 9.0, center.y() - 10.0, 18.0, 18.0);
+            painter->drawArc(cycle, 45 * 16, 270 * 16);
+            const QPointF arrowTip(center.x() + 6.4, center.y() + 6.4);
+            painter->drawLine(arrowTip, QPointF(center.x() + 2.8, center.y() + 6.0));
+            painter->drawLine(arrowTip, QPointF(center.x() + 6.7, center.y() + 2.8));
+        }
+        painter->restore();
+    }
+
+    bool editorEvent(QEvent* event,
+                     QAbstractItemModel* model,
+                     const QStyleOptionViewItem& option,
+                     const QModelIndex& index) override
+    {
+        Q_UNUSED(model);
+        Q_UNUSED(option);
+        if (event->type() != QEvent::MouseButtonRelease ||
+            index.column() != SequenceTreeModel::ResourceRegionColumn ||
+            !index.data(SequenceTreeModel::ResourceBoundaryEligibleRole).toBool()) {
+            return QStyledItemDelegate::editorEvent(event, model, option, index);
+        }
+        const auto* mouseEvent = static_cast<QMouseEvent*>(event);
+        if (mouseEvent->button() != Qt::LeftButton) {
+            return false;
+        }
+        if (boundaryClicked) {
+            boundaryClicked(index);
+        }
+        if (m_view && m_view->viewport()) {
+            m_view->viewport()->update();
+        }
+        return true;
+    }
+
+private:
+    QPointer<QTreeView> m_view;
+};
+
 class PluginFunctionTreeView final : public QTreeView
 {
 public:
@@ -518,7 +629,7 @@ MainWindow::MainWindow(QWidget* parent)
     m_scanDialog = new ScanDialog(this);
     buildActions();
     buildLayout();
-    scanPlugins(false);
+    loadPluginRegistry();
     restoreUiSettings();
     refreshHistory();
 
@@ -913,6 +1024,7 @@ MainWindow::MainWindow(QWidget* parent)
 MainWindow::~MainWindow()
 {
     m_runArtifactWriter->abandon();
+    waitForPluginScan();
     beginShutdown();
 }
 
@@ -956,6 +1068,16 @@ void MainWindow::showRunPage()
     }
 }
 
+void MainWindow::initializeAdminWorkspace()
+{
+    if (m_adminWorkspaceInitialized) {
+        return;
+    }
+    m_adminWorkspaceInitialized = true;
+    showStartupOverlay(tr("Loading plugins and preparing the Admin workspace..."));
+    QTimer::singleShot(0, this, [this] { scanPlugins(false); });
+}
+
 void MainWindow::closeEvent(QCloseEvent* event)
 {
     if (maybeSaveSequence() && maybeSaveStation()) {
@@ -970,6 +1092,11 @@ void MainWindow::closeEvent(QCloseEvent* event)
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event)
 {
+    if (m_startupOverlay && watched == centralWidget() &&
+        event->type() == QEvent::Resize) {
+        m_startupOverlay->setGeometry(centralWidget()->rect());
+        m_startupOverlay->raise();
+    }
     if (watched == m_flowFieldSearch && event->type() == QEvent::KeyPress) {
         const auto* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Escape) {
@@ -1351,6 +1478,28 @@ bool MainWindow::saveStationAs()
     return true;
 }
 
+void MainWindow::editSequenceVariables()
+{
+    if (!m_sequenceDocument || m_sequenceDocument->isEmpty()) {
+        statusBar()->showMessage(tr("Open a sequence before editing variables"), 3000);
+        return;
+    }
+    if (!resolvePendingStepChanges()) {
+        return;
+    }
+
+    SequenceVariablesDialog dialog(m_sequenceDocument->sequenceVariables(), this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    if (!m_sequenceDocument->setSequenceVariables(dialog.variables())) {
+        statusBar()->showMessage(tr("Failed to update sequence variables"), 4000);
+        return;
+    }
+    statusBar()->showMessage(tr("Sequence variable draft updated; press Ctrl+S to save"),
+                             4000);
+}
+
 void MainWindow::addSequenceStep()
 {
     if (!resolvePendingStepChanges()) {
@@ -1516,6 +1665,273 @@ void MainWindow::wrapSelectedStepsInTestItem()
         m_sequenceTreeView->expand(index);
         m_stepPropertyEditor->setCurrentItem(testItemPath);
     }
+}
+
+void MainWindow::placeResourceRegionBoundary()
+{
+    if (!resolvePendingStepChanges()) {
+        statusBar()->showMessage(
+            tr("Fix the current Step parameters before placing LOCK or UNLOCK"),
+            7000);
+        return;
+    }
+    const auto path = m_sequenceTreeModel->pathForIndex(
+        m_sequenceTreeView->currentIndex());
+    if (!path.isValid() || path.isGroup() || path.stepIndices.isEmpty()) {
+        statusBar()->showMessage(
+            tr("Select a Step for LOCK or UNLOCK"), 5000);
+        return;
+    }
+
+    const auto selectedObject = m_sequenceDocument->objectAt(path);
+    const auto start = selectedObject.value(QStringLiteral("resourceRegionStart"))
+                           .toObject();
+    const auto endId = selectedObject.value(QStringLiteral("resourceRegionEnd"))
+                           .toString();
+    const auto pendingId = m_sequenceDocument->pendingResourceRegionId();
+    const bool completesSingleItem = !start.isEmpty() && endId.isEmpty() &&
+        pendingId == start.value(QStringLiteral("id")).toString();
+    QString error;
+    if (!start.isEmpty() && !completesSingleItem) {
+        if (!m_sequenceDocument->clearResourceRegionAt(path, &error)) {
+            statusBar()->showMessage(error, 7000);
+            return;
+        }
+        statusBar()->showMessage(
+            tr("LOCK and its matching UNLOCK were removed"), 5000);
+        updateCommandState();
+        return;
+    }
+    if (!endId.isEmpty()) {
+        if (!m_sequenceDocument->removeResourceRegionEndAt(path, &error)) {
+            statusBar()->showMessage(error, 7000);
+            return;
+        }
+        statusBar()->showMessage(
+            tr("UNLOCK removed; the LOCK is waiting for a new end point"),
+            6000);
+        updateCommandState();
+        return;
+    }
+    const auto currentRegionId = m_sequenceTreeView->currentIndex()
+                                     .data(SequenceTreeModel::ResourceRegionIdRole)
+                                     .toString();
+    if (!currentRegionId.isEmpty() && !completesSingleItem) {
+        statusBar()->showMessage(
+            tr("This row is already inside a LOCK/UNLOCK interval"), 6000);
+        return;
+    }
+
+    bool placedEntry = false;
+    if (!m_sequenceDocument->placeNextResourceRegionBoundary(
+            path, {}, &placedEntry, &error)) {
+        statusBar()->showMessage(error, 7000);
+        return;
+    }
+
+    if (!placedEntry) {
+        QStringList resources;
+        if (!chooseResourceRegionResources(pendingId, &resources)) {
+            QString rollbackError;
+            if (!m_sequenceDocument->clearResourceRegionAt(path, &rollbackError)) {
+                statusBar()->showMessage(rollbackError, 7000);
+                updateCommandState();
+                return;
+            }
+            statusBar()->showMessage(
+                tr("Hardware selection cancelled; LOCK and UNLOCK were removed"),
+                6000);
+            updateCommandState();
+            return;
+        }
+        if (!m_sequenceDocument->setResourceRegionResources(
+                pendingId, resources, &error)) {
+            QString rollbackError;
+            if (!m_sequenceDocument->clearResourceRegionAt(path, &rollbackError)) {
+                error += tr("; rollback failed: %1").arg(rollbackError);
+            }
+            statusBar()->showMessage(error, 7000);
+            updateCommandState();
+            return;
+        }
+    }
+
+    m_selectedSequencePath = path;
+    const auto index = m_sequenceTreeModel->indexForPath(path);
+    if (index.isValid()) {
+        m_sequenceTreeView->setCurrentIndex(index);
+        m_sequenceTreeView->scrollTo(index, QAbstractItemView::PositionAtCenter);
+    }
+    statusBar()->showMessage(
+        placedEntry
+            ? tr("LOCK placed; click this row again for one item, or select a later sibling for a range")
+            : (completesSingleItem
+                   ? tr("Single-item lock placed; resources release when this item completes")
+                   : tr("UNLOCK placed; the locked interval is complete")),
+        6000);
+    updateCommandState();
+}
+
+bool MainWindow::chooseResourceRegionResources(const QString& regionId,
+                                               QStringList* selectedResources)
+{
+    if (!selectedResources || !m_flowTargetSelector) {
+        return false;
+    }
+    QVector<FlowTargetDevice> devices;
+    for (const auto& device : m_flowTargetSelector->devices()) {
+        if (!device.configured || device.logicalId.trimmed().isEmpty()) {
+            continue;
+        }
+        const auto duplicate = std::find_if(
+            devices.cbegin(), devices.cend(), [&](const FlowTargetDevice& candidate) {
+                return candidate.logicalId.compare(
+                           device.logicalId, Qt::CaseInsensitive) == 0;
+            });
+        if (duplicate == devices.cend()) {
+            devices.push_back(device);
+        }
+    }
+    if (devices.isEmpty()) {
+        QMessageBox::information(
+            this,
+            tr("Select Locked Hardware"),
+            tr("No configured Station hardware is available. Configure and enable a device in Station Config first."));
+        return false;
+    }
+
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("resourceRegionResourceDialog"));
+    dialog.setWindowTitle(tr("Select Locked Hardware"));
+    dialog.resize(620, 390);
+    dialog.setMinimumSize(520, 330);
+    dialog.setStyleSheet(QStringLiteral(R"(
+        QDialog#resourceRegionResourceDialog { background: #f7f9fb; }
+        QLabel#resourceRegionTitle { color: #1f2937; font-size: 16px; font-weight: 700; }
+        QLabel#resourceRegionHint { color: #667085; }
+        QLabel#resourceRegionSelectionCount { color: #475467; font-weight: 600; }
+        QScrollArea#resourceRegionScroll { border: 0; background: transparent; }
+        QWidget#resourceRegionCardArea { background: transparent; }
+        QToolButton[resourceCard="true"] {
+            min-height: 62px; padding: 7px 10px; text-align: left;
+            border: 1px solid #d7dce2; border-radius: 6px;
+            background: #ffffff; color: #344054; font-weight: 600;
+        }
+        QToolButton[resourceCard="true"]:hover {
+            border-color: #9fc4e8; background: #f5faff;
+        }
+        QToolButton[resourceCard="true"]:checked {
+            border: 2px solid #75a7e8; background: #eaf3ff; color: #175cd3;
+        }
+        QPushButton#resourceRegionConfirmButton {
+            min-width: 86px; min-height: 30px; border: 1px solid #2f75b5;
+            border-radius: 5px; background: #2f75b5; color: white; font-weight: 600;
+        }
+        QPushButton#resourceRegionConfirmButton:disabled {
+            border-color: #cfd7df; background: #e6e9ed; color: #98a2b3;
+        }
+    )"));
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(18, 16, 18, 14);
+    layout->setSpacing(8);
+    auto* title = new QLabel(tr("Hardware held by this interval"), &dialog);
+    title->setObjectName(QStringLiteral("resourceRegionTitle"));
+    layout->addWidget(title);
+    auto* hint = new QLabel(
+        tr("Other UUTs wait until UNLOCK. Select one or more physical devices."),
+        &dialog);
+    hint->setObjectName(QStringLiteral("resourceRegionHint"));
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    auto* scroll = new QScrollArea(&dialog);
+    scroll->setObjectName(QStringLiteral("resourceRegionScroll"));
+    scroll->setWidgetResizable(true);
+    auto* cardArea = new QWidget(scroll);
+    cardArea->setObjectName(QStringLiteral("resourceRegionCardArea"));
+    auto* grid = new QGridLayout(cardArea);
+    grid->setContentsMargins(0, 5, 0, 5);
+    grid->setHorizontalSpacing(8);
+    grid->setVerticalSpacing(8);
+    const auto existing = m_sequenceDocument->resourceRegionResources(regionId);
+    QVector<QToolButton*> resourceButtons;
+    for (int index = 0; index < devices.size(); ++index) {
+        const auto& device = devices[index];
+        auto* card = new QToolButton(cardArea);
+        card->setObjectName(QStringLiteral("resourceRegionResourceCard"));
+        card->setProperty("resourceCard", true);
+        card->setProperty("resourceId", device.logicalId);
+        card->setCheckable(true);
+        card->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        const auto subtitle = device.driverName.isEmpty()
+            ? device.deviceType
+            : device.driverName;
+        card->setText(QStringLiteral("%1\n%2").arg(device.logicalId, subtitle));
+        const auto type = device.deviceType.trimmed().toUpper();
+        const auto icon = type == QStringLiteral("CAN") ||
+                          type == QStringLiteral("SERIAL") ||
+                          type == QStringLiteral("MODBUS")
+            ? QStyle::SP_DriveNetIcon
+            : QStyle::SP_ComputerIcon;
+        card->setIcon(style()->standardIcon(icon));
+        card->setIconSize(QSize(24, 24));
+        card->setToolTip(
+            QStringLiteral("%1 | %2").arg(device.deviceType, device.driverName));
+        bool checked = existing.contains(device.logicalId, Qt::CaseInsensitive);
+        for (const auto& oldResource : existing) {
+            checked = checked || oldResource.startsWith(
+                device.logicalId + QLatin1Char('.'), Qt::CaseInsensitive);
+        }
+        card->setChecked(checked);
+        grid->addWidget(card, index / 2, index % 2);
+        resourceButtons.push_back(card);
+    }
+    grid->setRowStretch((devices.size() + 1) / 2, 1);
+    scroll->setWidget(cardArea);
+    layout->addWidget(scroll, 1);
+
+    auto* selectionCount = new QLabel(&dialog);
+    selectionCount->setObjectName(QStringLiteral("resourceRegionSelectionCount"));
+    layout->addWidget(selectionCount);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->setObjectName(QStringLiteral("resourceRegionResourceButtons"));
+    auto* ok = buttons->button(QDialogButtonBox::Ok);
+    ok->setObjectName(QStringLiteral("resourceRegionConfirmButton"));
+    ok->setText(tr("Use Selected"));
+    const auto updateSelection = [resourceButtons, ok, selectionCount] {
+        int checkedCount = 0;
+        for (const auto* card : resourceButtons) {
+            checkedCount += card->isChecked() ? 1 : 0;
+        }
+        ok->setEnabled(checkedCount > 0);
+        selectionCount->setText(
+            checkedCount == 1
+                ? QObject::tr("1 device selected")
+                : QObject::tr("%1 devices selected").arg(checkedCount));
+    };
+    for (auto* card : resourceButtons) {
+        connect(card, &QToolButton::toggled, &dialog,
+                [updateSelection](bool) { updateSelection(); });
+    }
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    updateSelection();
+    if (dialog.exec() != QDialog::Accepted) {
+        return false;
+    }
+
+    selectedResources->clear();
+    for (const auto* card : resourceButtons) {
+        if (card->isChecked()) {
+            selectedResources->push_back(
+                card->property("resourceId").toString());
+        }
+    }
+    return !selectedResources->isEmpty();
 }
 
 void MainWindow::moveSequenceStep(int offset)
@@ -1704,6 +2120,11 @@ void MainWindow::showScanDialog()
 
 void MainWindow::scanPlugins(bool interactive)
 {
+    if (m_pluginScanInProgress) {
+        statusBar()->showMessage(tr("Plugin scan is already running"), 3000);
+        return;
+    }
+
     const auto applicationDirectory = QCoreApplication::applicationDirPath();
     const auto pluginDirectory = QDir(applicationDirectory).absoluteFilePath(
         QStringLiteral("plugins"));
@@ -1713,6 +2134,7 @@ void MainWindow::scanPlugins(bool interactive)
         if (interactive) {
             QMessageBox::warning(this, tr("Scan Plugins"), message);
         }
+        hideStartupOverlay();
         return;
     }
 
@@ -1723,68 +2145,199 @@ void MainWindow::scanPlugins(bool interactive)
                 tr("No PicoATE plugin DLL was found in the plugins directory"),
                 7000);
         }
+        hideStartupOverlay();
         return;
     }
 
-    const auto nativeHost = firstDescribeCapableNativeHost({
+    const QStringList nativeHostCandidates = {
         QDir(applicationDirectory).absoluteFilePath(
             QStringLiteral("PicoATE.NativeHost.exe")),
         QDir(applicationDirectory).absoluteFilePath(
             QStringLiteral("../../../src/nativehost/Debug/PicoATE.NativeHost.exe")),
-    });
-    if (nativeHost.isEmpty()) {
+    };
+    if (firstExistingPath(nativeHostCandidates).isEmpty()) {
         const auto message = tr("No compatible PicoATE.NativeHost.exe was found. Rebuild or redeploy the UI so the Host supports --describe. Plugin DLLs are never loaded directly in the UI process.");
         if (interactive) {
             QMessageBox::critical(this, tr("Scan Plugins"), message);
+        } else {
+            statusBar()->showMessage(message, 7000);
         }
+        hideStartupOverlay();
         return;
     }
 
     const auto registryPath = QDir(pluginDirectory).absoluteFilePath(
         QStringLiteral("PluginRegistry.json"));
+    m_pluginScanInProgress = true;
+    if (m_scanPluginsAction) {
+        m_scanPluginsAction->setEnabled(false);
+    }
+    showStartupOverlay(tr("Scanning plugin functions..."));
     statusBar()->showMessage(tr("Scanning plugins..."));
-    const auto result = PluginCatalog::scanPlugins(
-        pluginDirectory, nativeHost, registryPath, 5000);
+    auto result = std::make_shared<PluginScanResult>();
+    auto* worker = QThread::create(
+        [result, pluginDirectory, nativeHostCandidates, registryPath] {
+            const auto nativeHost = firstDescribeCapableNativeHost(
+                nativeHostCandidates);
+            if (nativeHost.isEmpty()) {
+                result->discoveredDllCount =
+                    PluginCatalog::discoverPluginFiles(pluginDirectory).size();
+                result->errors.push_back({
+                    nativeHostCandidates.join(QStringLiteral("; ")),
+                    QStringLiteral("No compatible NativeHost with --describe support was found")});
+                return;
+            }
+            *result = PluginCatalog::scanPlugins(
+                pluginDirectory, nativeHost, registryPath, 5000);
+        });
+    m_pluginScanThread = worker;
+    connect(worker, &QThread::finished, this,
+            [this, worker, result, registryPath, interactive] {
+                if (m_pluginScanThread == worker) {
+                    m_pluginScanThread = nullptr;
+                }
+                m_pluginScanInProgress = false;
+                if (m_scanPluginsAction) {
+                    m_scanPluginsAction->setEnabled(true);
+                }
+                hideStartupOverlay();
 
-    if (result.ok()) {
-        loadPluginRegistry();
-        if (interactive) {
-            QMessageBox::information(
-                this,
-                tr("Scan Plugins"),
-                tr("Found %1 plugin DLL(s), loaded %2 plugin(s), and updated:\n%3")
-                    .arg(result.discoveredDllCount)
-                    .arg(result.plugins.size())
-                    .arg(registryPath));
-        }
-        if (interactive) {
-            statusBar()->showMessage(tr("Plugin registry updated"), 5000);
-        }
+                if (result->ok()) {
+                    loadPluginRegistry();
+                    if (interactive) {
+                        QMessageBox::information(
+                            this,
+                            tr("Scan Plugins"),
+                            tr("Found %1 plugin DLL(s), loaded %2 plugin(s), and updated:\n%3")
+                                .arg(result->discoveredDllCount)
+                                .arg(result->plugins.size())
+                                .arg(registryPath));
+                    }
+                    statusBar()->showMessage(tr("Plugin registry updated"), 5000);
+                    worker->deleteLater();
+                    return;
+                }
+
+                if (result->registrySaved) {
+                    loadPluginRegistry();
+                }
+                QStringList details;
+                const int maximumDetails = qMin(8, result->errors.size());
+                for (int index = 0; index < maximumDetails; ++index) {
+                    const auto& error = result->errors[index];
+                    details.push_back(tr("%1: %2").arg(error.path, error.message));
+                }
+                if (interactive) {
+                    QMessageBox::warning(
+                        this,
+                        tr("Scan Plugins"),
+                        tr("Found %1 DLL(s) and loaded %2 plugin(s).\n%3")
+                            .arg(result->discoveredDllCount)
+                            .arg(result->plugins.size())
+                            .arg(details.join(QLatin1Char('\n'))));
+                }
+                statusBar()->showMessage(
+                    tr("Plugin scan completed with %1 error(s)")
+                        .arg(result->errors.size()),
+                    7000);
+                worker->deleteLater();
+            });
+    worker->start();
+}
+
+void MainWindow::buildStartupOverlay()
+{
+    auto* central = centralWidget();
+    if (!central || m_startupOverlay) {
         return;
     }
 
-    if (result.registrySaved) {
-        loadPluginRegistry();
-    }
+    m_startupOverlay = new QWidget(central);
+    m_startupOverlay->setObjectName(QStringLiteral("adminStartupOverlay"));
+    m_startupOverlay->setAttribute(Qt::WA_StyledBackground, true);
+    auto* overlayLayout = new QVBoxLayout(m_startupOverlay);
+    overlayLayout->setContentsMargins(20, 20, 20, 20);
+    overlayLayout->addStretch();
 
-    QStringList details;
-    const int maximumDetails = qMin(8, result.errors.size());
-    for (int index = 0; index < maximumDetails; ++index) {
-        const auto& error = result.errors[index];
-        details.push_back(tr("%1: %2").arg(error.path, error.message));
+    auto* row = new QHBoxLayout;
+    row->addStretch();
+    auto* card = new QFrame(m_startupOverlay);
+    card->setObjectName(QStringLiteral("adminStartupCard"));
+    card->setFixedSize(390, 154);
+    auto* cardLayout = new QVBoxLayout(card);
+    cardLayout->setContentsMargins(28, 24, 28, 24);
+    cardLayout->setSpacing(12);
+    m_startupSpinner = new LoadingSpinner(card);
+    m_startupSpinner->setObjectName(QStringLiteral("adminStartupSpinner"));
+    m_startupSpinner->setFixedSize(34, 34);
+    cardLayout->addWidget(m_startupSpinner, 0, Qt::AlignHCenter);
+    m_startupStatusLabel = new QLabel(card);
+    m_startupStatusLabel->setObjectName(QStringLiteral("adminStartupStatus"));
+    m_startupStatusLabel->setAlignment(Qt::AlignCenter);
+    m_startupStatusLabel->setWordWrap(true);
+    cardLayout->addWidget(m_startupStatusLabel);
+    row->addWidget(card);
+    row->addStretch();
+    overlayLayout->addLayout(row);
+    overlayLayout->addStretch();
+
+    m_startupOverlay->setStyleSheet(QStringLiteral(R"css(
+        QWidget#adminStartupOverlay { background: rgba(244, 247, 250, 235); }
+        QFrame#adminStartupCard {
+            background: #ffffff;
+            border: 1px solid #d6dfe8;
+            border-radius: 8px;
+        }
+        QLabel#adminStartupStatus {
+            color: #405160;
+            font-size: 10pt;
+            font-weight: 600;
+        }
+    )css"));
+    m_startupOverlay->setGeometry(central->rect());
+    central->installEventFilter(this);
+    m_startupSpinner->setRunning(false);
+    m_startupOverlay->hide();
+}
+
+void MainWindow::showStartupOverlay(const QString& message)
+{
+    if (!m_startupOverlay) {
+        buildStartupOverlay();
     }
-    if (interactive) {
-        QMessageBox::warning(
-            this,
-            tr("Scan Plugins"),
-            tr("Found %1 DLL(s) and loaded %2 plugin(s).\n%3")
-                .arg(result.discoveredDllCount)
-                .arg(result.plugins.size())
-                .arg(details.join(QLatin1Char('\n'))));
+    if (!m_startupOverlay) {
+        return;
     }
-    if (interactive) {
-        statusBar()->showMessage(tr("Plugin scan completed with errors"), 7000);
+    m_startupStatusLabel->setText(message);
+    m_startupSpinner->setRunning(true);
+    m_startupOverlay->setGeometry(centralWidget()->rect());
+    m_startupOverlay->show();
+    m_startupOverlay->raise();
+}
+
+void MainWindow::hideStartupOverlay()
+{
+    if (!m_startupOverlay) {
+        return;
     }
+    m_startupSpinner->setRunning(false);
+    m_startupOverlay->hide();
+}
+
+void MainWindow::waitForPluginScan()
+{
+    auto* worker = m_pluginScanThread;
+    if (!worker) {
+        return;
+    }
+    m_pluginScanThread = nullptr;
+    disconnect(worker, nullptr, this, nullptr);
+    if (worker->isRunning()) {
+        worker->requestInterruption();
+        worker->wait();
+    }
+    delete worker;
+    m_pluginScanInProgress = false;
 }
 
 void MainWindow::loadPluginRegistry()
@@ -2771,6 +3324,17 @@ void MainWindow::buildActions()
         m_flowFieldSearch->selectAll();
     });
 
+    m_sequenceVariablesAction = new QAction(
+        style()->standardIcon(QStyle::SP_FileDialogDetailedView),
+        tr("Variables"),
+        this);
+    m_sequenceVariablesAction->setObjectName(
+        QStringLiteral("sequenceVariablesAction"));
+    m_sequenceVariablesAction->setToolTip(
+        tr("Edit shared and per-UUT sequence variables"));
+    connect(m_sequenceVariablesAction, &QAction::triggered,
+            this, &MainWindow::editSequenceVariables);
+
     m_wrapTestItemAction = new QAction(
         style()->standardIcon(QStyle::SP_DirIcon), tr("Wrap in TestItem"), this);
     m_wrapTestItemAction->setObjectName(QStringLiteral("wrapTestItemAction"));
@@ -2978,6 +3542,7 @@ void MainWindow::buildActions()
     editMenu->addAction(m_redoAction);
     editMenu->addSeparator();
     editMenu->addAction(m_addStepAction);
+    editMenu->addAction(m_sequenceVariablesAction);
     editMenu->addAction(m_copyStepAction);
     editMenu->addAction(m_pasteStepAction);
     editMenu->addAction(m_deleteStepAction);
@@ -3061,6 +3626,7 @@ void MainWindow::buildLayout()
     sequenceToolbar->addAction(m_redoAction);
     sequenceToolbar->addSeparator();
     sequenceToolbar->addAction(m_addStepAction);
+    sequenceToolbar->addAction(m_sequenceVariablesAction);
     sequenceToolbar->addAction(m_copyStepAction);
     sequenceToolbar->addAction(m_pasteStepAction);
     sequenceToolbar->addAction(m_wrapTestItemAction);
@@ -3136,6 +3702,7 @@ void MainWindow::buildLayout()
     m_sequenceTreeView->setDropIndicatorShown(true);
     m_sequenceTreeView->setDragDropMode(QAbstractItemView::DragDrop);
     m_sequenceTreeView->setDefaultDropAction(Qt::MoveAction);
+    m_sequenceTreeView->setMouseTracking(true);
     m_sequenceTreeView->addAction(m_copyStepAction);
     m_sequenceTreeView->addAction(m_pasteStepAction);
     m_sequenceTreeView->installEventFilter(this);
@@ -3143,12 +3710,31 @@ void MainWindow::buildLayout()
     m_sequenceTreeView->setItemDelegateForColumn(
         SequenceTreeModel::NameColumn,
         new DragHandleDelegate(m_sequenceTreeView));
+    auto* resourceLockDelegate = new FlowResourceLockDelegate(m_sequenceTreeView);
+    resourceLockDelegate->boundaryClicked = [this](const QModelIndex& index) {
+        const auto rowIndex = index.siblingAtColumn(SequenceTreeModel::NameColumn);
+        m_sequenceTreeView->selectionModel()->select(
+            rowIndex,
+            QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        m_sequenceTreeView->setCurrentIndex(rowIndex);
+        placeResourceRegionBoundary();
+    };
+    m_sequenceTreeView->setItemDelegateForColumn(
+        SequenceTreeModel::ResourceRegionColumn,
+        resourceLockDelegate);
     auto treeSizePolicy = m_sequenceTreeView->sizePolicy();
     treeSizePolicy.setHorizontalPolicy(QSizePolicy::Ignored);
     m_sequenceTreeView->setSizePolicy(treeSizePolicy);
     m_sequenceTreeView->setMinimumWidth(320);
     polishReadableTreeView(m_sequenceTreeView);
-    installProportionalHeader(m_sequenceTreeView, {5, 2, 2, 1, 1, 2});
+    installProportionalHeader(m_sequenceTreeView, {5, 2, 2, 1, 1, 1, 2});
+    auto* flowHeader = m_sequenceTreeView->header();
+    flowHeader->setMinimumSectionSize(28);
+    flowHeader->setSectionResizeMode(SequenceTreeModel::ResourceRegionColumn,
+                                     QHeaderView::Fixed);
+    flowHeader->resizeSection(SequenceTreeModel::ResourceRegionColumn, 34);
+    flowHeader->moveSection(
+        flowHeader->visualIndex(SequenceTreeModel::ResourceRegionColumn), 0);
 
     auto* sequenceTreePanel = new QWidget(sequenceWorkArea);
     auto* sequenceTreeLayout = new QVBoxLayout(sequenceTreePanel);
@@ -3611,6 +4197,7 @@ void MainWindow::buildLayout()
     rootLayout->addWidget(m_workspaceTabs, 1);
 
     setCentralWidget(central);
+    buildStartupOverlay();
 
     setStyleSheet(QStringLiteral(R"css(
         QWidget#adminRunPage { background: #f4f6f8; color: #20272e; }
@@ -3745,6 +4332,15 @@ void MainWindow::updateCommandState()
     const auto selectedStepPaths = selectedSequenceStepPaths();
     const bool stepSelected = hasSelection && !selectedPath.isGroup() &&
                               selectedStepPaths.size() == 1;
+    const bool resourceExitPending = m_sequenceDocument &&
+        !m_sequenceDocument->pendingResourceRegionId().isEmpty();
+    if (m_sequenceTreeView) {
+        if (auto* delegate = m_sequenceTreeView->itemDelegateForColumn(
+                SequenceTreeModel::ResourceRegionColumn)) {
+            delegate->setProperty("expectUnlock", resourceExitPending);
+        }
+        m_sequenceTreeView->viewport()->update();
+    }
 
     const bool sequenceHasChanges = hasDocument &&
         (m_sequenceDocument->isModified() ||
@@ -3770,6 +4366,7 @@ void MainWindow::updateCommandState()
     m_redoAction->setEnabled(
         canChangeSources && m_sequenceDocument->undoStack()->canRedo());
     m_addStepAction->setEnabled(canChangeSources && hasDocument && hasSelection);
+    m_sequenceVariablesAction->setEnabled(canChangeSources && hasDocument);
     const bool hasSelectedSteps = !selectedStepPaths.isEmpty();
     m_deleteStepAction->setEnabled(canChangeSources && hasSelectedSteps);
     m_copyStepAction->setEnabled(canChangeSources && hasSelectedSteps);
@@ -4098,7 +4695,7 @@ void MainWindow::applyRuntimeEvents(
         if (!event.nodeId.isEmpty() && adminIsTerminalActivation(event.activationState)) {
             m_adminTerminalNodes.insert(event.nodeId);
         }
-        if (!event.uutId.isEmpty() && !event.nodeId.isEmpty() &&
+        if (!event.nodeId.isEmpty() &&
             event.activationState == PicoATE::Core::ActivationState::Running) {
             const auto index = m_uutStepModel->indexForStep(event.uutId,
                                                              event.nodeId);
@@ -4119,7 +4716,7 @@ void MainWindow::applyRuntimeEvents(
 
 void MainWindow::selectRuntimeEvent(const PicoATE::Core::RuntimeEvent& event)
 {
-    if (!event.uutId.isEmpty() && !event.nodeId.isEmpty() && m_resultView) {
+    if (!event.nodeId.isEmpty() && m_resultView) {
         const auto resultIndex = m_uutStepModel->indexForStep(event.uutId, event.nodeId);
         if (resultIndex.isValid()) {
             m_resultView->setCurrentIndex(resultIndex);
@@ -4221,7 +4818,7 @@ void MainWindow::focusDebugNode(const PicoATE::Core::RuntimeEvent& event)
     selectTimelineSequence(event.sequenceNumber);
     selectRuntimeEvent(event);
 
-    if (!event.uutId.isEmpty() && m_resultView) {
+    if (m_resultView) {
         const auto resultIndex =
             m_uutStepModel->indexForStep(event.uutId, event.nodeId);
         if (resultIndex.isValid()) {

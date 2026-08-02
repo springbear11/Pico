@@ -1,8 +1,13 @@
 #include "PicoATE/Core/SequenceCompiler.h"
 
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonValue>
+#include <QRegularExpression>
 #include <QSet>
+
+#include <cmath>
+#include <limits>
 
 namespace PicoATE::Core {
 namespace {
@@ -262,6 +267,16 @@ void collectModuleBindingWarnings(const QJsonObject& object,
                       warnings);
 }
 
+void collectVariableWarnings(const QJsonObject& object,
+                             const QString& path,
+                             QVector<CompileWarning>& warnings)
+{
+    warnUnknownFields(object,
+                      path,
+                      {"name", "type", "scope", "value", "values", "description"},
+                      warnings);
+}
+
 void collectStepWarnings(const QJsonObject& object,
                          const QString& path,
                          QVector<CompileWarning>& warnings)
@@ -283,6 +298,8 @@ void collectStepWarnings(const QJsonObject& object,
         "inputs",
         "ms",
         "resources",
+        "resourceRegionStart",
+        "resourceRegionEnd",
         "retry",
         "timeout",
         "timeoutMs",
@@ -311,6 +328,23 @@ void collectStepWarnings(const QJsonObject& object,
         for (int i = 0; i < resources.size(); ++i) {
             if (resources[i].isObject()) {
                 collectResourceWarnings(resources[i].toObject(), QString("%1.resources[%2]").arg(path).arg(i), warnings);
+            }
+        }
+    }
+
+    if (object.value("resourceRegionStart").isObject()) {
+        const auto region = object.value("resourceRegionStart").toObject();
+        warnUnknownFields(region,
+                          path + ".resourceRegionStart",
+                          {"id", "resources"},
+                          warnings);
+        const auto resources = region.value("resources").toArray();
+        for (int i = 0; i < resources.size(); ++i) {
+            if (resources[i].isObject()) {
+                collectResourceWarnings(
+                    resources[i].toObject(),
+                    QString("%1.resourceRegionStart.resources[%2]").arg(path).arg(i),
+                    warnings);
             }
         }
     }
@@ -370,7 +404,22 @@ void collectGroupWarnings(const QJsonObject& object,
 void collectSequenceWarnings(const QJsonObject& object,
                              QVector<CompileWarning>& warnings)
 {
-    warnUnknownFields(object, {}, {"id", "name", "version", "metadata", "moduleBindings", "groups"}, warnings);
+    warnUnknownFields(object,
+                      {},
+                      {"id", "name", "version", "metadata", "moduleBindings",
+                       "variables", "groups"},
+                      warnings);
+
+    if (object.value("variables").isArray()) {
+        const auto variables = object.value("variables").toArray();
+        for (int i = 0; i < variables.size(); ++i) {
+            if (variables[i].isObject()) {
+                collectVariableWarnings(variables[i].toObject(),
+                                        QString("variables[%1]").arg(i),
+                                        warnings);
+            }
+        }
+    }
 
     if (object.value("moduleBindings").isArray()) {
         const auto bindings = object.value("moduleBindings").toArray();
@@ -645,8 +694,19 @@ SequenceDef SequenceCompiler::parseSequence(const QJsonObject& object,
                      QString("array, got %1").arg(jsonTypeName(object.value("moduleBindings"))));
     } else if (object.value("moduleBindings").isArray()) {
         sequence.moduleBindings = parseModuleBindings(object.value("moduleBindings").toArray(),
-                                                      "moduleBindings",
-                                                      errors);
+                                                       "moduleBindings",
+                                                       errors);
+    }
+
+    if (object.contains("variables") && !object.value("variables").isArray()) {
+        addTypeError(errors,
+                     "variables",
+                     QString("array, got %1")
+                         .arg(jsonTypeName(object.value("variables"))));
+    } else if (object.value("variables").isArray()) {
+        sequence.variables = parseVariables(object.value("variables").toArray(),
+                                            "variables",
+                                            errors);
     }
 
     const auto groupsValue = object.value("groups");
@@ -666,6 +726,206 @@ SequenceDef SequenceCompiler::parseSequence(const QJsonObject& object,
     }
 
     return sequence;
+}
+
+QVector<SequenceVariableDefinition> SequenceCompiler::parseVariables(
+    const QJsonArray& array,
+    const QString& path,
+    QVector<CompileError>& errors) const
+{
+    QVector<SequenceVariableDefinition> definitions;
+    QSet<QString> names;
+    static const QRegularExpression namePattern(
+        QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+    static const QRegularExpression hexPattern(
+        QStringLiteral("^(?:0[xX])?[0-9A-Fa-f]+$"));
+    static const QSet<QString> reservedNames = {
+        QStringLiteral("uut"),
+        QStringLiteral("loop"),
+        QStringLiteral("frame"),
+        QStringLiteral("attempt"),
+        QStringLiteral("sn"),
+        QStringLiteral("serialnumber"),
+    };
+
+    const auto parseValue = [&](const QJsonValue& jsonValue,
+                                SequenceVariableType type,
+                                const QString& valuePath,
+                                QVariant& result) -> bool {
+        switch (type) {
+        case SequenceVariableType::String:
+            if (!jsonValue.isString()) {
+                addTypeError(errors, valuePath,
+                             QString("string, got %1").arg(jsonTypeName(jsonValue)));
+                return false;
+            }
+            result = jsonValue.toString();
+            return true;
+        case SequenceVariableType::Integer: {
+            if (!jsonValue.isDouble()) {
+                addTypeError(errors, valuePath,
+                             QString("integer, got %1").arg(jsonTypeName(jsonValue)));
+                return false;
+            }
+            const double value = jsonValue.toDouble();
+            if (!std::isfinite(value) || std::trunc(value) != value ||
+                value < static_cast<double>(std::numeric_limits<qint64>::min()) ||
+                value > static_cast<double>(std::numeric_limits<qint64>::max())) {
+                addError(errors, valuePath, "Expected an integer value");
+                return false;
+            }
+            result = static_cast<qint64>(value);
+            return true;
+        }
+        case SequenceVariableType::Hex: {
+            qulonglong value = 0;
+            bool ok = false;
+            if (jsonValue.isString()) {
+                auto text = jsonValue.toString().trimmed();
+                if (!hexPattern.match(text).hasMatch()) {
+                    addError(errors, valuePath, "Expected a hexadecimal value",
+                             "Use a value such as 0x101");
+                    return false;
+                }
+                if (text.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive)) {
+                    text.remove(0, 2);
+                }
+                value = text.toULongLong(&ok, 16);
+            } else if (jsonValue.isDouble()) {
+                const double numeric = jsonValue.toDouble();
+                ok = std::isfinite(numeric) && numeric >= 0.0 &&
+                     std::trunc(numeric) == numeric;
+                if (ok) {
+                    value = static_cast<qulonglong>(numeric);
+                }
+            }
+            if (!ok) {
+                addError(errors, valuePath, "Expected a hexadecimal value",
+                         "Use a value such as 0x101");
+                return false;
+            }
+            result = value;
+            return true;
+        }
+        case SequenceVariableType::Double:
+            if (!jsonValue.isDouble()) {
+                addTypeError(errors, valuePath,
+                             QString("number, got %1").arg(jsonTypeName(jsonValue)));
+                return false;
+            }
+            result = jsonValue.toDouble();
+            return true;
+        case SequenceVariableType::Boolean:
+            if (!jsonValue.isBool()) {
+                addTypeError(errors, valuePath,
+                             QString("bool, got %1").arg(jsonTypeName(jsonValue)));
+                return false;
+            }
+            result = jsonValue.toBool();
+            return true;
+        }
+        return false;
+    };
+
+    for (int i = 0; i < array.size(); ++i) {
+        const auto variablePath = QString("%1[%2]").arg(path).arg(i);
+        if (!array[i].isObject()) {
+            addError(errors, variablePath, "Variable definition must be an object");
+            continue;
+        }
+        const auto object = array[i].toObject();
+        SequenceVariableDefinition definition;
+        definition.name = readString(object, "name", variablePath, errors).trimmed();
+        definition.description = readString(object, "description", variablePath, errors);
+        const auto normalizedName = definition.name.toLower();
+        if (!namePattern.match(definition.name).hasMatch()) {
+            addError(errors,
+                     childPath(variablePath, "name"),
+                     "Invalid variable name",
+                     "Use letters, numbers, and underscores; the first character must be a letter or underscore");
+        } else if (reservedNames.contains(normalizedName)) {
+            addError(errors,
+                     childPath(variablePath, "name"),
+                     "Variable name is reserved by the runtime",
+                     "Choose a product-specific name such as CAN_ID");
+        } else if (names.contains(definition.name)) {
+            addError(errors,
+                     childPath(variablePath, "name"),
+                     "Duplicate variable name",
+                     "Every sequence variable name must be unique");
+        }
+        names.insert(definition.name);
+
+        const auto typeText = normalized(
+            readString(object, "type", variablePath, errors, "string"));
+        if (typeText == "string") {
+            definition.type = SequenceVariableType::String;
+        } else if (typeText == "integer" || typeText == "int") {
+            definition.type = SequenceVariableType::Integer;
+        } else if (typeText == "hex") {
+            definition.type = SequenceVariableType::Hex;
+        } else if (typeText == "double" || typeText == "number") {
+            definition.type = SequenceVariableType::Double;
+        } else if (typeText == "bool" || typeText == "boolean") {
+            definition.type = SequenceVariableType::Boolean;
+        } else {
+            addError(errors,
+                     childPath(variablePath, "type"),
+                     "Unsupported variable type",
+                     "Use string, integer, hex, double, or bool");
+        }
+
+        const auto scopeText = normalized(
+            readString(object, "scope", variablePath, errors, "shared"));
+        if (scopeText == "shared") {
+            definition.scope = SequenceVariableScope::Shared;
+        } else if (scopeText == "peruut") {
+            definition.scope = SequenceVariableScope::PerUut;
+        } else {
+            addError(errors,
+                     childPath(variablePath, "scope"),
+                     "Unsupported variable scope",
+                     "Use shared or perUut");
+        }
+
+        if (definition.scope == SequenceVariableScope::Shared) {
+            if (!object.contains("value") || object.value("value").isNull()) {
+                addError(errors,
+                         childPath(variablePath, "value"),
+                         "Shared variable requires a value");
+            } else {
+                parseValue(object.value("value"), definition.type,
+                           childPath(variablePath, "value"), definition.value);
+            }
+        } else {
+            if (!object.value("values").isArray()) {
+                addTypeError(errors,
+                             childPath(variablePath, "values"),
+                             QString("array, got %1")
+                                 .arg(jsonTypeName(object.value("values"))));
+            } else {
+                const auto values = object.value("values").toArray();
+                if (values.isEmpty()) {
+                    addError(errors,
+                             childPath(variablePath, "values"),
+                             "Per-UUT variable requires at least one value");
+                }
+                definition.values.reserve(values.size());
+                for (int valueIndex = 0; valueIndex < values.size(); ++valueIndex) {
+                    QVariant value;
+                    if (!values[valueIndex].isNull()) {
+                        parseValue(values[valueIndex],
+                                   definition.type,
+                                   QString("%1.values[%2]").arg(variablePath).arg(valueIndex),
+                                   value);
+                    }
+                    definition.values.push_back(value);
+                }
+            }
+        }
+        definitions.push_back(std::move(definition));
+    }
+    return definitions;
 }
 
 StepGroupDef SequenceCompiler::parseGroup(const QJsonObject& object,
@@ -757,6 +1017,38 @@ StepDef SequenceCompiler::parseStep(const QJsonObject& object,
     } else if (object.value("resources").isArray()) {
         step.resources = parseResources(object.value("resources").toArray(), path + ".resources", errors);
     }
+
+    if (object.contains("resourceRegionStart")) {
+        if (!object.value("resourceRegionStart").isObject()) {
+            addTypeError(errors,
+                         childPath(path, "resourceRegionStart"),
+                         QString("object, got %1").arg(
+                             jsonTypeName(object.value("resourceRegionStart"))));
+        } else {
+            const auto regionObject = object.value("resourceRegionStart").toObject();
+            ResourceRegionStartDef region;
+            region.id = readString(regionObject,
+                                   "id",
+                                   path + ".resourceRegionStart",
+                                   errors);
+            if (!regionObject.value("resources").isArray()) {
+                addTypeError(errors,
+                             path + ".resourceRegionStart.resources",
+                             QString("array, got %1").arg(
+                                 jsonTypeName(regionObject.value("resources"))));
+            } else {
+                region.resources = parseResources(
+                    regionObject.value("resources").toArray(),
+                    path + ".resourceRegionStart.resources",
+                    errors);
+            }
+            step.resourceRegionStart = std::move(region);
+        }
+    }
+    step.resourceRegionEnd = readString(object,
+                                        "resourceRegionEnd",
+                                        path,
+                                        errors);
 
     if (object.contains("retry") && !object.value("retry").isObject()) {
         addTypeError(errors,
@@ -1070,6 +1362,7 @@ OperatorPromptDef SequenceCompiler::parseOperatorPrompt(const QJsonObject& objec
 
     prompt.title = readString(object, "title", path, errors, "Message");
     prompt.message = readString(object, "message", path, errors).trimmed();
+    prompt.image = readString(object, "image", path, errors).trimmed();
     prompt.confirmText = readString(object, "confirmText", path, errors, "OK").trimmed();
     prompt.closeOnStep = readString(object, "closeOnStep", path, errors).trimmed();
     prompt.timeoutMs = readInt(object, "timeoutMs", path, errors, 60000);
@@ -1079,6 +1372,17 @@ OperatorPromptDef SequenceCompiler::parseOperatorPrompt(const QJsonObject& objec
                  childPath(path, "message"),
                  "Operator prompt message is required",
                  "Describe the action the operator must perform");
+    }
+    if (!prompt.image.isEmpty()) {
+        const auto suffix = QFileInfo(prompt.image).suffix().toLower();
+        if (suffix != QStringLiteral("png") &&
+            suffix != QStringLiteral("jpg") &&
+            suffix != QStringLiteral("jpeg")) {
+            addError(errors,
+                     childPath(path, "image"),
+                     "Unsupported operator prompt image format",
+                     "Use a PNG, JPG, or JPEG image from the image folder");
+        }
     }
     if (prompt.mode == "confirm" && prompt.confirmText.isEmpty()) {
         addError(errors,

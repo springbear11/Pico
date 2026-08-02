@@ -50,6 +50,7 @@ struct RuntimeEvent {
     QString nodeDisplayName;
     ExecNodeKind nodeKind = ExecNodeKind::Action;
     AttemptId attemptId;
+    RequestId requestId;
     DeviceId deviceId;
     FrameId frameId;
     int attemptIndex = 0;

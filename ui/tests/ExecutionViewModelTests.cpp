@@ -350,6 +350,8 @@ PicoATE::Core::ExecutionReport sampleReport()
 
     UutReport uut;
     uut.uutId = QStringLiteral("UUT-中文-01");
+    uut.completed = true;
+    uut.outcome = NodeOutcome::Passed;
     uut.steps = {step};
 
     ExecutionReport report;
@@ -431,6 +433,7 @@ private slots:
     void stationDeviceModelEditsAndReordersDevices();
     void stationDocumentGeneratesTypedIdsAndMovesConfigurations();
     void sequenceTreeModelInspectsJsonFieldsWithoutChangingDocument();
+    void sequenceDocumentPlacesAlternatingResourceBoundaries();
     void coreServiceCompilesProvidedSequenceSnapshot();
     void coreServiceRepeatsWholeSequenceForLoopTest();
     void stationFailurePolicyContinuesAllTestItemChildren();
@@ -1188,7 +1191,7 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     QCOMPARE(functionModel.rowCount(), 2);
     const auto basicSection = functionModel.index(0, 0);
     QCOMPARE(basicSection.data().toString(), QStringLiteral("Basic Functions"));
-    QCOMPARE(functionModel.rowCount(basicSection), 11);
+    QCOMPARE(functionModel.rowCount(basicSection), 12);
     const auto messageBoxFunction = functionModel.index(1, 0, basicSection);
     QCOMPARE(messageBoxFunction.data().toString(), QStringLiteral("MessageBox"));
     QCOMPARE(messageBoxFunction.data(PluginFunctionModel::FunctionIdRole).toString(),
@@ -1233,6 +1236,23 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
              QStringLiteral("consecutive"));
     QCOMPARE(functionModel.index(8, 0, basicSection).data().toString(),
              QStringLiteral("Aggregate"));
+    const auto parserCategory = functionModel.index(11, 0, basicSection);
+    QCOMPARE(parserCategory.data().toString(), QStringLiteral("Data Parsing"));
+    QCOMPARE(functionModel.rowCount(parserCategory), 5);
+    const auto binaryParser = functionModel.index(0, 0, parserCategory);
+    QCOMPARE(binaryParser.data().toString(), QStringLiteral("Decode Binary Field"));
+    const auto binaryParserTemplate = functionModel.stepTemplate(binaryParser);
+    QCOMPARE(binaryParserTemplate.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("action"));
+    QCOMPARE(binaryParserTemplate.value(QStringLiteral("moduleId")).toString(),
+             QStringLiteral("builtin.data-parser"));
+    QCOMPARE(binaryParserTemplate.value(QStringLiteral("function")).toString(),
+             QStringLiteral("decodeBinary"));
+    QCOMPARE(binaryParserTemplate.value(QStringLiteral("inputs")).toObject()
+                 .value(QStringLiteral("byteOrder")).toString(),
+             QStringLiteral("big"));
+    std::unique_ptr<QMimeData> parserMime(functionModel.mimeData({binaryParser}));
+    QVERIFY(parserMime);
 
     const auto pluginSection = functionModel.index(1, 0);
     QCOMPARE(pluginSection.data().toString(), QStringLiteral("Plugin Functions"));
@@ -1408,6 +1428,41 @@ void ExecutionViewModelTests::stepOutputExpressionsUsePreviousScopedPluginOutput
         QStringLiteral("${step:poll.stats.outputs.average}")));
     QVERIFY(builtInExpressions.contains(
         QStringLiteral("${step:poll.stable.outputs.value}")));
+
+    const auto parserSequence = QJsonDocument::fromJson(R"json({
+      "id":"parser-expressions","name":"Parser Expressions","groups":[
+        {"id":"main","kind":"main","steps":[
+          {"id":"decode","kind":"action","moduleId":"builtin.data-parser",
+           "function":"decodeBinary","inputs":{"source":"01 02"}},
+          {"id":"parse-names","kind":"action","moduleId":"builtin.data-parser",
+           "function":"splitText","inputs":{
+             "source":"SN001,812.5","delimiter":",","resultMode":"multiple",
+             "fields":[
+               {"index":0,"name":"SN1","type":"string"},
+               {"index":1,"name":"voltage","type":"number"}
+             ]}},
+          {"id":"check","kind":"limit","inputs":{"actual":""}}
+        ]}
+      ]
+    })json").object();
+    const auto parserCandidates = buildStepOutputExpressionCandidates(
+        parserSequence, SequenceItemPath{0, {2}}, {builtInDataParserManifest()});
+    QStringList parserExpressions;
+    for (const auto& candidate : parserCandidates) {
+        parserExpressions.push_back(candidate.expression);
+    }
+    QVERIFY(parserExpressions.contains(
+        QStringLiteral("${step:decode.outputs.value}")));
+    QVERIFY(parserExpressions.contains(
+        QStringLiteral("${step:decode.outputs.rawHex}")));
+    QVERIFY(parserExpressions.contains(
+        QStringLiteral("${step:parse-names.outputs.fields.SN1}")));
+    QVERIFY(parserExpressions.contains(
+        QStringLiteral("${step:parse-names.outputs.fields.voltage}")));
+    QVERIFY(parserExpressions.contains(
+        QStringLiteral("${step:parse-names.outputs.fieldCount}")));
+    QVERIFY(!parserExpressions.contains(
+        QStringLiteral("${step:parse-names.outputs.value}")));
 
     const auto invalid = buildStepOutputExpressionCandidates(
         sequence, SequenceItemPath{}, {manifest.manifest});
@@ -1639,10 +1694,11 @@ void ExecutionViewModelTests::uutStepModelBuildsSingleUutPhaseLayout()
     UutReport uut;
     uut.uutId = QStringLiteral("SN-001");
     uut.steps = {
-        makeStep(QStringLiteral("open"), QStringLiteral("Open Fixture"), ExecutionPhase::Setup),
-        makeStep(QStringLiteral("measure"), QStringLiteral("Measure"), ExecutionPhase::Main),
-        makeStep(QStringLiteral("close"), QStringLiteral("Close Fixture"), ExecutionPhase::Cleanup)};
+        makeStep(QStringLiteral("measure"), QStringLiteral("Measure"), ExecutionPhase::Main)};
     ExecutionReport report;
+    report.sessionSteps = {
+        makeStep(QStringLiteral("open"), QStringLiteral("Open Fixture"), ExecutionPhase::Setup),
+        makeStep(QStringLiteral("close"), QStringLiteral("Close Fixture"), ExecutionPhase::Cleanup)};
     report.uuts = {uut};
 
     UutStepModel model;
@@ -2397,6 +2453,11 @@ void ExecutionViewModelTests::executionReportJsonRoundTripsAndRejectsUnsupported
 {
     auto report = sampleReport();
     report.uuts.first().steps.first().resultRecording = false;
+    auto sessionStep = report.uuts.first().steps.first();
+    sessionStep.stepId = QStringLiteral("session-cleanup");
+    sessionStep.displayName = QStringLiteral("Session Cleanup");
+    sessionStep.phase = PicoATE::Core::ExecutionPhase::Cleanup;
+    report.sessionSteps = {sessionStep};
     const auto bytes = PicoATE::Core::serializeExecutionReport(report);
     const auto parsed = PicoATE::Core::parseExecutionReport(bytes);
     QVERIFY2(parsed.ok(),
@@ -2404,7 +2465,13 @@ void ExecutionViewModelTests::executionReportJsonRoundTripsAndRejectsUnsupported
     QCOMPARE(parsed.report.planId, report.planId);
     QCOMPARE(parsed.report.sequenceId, report.sequenceId);
     QCOMPARE(parsed.report.state, PicoATE::Core::ExecutionState::Completed);
+    QCOMPARE(parsed.report.sessionSteps.size(), 1);
+    QCOMPARE(parsed.report.sessionSteps.first().stepId,
+             QStringLiteral("session-cleanup"));
     QCOMPARE(parsed.report.uuts.size(), 1);
+    QVERIFY(parsed.report.uuts.first().completed);
+    QCOMPARE(parsed.report.uuts.first().outcome,
+             PicoATE::Core::NodeOutcome::Passed);
     const auto& step = parsed.report.uuts.first().steps.first();
     QCOMPARE(step.displayName, QStringLiteral("测量,\"输出\""));
     QCOMPARE(step.kind, PicoATE::Core::ExecNodeKind::Action);
@@ -2805,7 +2872,7 @@ void ExecutionViewModelTests::testItemReportAndRuntimeEventsPreserveHierarchy()
 
     const auto serialized = PicoATE::Core::serializeExecutionReport(runResult.report);
     const auto document = QJsonDocument::fromJson(serialized);
-    QCOMPARE(document.object().value(QStringLiteral("schemaVersion")).toInt(), 3);
+    QCOMPARE(document.object().value(QStringLiteral("schemaVersion")).toInt(), 4);
     const auto parsed = PicoATE::Core::parseExecutionReport(serialized);
     QVERIFY(parsed.ok());
     QCOMPARE(parsed.report.uuts.first().steps.first().children.size(), 2);
@@ -3058,6 +3125,104 @@ void ExecutionViewModelTests::sequenceTreeModelBuildsHierarchyAndEditsSteps()
     QCOMPARE(groups.first().toObject().value("steps").toArray()
                  .last().toObject().value("id").toString(),
              QString("001"));
+}
+
+void ExecutionViewModelTests::sequenceDocumentPlacesAlternatingResourceBoundaries()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath(QStringLiteral("resource-region.json"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"({
+      "id":"resource-region-ui","name":"Resource Region UI","groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"001","kind":"noop","name":"Send"},
+          {"id":"002","kind":"wait","name":"Wait","ms":1},
+          {"id":"003","kind":"noop","name":"Read"}
+        ]
+      }]
+    })");
+    file.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(path));
+    SequenceTreeModel model(&document);
+    const SequenceItemPath entryPath{0, {0}};
+    const SequenceItemPath exitPath{0, {2}};
+    bool placedEntry = false;
+    QString error;
+    QVERIFY2(document.placeNextResourceRegionBoundary(
+                 entryPath, QStringLiteral("CAN1.CH1"), &placedEntry, &error),
+             qPrintable(error));
+    QVERIFY(placedEntry);
+    QCOMPARE(document.pendingResourceRegionId(),
+             QStringLiteral("resource-region-001"));
+
+    QVERIFY2(document.placeNextResourceRegionBoundary(
+                 entryPath, {}, &placedEntry, &error),
+             qPrintable(error));
+    QVERIFY(!placedEntry);
+    QVERIFY(document.pendingResourceRegionId().isEmpty());
+    const auto singleItem = document.objectAt(entryPath);
+    QCOMPARE(singleItem.value(QStringLiteral("resourceRegionEnd")).toString(),
+             QStringLiteral("resource-region-001"));
+    {
+        const auto singleGroup = model.index(0, SequenceTreeModel::NameColumn);
+        const auto singleBoundary = model.index(
+            0, SequenceTreeModel::ResourceRegionColumn, singleGroup);
+        QCOMPARE(singleBoundary.data().toString(), QStringLiteral("LOCK/UNLOCK"));
+        QCOMPARE(singleBoundary.data(SequenceTreeModel::ResourceMarkerRole).toInt(), 3);
+
+        PicoATE::Core::SequenceCompiler singleCompiler;
+        const auto singleCompiled = singleCompiler.compileJson(document.rootObject());
+        QVERIFY2(singleCompiled.ok(), singleCompiled.errors.isEmpty()
+                                      ? "Single-item resource region compilation failed"
+                                      : qPrintable(singleCompiled.errors.first().message));
+        QCOMPARE(singleCompiled.plan.resourceRegions.size(), 1);
+        QCOMPARE(singleCompiled.plan.resourceRegions.first().entryNodeId,
+                 QStringLiteral("001"));
+        QCOMPARE(singleCompiled.plan.resourceRegions.first().exitNodeId,
+                 QStringLiteral("001"));
+    }
+    QVERIFY2(document.clearResourceRegionAt(entryPath, &error), qPrintable(error));
+
+    QVERIFY2(document.placeNextResourceRegionBoundary(
+                 entryPath, QStringLiteral("CAN1.CH1"), &placedEntry, &error),
+             qPrintable(error));
+    QVERIFY(placedEntry);
+    QVERIFY2(document.placeNextResourceRegionBoundary(
+                 exitPath, {}, &placedEntry, &error),
+             qPrintable(error));
+    QVERIFY(!placedEntry);
+    QVERIFY(document.pendingResourceRegionId().isEmpty());
+
+    const auto group = model.index(0, SequenceTreeModel::NameColumn);
+    const auto entry = model.index(0, SequenceTreeModel::ResourceRegionColumn, group);
+    const auto middle = model.index(1, SequenceTreeModel::NameColumn, group);
+    const auto exit = model.index(2, SequenceTreeModel::ResourceRegionColumn, group);
+    QCOMPARE(entry.data().toString(), QStringLiteral("LOCK"));
+    QCOMPARE(exit.data().toString(), QStringLiteral("UNLOCK"));
+    QCOMPARE(middle.data(SequenceTreeModel::ResourceRegionIdRole).toString(),
+             QStringLiteral("resource-region-001"));
+    QVERIFY(middle.data(Qt::BackgroundRole).isValid());
+
+    PicoATE::Core::SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(document.rootObject());
+    QVERIFY2(compiled.ok(), compiled.errors.isEmpty()
+                                ? "Resource region compilation failed"
+                                : qPrintable(compiled.errors.first().message));
+    QCOMPARE(compiled.plan.resourceRegions.size(), 1);
+    QCOMPARE(compiled.plan.resourceRegions.first().entryNodeId,
+             QStringLiteral("001"));
+    QCOMPARE(compiled.plan.resourceRegions.first().exitNodeId,
+             QStringLiteral("003"));
+
+    document.undoStack()->undo();
+    QCOMPARE(document.pendingResourceRegionId(),
+             QStringLiteral("resource-region-001"));
+    document.undoStack()->undo();
+    QVERIFY(document.pendingResourceRegionId().isEmpty());
 }
 
 void ExecutionViewModelTests::sequenceTreeModelShowsInheritedDisabledState()

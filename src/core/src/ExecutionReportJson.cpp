@@ -46,6 +46,7 @@ QString activationStateName(ActivationState state)
     case ActivationState::Created: return "Created";
     case ActivationState::WaitingForDependency: return "WaitingForDependency";
     case ActivationState::WaitingForResource: return "WaitingForResource";
+    case ActivationState::WaitingForTimer: return "WaitingForTimer";
     case ActivationState::WaitingAtBarrier: return "WaitingAtBarrier";
     case ActivationState::Ready: return "Ready";
     case ActivationState::Running: return "Running";
@@ -64,6 +65,7 @@ std::optional<ActivationState> activationStateFromString(const QString& value)
     if (value == "Created") return ActivationState::Created;
     if (value == "WaitingForDependency") return ActivationState::WaitingForDependency;
     if (value == "WaitingForResource") return ActivationState::WaitingForResource;
+    if (value == "WaitingForTimer") return ActivationState::WaitingForTimer;
     if (value == "WaitingAtBarrier") return ActivationState::WaitingAtBarrier;
     if (value == "Ready") return ActivationState::Ready;
     if (value == "Running") return ActivationState::Running;
@@ -240,6 +242,7 @@ QJsonObject attemptToJson(const AttemptReport& attempt)
 {
     return {
         {"index", attempt.index},
+        {"requestId", attempt.requestId},
         {"outcome", nodeOutcomeName(attempt.outcome)},
         {"durationMs", attempt.durationMs},
         {"errorCode", attempt.errorCode},
@@ -255,6 +258,7 @@ AttemptReport attemptFromJson(const QJsonObject& object,
 {
     AttemptReport attempt;
     attempt.index = object.value("index").toInt();
+    attempt.requestId = object.value("requestId").toString();
     const auto outcomeText = object.value("outcome").toString("Unknown");
     const auto outcome = outcomeFromString(outcomeText);
     if (outcome) attempt.outcome = *outcome;
@@ -398,13 +402,19 @@ StepReport stepFromJson(const QJsonObject& object,
 
 QJsonObject reportBodyToJson(const ExecutionReport& report)
 {
+    QJsonArray sessionSteps;
+    for (const auto& step : report.sessionSteps) {
+        sessionSteps.push_back(stepToJson(step));
+    }
     QJsonArray uuts;
     for (const auto& uut : report.uuts) {
         QJsonArray steps;
         for (const auto& step : uut.steps) steps.push_back(stepToJson(step));
         uuts.push_back(QJsonObject{
             {"uutId", uut.uutId},
+            {"completed", uut.completed},
             {"hasError", uut.hasError},
+            {"outcome", nodeOutcomeName(uut.outcome)},
             {"steps", steps},
         });
     }
@@ -415,6 +425,8 @@ QJsonObject reportBodyToJson(const ExecutionReport& report)
         {"state", executionStateName(report.state)},
         {"completed", report.completed},
         {"hasError", report.hasError},
+        {"sessionHasError", report.sessionHasError},
+        {"sessionSteps", sessionSteps},
         {"uuts", uuts},
     };
 }
@@ -462,6 +474,24 @@ ExecutionReportJsonResult executionReportFromJson(const QJsonObject& object)
     else addError(result.errors, "report.state", "Unsupported execution state: " + stateText);
     result.report.completed = report.value("completed").toBool(false);
     result.report.hasError = report.value("hasError").toBool(false);
+    result.report.sessionHasError = report.value("sessionHasError").toBool(false);
+
+    const auto sessionStepsValue = report.value("sessionSteps");
+    if (!sessionStepsValue.isUndefined() && !sessionStepsValue.isArray()) {
+        addError(result.errors, "report.sessionSteps", "Expected array");
+    } else {
+        const auto sessionSteps = sessionStepsValue.toArray();
+        result.report.sessionSteps.reserve(sessionSteps.size());
+        for (int stepIndex = 0; stepIndex < sessionSteps.size(); ++stepIndex) {
+            const auto stepPath = QString("report.sessionSteps[%1]").arg(stepIndex);
+            if (!sessionSteps[stepIndex].isObject()) {
+                addError(result.errors, stepPath, "Expected object");
+                continue;
+            }
+            result.report.sessionSteps.push_back(stepFromJson(
+                sessionSteps[stepIndex].toObject(), stepPath, result.errors));
+        }
+    }
 
     const auto uutsValue = report.value("uuts");
     if (!uutsValue.isUndefined() && !uutsValue.isArray()) {
@@ -479,7 +509,16 @@ ExecutionReportJsonResult executionReportFromJson(const QJsonObject& object)
         const auto uutObject = uuts[uutIndex].toObject();
         UutReport uut;
         uut.uutId = uutObject.value("uutId").toString();
+        uut.completed = uutObject.value("completed").toBool(false);
         uut.hasError = uutObject.value("hasError").toBool(false);
+        const auto uutOutcomeText = uutObject.value("outcome").toString("Unknown");
+        const auto uutOutcome = outcomeFromString(uutOutcomeText);
+        if (uutOutcome) {
+            uut.outcome = *uutOutcome;
+        } else {
+            addError(result.errors, uutPath + ".outcome",
+                     "Unsupported node outcome: " + uutOutcomeText);
+        }
         const auto stepsValue = uutObject.value("steps");
         if (!stepsValue.isUndefined() && !stepsValue.isArray()) {
             addError(result.errors, uutPath + ".steps", "Expected array");

@@ -319,30 +319,23 @@ RunServiceResult CoreExecutionService::run(
         }
     }
 
-    for (const auto& input : uutInputs) {
-        auto uutVariables = input.variables;
-        if (!uutVariables.contains(QStringLiteral("sn"))) {
-            uutVariables.insert(QStringLiteral("sn"), input.uutId);
+    for (int index = 0; index < uutInputs.size(); ++index) {
+        const auto& input = uutInputs[index];
+        const auto binding = PicoATE::Core::bindSequenceVariablesForUut(
+            m_compiled->plan.variables, index, input.uutId, input.variables);
+        for (const auto& diagnostic : binding.errors) {
+            result.diagnostics.push_back(error(
+                diagnostic.variableName.isEmpty()
+                    ? QStringLiteral("variables")
+                    : QStringLiteral("variables.%1").arg(diagnostic.variableName),
+                diagnostic.message,
+                QStringLiteral("Configure a value for this UUT in Flow > Variables")));
         }
-        if (!uutVariables.contains(QStringLiteral("serialNumber"))) {
-            uutVariables.insert(QStringLiteral("serialNumber"), input.uutId);
+        if (!binding.ok()) {
+            return result;
         }
-        auto uutNamespace = uutVariables.value(QStringLiteral("uut")).toMap();
-        uutNamespace.insert(QStringLiteral("id"), input.uutId);
-        if (!uutNamespace.contains(QStringLiteral("sn"))) {
-            uutNamespace.insert(
-                QStringLiteral("sn"),
-                uutVariables.value(QStringLiteral("sn"), input.uutId));
-        }
-        if (!uutNamespace.contains(QStringLiteral("serialNumber"))) {
-            uutNamespace.insert(
-                QStringLiteral("serialNumber"),
-                uutVariables.value(QStringLiteral("serialNumber"), input.uutId));
-        }
-        uutVariables.insert(QStringLiteral("uut"), uutNamespace);
-
         auto& uut = session.addUut(input.uutId);
-        uut.variables = std::move(uutVariables);
+        uut.variables = binding.variables;
     }
 
     result.executed = true;

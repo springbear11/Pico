@@ -118,7 +118,7 @@ private:
     ModelItem* findModelItem(const PicoATE::Core::UutId& uutId,
                              const PicoATE::Core::NodeId& stepId) const;
     PicoATE::Core::UutReport& ensureUut(const PicoATE::Core::UutId& uutId);
-    PicoATE::Core::StepReport& ensureStep(PicoATE::Core::UutReport& uut,
+    PicoATE::Core::StepReport& ensureStep(QVector<PicoATE::Core::StepReport>& steps,
                                           const PicoATE::Core::RuntimeEvent& event);
 
     PicoATE::Core::ExecutionReport m_report;

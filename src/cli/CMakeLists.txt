@@ -92,6 +92,16 @@ add_test(
 )
 
 add_test(
+    NAME PicoATECliDataParserExample
+    COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/data_parser_sequence.json" --uuts 1
+)
+
+add_test(
+    NAME PicoATECliNamedTextFieldsExample
+    COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/named_text_fields_sequence.json" --uuts 1
+)
+
+add_test(
     NAME PicoATECliCustomDisabledExample
     COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/custom_disabled_sequence.json" --uuts 1
 )
@@ -114,6 +124,16 @@ add_test(
 add_test(
     NAME PicoATECliScopedResultExample
     COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/scoped_result_sequence.json" --uuts 2
+)
+
+add_test(
+    NAME PicoATECliResourceRegionExample
+    COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/resource_region_sequence.json" --uuts 4
+)
+
+add_test(
+    NAME PicoATECliSequenceVariablesExample
+    COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/sequence_variables.json" --uuts 4
 )
 
 add_test(

@@ -15,7 +15,7 @@
                 "listenOnly": false,
                 "selfTest": false
             },
-            "resource": "",
+            "resource": "GC201805427",
             "timeoutMs": 30000
         },
         {
@@ -32,7 +32,7 @@
                 "listenOnly": false,
                 "selfTest": false
             },
-            "resource": "",
+            "resource": "GC201805427",
             "timeoutMs": 30000
         },
         {
@@ -49,7 +49,7 @@
                 "listenOnly": false,
                 "selfTest": false
             },
-            "resource": "",
+            "resource": "31F00038F70",
             "timeoutMs": 30000
         },
         {
@@ -66,7 +66,7 @@
                 "listenOnly": false,
                 "selfTest": false
             },
-            "resource": "",
+            "resource": "31F00038F70",
             "timeoutMs": 30000
         },
         {

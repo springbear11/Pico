@@ -11,6 +11,7 @@ add_library(PicoATECore SHARED
     src/ExecutionGraphScheduler.cpp
     src/ExecutionSession.cpp
     src/ExecutionPlan.cpp
+    src/ExecutionRequest.cpp
     src/ExecutionReportJson.cpp
     src/ExecutionResultStore.cpp
     src/InstrumentAdapterModules.cpp
@@ -18,6 +19,7 @@ add_library(PicoATECore SHARED
     src/MeasurementTypes.cpp
     src/ModuleBindingRegistrar.cpp
     src/ModuleRuntime.cpp
+    src/DataParserModule.cpp
     src/ModuleTransportJson.cpp
     src/NativeHostManifest.cpp
     src/NodeRunner.cpp
@@ -35,6 +37,7 @@ add_library(PicoATECore SHARED
     src/StationRunPreparation.cpp
     src/StationRuntime.cpp
     src/StopToken.cpp
+    src/TimerService.cpp
     src/VariableResolver.cpp
 )
 

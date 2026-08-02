@@ -150,6 +150,15 @@
                             "kind": "action",
                             "moduleId": "device",
                             "name": "CAN1_Send_Frame",
+                            "resourceRegionStart": {
+                                "id": "resource-region-001",
+                                "resources": [
+                                    {
+                                        "mode": "exclusive",
+                                        "resourceId": "CAN2"
+                                    }
+                                ]
+                            },
                             "resultRecording": false,
                             "retry": {
                                 "delayMs": 0,
@@ -247,6 +256,7 @@
                                 "tolerance": 0,
                                 "unit": "byte"
                             },
+                            "resourceRegionEnd": "resource-region-001",
                             "resultRecording": true,
                             "retry": {
                                 "delayMs": 0,

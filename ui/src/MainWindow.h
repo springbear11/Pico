@@ -24,6 +24,7 @@ class QSortFilterProxyModel;
 class QSpinBox;
 class QTableView;
 class QTabWidget;
+class QThread;
 class QTimer;
 class QTreeView;
 
@@ -36,6 +37,7 @@ class DeviceStatusModel;
 class ExecutionViewModel;
 class FlowTargetSelector;
 class HistoryModel;
+class LoadingSpinner;
 class MeasurementModel;
 class OperatorPromptPresenter;
 class PluginFunctionModel;
@@ -60,6 +62,7 @@ public:
     bool openSequenceFile(const QString& filePath);
     bool openStationFile(const QString& filePath);
     void showRunPage();
+    void initializeAdminWorkspace();
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -87,11 +90,15 @@ private:
     bool isStationWorkspaceActive() const;
     bool saveStation();
     bool saveStationAs();
+    void editSequenceVariables();
     void addSequenceStep();
     void deleteSequenceStep();
     void copySequenceSteps();
     void pasteSequenceSteps();
     void wrapSelectedStepsInTestItem();
+    void placeResourceRegionBoundary();
+    bool chooseResourceRegionResources(const QString& regionId,
+                                       QStringList* selectedResources);
     void setSelectedSequenceStepsEnabled(bool enabled);
     QVector<SequenceItemPath> selectedSequenceStepPaths() const;
     void moveSequenceStep(int offset);
@@ -103,6 +110,10 @@ private:
     void showScanDialog();
     void scanPlugins(bool interactive = true);
     void loadPluginRegistry();
+    void buildStartupOverlay();
+    void showStartupOverlay(const QString& message);
+    void hideStartupOverlay();
+    void waitForPluginScan();
     void updatePluginDeviceBindings();
     void addStationDevice();
     void deleteStationDevice();
@@ -188,6 +199,7 @@ private:
     QAction* m_copyStepAction = nullptr;
     QAction* m_pasteStepAction = nullptr;
     QAction* m_findFlowFieldAction = nullptr;
+    QAction* m_sequenceVariablesAction = nullptr;
     QAction* m_wrapTestItemAction = nullptr;
     QAction* m_enableStepsAction = nullptr;
     QAction* m_disableStepsAction = nullptr;
@@ -215,6 +227,7 @@ private:
     QAction* m_scanAction = nullptr;
     QAction* m_scanPluginsAction = nullptr;
     QAction* m_resetLayoutAction = nullptr;
+    QThread* m_pluginScanThread = nullptr;
     QMenu* m_recentSequenceMenu = nullptr;
     QMenu* m_recentStationMenu = nullptr;
     QLineEdit* m_sequencePath = nullptr;
@@ -240,6 +253,9 @@ private:
     QLabel* m_adminAverageTime = nullptr;
     QProgressBar* m_adminProgress = nullptr;
     QTimer* m_adminElapsedTimer = nullptr;
+    QWidget* m_startupOverlay = nullptr;
+    LoadingSpinner* m_startupSpinner = nullptr;
+    QLabel* m_startupStatusLabel = nullptr;
     QTreeView* m_sequenceTreeView = nullptr;
     QLineEdit* m_flowFieldSearch = nullptr;
     QTreeView* m_pluginFunctionView = nullptr;
@@ -281,6 +297,8 @@ private:
     bool m_sequenceTreeStatePending = false;
     bool m_expandSequenceTreeOnNextUpdate = true;
     bool m_loadingSequenceFile = false;
+    bool m_pluginScanInProgress = false;
+    bool m_adminWorkspaceInitialized = false;
     int m_adminTotalNodes = 0;
     int m_adminPassedUnits = 0;
     int m_adminFailedUnits = 0;

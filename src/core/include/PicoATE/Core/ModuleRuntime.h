@@ -36,6 +36,7 @@ struct ModuleExecutionContext {
     UutId uutId;
     FrameId frameId;
     AttemptId attemptId;
+    RequestId requestId;
     int attemptIndex = 0;
     QVariantMap inputs;
     QVariantMap parameters;
@@ -98,6 +99,7 @@ private:
 };
 
 struct ModuleTransportRequest {
+    RequestId requestId;
     QString traceId;
     ModuleId moduleId;
     ModuleFunction functionName;

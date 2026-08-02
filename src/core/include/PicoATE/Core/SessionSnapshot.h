@@ -9,6 +9,7 @@ struct ExecutionSessionSnapshot {
     QString executionId;
     PlanId rootPlanId;
     ExecutionState state = ExecutionState::Idle;
+    UutExecution sessionExecution;
     QVector<UutExecution> uuts;
     QVector<ExecutionFrame> frames;
     ResourceSnapshot resources;

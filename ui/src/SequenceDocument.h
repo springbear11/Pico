@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
+#include <QStringList>
 #include <QVector>
 
 #include <functional>
@@ -58,6 +59,7 @@ public:
     bool isEmpty() const;
     quint64 revision() const;
     QJsonObject rootObject() const;
+    QJsonArray sequenceVariables() const;
     QVector<UiDiagnostic> diagnostics() const;
     SequenceDocumentSnapshot snapshot() const;
     QUndoStack* undoStack() const;
@@ -70,6 +72,7 @@ public:
     bool ensureStandardGroups();
     bool isStandardGroup(const SequenceItemPath& path) const;
     bool replaceRootObject(QJsonObject root);
+    bool setSequenceVariables(QJsonArray variables);
     QJsonObject objectAt(const SequenceItemPath& path) const;
     SequenceItemPath findItemPath(const QJsonObject& object,
                                   const SequenceItemPath& preferredPath = {}) const;
@@ -100,6 +103,19 @@ public:
                       const QJsonValue& value);
     bool replaceItemObject(const SequenceItemPath& path,
                            QJsonObject object);
+    QString pendingResourceRegionId() const;
+    bool placeNextResourceRegionBoundary(const SequenceItemPath& path,
+                                         const QString& resourceId,
+                                         bool* placedEntry = nullptr,
+                                         QString* errorMessage = nullptr);
+    QStringList resourceRegionResources(const QString& regionId) const;
+    bool setResourceRegionResources(const QString& regionId,
+                                    const QStringList& resourceIds,
+                                    QString* errorMessage = nullptr);
+    bool removeResourceRegionEndAt(const SequenceItemPath& path,
+                                   QString* errorMessage = nullptr);
+    bool clearResourceRegionAt(const SequenceItemPath& path,
+                               QString* errorMessage = nullptr);
 
 signals:
     void documentChanged();

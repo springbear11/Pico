@@ -1,4 +1,5 @@
 #include "PicoATE/Core/DeviceDiscovery.h"
+#include "PicoATE/Core/ExecutionRequest.h"
 
 #include "PicoATE/Core/QProcessTransport.h"
 
@@ -133,6 +134,7 @@ DeviceDiscoveryResult canDevices(const DeviceDiscoveryRequest& request)
                                 {QStringLiteral("--dll"), request.pluginDllPath,
                                  QStringLiteral("--vendor-stdio"), QStringLiteral("discard")});
     ModuleTransportRequest call;
+    call.requestId = createRequestId(QStringLiteral("device-discovery"));
     call.traceId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     call.moduleId = request.driverId;
     call.functionName = QStringLiteral("findDevices");

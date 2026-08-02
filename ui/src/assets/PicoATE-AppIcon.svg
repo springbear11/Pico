@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="PicoATE application icon">
+  <rect x="16" y="16" width="480" height="480" rx="88" fill="#fafbfc" stroke="#dfe3e8" stroke-width="6"/>
+  <g fill="#181b1f" transform="translate(106 123) scale(.484)">
+    <path d="M0 0H620L533 219L0 330Z"/>
+    <path d="M95 346L620 236V550H15Z"/>
+  </g>
+</svg>

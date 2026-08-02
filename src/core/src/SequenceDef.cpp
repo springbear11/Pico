@@ -154,6 +154,9 @@ QVariantMap OperatorPromptDef::toPayload() const
     payload.insert("mode", mode);
     payload.insert("title", title);
     payload.insert("message", message);
+    if (!image.isEmpty()) {
+        payload.insert("image", image);
+    }
     payload.insert("confirmText", confirmText);
     payload.insert("closeOnStep", closeOnStep);
     payload.insert("timeoutMs", timeoutMs);

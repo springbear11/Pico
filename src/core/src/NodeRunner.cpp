@@ -1,4 +1,5 @@
 #include "PicoATE/Core/NodeRunner.h"
+#include "PicoATE/Core/DataParserModule.h"
 #include "PicoATE/Core/InstrumentAdapterModules.h"
 #include "PicoATE/Core/ExecutionControl.h"
 #include "PicoATE/Core/ExecutionResultStore.h"
@@ -10,8 +11,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
-#include <QThread>
-
 #include <cmath>
 
 namespace PicoATE::Core {
@@ -255,6 +254,7 @@ NodeRunner::NodeRunner()
 {
     registerModule(std::make_shared<MockActionModule>("mock.action"));
     registerModule(std::make_shared<MockActionModule>("mock.measurement"));
+    registerModule(std::make_shared<DataParserModule>());
     registerModule(std::make_shared<ExampleDmmAdapterModule>());
     registerModule(std::make_shared<ExampleCanAdapterModule>());
     registerHandler(std::make_shared<NoopNodeHandler>());
@@ -351,11 +351,10 @@ NodeResult WaitNodeHandler::run(const ExecNode& node, const NodeExecutionContext
     NodeResult result;
     result.nodeId = node.id;
     result.startedAt = QDateTime::currentDateTimeUtc();
-    const int waitMs = node.payload.value("ms", 0).toInt();
-    if (waitMs > 0) {
-        QThread::msleep(static_cast<unsigned long>(waitMs));
-    }
-    result.outcome = NodeOutcome::Passed;
+    result.outcome = NodeOutcome::Error;
+    result.errorCode = QStringLiteral("WaitRequiresScheduler");
+    result.errorMessage = QStringLiteral(
+        "Wait nodes must be dispatched by ExecutionGraphScheduler");
     result.finishedAt = QDateTime::currentDateTimeUtc();
     return result;
 }
@@ -916,6 +915,7 @@ NodeResult ActionNodeHandler::run(const ExecNode& node, const NodeExecutionConte
     moduleContext.uutId = context.uutId;
     moduleContext.frameId = context.frameId;
     moduleContext.attemptId = context.attemptId;
+    moduleContext.requestId = context.requestId;
     moduleContext.attemptIndex = context.attemptIndex;
     moduleContext.variables = context.variables;
     moduleContext.parameters = node.payload;

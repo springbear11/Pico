@@ -1,4 +1,5 @@
 #include "PicoATE/Core/DeviceTransportSession.h"
+#include "PicoATE/Core/ExecutionRequest.h"
 
 #include <QUuid>
 
@@ -140,10 +141,14 @@ ModuleResult TransportDeviceSession::callHost(const ModuleFunction& functionName
     }
 
     ModuleTransportRequest request;
+    request.requestId = context.requestId.isEmpty()
+        ? createRequestId(QStringLiteral("device"))
+        : context.requestId;
     request.traceId = traceIdForDevice(m_config.deviceId, functionName);
     request.moduleId = m_config.driverId;
     request.functionName = functionName;
     request.context = context;
+    request.context.requestId = request.requestId;
     request.context.inputs = deviceInputs(std::move(inputs));
 
     ModuleTransportResponse response;
