@@ -39,6 +39,7 @@ public:
     bool cancel(const RequestId& requestId);
     std::optional<TimerCompletion> takeReadyForContext(const UutId& uutId,
                                                        const FrameId& frameId);
+    std::optional<TimerCompletion> takeAnyReady();
 
     bool hasPendingRequests() const;
     bool hasPendingRequestForUut(const UutId& uutId) const;

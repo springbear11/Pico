@@ -8,6 +8,13 @@ namespace PicoATE::Core {
 
 namespace {
 
+bool resourceIdsOverlap(const ResourceId& left, const ResourceId& right)
+{
+    return left == right ||
+           left.startsWith(right + '.') ||
+           right.startsWith(left + '.');
+}
+
 class AttemptModuleLogSink final : public IModuleLogSink {
 public:
     AttemptModuleLogSink(RuntimeEventEmitter* events,
@@ -183,10 +190,146 @@ bool ExecutionGraphScheduler::waitForPendingRequest(std::chrono::milliseconds ma
     return m_timers.waitForNextDeadline(maximumWait);
 }
 
+SchedulerStepResult ExecutionGraphScheduler::pumpPeriodicTaskOnce()
+{
+    SchedulerStepResult step;
+    const auto invocation = m_periodicTasks.takeReady();
+    if (!invocation) {
+        step.blocked = true;
+        return step;
+    }
+
+    const auto* node = m_plan.node(invocation->nodeId);
+    auto* execution = invocation->execution;
+    if (!node || !execution) {
+        NodeResult missing;
+        missing.nodeId = invocation->nodeId;
+        missing.outcome = NodeOutcome::Error;
+        missing.errorCode = QStringLiteral("PeriodicTaskNodeMissing");
+        missing.errorMessage = QStringLiteral("Periodic task node or execution context no longer exists");
+        missing.startedAt = QDateTime::currentDateTimeUtc();
+        missing.finishedAt = missing.startedAt;
+        m_periodicTasks.complete(*invocation, missing);
+        step.progressed = true;
+        step.hasError = true;
+        step.nodeId = invocation->nodeId;
+        step.nodeResults.push_back(missing);
+        return step;
+    }
+
+    if (m_stopToken && m_stopToken->isStopRequested()) {
+        m_periodicTasks.defer(*invocation);
+        step.blocked = true;
+        return step;
+    }
+
+    ResourceLease lease;
+    bool hasLease = false;
+    if (!node->resources.isEmpty()) {
+        ResourceRequest request;
+        request.requestId = invocation->requestId;
+        request.uutId = execution->uutId;
+        request.frameId = invocation->frameId;
+        request.nodeId = node->id;
+        request.requirements = node->resources;
+        const auto maybeLease = m_resources.tryAcquire(request);
+        if (!maybeLease) {
+            m_resources.cancelRequest(request.requestId);
+            m_periodicTasks.defer(*invocation);
+            step.blocked = true;
+            return step;
+        }
+        lease = *maybeLease;
+        hasLease = true;
+    }
+
+    auto& activation = execution->ensureActivation(node->id, invocation->frameId);
+    NodeAttempt attempt;
+    attempt.id = QStringLiteral("%1:periodic-%2")
+                     .arg(activation.id)
+                     .arg(invocation->invocationIndex + 1);
+    attempt.requestId = invocation->requestId;
+    attempt.activationId = activation.id;
+    attempt.attemptIndex = activation.attempts.size();
+    attempt.state = AttemptState::Running;
+    if (hasLease) {
+        attempt.leaseId = lease.leaseId;
+    }
+
+    NodeExecutionContext context;
+    context.uutId = execution->uutId;
+    context.frameId = invocation->frameId;
+    context.attemptId = attempt.id;
+    context.requestId = attempt.requestId;
+    context.currentNodeId = node->id;
+    context.attemptIndex = invocation->invocationIndex;
+    context.variables = execution->variables;
+    context.resultStore = &m_results;
+    context.executionControl = m_executionControl;
+    context.stopToken = m_stopToken;
+    context.runtimeEvents = m_events;
+    AttemptModuleLogSink moduleLogSink(
+        m_events, *execution, *node, m_plan.structuralParentOf(node->id),
+        attempt, invocation->frameId);
+    context.logSink = m_events ? &moduleLogSink : nullptr;
+
+    publishAttemptEvent(RuntimeEventKind::AttemptStarted, *execution, *node, attempt,
+                        QStringLiteral("periodic task tick"));
+    auto executableNode = *node;
+    executableNode.periodic.enabled = false;
+    auto result = m_runner.run(executableNode, context);
+    attempt.state = AttemptState::Completed;
+    attempt.result = result;
+    activation.attempts.push_back(attempt);
+    m_results.commit(execution->uutId,
+                     invocation->frameId,
+                     node->id,
+                     activation.attempts.last().attemptIndex,
+                     result);
+    publishAttemptEvent(RuntimeEventKind::AttemptCompleted,
+                        *execution,
+                        *node,
+                        activation.attempts.last(),
+                        result.errorMessage);
+
+    if (hasLease) {
+        m_resources.release(lease.leaseId);
+    }
+    m_periodicTasks.complete(*invocation, result);
+
+    step.progressed = true;
+    step.nodeId = node->id;
+    step.nodeResults.push_back(result);
+    step.hasError = result.outcome == NodeOutcome::Failed ||
+                    result.outcome == NodeOutcome::Error ||
+                    result.outcome == NodeOutcome::Timeout;
+    return step;
+}
+
+bool ExecutionGraphScheduler::stopAllPeriodicTasks()
+{
+    bool hadError = false;
+    for (const auto& summary : m_periodicTasks.stopAll()) {
+        hadError = hadError || summary.failureCount > 0;
+    }
+    return hadError;
+}
+
+int ExecutionGraphScheduler::activePeriodicTaskCount() const
+{
+    return m_periodicTasks.activeTaskCount();
+}
+
 SchedulerResult ExecutionGraphScheduler::run(UutExecution& uut, const FrameId& frameId)
 {
     SchedulerResult schedulerResult;
     while (true) {
+        const auto periodicStep = pumpPeriodicTaskOnce();
+        schedulerResult.nodeResults += periodicStep.nodeResults;
+        schedulerResult.hasError = schedulerResult.hasError || periodicStep.hasError;
+        if (periodicStep.progressed) {
+            continue;
+        }
         auto step = pumpOnce(uut, frameId);
         schedulerResult.nodeResults += step.nodeResults;
         if (step.hasError) {
@@ -201,6 +344,8 @@ SchedulerResult ExecutionGraphScheduler::run(UutExecution& uut, const FrameId& f
         }
         break;
     }
+
+    schedulerResult.hasError = schedulerResult.hasError || stopAllPeriodicTasks();
 
     schedulerResult.completed = true;
     for (auto it = m_plan.nodes.constBegin(); it != m_plan.nodes.constEnd(); ++it) {
@@ -810,13 +955,22 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
     if (node.kind == ExecNodeKind::Barrier) {
         return executeBarrierNode(uut, node, frameId);
     }
+    if (node.periodic.enabled) {
+        return registerPeriodicTask(uut, node, frameId);
+    }
 
     ResourceLease lease;
     bool hasLease = false;
     QVector<ResourceRequirement> nodeRequirements;
     const auto regionResourceIds = activeRegionResourceIds(uut.uutId, frameId);
     for (const auto& requirement : node.resources) {
-        if (!regionResourceIds.contains(requirement.resourceId)) {
+        const bool coveredByRegion = std::any_of(
+            regionResourceIds.cbegin(),
+            regionResourceIds.cend(),
+            [&requirement](const ResourceId& activeResourceId) {
+                return resourceIdsOverlap(activeResourceId, requirement.resourceId);
+            });
+        if (!coveredByRegion) {
             nodeRequirements.push_back(requirement);
         }
     }
@@ -960,6 +1114,74 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
         }
     }
 
+    return result;
+}
+
+NodeResult ExecutionGraphScheduler::registerPeriodicTask(
+    UutExecution& uut,
+    const ExecNode& node,
+    const FrameId& frameId)
+{
+    auto& activation = uut.ensureActivation(node.id, frameId);
+    NodeAttempt attempt;
+    attempt.id = QStringLiteral("%1:registration").arg(activation.id);
+    attempt.requestId = createRequestId(QStringLiteral("periodic-register"));
+    attempt.activationId = activation.id;
+    attempt.attemptIndex = activation.attempts.size();
+    attempt.state = AttemptState::Running;
+
+    publishAttemptEvent(RuntimeEventKind::AttemptStarted,
+                        uut,
+                        node,
+                        attempt,
+                        QStringLiteral("registering periodic task"));
+
+    PeriodicTaskRegistration registration;
+    registration.taskId = node.id;
+    registration.nodeId = node.id;
+    registration.execution = &uut;
+    registration.frameId = frameId;
+    registration.activationId = activation.id;
+    registration.intervalMs = node.periodic.intervalMs;
+    registration.runImmediately = node.periodic.runImmediately;
+
+    NodeResult result;
+    result.nodeId = node.id;
+    result.startedAt = QDateTime::currentDateTimeUtc();
+    QString errorMessage;
+    if (m_periodicTasks.registerTask(std::move(registration), &errorMessage)) {
+        result.outcome = NodeOutcome::Passed;
+        result.outputs.insert(QStringLiteral("taskId"), node.id);
+        result.outputs.insert(QStringLiteral("intervalMs"), node.periodic.intervalMs);
+        result.outputs.insert(QStringLiteral("runImmediately"), node.periodic.runImmediately);
+    } else {
+        result.outcome = NodeOutcome::Error;
+        result.errorCode = QStringLiteral("PeriodicTaskRegistrationFailed");
+        result.errorMessage = errorMessage;
+    }
+    result.finishedAt = QDateTime::currentDateTimeUtc();
+
+    attempt.state = AttemptState::Completed;
+    attempt.result = result;
+    activation.attempts.push_back(attempt);
+    activation.state = outcomeToActivationState(result.outcome);
+    activation.completedAt = result.finishedAt;
+    m_results.commit(uut.uutId,
+                     frameId,
+                     node.id,
+                     activation.attempts.last().attemptIndex,
+                     result);
+    publishAttemptEvent(RuntimeEventKind::AttemptCompleted,
+                        uut,
+                        node,
+                        activation.attempts.last(),
+                        result.errorMessage);
+    publishNodeEvent(RuntimeEventKind::NodeStateChanged,
+                     uut,
+                     node,
+                     activation.state,
+                     result.outcome,
+                     result.errorMessage);
     return result;
 }
 

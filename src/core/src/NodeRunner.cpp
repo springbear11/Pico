@@ -86,84 +86,6 @@ void publishLimitLog(const NodeExecutionContext& context, const QString& message
     context.logSink->publishModuleLog(record);
 }
 
-void applyConfiguredLimits(const ExecNode& node, MeasurementResult& measurement)
-{
-    const auto comparison = normalizedComparison(
-        node.payload.value("comparison", "between").toString());
-    measurement.attributes.insert("comparison", comparison);
-    measurement.attributes.insert(
-        "inclusive", node.payload.value("inclusive", true).toBool());
-
-    QVariant lowerValue;
-    QVariant upperValue;
-    QVariant expectedValue;
-    QVariant toleranceValue;
-    const bool hasLower = limitValue(node, "lower", lowerValue) ||
-                          limitValue(node, "lowerLimit", lowerValue);
-    const bool hasUpper = limitValue(node, "upper", upperValue) ||
-                          limitValue(node, "upperLimit", upperValue);
-    const bool hasExpected = limitValue(node, "expected", expectedValue);
-    const bool hasTolerance = limitValue(node, "tolerance", toleranceValue);
-
-    double lower = 0.0;
-    double upper = 0.0;
-    double expected = 0.0;
-    double tolerance = 0.0;
-    if (hasExpected) {
-        measurement.attributes.insert("expected", expectedValue);
-    }
-    if (hasTolerance) {
-        measurement.attributes.insert("tolerance", toleranceValue);
-    }
-
-    if ((comparison == "between" || comparison == "range") &&
-        hasLower && hasUpper &&
-        finiteNumber(lowerValue, lower) && finiteNumber(upperValue, upper)) {
-        measurement.hasLowerLimit = true;
-        measurement.lowerLimit = lower;
-        measurement.hasUpperLimit = true;
-        measurement.upperLimit = upper;
-        return;
-    }
-    if ((comparison == "between" || comparison == "range") &&
-        hasExpected && hasTolerance &&
-        finiteNumber(expectedValue, expected) && finiteNumber(toleranceValue, tolerance)) {
-        measurement.hasLowerLimit = true;
-        measurement.lowerLimit = expected - tolerance;
-        measurement.hasUpperLimit = true;
-        measurement.upperLimit = expected + tolerance;
-        return;
-    }
-
-    const bool equality = comparison == "==" || comparison == "eq" ||
-        comparison == "equal" || comparison == "!=" || comparison == "ne" ||
-        comparison == "notequal";
-    if (equality && hasExpected && finiteNumber(expectedValue, expected) &&
-        (!hasTolerance || finiteNumber(toleranceValue, tolerance))) {
-        measurement.hasLowerLimit = true;
-        measurement.lowerLimit = expected - tolerance;
-        measurement.hasUpperLimit = true;
-        measurement.upperLimit = expected + tolerance;
-        return;
-    }
-
-    const bool lowerBound = comparison == ">" || comparison == "gt" ||
-        comparison == "greaterthan" || comparison == ">=" || comparison == "ge" ||
-        comparison == "gte" || comparison == "greaterorequal";
-    const bool upperBound = comparison == "<" || comparison == "lt" ||
-        comparison == "lessthan" || comparison == "<=" || comparison == "le" ||
-        comparison == "lte" || comparison == "lessorequal";
-    const auto thresholdValue = hasExpected
-        ? expectedValue
-        : (lowerBound ? lowerValue : upperValue);
-    if ((lowerBound || upperBound) && finiteNumber(thresholdValue, expected)) {
-        measurement.hasLowerLimit = lowerBound;
-        measurement.lowerLimit = expected;
-        measurement.hasUpperLimit = upperBound;
-        measurement.upperLimit = expected;
-    }
-}
-
 NodeResult runtimeVariableErrorResult(const ExecNode& node,
                                       const QVector<VariableResolutionError>& errors)
 {
@@ -191,7 +113,7 @@ NodeResult runtimeVariableErrorResult(const ExecNode& node,
         measurement.status = MeasurementStatus::Error;
         measurement.errorCode = result.errorCode;
         measurement.errorMessage = result.errorMessage;
-        applyConfiguredLimits(node, measurement);
+        applyConfiguredMeasurementLimits(node.payload, measurement);
         result.measurements.push_back(std::move(measurement));
     }
     return result;
@@ -218,6 +140,7 @@ NodeResult limitErrorResult(const ExecNode& node,
     measurement.status = MeasurementStatus::Error;
     measurement.errorCode = code;
     measurement.errorMessage = message;
+    applyConfiguredMeasurementLimits(node.payload, measurement);
     result.measurements.push_back(measurement);
     return result;
 }
@@ -517,8 +440,6 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
     double lower = 0.0;
     double upper = 0.0;
     double expected = 0.0;
-    bool numericMeasurement = false;
-    bool derivedRange = false;
     const bool inclusive = node.payload.value("inclusive", true).toBool();
 
     if (comparison == "between" || comparison == "range") {
@@ -562,7 +483,6 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
                                         "LimitConfigurationError",
                                         "Derived lower and upper limits must be finite numbers");
             }
-            derivedRange = true;
         }
         if (lower > upper) {
             return limitErrorResult(node,
@@ -570,7 +490,6 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
                                     "LimitConfigurationError",
                                     "Lower limit must not be greater than upper limit");
         }
-        numericMeasurement = true;
         passed = inclusive
             ? actualNumber >= lower && actualNumber <= upper
             : actualNumber > lower && actualNumber < upper;
@@ -591,7 +510,6 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
                                     "LimitTypeError",
                                     "Numeric comparison requires finite actual and threshold values");
         }
-        numericMeasurement = true;
         if (comparison == ">" || comparison == "gt" || comparison == "greaterthan") passed = actualNumber > expected;
         else if (comparison == ">=" || comparison == "ge" || comparison == "gte" || comparison == "greaterorequal") passed = actualNumber >= expected;
         else if (comparison == "<" || comparison == "lt" || comparison == "lessthan") passed = actualNumber < expected;
@@ -606,7 +524,6 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
         }
         double expectedNumber = 0.0;
         if (finiteNumber(actual, actualNumber) && finiteNumber(expectedValue, expectedNumber)) {
-            numericMeasurement = true;
             passed = std::abs(actualNumber - expectedNumber) <= tolerance;
         } else {
             passed = actual.toString() == expectedValue.toString();
@@ -657,46 +574,7 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
     measurement.rawValue = actual;
     measurement.unit = node.payload.value("unit").toString();
     measurement.status = passed ? MeasurementStatus::Passed : MeasurementStatus::Failed;
-    measurement.attributes.insert("comparison", comparison);
-    measurement.attributes.insert("inclusive", inclusive);
-    if (numericMeasurement && (comparison == "between" || comparison == "range")) {
-        measurement.hasLowerLimit = true;
-        measurement.lowerLimit = lower;
-        measurement.hasUpperLimit = true;
-        measurement.upperLimit = upper;
-        if (derivedRange) {
-            measurement.attributes.insert("expected", expected);
-            measurement.attributes.insert("tolerance", tolerance);
-            measurement.attributes.insert("limitsDerived", true);
-        }
-    } else if (numericMeasurement &&
-               (comparison == ">" || comparison == "gt" || comparison == "greaterthan" ||
-                comparison == ">=" || comparison == "ge" || comparison == "gte" ||
-                comparison == "greaterorequal")) {
-        measurement.hasLowerLimit = true;
-        measurement.lowerLimit = expected;
-    } else if (numericMeasurement &&
-               (comparison == "<" || comparison == "lt" || comparison == "lessthan" ||
-                comparison == "<=" || comparison == "le" || comparison == "lte" ||
-                comparison == "lessorequal")) {
-        measurement.hasUpperLimit = true;
-        measurement.upperLimit = expected;
-    } else if (numericMeasurement &&
-               (comparison == "==" || comparison == "eq" || comparison == "equal" ||
-                comparison == "!=" || comparison == "ne" || comparison == "notequal")) {
-        measurement.hasLowerLimit = true;
-        measurement.lowerLimit = expected - tolerance;
-        measurement.hasUpperLimit = true;
-        measurement.upperLimit = expected + tolerance;
-        measurement.attributes.insert("expected", expectedValue);
-        measurement.attributes.insert("tolerance", tolerance);
-        measurement.attributes.insert("limitsDerived", true);
-    } else if (hasExpected) {
-        measurement.attributes.insert("expected", expectedValue);
-        if (hasTolerance) {
-            measurement.attributes.insert("tolerance", tolerance);
-        }
-    }
+    applyConfiguredMeasurementLimits(node.payload, measurement);
     if (!passed) {
         result.errorCode = "LimitFailed";
         result.errorMessage = QString("Measurement %1 failed %2 comparison")

@@ -148,6 +148,7 @@ private:
     void updateAdminYield();
     void updateAdminElapsed();
     void updateDebugSnapshot();
+    void setRunTestInstructionPointer(const QString& nodePath);
     void displayReport(const PicoATE::Core::ExecutionReport& report);
     void applyRuntimeEvents(const QVector<PicoATE::Core::RuntimeEvent>& events);
     void selectRuntimeEvent(const PicoATE::Core::RuntimeEvent& event);

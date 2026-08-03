@@ -441,6 +441,21 @@ RX/解析 Step 把值写入每个 UUT 独立的结果仓库，再通过 Step 表
 | `contains` / `startsWith` / `endsWith` | `expected` | 字符串判断，区分大小写 |
 | `isTrue` / `isFalse` | 无 | 严格布尔判断，不接受字符串 `"true"` |
 
+### 判定项与上下限显示规则
+
+- 是否属于判定项，只看节点有没有明确的 Limit 比较语义，不按插件类别猜测。当前标准
+  判定节点是 `kind: "limit"`。
+- CAN、Modbus、VISA、Serial 等读取或解析 Step 负责产生值，不会因为“输出了数值”就
+  自动判定 Pass/Fail；需要判定时，在后面增加 Limit，并通过表达式引用解析结果。
+- Sequence 编译成功后，ExecutionReport 会立即为所有 Limit 生成只读判定规格。因此
+  Run Test 页面在开始运行前就显示 Lower/Upper，不再等节点执行到当前位置才出现。
+- `between`、单边比较和数值容差会显示计算后的数值上下限；字符串、布尔值等没有数值
+  区间的比较，会在 Lower/Upper 位置显示比较基准，避免操作员看不到期望值。
+- 运行前 Actual 显示 `-`。节点执行后只更新 Actual、Result、ErrorCode 和用时，并保留
+  同一份判定规格；节点被跳过或实际值解析失败时，也不会丢失已经配置的上下限。
+- `expected` 或上下限是运行时变量表达式时，运行前先显示表达式；运行后报告使用解析后
+  的有效值。这样工程师在开跑前仍能确认规则来源。
+
 比较不通过时，节点结果是 `Failed`，错误码为 `LimitFailed`。运行时优先由 Station
 的 `stopOnFailure` 决定停止还是继续；未加载 Station 配置时才使用节点的
 `errorPolicy.onFail`。实际值缺失、类型错误、上下限配置错误
@@ -941,3 +956,44 @@ Potential future strict mode:
 这种单项 TestItem 锁只申请一次。TestItem 整体 Retry 时继续持有原租约，直到最终通过、重试耗尽、停止或异常收口后才释放，其他 UUT 在此期间不能进入。若把 `LOCK` 和 `UNLOCK` 分别放在 TestItem 内部的两个子 Step 上，则锁只覆盖每轮执行的该子区间，TestItem 整体 Retry 之间允许其他 UUT 使用资源。
 
 当前约束：`LOCK` 和 `UNLOCK` 必须位于同一父级；普通区间的 `UNLOCK` 必须晚于 `LOCK`；单项锁允许起止点为同一 Step 或 TestItem。区间不可交叉、嵌套、缺少一端，也不可包含 Barrier。失败、Stop 或跳过 `UNLOCK` 时，调度器仍会释放租约。复制 Step 时不会复制资源区间标记，避免生成重复区间 ID。
+
+# 周期后台 Action（MVP）
+
+普通插件 Action 可以在 Setup 顶层增加 `periodic`，把该 Action 注册为覆盖本次测试主流程的周期任务：
+
+```json
+{
+  "id": "heartbeat",
+  "name": "Send Heartbeat",
+  "kind": "action",
+  "moduleId": "device",
+  "function": "write",
+  "inputs": {
+    "deviceId": "MODBUS1",
+    "address": 1,
+    "value": 1
+  },
+  "periodic": {
+    "intervalMs": 5000,
+    "runImmediately": true
+  }
+}
+```
+
+| 字段 | 必填 | 含义 |
+|---|---|---|
+| `intervalMs` | 否 | 两次执行之间的间隔，默认 5000 ms，必须大于 0 |
+| `runImmediately` | 否 | 注册后是否立即执行一次，默认 `true` |
+
+当前约束：
+
+1. 只支持 Setup 组顶层的单个 `action`，不支持放进 TestItem、Loop 或 Cleanup。
+2. 周期 Action 不使用 Step Retry；一次失败后等待下一周期再次执行，主流程继续，最终 Session 记为失败。
+3. 必须声明资源；若 `inputs.deviceId` 是固定值，编译器会自动取通道前的设备 ID，例如 `CAN1.CH2` 自动使用独占资源 `CAN1`。动态 `deviceId` 必须显式填写 `resources`。
+4. 任务使用与主流程相同的 `ResourceManager`。事务区间持有同一资源时，本次周期执行会延后，不会插入 Send/Read 等事务中间。
+   设备级资源与通道资源按层级互斥，例如 `CAN1` 与 `CAN1.CH1` 视为同一资源树。
+5. 每次触发生成独立 `requestId`，不允许同一任务重入，也不会积压补跑错过的周期。
+6. 所有 UUT Main 结束或 Session Stop 后自动取消定时请求，再进入 Cleanup，不需要额外 Stop Step。
+7. 当前为调度线程协作式执行。普通插件调用若长时间阻塞，周期任务会延后；本版本不会另起线程强行并发进入厂家 DLL。
+
+完整运行边界见 [周期后台任务](周期后台任务.md)。

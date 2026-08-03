@@ -176,6 +176,12 @@ struct TimeoutPolicy {
     int timeoutMs = 0;
 };
 
+struct PeriodicTaskPolicy {
+    bool enabled = false;
+    int intervalMs = 5000;
+    bool runImmediately = true;
+};
+
 struct NodeErrorPolicy {
     ErrorAction onFail = ErrorAction::StopUut;
     ErrorAction onError = ErrorAction::StopUut;
@@ -194,6 +200,7 @@ struct ExecNode {
     QVector<ResourceRequirement> resources;
     TimeoutPolicy timeout;
     RetryPolicy retry;
+    PeriodicTaskPolicy periodic;
     NodeErrorPolicy errorPolicy;
     bool alwaysRun = false;
     bool checkpointBefore = false;

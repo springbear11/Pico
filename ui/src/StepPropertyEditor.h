@@ -196,6 +196,9 @@ private:
     QSpinBox* m_retryDelaySpin = nullptr;
     QLineEdit* m_retryWhenEdit = nullptr;
     QSpinBox* m_timeoutSpin = nullptr;
+    QCheckBox* m_periodicEnabledCheck = nullptr;
+    QSpinBox* m_periodicIntervalSpin = nullptr;
+    QCheckBox* m_periodicRunImmediatelyCheck = nullptr;
     QPlainTextEdit* m_resourcesEdit = nullptr;
 };
 

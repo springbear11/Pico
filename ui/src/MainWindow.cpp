@@ -56,6 +56,7 @@
 #include <QPushButton>
 #include <QProgressBar>
 #include <QPointer>
+#include <QPolygonF>
 #include <QRegularExpression>
 #include <QScreen>
 #include <QScrollArea>
@@ -86,6 +87,7 @@
 #include <initializer_list>
 #include <algorithm>
 #include <functional>
+#include <limits>
 
 namespace PicoATE::Ui {
 
@@ -247,6 +249,21 @@ public:
     {
         setObjectName(QStringLiteral("runTestBreakpointDelegate"));
         setProperty("visualBreakpointCount", 0);
+        setProperty("currentNodePath", QString{});
+    }
+
+    std::function<void(const QString&, bool)> breakpointToggled;
+
+    void setBreakpointKeys(QSet<QString> keys)
+    {
+        if (m_breakpointKeys == keys) {
+            return;
+        }
+        m_breakpointKeys = std::move(keys);
+        setProperty("visualBreakpointCount", m_breakpointKeys.size());
+        if (m_view && m_view->viewport()) {
+            m_view->viewport()->update();
+        }
     }
 
     void paint(QPainter* painter,
@@ -290,9 +307,10 @@ public:
             painter->restore();
         }
 
-        const bool active = m_visualBreakpointKeys.contains(key);
+        const bool current = property("currentNodePath").toString() == key;
+        const bool active = m_breakpointKeys.contains(key);
         const bool hovered = option.state & QStyle::State_MouseOver;
-        if (!active && !hovered) {
+        if (!current && !active && !hovered) {
             return;
         }
 
@@ -301,14 +319,31 @@ public:
 
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, true);
-        if (active) {
+        if (current) {
+            const qreal centerY = center.y();
+            const qreal left = option.rect.left() + 2.0;
+            const qreal neck = option.rect.left() + 8.0;
+            const qreal tip = option.rect.left() + BreakpointMarkerWidth - 1.0;
+            const QPolygonF arrow({
+                QPointF(left, centerY - 3.0),
+                QPointF(neck, centerY - 3.0),
+                QPointF(neck, centerY - 6.0),
+                QPointF(tip, centerY),
+                QPointF(neck, centerY + 6.0),
+                QPointF(neck, centerY + 3.0),
+                QPointF(left, centerY + 3.0)});
+            painter->setPen(QPen(QColor(QStringLiteral("#9a6400")), 1.0));
+            painter->setBrush(QColor(QStringLiteral("#f2b63d")));
+            painter->drawPolygon(arrow);
+        } else if (active) {
             painter->setPen(QPen(QColor(QStringLiteral("#a51d14")), 1.0));
             painter->setBrush(QColor(QStringLiteral("#e13a2d")));
+            painter->drawEllipse(center, BreakpointRadius, BreakpointRadius);
         } else {
             painter->setPen(QPen(QColor(QStringLiteral("#d96a61")), 1.0));
             painter->setBrush(QColor(QStringLiteral("#f3b2ad")));
+            painter->drawEllipse(center, BreakpointRadius, BreakpointRadius);
         }
-        painter->drawEllipse(center, BreakpointRadius, BreakpointRadius);
         painter->restore();
     }
 
@@ -334,14 +369,18 @@ public:
             return QStyledItemDelegate::editorEvent(event, model, option, index);
         }
 
-        if (m_visualBreakpointKeys.contains(key)) {
-            m_visualBreakpointKeys.remove(key);
+        const bool enabled = !m_breakpointKeys.contains(key);
+        if (enabled) {
+            m_breakpointKeys.insert(key);
         } else {
-            m_visualBreakpointKeys.insert(key);
+            m_breakpointKeys.remove(key);
         }
-        setProperty("visualBreakpointCount", m_visualBreakpointKeys.size());
+        setProperty("visualBreakpointCount", m_breakpointKeys.size());
         if (m_view && m_view->viewport()) {
             m_view->viewport()->update();
+        }
+        if (breakpointToggled) {
+            breakpointToggled(key, enabled);
         }
         return true;
     }
@@ -363,7 +402,7 @@ private:
     static constexpr int BreakpointRadius = 4;
     static constexpr int BreakpointMarkerWidth = 16;
     QPointer<QTreeView> m_view;
-    QSet<QString> m_visualBreakpointKeys;
+    QSet<QString> m_breakpointKeys;
 };
 
 class FlowResourceLockDelegate final : public QStyledItemDelegate
@@ -1952,6 +1991,46 @@ void MainWindow::moveSequenceStep(int offset)
     }
 }
 
+QString nextPendingRunTestNodePath(const UutStepModel* model,
+                                   const PicoATE::Core::UutId& uutId,
+                                   const PicoATE::Core::NodeId& currentNodeId)
+{
+    if (!model || currentNodeId.isEmpty()) {
+        return {};
+    }
+
+    auto current = model->indexForStep(uutId, currentNodeId);
+    if (!current.isValid()) {
+        current = model->indexForStep({}, currentNodeId);
+    }
+    const int currentLine = model->visualLineNumber(current);
+    if (currentLine <= 0) {
+        return {};
+    }
+
+    int nextLine = std::numeric_limits<int>::max();
+    QString nextNodePath;
+    const auto visit = [&](const QModelIndex& parent, const auto& self) -> void {
+        const int rowCount = model->rowCount(parent);
+        for (int row = 0; row < rowCount; ++row) {
+            const auto index = model->index(row, UutStepModel::NameColumn, parent);
+            if (const auto step = model->stepAt(index)) {
+                const int line = model->visualLineNumber(index);
+                if (line > currentLine && line < nextLine &&
+                    !adminIsTerminalActivation(step->state)) {
+                    nextLine = line;
+                    nextNodePath = step->nodePath.isEmpty()
+                        ? step->stepId
+                        : step->nodePath;
+                }
+            }
+            self(index, self);
+        }
+    };
+    visit({}, visit);
+    return nextNodePath;
+}
+
 void MainWindow::applyUndoRedo(bool redo)
 {
     if (!resolvePendingStepChanges()) {
@@ -3483,6 +3562,7 @@ void MainWindow::buildActions()
         style()->standardIcon(QStyle::SP_ArrowDown),
         tr("Step Into"),
         this);
+    m_stepIntoAction->setObjectName(QStringLiteral("stepIntoAction"));
     m_stepIntoAction->setToolTip(tr("Run one scheduler step and pause again"));
     connect(m_stepIntoAction, &QAction::triggered, m_viewModel, &ExecutionViewModel::stepInto);
 
@@ -3728,6 +3808,7 @@ void MainWindow::buildLayout()
     m_sequenceTreeView->setMinimumWidth(320);
     polishReadableTreeView(m_sequenceTreeView);
     installProportionalHeader(m_sequenceTreeView, {5, 2, 2, 1, 1, 1, 2});
+    m_sequenceTreeView->setColumnHidden(SequenceTreeModel::BreakpointColumn, true);
     auto* flowHeader = m_sequenceTreeView->header();
     flowHeader->setMinimumSectionSize(28);
     flowHeader->setSectionResizeMode(SequenceTreeModel::ResourceRegionColumn,
@@ -4013,9 +4094,33 @@ void MainWindow::buildLayout()
     m_resultView->setSelectionMode(QAbstractItemView::SingleSelection);
     polishReadableTreeView(m_resultView);
     m_resultView->setMouseTracking(true);
+    auto* runTestBreakpointDelegate = new RunTestBreakpointDelegate(m_resultView);
+    runTestBreakpointDelegate->setBreakpointKeys(
+        m_sequenceTreeModel->breakpointNodePaths());
+    runTestBreakpointDelegate->breakpointToggled =
+        [this](const QString& nodePath, bool enabled) {
+            auto nodePaths = m_sequenceTreeModel->breakpointNodePaths();
+            if (enabled) {
+                nodePaths.insert(nodePath);
+            } else {
+                nodePaths.remove(nodePath);
+            }
+            m_sequenceTreeModel->setBreakpointNodePaths(std::move(nodePaths));
+        };
+    connect(m_sequenceTreeModel,
+            &SequenceTreeModel::breakpointsChanged,
+            runTestBreakpointDelegate,
+            [this, runTestBreakpointDelegate] {
+                runTestBreakpointDelegate->setBreakpointKeys(
+                    m_sequenceTreeModel->breakpointNodePaths());
+                if (m_viewModel) {
+                    m_viewModel->setBreakpoints(
+                        m_sequenceTreeModel->breakpointSpecs());
+                }
+            });
     m_resultView->setItemDelegateForColumn(
         UutStepModel::BreakpointVisualColumn,
-        new RunTestBreakpointDelegate(m_resultView));
+        runTestBreakpointDelegate);
     installProportionalHeader(m_resultView, {2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1});
     auto* resultHeader = m_resultView->header();
     resultHeader->setMinimumSectionSize(28);
@@ -4613,7 +4718,20 @@ void MainWindow::updateReport()
 
 void MainWindow::updateDebugSnapshot()
 {
-    m_debugSnapshotModel->setSnapshot(m_viewModel->debugSnapshot());
+    const auto snapshot = m_viewModel->debugSnapshot();
+    m_debugSnapshotModel->setSnapshot(snapshot);
+    setRunTestInstructionPointer(snapshot ? snapshot->currentNodeId : QString{});
+}
+
+void MainWindow::setRunTestInstructionPointer(const QString& nodePath)
+{
+    if (auto* delegate = findChild<QObject*>(
+            QStringLiteral("runTestBreakpointDelegate"))) {
+        delegate->setProperty("currentNodePath", nodePath);
+    }
+    if (m_resultView && m_resultView->viewport()) {
+        m_resultView->viewport()->update();
+    }
 }
 
 void MainWindow::displayReport(const PicoATE::Core::ExecutionReport& report)
@@ -4708,6 +4826,14 @@ void MainWindow::applyRuntimeEvents(
         }
         if (event.kind == PicoATE::Core::RuntimeEventKind::BreakpointHit ||
             event.kind == PicoATE::Core::RuntimeEventKind::DebugStepCompleted) {
+            const auto instructionNode =
+                event.kind == PicoATE::Core::RuntimeEventKind::DebugStepCompleted
+                ? nextPendingRunTestNodePath(m_uutStepModel,
+                                             event.uutId,
+                                             event.nodeId)
+                : event.nodeId;
+            setRunTestInstructionPointer(
+                instructionNode.isEmpty() ? event.nodeId : instructionNode);
             focusDebugNode(event);
         }
     }

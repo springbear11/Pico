@@ -2,6 +2,17 @@
 
 namespace PicoATE::Core {
 
+namespace {
+
+bool resourceIdsOverlap(const ResourceId& left, const ResourceId& right)
+{
+    return left == right ||
+           left.startsWith(right + '.') ||
+           right.startsWith(left + '.');
+}
+
+} // namespace
+
 std::optional<ResourceLease> ResourceManager::tryAcquire(const ResourceRequest& request)
 {
     if (!canAcquire(request)) {
@@ -149,7 +160,7 @@ void ResourceManager::enqueueWaiter(const ResourceRequest& request)
 bool ResourceManager::conflicts(const ResourceRequirement& requested,
                                 const ResourceRequirement& held) const
 {
-    if (requested.resourceId != held.resourceId) {
+    if (!resourceIdsOverlap(requested.resourceId, held.resourceId)) {
         return false;
     }
 

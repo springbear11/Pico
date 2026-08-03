@@ -702,9 +702,26 @@ void SequenceTreeModel::setBreakpointNodePaths(QSet<QString> nodePaths)
     if (m_breakpointNodePaths == nodePaths) {
         return;
     }
-    beginResetModel();
+
+    QSet<QString> changedPaths = m_breakpointNodePaths;
+    for (const auto& nodePath : nodePaths) {
+        if (changedPaths.contains(nodePath)) {
+            changedPaths.remove(nodePath);
+        } else {
+            changedPaths.insert(nodePath);
+        }
+    }
     m_breakpointNodePaths = std::move(nodePaths);
-    endResetModel();
+    for (const auto& nodePath : changedPaths) {
+        const auto index = indexForNodePath(nodePath);
+        if (!index.isValid()) {
+            continue;
+        }
+        const auto breakpointIndex = index.siblingAtColumn(BreakpointColumn);
+        emit dataChanged(breakpointIndex,
+                         breakpointIndex,
+                         {Qt::DisplayRole, Qt::CheckStateRole, Qt::ToolTipRole});
+    }
     emit breakpointsChanged();
 }
 

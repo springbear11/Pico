@@ -70,6 +70,35 @@ std::optional<TimerCompletion> TimerService::takeReadyForContext(const UutId& uu
     return completion;
 }
 
+std::optional<TimerCompletion> TimerService::takeAnyReady()
+{
+    std::lock_guard lock(m_mutex);
+    const auto now = Clock::now();
+    auto selected = m_pending.end();
+    for (auto it = m_pending.begin(); it != m_pending.end(); ++it) {
+        if (it->deadline > now) {
+            continue;
+        }
+        if (selected == m_pending.end() || it->deadline < selected->deadline) {
+            selected = it;
+        }
+    }
+    if (selected == m_pending.end()) {
+        return std::nullopt;
+    }
+
+    TimerCompletion completion;
+    completion.requestId = selected->request.requestId;
+    completion.uutId = selected->request.uutId;
+    completion.frameId = selected->request.frameId;
+    completion.nodeId = selected->request.nodeId;
+    completion.activationId = selected->request.activationId;
+    completion.attemptId = selected->request.attemptId;
+    completion.finishedAt = QDateTime::currentDateTimeUtc();
+    m_pending.erase(selected);
+    return completion;
+}
+
 bool TimerService::hasPendingRequests() const
 {
     std::lock_guard lock(m_mutex);

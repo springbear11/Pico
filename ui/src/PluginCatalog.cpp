@@ -100,6 +100,15 @@ PluginParameterDefinition parseInput(
                  QStringLiteral("Unsupported parameter type: %1").arg(typeText));
     }
     result.required = object.value(QStringLiteral("required")).toBool(false);
+    if (object.contains(QStringLiteral("allowEmpty"))) {
+        const auto allowEmpty = object.value(QStringLiteral("allowEmpty"));
+        if (allowEmpty.isBool()) {
+            result.allowEmpty = allowEmpty.toBool();
+        } else {
+            addError(errors, path + QStringLiteral(".allowEmpty"),
+                     QStringLiteral("Expected bool"));
+        }
+    }
     if (object.contains(QStringLiteral("default"))) {
         result.defaultValue = object.value(QStringLiteral("default")).toVariant();
     }
@@ -856,10 +865,12 @@ PluginManifest builtInDataParserManifest()
     betweenInputs.insert(1, input(QStringLiteral("startMarker"),
                                   QStringLiteral("Start Marker"),
                                   PluginParameterType::String, QString()));
-    betweenInputs.insert(2, input(QStringLiteral("endMarker"),
-                                  QStringLiteral("End Marker"),
-                                  PluginParameterType::String,
-                                  QStringLiteral("\\r\\n")));
+    auto endMarker = input(QStringLiteral("endMarker"),
+                           QStringLiteral("End Marker"),
+                           PluginParameterType::String,
+                           QStringLiteral("\\r\\n"));
+    endMarker.allowEmpty = true;
+    betweenInputs.insert(2, std::move(endMarker));
     betweenInputs.insert(3, input(QStringLiteral("occurrence"),
                                   QStringLiteral("Occurrence"),
                                   PluginParameterType::Integer, 1, false, 1));
