@@ -162,6 +162,10 @@ StepReport makeStepReport(const ExecutionPlan& plan, const UutExecution& uut, co
         report.kind = node->kind;
         report.phase = executionPhaseOf(*node);
         report.resultRecording = node->resultRecording;
+        if (node->kind == ExecNodeKind::Limit) {
+            report.measurements.push_back(
+                configuredMeasurementPreview(node->payload, node->displayName));
+        }
     }
 
     const auto loopRegion = plan.loopRegionForBodyNode(nodeId);
@@ -188,7 +192,9 @@ StepReport makeStepReport(const ExecutionPlan& plan, const UutExecution& uut, co
     }
     if (!activation.attempts.isEmpty()) {
         report.outcome = activation.attempts.last().result.outcome;
-        report.measurements = activation.attempts.last().result.measurements;
+        if (!activation.attempts.last().result.measurements.isEmpty()) {
+            report.measurements = activation.attempts.last().result.measurements;
+        }
     }
 
     report.attempts.reserve(activation.attempts.size());
@@ -209,6 +215,12 @@ StepReport makeStepReport(const ExecutionPlan& plan, const UutExecution& uut, co
     }
 
     report.wasError = outcomeWasError(report.outcome) || measurementsHaveError(report.measurements);
+    if (node && node->periodic.enabled) {
+        for (const auto& attempt : activation.attempts) {
+            report.wasError = report.wasError || outcomeWasError(attempt.result.outcome) ||
+                              measurementsHaveError(attempt.result.measurements);
+        }
+    }
     return report;
 }
 
@@ -365,6 +377,7 @@ ExecutionState ExecutionSession::state() const
 ExecutionSessionResult ExecutionSession::run()
 {
     ExecutionSessionResult result;
+    m_scheduler->stopAllPeriodicTasks();
     m_executionControl->clearDebugSnapshot();
     m_breakpointResumeGuards.clear();
     m_activeDebugStepMode = DebugStepMode::None;
@@ -415,6 +428,13 @@ ExecutionSessionResult ExecutionSession::run()
 
     while (!phaseComplete(m_sessionExecution, ExecutionPhase::Setup)) {
         prepareStopIfRequested();
+        if (!m_stopToken->isStopRequested()) {
+            const auto periodicStep = m_scheduler->pumpPeriodicTaskOnce();
+            appendSessionStep(periodicStep);
+            if (periodicStep.progressed) {
+                continue;
+            }
+        }
         if (m_executionControl->state() == ExecutionControlState::PauseRequested &&
             m_scheduler->hasPendingRequestForUut(m_sessionExecution.uutId)) {
             const auto step = m_scheduler->pumpPendingRequestOnce(
@@ -467,6 +487,10 @@ ExecutionSessionResult ExecutionSession::run()
     const bool runMain = setupComplete && !setupHasError && !m_stopToken->isStopRequested();
     while (runMain) {
         prepareStopIfRequested();
+        const auto periodicStep = m_stopToken->isStopRequested()
+            ? SchedulerStepResult{}
+            : m_scheduler->pumpPeriodicTaskOnce();
+        appendSessionStep(periodicStep);
         if (m_executionControl->state() == ExecutionControlState::PauseRequested &&
             m_scheduler->hasPendingRequests()) {
             bool completedPendingRequest = false;
@@ -490,7 +514,7 @@ ExecutionSessionResult ExecutionSession::run()
         }
         pauseAtSafePointIfRequested();
         prepareStopIfRequested();
-        bool progressed = false;
+        bool progressed = periodicStep.progressed;
         for (auto& uut : m_uuts) {
             if (uutComplete(uut)) {
                 continue;
@@ -500,6 +524,11 @@ ExecutionSessionResult ExecutionSession::run()
             }
             pauseAtSafePointIfRequested();
             prepareStopIfRequested();
+            if (!m_stopToken->isStopRequested()) {
+                const auto periodicUutStep = m_scheduler->pumpPeriodicTaskOnce();
+                appendSessionStep(periodicUutStep);
+                progressed = progressed || periodicUutStep.progressed;
+            }
             pauseAtBreakpointIfNeeded(uut);
             prepareStopIfRequested();
             auto step = m_scheduler->pumpOnce(
@@ -527,6 +556,7 @@ ExecutionSessionResult ExecutionSession::run()
     }
 
     publishCompletedUuts();
+    result.hasError = result.hasError || m_scheduler->stopAllPeriodicTasks();
     for (const auto& uut : m_uuts) {
         m_scheduler->releaseAllResourceRegions(uut.uutId, QStringLiteral("root"));
     }
@@ -596,8 +626,10 @@ ExecutionSessionResult ExecutionSession::run()
         m_state = ExecutionState::CompletedWithError;
     } else if (result.completed) {
         m_state = ExecutionState::Completed;
-    } else if (m_stopToken->isStopRequested()) {
-        m_state = ExecutionState::Stopping;
+    } else {
+        // run() is synchronous; transitional states must not escape as final results.
+        result.hasError = true;
+        m_state = ExecutionState::CompletedWithError;
     }
 
     result.state = m_state;
@@ -658,6 +690,11 @@ ExecutionReport ExecutionSession::report() const
 
         report.hasError = report.hasError || uutReport.hasError;
         report.uuts.push_back(uutReport);
+    }
+
+    if (m_state == ExecutionState::CompletedWithError) {
+        report.sessionHasError = true;
+        report.hasError = true;
     }
 
     return report;

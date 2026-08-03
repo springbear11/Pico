@@ -423,6 +423,9 @@ QString measurementLimits(const PicoATE::Core::MeasurementResult& measurement)
 
 QString measurementValueText(const PicoATE::Core::MeasurementResult& measurement)
 {
+    if (!measurement.value.isValid() || measurement.value.isNull()) {
+        return QStringLiteral("-");
+    }
     const auto value = variantText(measurement.value);
     return measurement.unit.isEmpty() ? value : QStringLiteral("%1 %2").arg(value, measurement.unit);
 }

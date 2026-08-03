@@ -6,6 +6,7 @@
 #include "PicoATE/Core/ExecutionResultStore.h"
 #include "PicoATE/Core/LoopController.h"
 #include "PicoATE/Core/NodeRunner.h"
+#include "PicoATE/Core/PeriodicTaskController.h"
 #include "PicoATE/Core/ResourceManager.h"
 #include "PicoATE/Core/RuntimeEvent.h"
 #include "PicoATE/Core/StopToken.h"
@@ -69,6 +70,9 @@ public:
     bool hasPendingRequestForUut(const UutId& uutId) const;
     bool waitForPendingRequest(
         std::chrono::milliseconds maximumWait = std::chrono::milliseconds(20));
+    SchedulerStepResult pumpPeriodicTaskOnce();
+    bool stopAllPeriodicTasks();
+    int activePeriodicTaskCount() const;
 
 private:
     QVector<NodeId> findReadyNodes(
@@ -91,6 +95,9 @@ private:
                            const QString& reason);
     void discardObsoletePendingWaits(UutExecution& uut);
     NodeResult executeNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
+    NodeResult registerPeriodicTask(UutExecution& uut,
+                                    const ExecNode& node,
+                                    const FrameId& frameId);
     NodeResult executeBarrierNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
     NodeResult executeLoopNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
     bool isWhileLoopBodyNode(const NodeId& nodeId) const;
@@ -206,6 +213,7 @@ private:
     QVector<ActiveOperatorPrompt> m_activeOperatorPrompts;
     TimerService m_timers;
     QHash<RequestId, PendingWait> m_pendingWaits;
+    PeriodicTaskController m_periodicTasks;
     struct ActiveResourceRegion {
         ResourceRegionId regionId;
         UutId uutId;

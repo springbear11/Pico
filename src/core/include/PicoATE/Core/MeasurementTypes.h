@@ -40,4 +40,9 @@ QVector<MeasurementResult> measurementsFromVariant(const QVariant& value,
 QVariant measurementsToVariant(const QVector<MeasurementResult>& measurements);
 bool measurementStatusIsError(MeasurementStatus status);
 
+void applyConfiguredMeasurementLimits(const QVariantMap& configuration,
+                                      MeasurementResult& measurement);
+MeasurementResult configuredMeasurementPreview(const QVariantMap& configuration,
+                                               const QString& defaultName = {});
+
 } // namespace PicoATE::Core

@@ -42,6 +42,7 @@ struct PluginParameterDefinition {
     QString name;
     PluginParameterType type = PluginParameterType::String;
     bool required = false;
+    bool allowEmpty = false;
     QVariant defaultValue;
     std::optional<double> minimum;
     std::optional<double> maximum;

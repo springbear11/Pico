@@ -69,6 +69,14 @@ struct TimeoutPolicyDef {
     TimeoutPolicy toRuntimePolicy() const;
 };
 
+struct PeriodicTaskPolicyDef {
+    bool enabled = false;
+    int intervalMs = 5000;
+    bool runImmediately = true;
+
+    PeriodicTaskPolicy toRuntimePolicy() const;
+};
+
 struct ErrorPolicyDef {
     OnFailureAction onFail = OnFailureAction::StopUut;
     OnFailureAction onError = OnFailureAction::StopUut;
@@ -139,6 +147,7 @@ struct StepDef {
     ResourceRegionId resourceRegionEnd;
     RetryPolicyDef retry;
     TimeoutPolicyDef timeout;
+    PeriodicTaskPolicyDef periodic;
     ErrorPolicyDef errorPolicy;
     BarrierPolicyDef barrier;
     LoopPolicyDef loop;

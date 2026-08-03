@@ -109,7 +109,7 @@ private slots:
     void switchingStationDevicesCanDiscardCurrentDraft();
     void disabledReferencedDeviceDiagnosticPersistsAcrossEditors();
     void runActionSyncsTreeBreakpointsAndStopsAtBreakpoint();
-    void runTestBreakpointGutterIsVisualOnly();
+    void runTestBreakpointGutterControlsExecutionBreakpoints();
     void runPopulatesRuntimeTimeline();
     void persistsLayoutAndRecentFiles();
     void invalidOrOffscreenGeometryFallsBackToPrimaryScreen();
@@ -147,7 +147,9 @@ private slots:
     void messageBoxPropertyEditorSwitchesConfirmationMode();
     void messageBoxPropertyEditorInsertsRuntimeValues();
     void parserPropertyEditorCreatesNamedOutputsForFx();
+    void parserPropertyEditorPreservesExplicitEmptyEndMarker();
     void whileLoopPropertyEditorUsesTypedFields();
+    void periodicActionPropertyEditorUsesTypedPolicyFields();
 
 private:
     QTemporaryDir m_settingsDirectory;
@@ -2952,14 +2954,20 @@ void MainWindowLifecycleTests::runActionSyncsTreeBreakpointsAndStopsAtBreakpoint
     auto* treeModel = window.findChild<SequenceTreeModel*>();
     auto* viewModel = window.findChild<ExecutionViewModel*>();
     auto* runAction = window.findChild<QAction*>(QStringLiteral("runAction"));
+    auto* stepIntoAction = window.findChild<QAction*>(
+        QStringLiteral("stepIntoAction"));
     auto* resultView = window.findChild<QTreeView*>(QStringLiteral("resultView"));
+    auto* breakpointDelegate = window.findChild<QAbstractItemDelegate*>(
+        QStringLiteral("runTestBreakpointDelegate"));
     auto* workspaceTabs = window.findChild<QTabWidget*>(
         QStringLiteral("workspaceTabs"));
     QVERIFY(treeView);
     QVERIFY(treeModel);
     QVERIFY(viewModel);
     QVERIFY(runAction);
+    QVERIFY(stepIntoAction);
     QVERIFY(resultView);
+    QVERIFY(breakpointDelegate);
     QVERIFY(workspaceTabs);
     workspaceTabs->setCurrentIndex(1);
     QCOMPARE(workspaceTabs->currentIndex(), 1);
@@ -2968,11 +2976,7 @@ void MainWindowLifecycleTests::runActionSyncsTreeBreakpointsAndStopsAtBreakpoint
     const auto firstStep = treeModel->index(0, SequenceTreeModel::NameColumn, setupGroup);
     QVERIFY(firstStep.isValid());
     QCOMPARE(treeModel->nodePathForIndex(firstStep), QString("open-fixture"));
-    QVERIFY(treeModel->setData(firstStep.siblingAtColumn(
-                                   SequenceTreeModel::BreakpointColumn),
-                               Qt::Checked,
-                               Qt::CheckStateRole));
-    QCOMPARE(treeModel->breakpointSpecs().size(), 1);
+    QVERIFY(treeView->isColumnHidden(SequenceTreeModel::BreakpointColumn));
 
     viewModel->compile();
     QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 3000);
@@ -2988,6 +2992,26 @@ void MainWindowLifecycleTests::runActionSyncsTreeBreakpointsAndStopsAtBreakpoint
              QStringList({QStringLiteral("SETUP"),
                           QStringLiteral("MAIN"),
                           QStringLiteral("CLEANUP")}));
+    workspaceTabs->setCurrentIndex(0);
+    resultView->expandAll();
+    QCoreApplication::processEvents();
+    const auto setupPhase = resultView->model()->index(
+        0, UutStepModel::NameColumn);
+    const auto runTestFirstStep = resultView->model()->index(
+        0, UutStepModel::NameColumn, setupPhase);
+    const auto breakpointIndex = runTestFirstStep.siblingAtColumn(
+        UutStepModel::BreakpointVisualColumn);
+    const auto breakpointRect = resultView->visualRect(breakpointIndex);
+    QVERIFY(breakpointRect.isValid());
+    QTest::mouseClick(resultView->viewport(),
+                      Qt::LeftButton,
+                      Qt::NoModifier,
+                      QPoint(breakpointRect.left() + 8,
+                             breakpointRect.center().y()));
+    QCOMPARE(treeModel->breakpointSpecs().size(), 1);
+    QCOMPARE(treeModel->breakpointSpecs().first().address.value,
+             QString("open-fixture"));
+
     runAction->trigger();
     QCOMPARE(workspaceTabs->currentIndex(), 0);
     QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Paused, 3000);
@@ -3000,14 +3024,28 @@ void MainWindowLifecycleTests::runActionSyncsTreeBreakpointsAndStopsAtBreakpoint
     QVERIFY(viewModel->debugSnapshot().has_value());
     QCOMPARE(viewModel->debugSnapshot()->currentNodeId, QString("open-fixture"));
     QTRY_COMPARE_WITH_TIMEOUT(
+        breakpointDelegate->property("currentNodePath").toString(),
+        QString("open-fixture"),
+        1000);
+    QTRY_COMPARE_WITH_TIMEOUT(
         treeModel->nodePathForIndex(treeView->currentIndex()),
         QString("open-fixture"),
+        1000);
+
+    stepIntoAction->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Paused, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        breakpointDelegate->property("currentNodePath").toString(),
+        QString("wait-100ms"),
         1000);
 
     viewModel->stop();
     QTRY_VERIFY_WITH_TIMEOUT(viewModel->state() == UiRunState::Completed ||
                              viewModel->state() == UiRunState::Failed,
                              3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        breakpointDelegate->property("currentNodePath").toString().isEmpty(),
+        1000);
     QVERIFY(window.close());
 }
 
@@ -3856,7 +3894,7 @@ void MainWindowLifecycleTests::productionLoopTestCountsAndArchivesEveryIteration
     }
 }
 
-void MainWindowLifecycleTests::runTestBreakpointGutterIsVisualOnly()
+void MainWindowLifecycleTests::runTestBreakpointGutterControlsExecutionBreakpoints()
 {
     const QString projectDir = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR);
 
@@ -3898,7 +3936,9 @@ void MainWindowLifecycleTests::runTestBreakpointGutterIsVisualOnly()
                       Qt::NoModifier,
                       breakpointPoint);
     QCOMPARE(delegate->property("visualBreakpointCount").toInt(), 1);
-    QVERIFY(treeModel->breakpointSpecs().isEmpty());
+    QCOMPARE(treeModel->breakpointSpecs().size(), 1);
+    QCOMPARE(treeModel->breakpointSpecs().first().address.value,
+             QString("open-fixture"));
 
     const auto screenshotPath = qEnvironmentVariable(
         "PICOATE_BREAKPOINT_SCREENSHOT");
@@ -4297,6 +4337,58 @@ void MainWindowLifecycleTests::parserPropertyEditorCreatesNamedOutputsForFx()
     QVERIFY(editor.commitPendingChanges());
 }
 
+void MainWindowLifecycleTests::parserPropertyEditorPreservesExplicitEmptyEndMarker()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(
+        QStringLiteral("empty_end_marker.json"));
+    QFile sequenceFile(sequencePath);
+    QVERIFY(sequenceFile.open(QIODevice::WriteOnly));
+    sequenceFile.write(R"json({
+      "id":"empty-end-marker","name":"Empty End Marker","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"parse","name":"Extract Remaining Text","kind":"action",
+          "moduleId":"builtin.data-parser","function":"extractBetween",
+          "inputs":{"source":"SN:1234567890","startMarker":"SN:"}
+        }]
+      }]
+    })json");
+    sequenceFile.close();
+
+    const SequenceItemPath parserPath{0, {0}};
+    SequenceDocument document;
+    QVERIFY(document.load(sequencePath));
+    StepPropertyEditor editor(&document);
+    editor.setPluginRegistry({});
+    editor.setCurrentItem(parserPath);
+
+    auto* endMarker = editor.findChild<QLineEdit*>(
+        QStringLiteral("pluginInput_endMarker"));
+    QVERIFY(endMarker);
+    QCOMPARE(endMarker->text(), QStringLiteral("\\r\\n"));
+    endMarker->clear();
+    QVERIFY(editor.commitPendingChanges());
+
+    const auto inputs = document.objectAt(parserPath)
+                            .value(QStringLiteral("inputs")).toObject();
+    QVERIFY(inputs.contains(QStringLiteral("endMarker")));
+    QCOMPARE(inputs.value(QStringLiteral("endMarker")).toString(), QString{});
+
+    QString errorMessage;
+    QVERIFY2(document.save(&errorMessage), qPrintable(errorMessage));
+
+    SequenceDocument reloaded;
+    QVERIFY(reloaded.load(sequencePath));
+    StepPropertyEditor reloadedEditor(&reloaded);
+    reloadedEditor.setPluginRegistry({});
+    reloadedEditor.setCurrentItem(parserPath);
+    auto* reloadedEndMarker = reloadedEditor.findChild<QLineEdit*>(
+        QStringLiteral("pluginInput_endMarker"));
+    QVERIFY(reloadedEndMarker);
+    QVERIFY(reloadedEndMarker->text().isEmpty());
+}
+
 void MainWindowLifecycleTests::whileLoopPropertyEditorUsesTypedFields()
 {
     const auto path = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
@@ -4335,6 +4427,54 @@ void MainWindowLifecycleTests::whileLoopPropertyEditorUsesTypedFields()
     QVERIFY(!loop.contains(QStringLiteral("sample")));
     QVERIFY(!loop.contains(QStringLiteral("completionMode")));
     QVERIFY(!loop.contains(QStringLiteral("variable")));
+}
+
+void MainWindowLifecycleTests::periodicActionPropertyEditorUsesTypedPolicyFields()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("periodic_editor.json"));
+    QFile file(sequencePath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"json({
+      "id":"periodic-editor","name":"Periodic Editor","groups":[{
+        "id":"setup","kind":"setup","steps":[{
+          "id":"heartbeat","name":"Heartbeat","kind":"action",
+          "moduleId":"test.periodic","function":"send",
+          "inputs":{"deviceId":"DEVICE1"}
+        }]
+      }]
+    })json");
+    file.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(sequencePath));
+    StepPropertyEditor editor(&document);
+    const SequenceItemPath heartbeatPath{0, {0}};
+    editor.setCurrentItem(heartbeatPath);
+
+    auto* enabled = editor.findChild<QCheckBox*>(
+        QStringLiteral("propertyPeriodicEnabledCheck"));
+    auto* interval = editor.findChild<QSpinBox*>(
+        QStringLiteral("propertyPeriodicIntervalSpin"));
+    auto* immediate = editor.findChild<QCheckBox*>(
+        QStringLiteral("propertyPeriodicRunImmediatelyCheck"));
+    QVERIFY(enabled);
+    QVERIFY(interval);
+    QVERIFY(immediate);
+    QVERIFY(!enabled->isHidden());
+    QVERIFY(interval->isHidden());
+
+    enabled->setChecked(true);
+    QVERIFY(!interval->isHidden());
+    interval->setValue(5000);
+    immediate->setChecked(false);
+    QVERIFY(editor.commitPendingChanges());
+
+    const auto periodic = document.objectAt(heartbeatPath)
+        .value(QStringLiteral("periodic")).toObject();
+    QCOMPARE(periodic.value(QStringLiteral("intervalMs")).toInt(), 5000);
+    QCOMPARE(periodic.value(QStringLiteral("runImmediately")).toBool(), false);
 }
 
 QTEST_MAIN(MainWindowLifecycleTests)

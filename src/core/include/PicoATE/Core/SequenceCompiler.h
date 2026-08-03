@@ -57,6 +57,9 @@ private:
     TimeoutPolicyDef parseTimeout(const QJsonObject& object,
                                   const QString& path,
                                   QVector<CompileError>& errors) const;
+    PeriodicTaskPolicyDef parsePeriodicTask(const QJsonObject& object,
+                                            const QString& path,
+                                            QVector<CompileError>& errors) const;
     LoopPolicyDef parseLoopPolicy(const QJsonObject& object,
                                   const QString& path,
                                   QVector<CompileError>& errors) const;

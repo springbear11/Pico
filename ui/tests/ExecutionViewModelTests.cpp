@@ -1643,6 +1643,27 @@ void ExecutionViewModelTests::runnerModelsExposeReportHierarchyAndDetails()
     QCOMPARE(diagnosticModel.data(
                  diagnosticModel.index(0, DiagnosticModel::SeverityColumn)).toString(),
              QStringLiteral("Warning"));
+
+    report.completed = false;
+    report.uuts[0].steps[0].state = PicoATE::Core::ActivationState::Created;
+    report.uuts[0].steps[0].outcome = PicoATE::Core::NodeOutcome::Unknown;
+    report.uuts[0].steps[0].attempts.clear();
+    report.uuts[0].steps[0].measurements = {
+        PicoATE::Core::configuredMeasurementPreview(
+            {{QStringLiteral("comparison"), QStringLiteral("between")},
+             {QStringLiteral("expected"), 12.0},
+             {QStringLiteral("tolerance"), 0.5},
+             {QStringLiteral("unit"), QStringLiteral("V")}},
+            QStringLiteral("Planned Voltage"))};
+    resultModel.setReport(report);
+    refreshedUut = resultModel.index(0, UutStepModel::NameColumn);
+    refreshedStep = resultModel.index(0, UutStepModel::NameColumn, refreshedUut);
+    QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::LowerLimitColumn)).toString(),
+             QStringLiteral("11.5"));
+    QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::UpperLimitColumn)).toString(),
+             QStringLiteral("12.5"));
+    QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::ActualColumn)).toString(),
+             QStringLiteral("-"));
 }
 
 void ExecutionViewModelTests::uutStepModelUsesProductionStateColors()

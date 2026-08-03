@@ -31,6 +31,15 @@ TimeoutPolicy TimeoutPolicyDef::toRuntimePolicy() const
     return policy;
 }
 
+PeriodicTaskPolicy PeriodicTaskPolicyDef::toRuntimePolicy() const
+{
+    PeriodicTaskPolicy policy;
+    policy.enabled = enabled;
+    policy.intervalMs = intervalMs;
+    policy.runImmediately = runImmediately;
+    return policy;
+}
+
 NodeErrorPolicy ErrorPolicyDef::toRuntimePolicy() const
 {
     NodeErrorPolicy policy;

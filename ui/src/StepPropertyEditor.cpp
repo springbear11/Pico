@@ -347,6 +347,10 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
             &QComboBox::currentIndexChanged,
             this,
             [this] { if (!m_loading) updateLoopRows(); });
+    connect(m_periodicEnabledCheck,
+            &QCheckBox::toggled,
+            this,
+            [this] { if (!m_loading) updateKindRows(); });
     const auto rebuildCallEditors = [this] {
         rebuildFunctionChoices();
         rebuildDeviceChoices();
@@ -1103,6 +1107,21 @@ void StepPropertyEditor::buildPolicyPage()
     m_timeoutSpin->setSuffix(tr(" ms"));
     m_policyForm->addRow(tr("Timeout"), m_timeoutSpin);
 
+    m_periodicEnabledCheck = new QCheckBox(tr("Run this Action in the background"), content);
+    m_periodicEnabledCheck->setObjectName(QStringLiteral("propertyPeriodicEnabledCheck"));
+    m_periodicEnabledCheck->setToolTip(
+        tr("Register this top-level Setup Action as a cooperative periodic task."));
+    m_policyForm->addRow(tr("Periodic task"), m_periodicEnabledCheck);
+    m_periodicIntervalSpin = new QSpinBox(content);
+    m_periodicIntervalSpin->setObjectName(QStringLiteral("propertyPeriodicIntervalSpin"));
+    m_periodicIntervalSpin->setRange(1, std::numeric_limits<int>::max());
+    m_periodicIntervalSpin->setSuffix(tr(" ms"));
+    m_policyForm->addRow(tr("Interval"), m_periodicIntervalSpin);
+    m_periodicRunImmediatelyCheck = new QCheckBox(tr("Run once immediately after registration"), content);
+    m_periodicRunImmediatelyCheck->setObjectName(
+        QStringLiteral("propertyPeriodicRunImmediatelyCheck"));
+    m_policyForm->addRow(tr("First run"), m_periodicRunImmediatelyCheck);
+
     m_resourcesEdit = new QPlainTextEdit(content);
     m_resourcesEdit->setObjectName(QStringLiteral("propertyResourcesEdit"));
     m_resourcesEdit->setMinimumHeight(140);
@@ -1249,6 +1268,11 @@ void StepPropertyEditor::loadCurrentObject()
     const auto timeout = m_sourceObject.value("timeout").toObject();
     m_timeoutSpin->setValue(timeout.value("timeoutMs").toInt(
         m_sourceObject.value("timeoutMs").toInt(0)));
+    const auto periodic = m_sourceObject.value("periodic").toObject();
+    m_periodicEnabledCheck->setChecked(!periodic.isEmpty());
+    m_periodicIntervalSpin->setValue(periodic.value("intervalMs").toInt(5000));
+    m_periodicRunImmediatelyCheck->setChecked(
+        periodic.value("runImmediately").toBool(true));
     m_resourcesEdit->setPlainText(arrayText(m_sourceObject.value("resources").toArray()));
 
     rebuildDeviceChoices();
@@ -1298,6 +1322,7 @@ void StepPropertyEditor::updateKindRows()
     const bool operatorPrompt = kind == "operatorPrompt";
     const bool noticePrompt = operatorPrompt &&
         m_promptModeCombo->currentData().toString() == QStringLiteral("notice");
+    const bool periodic = action && m_periodicEnabledCheck->isChecked();
 
     setFormRowVisible(m_dataForm, m_moduleIdEdit, action || moduleCall);
     setFormRowVisible(m_dataForm, m_functionEdit, action || moduleCall);
@@ -1331,6 +1356,9 @@ void StepPropertyEditor::updateKindRows()
     for (auto* field : barrierFields) {
         setFormRowVisible(m_dataForm, field, barrier);
     }
+    setFormRowVisible(m_policyForm, m_periodicEnabledCheck, action);
+    setFormRowVisible(m_policyForm, m_periodicIntervalSpin, periodic);
+    setFormRowVisible(m_policyForm, m_periodicRunImmediatelyCheck, periodic);
     updateLoopRows();
     updateLimitRows();
     updateAdvancedJsonVisibility();
@@ -2580,7 +2608,11 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
                 if (invalidWidget) *invalidWidget = item.widget;
                 return false;
             }
-            inputs.remove(definition.key);
+            if (definition.allowEmpty) {
+                inputs.insert(definition.key, QString{});
+            } else {
+                inputs.remove(definition.key);
+            }
             continue;
         }
 
@@ -2961,6 +2993,18 @@ bool StepPropertyEditor::commitPendingChanges()
         timeout.insert("timeoutMs", m_timeoutSpin->value());
         updated.insert("timeout", timeout);
         updated.remove("timeoutMs");
+
+        if (kind == QStringLiteral("action") &&
+            m_periodicEnabledCheck->isChecked()) {
+            QJsonObject periodic;
+            periodic.insert(QStringLiteral("intervalMs"),
+                            m_periodicIntervalSpin->value());
+            periodic.insert(QStringLiteral("runImmediately"),
+                            m_periodicRunImmediatelyCheck->isChecked());
+            updated.insert(QStringLiteral("periodic"), periodic);
+        } else {
+            updated.remove(QStringLiteral("periodic"));
+        }
 
         if (kind == "loop") {
             QJsonObject loop;

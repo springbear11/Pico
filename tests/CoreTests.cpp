@@ -224,6 +224,34 @@ public:
     }
 };
 
+class PeriodicRecordingModule final : public IModule {
+public:
+    ModuleId moduleId() const override
+    {
+        return QStringLiteral("test.periodic");
+    }
+
+    ModuleResult execute(const ModuleFunction&,
+                         const ModuleExecutionContext& context) override
+    {
+        requestIds.push_back(context.requestId);
+        callTimesMs.push_back(clock.isValid() ? clock.elapsed() : 0);
+        ModuleResult result;
+        result.outputs.insert(QStringLiteral("callCount"), requestIds.size());
+        if (failFirst && requestIds.size() == 1) {
+            result.outcome = ModuleOutcome::Failed;
+            result.errorCode = QStringLiteral("HeartbeatRejected");
+            result.errorMessage = QStringLiteral("intentional periodic failure");
+        }
+        return result;
+    }
+
+    bool failFirst = false;
+    QElapsedTimer clock;
+    QVector<RequestId> requestIds;
+    QVector<qint64> callTimesMs;
+};
+
 class MultiUutLifecycleModule final : public IModule {
 public:
     ModuleId moduleId() const override
@@ -569,6 +597,7 @@ private slots:
     void deviceSessionManagerRejectsUnavailableDeviceAtOpen();
     void stationRuntimeLoadsStationConfig();
     void resourceManagerSerializesWaiters();
+    void resourceManagerTreatsDeviceAndChannelAsOneHierarchy();
     void barrierControllerReleasesOnlyThroughDecision();
     void planCacheKeepsRunningPlanAlive();
     void nodeRunnerRunsRegisteredModuleAndMapsModuleResult();
@@ -630,6 +659,10 @@ private slots:
     void stopTokenEscalatesAtomically();
     void executionSessionConsumesCrossThreadStopToken();
     void executionSessionWaitDoesNotBlockOtherUuts();
+    void sequenceCompilerRunsCooperativePeriodicAction();
+    void periodicActionWaitsForResourceRegionAndStopsWithSession();
+    void periodicActionFailureMarksSessionButDoesNotStopMain();
+    void sequenceCompilerRejectsUnsupportedPeriodicTaskShapes();
     void executionSessionPausesAtNodeBoundaryAndResumes();
     void executionSessionPausePreservesMultiUutBarrierState();
     void executionSessionStopWakesPausedRunAndRunsCleanup();
@@ -697,6 +730,7 @@ private slots:
     void cleanupTestItemRunsAllChildren();
     void cleanupTestItemContinuesAfterChildError();
     void cleanupFailureContinuesBestEffortAndCompletesSession();
+    void incompleteCleanupReturnsCompletedWithError();
     void nestedTestItemsAggregateDirectChildrenRecursively();
     void testItemContainingLoopAggregatesIterationFailures();
     void loopTestItemChildrenKeepSerialOrderAcrossIterations();
@@ -711,6 +745,7 @@ private slots:
     void compilerDeduplicatesMultipleReferencesToSameStep();
     void runtimeResultLookupReportsMissingAndNonPassedSources();
     void limitNodeSupportsNumericStringAndBooleanComparisons();
+    void limitSpecificationsAppearInReportBeforeExecution();
     void limitNodeDistinguishesFailuresFromConfigurationErrors();
     void limitNodePreservesConfiguredLimitsWhenVariableResolutionFails();
     void limitStepFailsReferencedParsedValueOutsideRange();
@@ -1205,6 +1240,36 @@ void CoreTests::resourceManagerSerializesWaiters()
     secondLease = resources.tryAcquire(second);
     QVERIFY(secondLease.has_value());
     QCOMPARE(resources.waiterCount(), 0);
+}
+
+void CoreTests::resourceManagerTreatsDeviceAndChannelAsOneHierarchy()
+{
+    ResourceManager resources;
+    ResourceRequirement wholeDevice;
+    wholeDevice.resourceId = QStringLiteral("CAN1");
+    wholeDevice.mode = ResourceMode::Exclusive;
+    ResourceRequirement channel;
+    channel.resourceId = QStringLiteral("CAN1.CH1");
+    channel.mode = ResourceMode::Exclusive;
+
+    ResourceRequest deviceRequest;
+    deviceRequest.requestId = QStringLiteral("device-lock");
+    deviceRequest.uutId = QStringLiteral("UUT-1");
+    deviceRequest.frameId = QStringLiteral("root");
+    deviceRequest.nodeId = QStringLiteral("heartbeat");
+    deviceRequest.requirements = {wholeDevice};
+    const auto deviceLease = resources.tryAcquire(deviceRequest);
+    QVERIFY(deviceLease.has_value());
+
+    ResourceRequest channelRequest = deviceRequest;
+    channelRequest.requestId = QStringLiteral("channel-lock");
+    channelRequest.uutId = QStringLiteral("UUT-2");
+    channelRequest.nodeId = QStringLiteral("read-can");
+    channelRequest.requirements = {channel};
+    QVERIFY(!resources.tryAcquire(channelRequest).has_value());
+
+    resources.release(deviceLease->leaseId);
+    QVERIFY(resources.tryAcquire(channelRequest).has_value());
 }
 
 void CoreTests::barrierControllerReleasesOnlyThroughDecision()
@@ -7052,6 +7117,55 @@ void CoreTests::cleanupFailureContinuesBestEffortAndCompletesSession()
     QCOMPARE(strictExecution.outcomeOf("close-psu"), NodeOutcome::Skipped);
 }
 
+void CoreTests::incompleteCleanupReturnsCompletedWithError()
+{
+    const auto json = R"json({
+      "id":"incomplete-cleanup-terminal","name":"Incomplete Cleanup Terminal","groups":[
+        {"id":"main","kind":"main","steps":[
+          {"id":"measure","name":"Measure","kind":"noop"}
+        ]},
+        {"id":"cleanup","kind":"cleanup","steps":[
+          {"id":"cleanup-barrier","name":"Cleanup Barrier","kind":"barrier",
+           "barrier":{"barrierName":"cleanup-terminal","expectedUutCount":2}}
+        ]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compile.ok(), qPrintable(compile.errors.isEmpty()
+                                          ? QString()
+                                          : compile.errors.first().message));
+
+    CollectingRuntimeEventSink events;
+    ExecutionSession session(compile.plan, {}, &events);
+    session.addUut("uut-1");
+    session.addUut("uut-2");
+    const auto run = session.run();
+
+    QVERIFY(!run.completed);
+    QVERIFY(run.hasError);
+    QCOMPARE(run.state, ExecutionState::CompletedWithError);
+    QCOMPARE(session.state(), ExecutionState::CompletedWithError);
+    QCOMPARE(session.snapshot().sessionExecution.stateOf("cleanup-barrier"),
+             ActivationState::WaitingAtBarrier);
+
+    const auto report = session.report();
+    QVERIFY(report.completed);
+    QVERIFY(report.hasError);
+    QCOMPARE(report.state, ExecutionState::CompletedWithError);
+
+    const auto runtimeEvents = events.records();
+    const bool sawTerminalState = std::any_of(
+        runtimeEvents.cbegin(),
+        runtimeEvents.cend(),
+        [](const RuntimeEvent& event) {
+            return event.kind == RuntimeEventKind::SessionStateChanged &&
+                   event.executionState == ExecutionState::CompletedWithError;
+        });
+    QVERIFY(sawTerminalState);
+}
+
 void CoreTests::testItemAggregatesErrorSeverity()
 {
     const auto json = R"json(
@@ -7766,6 +7880,66 @@ void CoreTests::limitNodeSupportsNumericStringAndBooleanComparisons()
     QCOMPARE(result.outcome, NodeOutcome::Passed);
 }
 
+void CoreTests::limitSpecificationsAppearInReportBeforeExecution()
+{
+    ExecNode limit;
+    limit.id = QStringLiteral("check-voltage");
+    limit.displayName = QStringLiteral("Check Voltage");
+    limit.kind = ExecNodeKind::Limit;
+    limit.payload.insert(QStringLiteral("comparison"), QStringLiteral("between"));
+    limit.payload.insert(QStringLiteral("expected"), 5.0);
+    limit.payload.insert(QStringLiteral("tolerance"), 0.2);
+    limit.payload.insert(QStringLiteral("measurementName"), QStringLiteral("VOUT"));
+    limit.payload.insert(QStringLiteral("unit"), QStringLiteral("V"));
+    limit.payload.insert(
+        QStringLiteral("inputs"),
+        QVariantMap{{QStringLiteral("actual"),
+                     QStringLiteral("${step:read.outputs.value}")}});
+
+    ExecutionPlan plan;
+    plan.id = QStringLiteral("limit-preview-plan");
+    QVERIFY(plan.addNode(limit));
+    plan.entryNodeId = limit.id;
+    plan.exitNodeId = limit.id;
+
+    ExecutionSession session(plan);
+    session.addUut(QStringLiteral("uut-1"));
+    const auto report = session.report();
+    QCOMPARE(report.uuts.size(), 1);
+    const auto* step = findStep(report.uuts.first(), limit.id);
+    QVERIFY(step != nullptr);
+    QCOMPARE(step->attempts.size(), 0);
+    QCOMPARE(step->measurements.size(), 1);
+    const auto& measurement = step->measurements.first();
+    QCOMPARE(measurement.name, QStringLiteral("VOUT"));
+    QCOMPARE(measurement.unit, QStringLiteral("V"));
+    QCOMPARE(measurement.status, MeasurementStatus::Unknown);
+    QVERIFY(!measurement.value.isValid());
+    QVERIFY(measurement.hasLowerLimit);
+    QCOMPARE(measurement.lowerLimit, 4.8);
+    QVERIFY(measurement.hasUpperLimit);
+    QCOMPARE(measurement.upperLimit, 5.2);
+
+    const auto stringPreview = configuredMeasurementPreview(
+        {{QStringLiteral("comparison"), QStringLiteral("equal")},
+         {QStringLiteral("expected"), QStringLiteral("READY")}},
+        QStringLiteral("State"));
+    QCOMPARE(stringPreview.attributes.value(QStringLiteral("displayLower")).toString(),
+             QStringLiteral("READY"));
+    QCOMPARE(stringPreview.attributes.value(QStringLiteral("displayUpper")).toString(),
+             QStringLiteral("READY"));
+
+    const auto expressionPreview = configuredMeasurementPreview(
+        {{QStringLiteral("comparison"), QStringLiteral("between")},
+         {QStringLiteral("expected"), QStringLiteral("${globals.targetVoltage}")},
+         {QStringLiteral("tolerance"), 0.1}},
+        QStringLiteral("Dynamic Voltage"));
+    QCOMPARE(expressionPreview.attributes.value(QStringLiteral("displayLower")).toString(),
+             QStringLiteral("${globals.targetVoltage} - 0.1"));
+    QCOMPARE(expressionPreview.attributes.value(QStringLiteral("displayUpper")).toString(),
+             QStringLiteral("${globals.targetVoltage} + 0.1"));
+}
+
 void CoreTests::limitNodeDistinguishesFailuresFromConfigurationErrors()
 {
     NodeRunner runner;
@@ -8216,6 +8390,165 @@ void CoreTests::sequenceCompilerRejectsInvalidOperatorPromptCloseTarget()
     })json");
     QVERIFY(!earlier.ok());
     QVERIFY(hasMessage(earlier, QStringLiteral("later node")));
+}
+
+void CoreTests::sequenceCompilerRunsCooperativePeriodicAction()
+{
+    const auto json = R"json({
+      "id":"periodic-action","name":"Periodic Action","groups":[
+        {"id":"setup","kind":"setup","steps":[{
+          "id":"heartbeat","name":"Heartbeat","kind":"action",
+          "moduleId":"test.periodic","function":"send",
+          "inputs":{"deviceId":"DEVICE1"},
+          "periodic":{"intervalMs":10,"runImmediately":true}
+        }]},
+        {"id":"main","kind":"main","steps":[
+          {"id":"wait-main","kind":"wait","ms":75}
+        ]},
+        {"id":"cleanup","kind":"cleanup","steps":[
+          {"id":"cleanup-done","kind":"cleanup"}
+        ]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), compiled.errors.isEmpty()
+                                ? "compile failed"
+                                : qPrintable(compiled.errors.first().message));
+    const auto* heartbeat = compiled.plan.node(QStringLiteral("heartbeat"));
+    QVERIFY(heartbeat);
+    QVERIFY(heartbeat->periodic.enabled);
+    QCOMPARE(heartbeat->periodic.intervalMs, 10);
+    QCOMPARE(heartbeat->resources.size(), 1);
+    QCOMPARE(heartbeat->resources.first().resourceId, QStringLiteral("DEVICE1"));
+
+    auto module = std::make_shared<PeriodicRecordingModule>();
+    module->clock.start();
+    ExecutionSession session(compiled.plan);
+    QVERIFY(session.registerModule(module));
+    session.addUut(QStringLiteral("UUT-1"));
+    const auto result = session.run();
+
+    QVERIFY(result.completed);
+    QVERIFY(module->requestIds.size() >= 3);
+    QSet<RequestId> uniqueRequests(module->requestIds.cbegin(), module->requestIds.cend());
+    QCOMPARE(uniqueRequests.size(), module->requestIds.size());
+    const auto countAtCompletion = module->requestIds.size();
+    QTest::qWait(40);
+    QCOMPARE(module->requestIds.size(), countAtCompletion);
+}
+
+void CoreTests::periodicActionWaitsForResourceRegionAndStopsWithSession()
+{
+    const auto json = R"json({
+      "id":"periodic-resource","name":"Periodic Resource","groups":[
+        {"id":"setup","kind":"setup","steps":[{
+          "id":"heartbeat","kind":"action","moduleId":"test.periodic","function":"send",
+          "inputs":{"deviceId":"DEVICE1.CH1"},
+          "periodic":{"intervalMs":30,"runImmediately":false}
+        }]},
+        {"id":"main","kind":"main","steps":[
+          {"id":"locked-wait","kind":"wait","ms":90,
+           "resourceRegionStart":{"id":"device-transaction","resources":[
+             {"resourceId":"DEVICE1","mode":"exclusive"}
+           ]},"resourceRegionEnd":"device-transaction"},
+          {"id":"unlocked-wait","kind":"wait","ms":70}
+        ]},
+        {"id":"cleanup","kind":"cleanup","steps":[
+          {"id":"cleanup-done","kind":"cleanup"}
+        ]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), compiled.errors.isEmpty()
+                                ? "compile failed"
+                                : qPrintable(compiled.errors.first().message));
+
+    auto module = std::make_shared<PeriodicRecordingModule>();
+    module->clock.start();
+    ExecutionSession session(compiled.plan);
+    QVERIFY(session.registerModule(module));
+    session.addUut(QStringLiteral("UUT-1"));
+    const auto result = session.run();
+
+    QVERIFY(result.completed);
+    QVERIFY(!module->callTimesMs.isEmpty());
+    QVERIFY2(module->callTimesMs.first() >= 70,
+             qPrintable(QStringLiteral("periodic action ran while resource region was locked at %1 ms")
+                            .arg(module->callTimesMs.first())));
+}
+
+void CoreTests::periodicActionFailureMarksSessionButDoesNotStopMain()
+{
+    const auto json = R"json({
+      "id":"periodic-failure","name":"Periodic Failure","groups":[
+        {"id":"setup","kind":"setup","steps":[{
+          "id":"heartbeat","kind":"action","moduleId":"test.periodic","function":"send",
+          "inputs":{"deviceId":"DEVICE1"},
+          "periodic":{"intervalMs":10,"runImmediately":true}
+        }]},
+        {"id":"main","kind":"main","steps":[
+          {"id":"wait-main","kind":"wait","ms":55},
+          {"id":"main-finished","kind":"noop"}
+        ]},
+        {"id":"cleanup","kind":"cleanup","steps":[
+          {"id":"cleanup-done","kind":"cleanup"}
+        ]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compiled.ok());
+    auto module = std::make_shared<PeriodicRecordingModule>();
+    module->failFirst = true;
+    module->clock.start();
+    ExecutionSession session(compiled.plan);
+    QVERIFY(session.registerModule(module));
+    session.addUut(QStringLiteral("UUT-1"));
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(result.state, ExecutionState::CompletedWithError);
+    QVERIFY(module->requestIds.size() >= 2);
+    const auto executionReport = session.report();
+    QVERIFY(executionReport.sessionHasError);
+    const auto* heartbeat = findStep(executionReport.sessionSteps,
+                                     QStringLiteral("heartbeat"));
+    QVERIFY(heartbeat);
+    QVERIFY(heartbeat->wasError);
+}
+
+void CoreTests::sequenceCompilerRejectsUnsupportedPeriodicTaskShapes()
+{
+    const auto json = R"json({
+      "id":"invalid-periodic","name":"Invalid Periodic","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"bad-heartbeat","kind":"action","moduleId":"test.periodic","function":"send",
+          "inputs":{"deviceId":"${variables.deviceId}"},
+          "retry":{"maxAttempts":2},
+          "periodic":{"intervalMs":0,"runImmediately":true}
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(!compiled.ok());
+    const auto hasMessage = [&compiled](const QString& text) {
+        return std::any_of(compiled.errors.cbegin(), compiled.errors.cend(),
+                           [&text](const CompileError& error) {
+            return error.message.contains(text, Qt::CaseInsensitive);
+        });
+    };
+    QVERIFY(hasMessage(QStringLiteral("top-level Setup")));
+    QVERIFY(hasMessage(QStringLiteral("interval")));
+    QVERIFY(hasMessage(QStringLiteral("retry")));
+    QVERIFY(hasMessage(QStringLiteral("exclusive resource")));
 }
 
 QTEST_MAIN(CoreTests)

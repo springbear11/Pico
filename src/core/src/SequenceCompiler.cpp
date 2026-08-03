@@ -224,6 +224,13 @@ void collectRetryWarnings(const QJsonObject& object,
     warnUnknownFields(object, path, {"maxAttempts", "delayMs", "retryWhen"}, warnings);
 }
 
+void collectPeriodicTaskWarnings(const QJsonObject& object,
+                                 const QString& path,
+                                 QVector<CompileWarning>& warnings)
+{
+    warnUnknownFields(object, path, {"intervalMs", "runImmediately"}, warnings);
+}
+
 void collectLoopWarnings(const QJsonObject& object,
                          const QString& path,
                          QVector<CompileWarning>& warnings)
@@ -303,6 +310,7 @@ void collectStepWarnings(const QJsonObject& object,
         "retry",
         "timeout",
         "timeoutMs",
+        "periodic",
         "errorPolicy",
         "barrier",
         "prompt",
@@ -355,6 +363,12 @@ void collectStepWarnings(const QJsonObject& object,
 
     if (object.value("timeout").isObject()) {
         collectTimeoutWarnings(object.value("timeout").toObject(), path + ".timeout", warnings);
+    }
+
+    if (object.value("periodic").isObject()) {
+        collectPeriodicTaskWarnings(object.value("periodic").toObject(),
+                                    path + ".periodic",
+                                    warnings);
     }
 
     if (object.value("errorPolicy").isObject()) {
@@ -1068,6 +1082,16 @@ StepDef SequenceCompiler::parseStep(const QJsonObject& object,
         step.timeout.timeoutMs = readInt(object, "timeoutMs", path, errors, 0);
     }
 
+    if (object.contains("periodic") && !object.value("periodic").isObject()) {
+        addTypeError(errors,
+                     childPath(path, "periodic"),
+                     QString("object, got %1").arg(jsonTypeName(object.value("periodic"))));
+    } else if (object.value("periodic").isObject()) {
+        step.periodic = parsePeriodicTask(object.value("periodic").toObject(),
+                                          path + ".periodic",
+                                          errors);
+    }
+
     if (object.contains("errorPolicy") && !object.value("errorPolicy").isObject()) {
         addTypeError(errors,
                      childPath(path, "errorPolicy"),
@@ -1280,6 +1304,18 @@ TimeoutPolicyDef SequenceCompiler::parseTimeout(const QJsonObject& object,
     TimeoutPolicyDef timeout;
     timeout.timeoutMs = readInt(object, "timeoutMs", path, errors, 0);
     return timeout;
+}
+
+PeriodicTaskPolicyDef SequenceCompiler::parsePeriodicTask(
+    const QJsonObject& object,
+    const QString& path,
+    QVector<CompileError>& errors) const
+{
+    PeriodicTaskPolicyDef periodic;
+    periodic.enabled = true;
+    periodic.intervalMs = readInt(object, "intervalMs", path, errors, 5000);
+    periodic.runImmediately = readBool(object, "runImmediately", path, errors, true);
+    return periodic;
 }
 
 LoopPolicyDef SequenceCompiler::parseLoopPolicy(const QJsonObject& object,

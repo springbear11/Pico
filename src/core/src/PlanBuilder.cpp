@@ -111,6 +111,19 @@ std::optional<NodeId> resolveOperatorPromptCloseTarget(const ExecutionPlan& plan
         : std::nullopt;
 }
 
+QString staticDeviceResourceId(const StepDef& step)
+{
+    auto deviceId = step.inputs.value(QStringLiteral("deviceId")).toString().trimmed();
+    if (deviceId.isEmpty() || deviceId.contains(QStringLiteral("${"))) {
+        return {};
+    }
+    const auto channelSeparator = deviceId.indexOf('.');
+    if (channelSeparator > 0) {
+        deviceId = deviceId.left(channelSeparator);
+    }
+    return deviceId.trimmed();
+}
+
 } // namespace
 
 PlanBuildResult PlanBuilder::build(const SequenceDef& sequence) const
@@ -289,6 +302,7 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
     };
     const auto collectStep = [&](const StepDef& step,
                                  const NodeId& parentPath,
+                                 StepGroupKind groupKind,
                                  bool insideLoop,
                                  bool insideWhileLoop,
                                  bool insideRetryingTestItem,
@@ -393,6 +407,41 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
                 QString("Move break step %1 into a For or While loop").arg(step.id)});
         }
 
+
+        if (step.periodic.enabled) {
+            if (groupKind != StepGroupKind::Setup || !parentPath.isEmpty()) {
+                result.errors.push_back({
+                    "Periodic task must be a top-level Setup step",
+                    QString("Move %1 directly into the Setup group").arg(step.id)});
+            }
+            if (step.kind != StepKind::Action) {
+                result.errors.push_back({
+                    "Periodic task supports Action steps only",
+                    QString("Change %1 to an action step").arg(step.id)});
+            }
+            if (step.periodic.intervalMs <= 0) {
+                result.errors.push_back({
+                    "Periodic task interval must be positive",
+                    QString("Set periodic.intervalMs to at least 1 for %1").arg(step.id)});
+            }
+            if (step.retry.maxAttempts != 1) {
+                result.errors.push_back({
+                    "Periodic task does not support Step retry",
+                    QString("Set retry.maxAttempts to 1 for %1; the next timer tick is the retry boundary")
+                        .arg(step.id)});
+            }
+            if (step.resourceRegionStart || !step.resourceRegionEnd.isEmpty()) {
+                result.errors.push_back({
+                    "Periodic task cannot define a resource region boundary",
+                    QString("Use the periodic Step resources list for %1").arg(step.id)});
+            }
+            if (step.resources.isEmpty() && staticDeviceResourceId(step).isEmpty()) {
+                result.errors.push_back({
+                    "Periodic task requires an exclusive resource",
+                    QString("Select a fixed deviceId or add resources to %1").arg(step.id)});
+            }
+        }
+
         const bool retryingTestItem = insideRetryingTestItem ||
             (step.kind == StepKind::TestItem && step.retry.maxAttempts > 1);
         const bool whileLoop = insideWhileLoop ||
@@ -400,6 +449,7 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
         for (const auto& child : step.steps) {
             collectRef(child,
                        nodePath,
+                       groupKind,
                        step.kind == StepKind::Loop || insideLoop,
                        whileLoop,
                        retryingTestItem,
@@ -412,7 +462,7 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
             continue;
         }
         for (const auto& step : group.steps) {
-            collectStep(step, {}, false, false, false, collectStep);
+            collectStep(step, {}, group.kind, false, false, false, collectStep);
         }
     }
 
@@ -612,6 +662,7 @@ ExecNode PlanBuilder::buildNode(const StepDef& step,
     }
     node.retry = step.retry.toRuntimePolicy();
     node.timeout = step.timeout.toRuntimePolicy();
+    node.periodic = step.periodic.toRuntimePolicy();
     node.errorPolicy = step.errorPolicy.toRuntimePolicy();
     node.alwaysRun = step.alwaysRun || groupKind == StepGroupKind::Cleanup || step.kind == StepKind::Cleanup;
     node.resultRecording = step.resultRecording;
@@ -629,6 +680,12 @@ ExecNode PlanBuilder::buildNode(const StepDef& step,
 
     for (const auto& resource : step.resources) {
         node.resources.push_back(resource.toRuntimeRequirement());
+    }
+    if (node.periodic.enabled && node.resources.isEmpty()) {
+        ResourceRequirement requirement;
+        requirement.resourceId = staticDeviceResourceId(step);
+        requirement.mode = ResourceMode::Exclusive;
+        node.resources.push_back(requirement);
     }
 
     if (groupKind != StepGroupKind::Cleanup &&
