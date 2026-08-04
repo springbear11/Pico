@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 
+#include "ApplicationDiagnostics.h"
 #include "ExecutionViewModel.h"
 #include "FlowTargetSelector.h"
 #include "LoadingSpinner.h"
@@ -14,6 +15,7 @@
 #include "RunArtifactWriter.h"
 #include "ScanDialog.h"
 #include "SequenceDocument.h"
+#include "SequenceEditorTreeView.h"
 #include "SequenceTreeModel.h"
 #include "SequenceVariablesDialog.h"
 #include "StationDeviceModel.h"
@@ -778,7 +780,10 @@ MainWindow::MainWindow(QWidget* parent)
             &SequenceDocument::documentChanged,
             this,
             [this] {
-                synchronizeSequenceSnapshot();
+                ApplicationDiagnostics::recordAction(
+                    QStringLiteral("FLOW_DOCUMENT_CHANGED"),
+                    m_sequenceDocument->displayName());
+                m_viewModel->invalidateSequenceDocument();
                 updateSequenceEditor();
             });
     connect(m_sequenceDocument,
@@ -889,7 +894,16 @@ MainWindow::MainWindow(QWidget* parent)
             this,
             [this](const SequenceItemPath&, const SequenceItemPath& to) {
                 m_selectedSequencePath = to;
-                updateSequenceEditor();
+                const auto index = m_sequenceTreeModel->indexForPath(to);
+                if (index.isValid()) {
+                    m_selectedSequenceNodePath =
+                        m_sequenceTreeModel->nodePathForIndex(index);
+                    m_sequenceTreeView->setCurrentIndex(index);
+                    m_sequenceTreeView->scrollTo(
+                        index, QAbstractItemView::EnsureVisible);
+                    m_stepPropertyEditor->setCurrentItem(to);
+                }
+                updateCommandState();
             });
     connect(m_sequenceTreeModel, &SequenceTreeModel::itemInserted,
             this, [this](const SequenceItemPath& path) {
@@ -900,10 +914,10 @@ MainWindow::MainWindow(QWidget* parent)
                         m_sequenceTreeModel->nodePathForIndex(index);
                     m_sequenceTreeView->setCurrentIndex(index);
                     m_sequenceTreeView->scrollTo(
-                        index, QAbstractItemView::PositionAtCenter);
+                        index, QAbstractItemView::EnsureVisible);
                     m_stepPropertyEditor->setCurrentItem(path);
                 }
-                updateSequenceEditor();
+                updateCommandState();
             });
     connect(m_editorDiagnosticView, &QTableView::clicked,
             this, &MainWindow::focusSequenceDiagnostic);
@@ -1062,6 +1076,7 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow()
 {
+    ApplicationDiagnostics::recordAction(QStringLiteral("ADMIN_WINDOW_CLOSE"));
     m_runArtifactWriter->abandon();
     waitForPluginScan();
     beginShutdown();
@@ -1298,6 +1313,9 @@ bool MainWindow::saveSequence()
         QMessageBox::critical(this, tr("Save Sequence"), errorMessage);
         return false;
     }
+    synchronizeSequenceSnapshot();
+    ApplicationDiagnostics::recordAction(
+        QStringLiteral("SEQUENCE_SAVED"), m_sequenceDocument->filePath());
     statusBar()->showMessage(tr("Sequence saved"), 3000);
     updateWindowTitle();
     updateCommandState();
@@ -1330,6 +1348,8 @@ bool MainWindow::saveSequenceAs()
     }
     addRecentSequence(path);
     synchronizeSequenceSnapshot();
+    ApplicationDiagnostics::recordAction(
+        QStringLiteral("SEQUENCE_SAVED_AS"), path);
     statusBar()->showMessage(tr("Sequence saved"), 3000);
     updateWindowTitle();
     updateCommandState();
@@ -1761,14 +1781,14 @@ void MainWindow::placeResourceRegionBoundary()
         return;
     }
 
-    bool placedEntry = false;
-    if (!m_sequenceDocument->placeNextResourceRegionBoundary(
-            path, {}, &placedEntry, &error)) {
-        statusBar()->showMessage(error, 7000);
-        return;
-    }
-
-    if (!placedEntry) {
+    bool placedEntry = pendingId.isEmpty();
+    if (placedEntry) {
+        if (!m_sequenceDocument->placeNextResourceRegionBoundary(
+                path, {}, &placedEntry, &error)) {
+            statusBar()->showMessage(error, 7000);
+            return;
+        }
+    } else {
         QStringList resources;
         if (!chooseResourceRegionResources(pendingId, &resources)) {
             QString rollbackError;
@@ -1783,12 +1803,8 @@ void MainWindow::placeResourceRegionBoundary()
             updateCommandState();
             return;
         }
-        if (!m_sequenceDocument->setResourceRegionResources(
-                pendingId, resources, &error)) {
-            QString rollbackError;
-            if (!m_sequenceDocument->clearResourceRegionAt(path, &rollbackError)) {
-                error += tr("; rollback failed: %1").arg(rollbackError);
-            }
+        if (!m_sequenceDocument->completePendingResourceRegion(
+                path, resources, &error)) {
             statusBar()->showMessage(error, 7000);
             updateCommandState();
             return;
@@ -1799,7 +1815,7 @@ void MainWindow::placeResourceRegionBoundary()
     const auto index = m_sequenceTreeModel->indexForPath(path);
     if (index.isValid()) {
         m_sequenceTreeView->setCurrentIndex(index);
-        m_sequenceTreeView->scrollTo(index, QAbstractItemView::PositionAtCenter);
+        m_sequenceTreeView->scrollTo(index, QAbstractItemView::EnsureVisible);
     }
     statusBar()->showMessage(
         placedEntry
@@ -2108,6 +2124,11 @@ void MainWindow::compileSequence()
         !saveStation()) {
         return;
     }
+    synchronizeSequenceSnapshot();
+    synchronizeStationSnapshot();
+    ApplicationDiagnostics::recordAction(
+        QStringLiteral("COMPILE_REQUESTED"),
+        m_sequenceDocument ? m_sequenceDocument->displayName() : QString{});
     m_viewModel->compile();
 }
 
@@ -2138,6 +2159,8 @@ void MainWindow::runScannedUut(const QString& serialNumber)
     QVariantMap variables;
     variables.insert(QStringLiteral("sn"), sn);
     variables.insert(QStringLiteral("serialNumber"), sn);
+    ApplicationDiagnostics::recordAction(
+        QStringLiteral("RUN_REQUESTED"), QStringLiteral("uut=%1").arg(sn));
     m_viewModel->runUut(sn, variables);
     showRunPage();
 }
@@ -2845,6 +2868,8 @@ void MainWindow::testSelectedStationDevice()
 
 void MainWindow::synchronizeSequenceSnapshot()
 {
+    ScopedOperationTimer timer(
+        QStringLiteral("MainWindow.synchronizeSequenceSnapshot"), 15);
     if (!m_sequenceDocument || m_sequenceDocument->isEmpty() ||
         !m_viewModel->canChangeSources()) {
         return;
@@ -2855,6 +2880,8 @@ void MainWindow::synchronizeSequenceSnapshot()
 
 void MainWindow::synchronizeStationSnapshot()
 {
+    ScopedOperationTimer timer(
+        QStringLiteral("MainWindow.synchronizeStationSnapshot"), 15);
     if (!m_stationDocument || m_stationDocument->isEmpty() ||
         !m_viewModel->canChangeSources()) {
         return;
@@ -2920,7 +2947,6 @@ void MainWindow::updateSequenceEditor()
         return;
     }
 
-    refreshEditorDiagnostics();
     if (m_sequenceTreeView) {
         if (m_expandSequenceTreeOnNextUpdate) {
             m_sequenceTreeView->expandAll();
@@ -3769,7 +3795,7 @@ void MainWindow::buildLayout()
                         tr("Flow target selected: %1").arg(targetId), 3000);
                 }
             });
-    m_sequenceTreeView = new QTreeView;
+    m_sequenceTreeView = new SequenceEditorTreeView;
     m_sequenceTreeView->setObjectName(QStringLiteral("sequenceTreeView"));
     m_sequenceTreeView->setModel(m_sequenceTreeModel);
     m_sequenceTreeView->setRootIsDecorated(true);
@@ -3779,7 +3805,7 @@ void MainWindow::buildLayout()
     m_sequenceTreeView->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_sequenceTreeView->setDragEnabled(true);
     m_sequenceTreeView->setAcceptDrops(true);
-    m_sequenceTreeView->setDropIndicatorShown(true);
+    m_sequenceTreeView->setDropIndicatorShown(false);
     m_sequenceTreeView->setDragDropMode(QAbstractItemView::DragDrop);
     m_sequenceTreeView->setDefaultDropAction(Qt::MoveAction);
     m_sequenceTreeView->setMouseTracking(true);
@@ -4442,9 +4468,12 @@ void MainWindow::updateCommandState()
     if (m_sequenceTreeView) {
         if (auto* delegate = m_sequenceTreeView->itemDelegateForColumn(
                 SequenceTreeModel::ResourceRegionColumn)) {
-            delegate->setProperty("expectUnlock", resourceExitPending);
+            if (delegate->property("expectUnlock").toBool() !=
+                resourceExitPending) {
+                delegate->setProperty("expectUnlock", resourceExitPending);
+                m_sequenceTreeView->viewport()->update();
+            }
         }
-        m_sequenceTreeView->viewport()->update();
     }
 
     const bool sequenceHasChanges = hasDocument &&

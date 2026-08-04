@@ -609,6 +609,9 @@ QVariant DiagnosticModel::headerData(int section,
 
 void DiagnosticModel::setDiagnostics(QVector<UiDiagnostic> diagnostics)
 {
+    if (m_diagnostics == diagnostics) {
+        return;
+    }
     beginResetModel();
     m_diagnostics = std::move(diagnostics);
     endResetModel();

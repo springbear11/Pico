@@ -24,6 +24,7 @@
 #include <QBrush>
 #include <QColor>
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
@@ -413,6 +414,7 @@ private slots:
     void runArtifactWriterStreamsAndClassifiesFiles();
     void testItemReportAndRuntimeEventsPreserveHierarchy();
     void sequenceDocumentPreservesUnknownFieldsAndSnapshots();
+    void sequenceDocumentDebouncesBackgroundValidation();
     void sequenceDocumentAddsMissingStandardGroups();
     void crossLoopSequenceUsesStandardLifecycleGroups();
     void sequenceDocumentReplacesItemAtomically();
@@ -425,15 +427,20 @@ private slots:
     void sequenceDocumentDestructionSilencesUndoStack();
     void sequenceDiagnosticPathsResolveNestedFields();
     void sequenceTreeModelBuildsHierarchyAndEditsSteps();
+    void sequenceTreeModelRefreshesFieldsWithoutReset();
+    void sequenceTreeModelInsertsAndRemovesSingleRowsWithoutReset();
     void sequenceTreeModelShowsInheritedDisabledState();
     void sequenceTreeModelTogglesTransientBreakpoints();
     void sequenceTreeModelMovesAcrossValidParents();
+    void sequenceTreeModelMovesRowsWithoutReset();
+    void sequenceTreeModelHandlesLargeSequenceIncrementally();
     void stationDocumentPreservesUnknownFieldsAndUndoHistory();
     void defaultStationTemplateProvidesDisabledCommonDeviceSlots();
     void stationDeviceModelEditsAndReordersDevices();
     void stationDocumentGeneratesTypedIdsAndMovesConfigurations();
     void sequenceTreeModelInspectsJsonFieldsWithoutChangingDocument();
     void sequenceDocumentPlacesAlternatingResourceBoundaries();
+    void sequenceDocumentCompletesResourceRegionAtomically();
     void coreServiceCompilesProvidedSequenceSnapshot();
     void coreServiceRepeatsWholeSequenceForLoopTest();
     void stationFailurePolicyContinuesAllTestItemChildren();
@@ -449,6 +456,7 @@ void ExecutionViewModelTests::sourceSelectionInvalidatesCompiledState()
     QVERIFY(!viewModel.canCompile());
 
     viewModel.setSequencePath(QStringLiteral("sequence.json"));
+    const auto selectedSequencePath = viewModel.sequencePath();
     QCOMPARE(viewModel.state(), UiRunState::SourceSelected);
     QVERIFY(viewModel.canCompile());
     QVERIFY(!viewModel.canRun());
@@ -456,6 +464,19 @@ void ExecutionViewModelTests::sourceSelectionInvalidatesCompiledState()
     viewModel.compile();
     QTRY_COMPARE_WITH_TIMEOUT(viewModel.state(), UiRunState::Ready, 1000);
     QVERIFY(viewModel.canRun());
+
+    QSignalSpy stateSpy(&viewModel, &ExecutionViewModel::stateChanged);
+    viewModel.invalidateSequenceDocument();
+    QCOMPARE(viewModel.state(), UiRunState::SourceSelected);
+    QCOMPARE(viewModel.sequencePath(), selectedSequencePath);
+    QVERIFY(viewModel.canCompile());
+    QVERIFY(!viewModel.canRun());
+    QCOMPARE(stateSpy.count(), 1);
+    viewModel.invalidateSequenceDocument();
+    QCOMPARE(stateSpy.count(), 1);
+
+    viewModel.compile();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel.state(), UiRunState::Ready, 1000);
 
     viewModel.setStationPath(QStringLiteral("station.json"));
     QCOMPARE(viewModel.state(), UiRunState::SourceSelected);
@@ -2989,6 +3010,49 @@ void ExecutionViewModelTests::sequenceDocumentPreservesUnknownFieldsAndSnapshots
     QVERIFY(!document.diagnostics().isEmpty());
 }
 
+void ExecutionViewModelTests::sequenceDocumentDebouncesBackgroundValidation()
+{
+    const auto originalPath = QDir(QString::fromUtf8(PICOATE_UI_TEST_PROJECT_DIR))
+                                  .filePath(QStringLiteral("examples/simple_sequence.json"));
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sourcePath = directory.filePath(QStringLiteral("simple_sequence.json"));
+    QVERIFY(QFile::copy(originalPath, sourcePath));
+    SequenceDocument document;
+    QVERIFY(document.load(sourcePath));
+    const auto validRoot = document.rootObject();
+    QVERIFY(document.diagnostics().isEmpty());
+
+    auto invalidRoot = validRoot;
+    invalidRoot.insert(QStringLiteral("groups"), QStringLiteral("not-an-array"));
+    QVERIFY(document.replaceRootObject(invalidRoot));
+    QTRY_VERIFY_WITH_TIMEOUT(!document.diagnostics().isEmpty(), 2000);
+
+    QVERIFY(document.replaceRootObject(validRoot));
+    QTRY_VERIFY_WITH_TIMEOUT(document.diagnostics().isEmpty(), 2000);
+
+    QSignalSpy diagnosticsChanged(&document,
+                                  &SequenceDocument::diagnosticsChanged);
+    QVERIFY(document.replaceRootObject(invalidRoot));
+    QVERIFY(document.replaceRootObject(validRoot));
+    QTest::qWait(500);
+    QVERIFY(document.diagnostics().isEmpty());
+    QCOMPARE(diagnosticsChanged.count(), 0);
+
+    // Destruction while an immediate validation is queued must not leave a
+    // worker callback targeting a deleted document.
+    {
+        auto shortLived = std::make_unique<SequenceDocument>();
+        QVERIFY(shortLived->load(sourcePath));
+        auto edited = shortLived->rootObject();
+        edited.insert(QStringLiteral("name"), QStringLiteral("Edited"));
+        QVERIFY(shortLived->replaceRootObject(std::move(edited)));
+        QString error;
+        QVERIFY2(shortLived->save(&error), qPrintable(error));
+        QCoreApplication::processEvents();
+    }
+}
+
 void ExecutionViewModelTests::sequenceDocumentAddsMissingStandardGroups()
 {
     QTemporaryDir directory;
@@ -3148,6 +3212,78 @@ void ExecutionViewModelTests::sequenceTreeModelBuildsHierarchyAndEditsSteps()
              QString("001"));
 }
 
+void ExecutionViewModelTests::sequenceTreeModelRefreshesFieldsWithoutReset()
+{
+    SequenceDocument document;
+    QVERIFY(document.load(
+        QDir(QString::fromUtf8(PICOATE_UI_TEST_PROJECT_DIR))
+            .filePath("examples/test_item_sequence.json")));
+
+    SequenceTreeModel model(&document);
+    QAbstractItemModelTester tester(
+        &model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+    QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+    QSignalSpy changedSpy(&model, &QAbstractItemModel::dataChanged);
+
+    const SequenceItemPath childPath{0, {0, 0}};
+    QVERIFY(document.setItemValue(
+        childPath, QStringLiteral("name"), QStringLiteral("Updated name")));
+
+    QCOMPARE(resetSpy.count(), 0);
+    QVERIFY(changedSpy.count() > 0);
+    const auto childIndex = model.indexForPath(childPath);
+    QVERIFY(childIndex.isValid());
+    QCOMPARE(childIndex.data().toString(), QStringLiteral("Updated name"));
+
+    changedSpy.clear();
+    const SequenceItemPath testItemPath{0, {0}};
+    QVERIFY(document.setItemValue(
+        testItemPath, QStringLiteral("enabled"), false));
+    QCOMPARE(resetSpy.count(), 0);
+    QVERIFY(changedSpy.count() >= 2);
+    QCOMPARE(model.indexForPath(childPath)
+                 .data(SequenceTreeModel::EffectiveEnabledRole).toBool(),
+             false);
+}
+
+void ExecutionViewModelTests::sequenceTreeModelInsertsAndRemovesSingleRowsWithoutReset()
+{
+    SequenceDocument document;
+    QVERIFY(document.load(
+        QDir(QString::fromUtf8(PICOATE_UI_TEST_PROJECT_DIR))
+            .filePath("examples/test_item_sequence.json")));
+
+    SequenceTreeModel model(&document);
+    QAbstractItemModelTester tester(
+        &model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+    QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+    QSignalSpy insertedSpy(&model, &QAbstractItemModel::rowsInserted);
+    QSignalSpy removedSpy(&model, &QAbstractItemModel::rowsRemoved);
+
+    const SequenceItemPath testItemPath{0, {0}};
+    QJsonObject insertedStep{
+        {QStringLiteral("id"), QStringLiteral("inserted-middle")},
+        {QStringLiteral("name"), QStringLiteral("Inserted middle")},
+        {QStringLiteral("kind"), QStringLiteral("noop")},
+        {QStringLiteral("enabled"), true},
+    };
+    QVERIFY(document.insertStep(testItemPath, 1, insertedStep));
+
+    QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(insertedSpy.count(), 1);
+    QCOMPARE(model.rowCount(model.indexForPath(testItemPath)), 3);
+    const SequenceItemPath insertedPath{0, {0, 1}};
+    QCOMPARE(model.indexForPath(insertedPath).data().toString(),
+             QStringLiteral("Inserted middle"));
+
+    QVERIFY(document.removeStep(insertedPath));
+    QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(removedSpy.count(), 1);
+    QCOMPARE(model.rowCount(model.indexForPath(testItemPath)), 2);
+    QCOMPARE(model.indexForPath(insertedPath).data().toString(),
+             QStringLiteral("Measure 3.3V Rail"));
+}
+
 void ExecutionViewModelTests::sequenceDocumentPlacesAlternatingResourceBoundaries()
 {
     QTemporaryDir directory;
@@ -3244,6 +3380,60 @@ void ExecutionViewModelTests::sequenceDocumentPlacesAlternatingResourceBoundarie
              QStringLiteral("resource-region-001"));
     document.undoStack()->undo();
     QVERIFY(document.pendingResourceRegionId().isEmpty());
+}
+
+void ExecutionViewModelTests::sequenceDocumentCompletesResourceRegionAtomically()
+{
+    SequenceDocument document;
+    QVERIFY(document.load(
+        QDir(QString::fromUtf8(PICOATE_UI_TEST_PROJECT_DIR))
+            .filePath(QStringLiteral("examples/resource_region_sequence.json"))));
+
+    auto root = document.rootObject();
+    auto groups = root.value(QStringLiteral("groups")).toArray();
+    auto main = groups.at(1).toObject();
+    auto steps = main.value(QStringLiteral("steps")).toArray();
+    auto entry = steps.at(0).toObject();
+    auto exit = steps.at(2).toObject();
+    entry.remove(QStringLiteral("resourceRegionStart"));
+    exit.remove(QStringLiteral("resourceRegionEnd"));
+    steps[0] = entry;
+    steps[2] = exit;
+    main.insert(QStringLiteral("steps"), steps);
+    groups[1] = main;
+    root.insert(QStringLiteral("groups"), groups);
+    QVERIFY(document.replaceRootObject(std::move(root)));
+
+    const SequenceItemPath entryPath{1, {0}};
+    const SequenceItemPath exitPath{1, {2}};
+    bool placedEntry = false;
+    QString error;
+    QVERIFY2(document.placeNextResourceRegionBoundary(
+                 entryPath, {}, &placedEntry, &error),
+             qPrintable(error));
+    QVERIFY(placedEntry);
+    const auto regionId = document.pendingResourceRegionId();
+    QVERIFY(!regionId.isEmpty());
+
+    const int commandCount = document.undoStack()->count();
+    QSignalSpy changed(&document, &SequenceDocument::documentChanged);
+    QVERIFY2(document.completePendingResourceRegion(
+                 exitPath,
+                 {QStringLiteral("CAN1"), QStringLiteral("DMM1")},
+                 &error),
+             qPrintable(error));
+    QCOMPARE(changed.count(), 1);
+    QCOMPARE(document.undoStack()->count(), commandCount + 1);
+    QVERIFY(document.pendingResourceRegionId().isEmpty());
+    QCOMPARE(document.objectAt(exitPath)
+                 .value(QStringLiteral("resourceRegionEnd")).toString(),
+             regionId);
+    QCOMPARE(document.resourceRegionResources(regionId),
+             QStringList({QStringLiteral("CAN1"), QStringLiteral("DMM1")}));
+
+    document.undoStack()->undo();
+    QCOMPARE(document.pendingResourceRegionId(), regionId);
+    QVERIFY(document.resourceRegionResources(regionId).isEmpty());
 }
 
 void ExecutionViewModelTests::sequenceTreeModelShowsInheritedDisabledState()
@@ -3880,6 +4070,111 @@ void ExecutionViewModelTests::sequenceTreeModelMovesAcrossValidParents()
     const auto children = document.objectAt(testItemPath).value("steps").toArray();
     QCOMPARE(children.at(0).toObject().value("id").toString(),
              QString("measure-3v3"));
+}
+
+void ExecutionViewModelTests::sequenceTreeModelMovesRowsWithoutReset()
+{
+    SequenceDocument document;
+    QVERIFY(document.load(
+        QDir(QString::fromUtf8(PICOATE_UI_TEST_PROJECT_DIR))
+            .filePath("examples/test_item_sequence.json")));
+    SequenceTreeModel model(&document);
+    QAbstractItemModelTester tester(
+        &model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+    QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+    QSignalSpy rowsMovedSpy(&model, &QAbstractItemModel::rowsMoved);
+
+    const auto mainGroup = model.index(0, SequenceTreeModel::NameColumn);
+    const auto testItem = model.index(
+        0, SequenceTreeModel::NameColumn, mainGroup);
+    const auto child = model.index(
+        0, SequenceTreeModel::NameColumn, testItem);
+    std::unique_ptr<QMimeData> childData(model.mimeData({child}));
+    QVERIFY(childData);
+    QVERIFY(model.dropMimeData(
+        childData.get(), Qt::MoveAction, 1, 0, mainGroup));
+
+    QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(rowsMovedSpy.count(), 1);
+    QCOMPARE(model.rowCount(model.indexForPath(SequenceItemPath{0, {0}})), 1);
+    QCOMPARE(model.indexForPath(SequenceItemPath{0, {1}}).data().toString(),
+             QStringLiteral("Measure 5V Rail"));
+}
+
+void ExecutionViewModelTests::sequenceTreeModelHandlesLargeSequenceIncrementally()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(
+        QStringLiteral("large-sequence.json"));
+
+    QJsonArray steps;
+    for (int index = 0; index < 500; ++index) {
+        steps.push_back(QJsonObject{
+            {QStringLiteral("id"),
+             QStringLiteral("%1").arg(index + 1, 3, 10, QLatin1Char('0'))},
+            {QStringLiteral("name"),
+             QStringLiteral("Large Step %1").arg(index + 1)},
+            {QStringLiteral("kind"), QStringLiteral("noop")},
+            {QStringLiteral("enabled"), true},
+        });
+    }
+    const QJsonObject root{
+        {QStringLiteral("id"), QStringLiteral("large-sequence")},
+        {QStringLiteral("name"), QStringLiteral("Large Sequence")},
+        {QStringLiteral("groups"), QJsonArray{
+            QJsonObject{{QStringLiteral("id"), QStringLiteral("setup")},
+                        {QStringLiteral("kind"), QStringLiteral("setup")},
+                        {QStringLiteral("steps"), QJsonArray{}}},
+            QJsonObject{{QStringLiteral("id"), QStringLiteral("main")},
+                        {QStringLiteral("kind"), QStringLiteral("main")},
+                        {QStringLiteral("steps"), steps}},
+            QJsonObject{{QStringLiteral("id"), QStringLiteral("cleanup")},
+                        {QStringLiteral("kind"), QStringLiteral("cleanup")},
+                        {QStringLiteral("steps"), QJsonArray{}}},
+        }},
+    };
+    QFile file(sequencePath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const auto bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+    QCOMPARE(file.write(bytes), qint64(bytes.size()));
+    file.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(sequencePath));
+    SequenceTreeModel model(&document);
+    QAbstractItemModelTester tester(
+        &model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+    QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+    QSignalSpy changedSpy(&model, &QAbstractItemModel::dataChanged);
+
+    QElapsedTimer timer;
+    timer.start();
+    for (int index = 0; index < 80; ++index) {
+        const SequenceItemPath path{1, {index * 5}};
+        QVERIFY(document.setItemValue(
+            path, QStringLiteral("enabled"), false));
+        QVERIFY(document.setItemValue(
+            path, QStringLiteral("name"),
+            QStringLiteral("Edited Step %1").arg(index)));
+    }
+    const SequenceItemPath mainPath{1, {}};
+    QJsonObject insertedStep{
+        {QStringLiteral("id"), QStringLiteral("inserted-large")},
+        {QStringLiteral("name"), QStringLiteral("Inserted Large Step")},
+        {QStringLiteral("kind"), QStringLiteral("noop")},
+        {QStringLiteral("enabled"), true},
+    };
+    QVERIFY(document.insertStep(mainPath, 250, insertedStep));
+    QVERIFY(document.removeStep(SequenceItemPath{1, {250}}));
+    const auto elapsedMs = timer.elapsed();
+
+    QCOMPARE(resetSpy.count(), 0);
+    QVERIFY(changedSpy.count() >= 160);
+    QCOMPARE(model.rowCount(model.indexForPath(mainPath)), 500);
+    QVERIFY2(elapsedMs < 5000,
+             qPrintable(QStringLiteral("Large incremental edit took %1 ms")
+                            .arg(elapsedMs)));
 }
 
 void ExecutionViewModelTests::stationDocumentPreservesUnknownFieldsAndUndoHistory()

@@ -11,6 +11,8 @@
 #include <functional>
 
 class QUndoStack;
+class QThreadPool;
+class QTimer;
 
 namespace PicoATE::Ui {
 
@@ -58,6 +60,7 @@ public:
     bool isModified() const;
     bool isEmpty() const;
     quint64 revision() const;
+    QVector<SequenceItemPath> lastChangedItemPaths() const;
     QJsonObject rootObject() const;
     QJsonArray sequenceVariables() const;
     QVector<UiDiagnostic> diagnostics() const;
@@ -108,6 +111,9 @@ public:
                                          const QString& resourceId,
                                          bool* placedEntry = nullptr,
                                          QString* errorMessage = nullptr);
+    bool completePendingResourceRegion(const SequenceItemPath& path,
+                                       const QStringList& resourceIds,
+                                       QString* errorMessage = nullptr);
     QStringList resourceRegionResources(const QString& regionId) const;
     bool setResourceRegionResources(const QString& regionId,
                                     const QStringList& resourceIds,
@@ -131,19 +137,31 @@ private:
     bool mutateSteps(const SequenceItemPath& parentPath,
                      const StepsMutation& mutation,
                      const QString& commandText);
-    bool commitRoot(QJsonObject root, const QString& commandText);
-    void applyCommandRoot(QJsonObject root);
+    bool commitRoot(QJsonObject root,
+                    const QString& commandText,
+                    QVector<SequenceItemPath> changedItemPaths = {});
+    void applyCommandRoot(QJsonObject root,
+                          const QVector<SequenceItemPath>& changedItemPaths);
     QString nextStepId(const SequenceItemPath& parentPath) const;
     void acceptRoot(QJsonObject root, QString filePath);
     void setModified(bool modified);
     void validate();
+    void scheduleValidation(int delayMs = 300);
+    void startAsyncValidation();
+    void applyValidationResult(quint64 revision,
+                               quint64 generation,
+                               QVector<UiDiagnostic> diagnostics);
     void setLoadError(QString path, QString message, QString suggestion = {});
 
     QString m_filePath;
     QJsonObject m_root;
     QVector<UiDiagnostic> m_diagnostics;
     QUndoStack* m_undoStack = nullptr;
+    QTimer* m_validationTimer = nullptr;
+    QThreadPool* m_validationPool = nullptr;
     quint64 m_revision = 0;
+    quint64 m_validationGeneration = 0;
+    QVector<SequenceItemPath> m_lastChangedItemPaths;
     bool m_modified = false;
 };
 

@@ -78,6 +78,7 @@ public:
 
     SequenceItemPath pathForIndex(const QModelIndex& index) const;
     ItemType itemType(const QModelIndex& index) const;
+    bool canContainSteps(const QModelIndex& index) const;
     QModelIndex indexForPath(const SequenceItemPath& path) const;
     QModelIndex indexForNodePath(const QString& nodePath) const;
     QString nodePathForIndex(const QModelIndex& index) const;
@@ -113,7 +114,38 @@ private:
         std::vector<std::unique_ptr<Item>> children;
     };
 
+    struct StructuralChange {
+        enum class Kind { None, Insert, Remove };
+        Kind kind = Kind::None;
+        Item* parent = nullptr;
+        int row = -1;
+        QJsonObject insertedObject;
+    };
+
+    void refreshFromDocument();
     void rebuild();
+    bool tryRefreshChangedItems(
+        const QVector<SequenceItemPath>& changedItemPaths);
+    void updateItemFromObject(Item& item, const QJsonObject& object);
+    void emitSubtreeChanged(Item& item);
+    bool tryApplySingleStructuralChange();
+    bool applyModelMove(const SequenceItemPath& sourcePath,
+                        const SequenceItemPath& destinationParent,
+                        const SequenceItemPath& movedPath);
+    bool locateSingleStructuralChange(Item& parent,
+                                      const QJsonArray& newSteps,
+                                      StructuralChange& change) const;
+    bool structureMatchesDocument() const;
+    bool stepStructureMatches(const Item& item,
+                              const QJsonObject& object) const;
+    void updateTreeFromDocument();
+    void updateStepsFromDocument(Item& parent,
+                                 const QJsonArray& steps,
+                                 const SequenceItemPath& parentPath,
+                                 const QString& parentNodePath,
+                                 const QString& parentLocalPath,
+                                 bool parentEffectiveEnabled);
+    void applyResourceRegions(Item& parent);
     void appendSteps(Item& parent,
                      const QJsonArray& steps,
                      const SequenceItemPath& parentPath,
@@ -121,6 +153,7 @@ private:
                      const QString& parentLocalPath = {},
                      bool parentEffectiveEnabled = true);
     Item* itemForIndex(const QModelIndex& index) const;
+    QModelIndex indexForItem(const Item* item) const;
     QModelIndex findIndex(const Item& parent,
                           const SequenceItemPath& path) const;
     QModelIndex findIndexForNodePath(const Item& parent,
@@ -135,6 +168,8 @@ private:
     QString m_inspectionField;
     QHash<QString, QColor> m_inspectionColors;
     int m_inspectionMatchCount = 0;
+    bool m_deferDocumentRefresh = false;
+    bool m_documentRefreshPending = false;
 };
 
 } // namespace PicoATE::Ui

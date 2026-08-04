@@ -1,5 +1,7 @@
+#include "ApplicationDiagnostics.h"
 #include "LoginDialog.h"
 #include "MainWindow.h"
+#include "PicoATEStyle.h"
 #include "ProductionWindow.h"
 
 #include <QApplication>
@@ -12,10 +14,12 @@
 int main(int argc, char* argv[])
 {
     QApplication application(argc, argv);
+    application.setStyle(new PicoATE::Ui::PicoATEStyle);
     QCoreApplication::setApplicationName(QStringLiteral("PicoATE UI"));
     QCoreApplication::setApplicationVersion(QStringLiteral("0.2.0"));
     QCoreApplication::setOrganizationName(QStringLiteral("PicoATE"));
     application.setWindowIcon(QIcon(QStringLiteral(":/branding/PicoATE.png")));
+    PicoATE::Ui::ApplicationDiagnostics::install();
 
     const auto arguments = application.arguments();
     QString sequenceRoot = QCoreApplication::applicationDirPath();

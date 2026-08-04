@@ -8,8 +8,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QMetaObject>
 #include <QSaveFile>
 #include <QSet>
+#include <QThreadPool>
+#include <QTimer>
 #include <QUndoCommand>
 #include <QUndoStack>
 
@@ -410,6 +413,31 @@ QString normalizedAbsolutePath(const QString& path)
     return path.trimmed().isEmpty() ? QString() : QFileInfo(path).absoluteFilePath();
 }
 
+QVector<UiDiagnostic> diagnosticsForRoot(const QJsonObject& root)
+{
+    QVector<UiDiagnostic> diagnostics;
+    if (root.isEmpty()) {
+        return diagnostics;
+    }
+
+    PicoATE::Core::SequenceCompiler compiler;
+    const auto result = compiler.compileJson(root);
+    diagnostics.reserve(result.errors.size() + result.warnings.size());
+    for (const auto& diagnostic : result.errors) {
+        diagnostics.push_back({UiDiagnosticSeverity::Error,
+                               diagnostic.path,
+                               diagnostic.message,
+                               diagnostic.suggestion});
+    }
+    for (const auto& diagnostic : result.warnings) {
+        diagnostics.push_back({UiDiagnosticSeverity::Warning,
+                               diagnostic.path,
+                               diagnostic.message,
+                               diagnostic.suggestion});
+    }
+    return diagnostics;
+}
+
 } // namespace
 
 class SequenceRootCommand final : public QUndoCommand
@@ -418,28 +446,31 @@ public:
     SequenceRootCommand(SequenceDocument* document,
                         QJsonObject before,
                         QJsonObject after,
-                        QString text)
+                        QString text,
+                        QVector<SequenceItemPath> changedItemPaths)
         : m_document(document)
         , m_before(std::move(before))
         , m_after(std::move(after))
+        , m_changedItemPaths(std::move(changedItemPaths))
     {
         setText(std::move(text));
     }
 
     void undo() override
     {
-        m_document->applyCommandRoot(m_before);
+        m_document->applyCommandRoot(m_before, m_changedItemPaths);
     }
 
     void redo() override
     {
-        m_document->applyCommandRoot(m_after);
+        m_document->applyCommandRoot(m_after, m_changedItemPaths);
     }
 
 private:
     SequenceDocument* m_document = nullptr;
     QJsonObject m_before;
     QJsonObject m_after;
+    QVector<SequenceItemPath> m_changedItemPaths;
 };
 
 QString SequenceItemPath::jsonPath() const
@@ -508,10 +539,26 @@ SequenceDocument::SequenceDocument(QObject* parent)
     m_undoStack->setUndoLimit(200);
     connect(m_undoStack, &QUndoStack::cleanChanged,
             this, [this](bool clean) { setModified(!clean); });
+
+    m_validationTimer = new QTimer(this);
+    m_validationTimer->setSingleShot(true);
+    connect(m_validationTimer, &QTimer::timeout,
+            this, &SequenceDocument::startAsyncValidation);
+
+    m_validationPool = new QThreadPool(this);
+    m_validationPool->setMaxThreadCount(1);
+    m_validationPool->setExpiryTimeout(30000);
 }
 
 SequenceDocument::~SequenceDocument()
 {
+    if (m_validationTimer) {
+        m_validationTimer->stop();
+    }
+    if (m_validationPool) {
+        m_validationPool->clear();
+        m_validationPool->waitForDone();
+    }
     if (!m_undoStack) {
         return;
     }
@@ -545,6 +592,11 @@ bool SequenceDocument::isEmpty() const
 quint64 SequenceDocument::revision() const
 {
     return m_revision;
+}
+
+QVector<SequenceItemPath> SequenceDocument::lastChangedItemPaths() const
+{
+    return m_lastChangedItemPaths;
 }
 
 QJsonObject SequenceDocument::rootObject() const
@@ -710,6 +762,7 @@ bool SequenceDocument::saveAs(const QString& filePath, QString* errorMessage)
     if (pathChanged) {
         emit filePathChanged(m_filePath);
     }
+    scheduleValidation(0);
     return true;
 }
 
@@ -719,8 +772,16 @@ void SequenceDocument::clear()
     m_undoStack->clear();
     m_filePath.clear();
     m_root = {};
+    m_lastChangedItemPaths.clear();
     m_diagnostics.clear();
     ++m_revision;
+    ++m_validationGeneration;
+    if (m_validationTimer) {
+        m_validationTimer->stop();
+    }
+    if (m_validationPool) {
+        m_validationPool->clear();
+    }
     setModified(false);
     if (hadPath) {
         emit filePathChanged({});
@@ -962,7 +1023,8 @@ bool SequenceDocument::setStepsEnabled(
     }
     return commitRoot(
         std::move(root), enabled ? tr("Enable Selected Steps")
-                                 : tr("Disable Selected Steps"));
+                                 : tr("Disable Selected Steps"),
+        std::move(uniquePaths));
 }
 
 bool SequenceDocument::duplicateStep(const SequenceItemPath& path)
@@ -1386,7 +1448,7 @@ bool SequenceDocument::setItemValue(const SequenceItemPath& path,
 
     groups[path.groupIndex] = group;
     root.insert("groups", groups);
-    return commitRoot(std::move(root), tr("Edit Property"));
+    return commitRoot(std::move(root), tr("Edit Property"), {path});
 }
 
 bool SequenceDocument::replaceItemObject(const SequenceItemPath& path,
@@ -1422,7 +1484,7 @@ bool SequenceDocument::replaceItemObject(const SequenceItemPath& path,
     }
 
     root.insert("groups", groups);
-    return commitRoot(std::move(root), tr("Apply Properties"));
+    return commitRoot(std::move(root), tr("Apply Properties"), {path});
 }
 
 QString SequenceDocument::pendingResourceRegionId() const
@@ -1530,6 +1592,100 @@ bool SequenceDocument::placeNextResourceRegionBoundary(
         return fail(tr("The selected sequence step no longer exists"));
     }
     return commitRoot(std::move(root), tr("Place Resource Boundary"));
+}
+
+bool SequenceDocument::completePendingResourceRegion(
+    const SequenceItemPath& path,
+    const QStringList& resourceIds,
+    QString* errorMessage)
+{
+    const auto fail = [errorMessage](const QString& message) {
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    };
+    if (!path.isValid() || path.stepIndices.isEmpty()) {
+        return fail(tr("Select a Step for UNLOCK"));
+    }
+
+    QStringList normalizedResources;
+    for (const auto& resourceId : resourceIds) {
+        const auto normalized = resourceId.trimmed();
+        if (!normalized.isEmpty() &&
+            !normalizedResources.contains(normalized, Qt::CaseInsensitive)) {
+            normalizedResources.push_back(normalized);
+        }
+    }
+    if (normalizedResources.isEmpty()) {
+        return fail(tr("Select at least one hardware resource"));
+    }
+
+    const auto locations = resourceRegionLocations(m_root);
+    QVector<ResourceRegionLocation> pendingLocations;
+    for (const auto& location : locations) {
+        if (location.exitRow < 0) {
+            pendingLocations.push_back(location);
+        }
+    }
+    if (pendingLocations.size() != 1) {
+        return fail(pendingLocations.isEmpty()
+                        ? tr("Place a LOCK before selecting UNLOCK")
+                        : tr("The sequence contains more than one unfinished resource region"));
+    }
+
+    const auto& pending = pendingLocations.first();
+    if (!sameResourceRegionParent(path, pending)) {
+        return fail(tr("UNLOCK must be a sibling of LOCK under the same parent"));
+    }
+    const int selectedRow = path.stepIndices.last();
+    if (selectedRow < pending.entryRow) {
+        return fail(tr("UNLOCK must be placed on LOCK itself or a later sibling step"));
+    }
+
+    const auto selected = objectAt(path);
+    if (selected.isEmpty()) {
+        return fail(tr("The selected sequence step no longer exists"));
+    }
+    const auto selectedStart = selected.value(QStringLiteral("resourceRegionStart"))
+                                   .toObject();
+    const bool completesSingleItem = selectedRow == pending.entryRow &&
+        selectedStart.value(QStringLiteral("id")).toString() == pending.id;
+    if ((!selectedStart.isEmpty() && !completesSingleItem) ||
+        selected.contains(QStringLiteral("resourceRegionEnd"))) {
+        return fail(tr("The selected step already contains LOCK or UNLOCK"));
+    }
+
+    QJsonArray resources;
+    for (const auto& resourceId : normalizedResources) {
+        resources.push_back(QJsonObject{
+            {QStringLiteral("resourceId"), resourceId},
+            {QStringLiteral("mode"), QStringLiteral("exclusive")}});
+    }
+
+    auto root = m_root;
+    if (!mutateStepInRoot(root, path, [&](QJsonObject& step) {
+            step.insert(QStringLiteral("resourceRegionEnd"), pending.id);
+            return true;
+        })) {
+        return fail(tr("The selected sequence step no longer exists"));
+    }
+    if (!mutateStepInRoot(
+            root,
+            resourceRegionPath(pending, pending.entryRow),
+            [&](QJsonObject& step) {
+                auto start = step.value(QStringLiteral("resourceRegionStart"))
+                                 .toObject();
+                if (start.value(QStringLiteral("id")).toString() != pending.id) {
+                    return false;
+                }
+                start.insert(QStringLiteral("resources"), resources);
+                step.insert(QStringLiteral("resourceRegionStart"), start);
+                return true;
+            })) {
+        return fail(tr("The resource region entry no longer exists"));
+    }
+    return commitRoot(std::move(root), tr("Complete Resource Region"));
 }
 
 QStringList SequenceDocument::resourceRegionResources(const QString& regionId) const
@@ -1713,22 +1869,28 @@ bool SequenceDocument::mutateSteps(const SequenceItemPath& parentPath,
     return commitRoot(std::move(root), commandText);
 }
 
-bool SequenceDocument::commitRoot(QJsonObject root,
-                                  const QString& commandText)
+bool SequenceDocument::commitRoot(
+    QJsonObject root,
+    const QString& commandText,
+    QVector<SequenceItemPath> changedItemPaths)
 {
     if (root == m_root) {
         return false;
     }
     m_undoStack->push(new SequenceRootCommand(
-        this, m_root, std::move(root), commandText));
+        this, m_root, std::move(root), commandText,
+        std::move(changedItemPaths)));
     return true;
 }
 
-void SequenceDocument::applyCommandRoot(QJsonObject root)
+void SequenceDocument::applyCommandRoot(
+    QJsonObject root,
+    const QVector<SequenceItemPath>& changedItemPaths)
 {
     m_root = std::move(root);
+    m_lastChangedItemPaths = changedItemPaths;
     ++m_revision;
-    validate();
+    scheduleValidation();
     emit documentChanged();
 }
 
@@ -1773,6 +1935,7 @@ void SequenceDocument::acceptRoot(QJsonObject root, QString filePath)
     const bool pathChanged = m_filePath != filePath;
     m_undoStack->clear();
     m_root = std::move(root);
+    m_lastChangedItemPaths.clear();
     m_filePath = std::move(filePath);
     ++m_revision;
     setModified(false);
@@ -1794,23 +1957,63 @@ void SequenceDocument::setModified(bool modified)
 
 void SequenceDocument::validate()
 {
-    m_diagnostics.clear();
-    if (!m_root.isEmpty()) {
-        PicoATE::Core::SequenceCompiler compiler;
-        const auto result = compiler.compileJson(m_root);
-        for (const auto& diagnostic : result.errors) {
-            m_diagnostics.push_back({UiDiagnosticSeverity::Error,
-                                     diagnostic.path,
-                                     diagnostic.message,
-                                     diagnostic.suggestion});
-        }
-        for (const auto& diagnostic : result.warnings) {
-            m_diagnostics.push_back({UiDiagnosticSeverity::Warning,
-                                     diagnostic.path,
-                                     diagnostic.message,
-                                     diagnostic.suggestion});
-        }
+    if (m_validationTimer) {
+        m_validationTimer->stop();
     }
+    ++m_validationGeneration;
+    auto diagnostics = diagnosticsForRoot(m_root);
+    if (m_diagnostics == diagnostics) {
+        return;
+    }
+    m_diagnostics = std::move(diagnostics);
+    emit diagnosticsChanged();
+}
+
+void SequenceDocument::scheduleValidation(int delayMs)
+{
+    if (!m_validationTimer) {
+        validate();
+        return;
+    }
+    ++m_validationGeneration;
+    m_validationTimer->start(qMax(0, delayMs));
+}
+
+void SequenceDocument::startAsyncValidation()
+{
+    if (!m_validationPool) {
+        validate();
+        return;
+    }
+
+    const auto root = m_root;
+    const auto revision = m_revision;
+    const auto generation = m_validationGeneration;
+    m_validationPool->clear();
+    m_validationPool->start([this, root, revision, generation] {
+        auto diagnostics = diagnosticsForRoot(root);
+        QMetaObject::invokeMethod(
+            this,
+            [this, revision, generation,
+             diagnostics = std::move(diagnostics)]() mutable {
+                applyValidationResult(revision, generation,
+                                      std::move(diagnostics));
+            },
+            Qt::QueuedConnection);
+    });
+}
+
+void SequenceDocument::applyValidationResult(
+    quint64 revision, quint64 generation,
+    QVector<UiDiagnostic> diagnostics)
+{
+    if (revision != m_revision || generation != m_validationGeneration) {
+        return;
+    }
+    if (m_diagnostics == diagnostics) {
+        return;
+    }
+    m_diagnostics = std::move(diagnostics);
     emit diagnosticsChanged();
 }
 
@@ -1818,6 +2021,13 @@ void SequenceDocument::setLoadError(QString path,
                                     QString message,
                                     QString suggestion)
 {
+    ++m_validationGeneration;
+    if (m_validationTimer) {
+        m_validationTimer->stop();
+    }
+    if (m_validationPool) {
+        m_validationPool->clear();
+    }
     m_diagnostics = {{UiDiagnosticSeverity::Error,
                       std::move(path),
                       std::move(message),

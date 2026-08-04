@@ -9,9 +9,11 @@
 #include "ProportionalHeaderView.h"
 #include "PluginCatalog.h"
 #include "PluginFunctionModel.h"
+#include "PicoATEStyle.h"
 #include "RunnerModels.h"
 #include "ScanDialog.h"
 #include "SequenceDocument.h"
+#include "SequenceEditorTreeView.h"
 #include "SequenceTreeModel.h"
 #include "SequenceVariablesDialog.h"
 #include "StepPropertyEditor.h"
@@ -35,6 +37,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGroupBox>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -46,11 +49,13 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QPixmap>
+#include <QPainter>
 #include <QSettings>
 #include <QScreen>
 #include <QScrollBar>
 #include <QSpinBox>
 #include <QStatusBar>
+#include <QStyleOption>
 #include <QStandardItemModel>
 #include <QSplitter>
 #include <QTableView>
@@ -93,6 +98,7 @@ class MainWindowLifecycleTests final : public QObject
 private slots:
     void initTestCase();
     void cleanupTestCase();
+    void picoStyleDrawsFilledCheckedIndicators();
     void closeAfterEditedRun_data();
     void closeAfterEditedRun();
     void stationEditorFeedsCompileSnapshot_data();
@@ -143,6 +149,7 @@ private slots:
     void flowFieldInspectionAppearsImmediatelyAndFillsPanel();
     void proportionalHeaderDistributesAvailableWidthByWeight();
     void flowEnableTogglePreservesTreePosition();
+    void flowDropTargetPrefersTestItemInterior();
     void operatorPromptDialogCannotBeDismissedByKeyboardOrWindowControls();
     void messageBoxPropertyEditorSwitchesConfirmationMode();
     void messageBoxPropertyEditorInsertsRuntimeValues();
@@ -157,6 +164,7 @@ private:
 
 void MainWindowLifecycleTests::initTestCase()
 {
+    qApp->setStyle(new PicoATEStyle);
     QVERIFY(m_settingsDirectory.isValid());
     QCoreApplication::setOrganizationName(QStringLiteral("PicoATE.Tests"));
     QCoreApplication::setApplicationName(QStringLiteral("PicoATEUiWindowTests"));
@@ -518,6 +526,72 @@ void MainWindowLifecycleTests::flowEnableTogglePreservesTreePosition()
     QVERIFY(tree->visualRect(target).intersects(tree->viewport()->rect()));
 }
 
+void MainWindowLifecycleTests::picoStyleDrawsFilledCheckedIndicators()
+{
+    auto* style = dynamic_cast<PicoATEStyle*>(qApp->style());
+    QVERIFY(style);
+    const auto renderIndicator = [&](QStyle::PrimitiveElement element,
+                                     QStyle::State state) {
+        QImage image(24, 24, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::white);
+        QPainter painter(&image);
+        QStyleOption option;
+        option.rect = image.rect();
+        option.state = state;
+        style->drawPrimitive(element, &option, &painter);
+        return image;
+    };
+
+    for (const auto element : {QStyle::PE_IndicatorCheckBox,
+                               QStyle::PE_IndicatorItemViewItemCheck}) {
+        const auto checked = renderIndicator(
+            element, QStyle::State_Enabled | QStyle::State_On);
+        const auto unchecked = renderIndicator(
+            element, QStyle::State_Enabled | QStyle::State_Off);
+        QVERIFY(checked.pixelColor(12, 12).lightness() < 100);
+        QVERIFY(unchecked.pixelColor(12, 12).lightness() > 220);
+    }
+    QCOMPARE(style->pixelMetric(QStyle::PM_IndicatorWidth), 18);
+    QCOMPARE(style->pixelMetric(QStyle::PM_IndicatorHeight), 18);
+}
+
+void MainWindowLifecycleTests::flowDropTargetPrefersTestItemInterior()
+{
+    SequenceDocument document;
+    QVERIFY(document.load(
+        QDir(QString::fromUtf8(PICOATE_UI_TEST_PROJECT_DIR))
+            .filePath(QStringLiteral("examples/test_item_sequence.json"))));
+
+    SequenceTreeModel model(&document);
+    SequenceEditorTreeView tree;
+    tree.setModel(&model);
+    tree.resize(900, 500);
+    tree.show();
+    tree.expandAll();
+    QTest::qWait(20);
+
+    const auto group = sequenceGroupByKind(&model, QStringLiteral("main"));
+    QVERIFY(group.isValid());
+    const auto testItem = model.index(0, SequenceTreeModel::NameColumn, group);
+    QVERIFY(testItem.isValid());
+    QVERIFY(model.canContainSteps(testItem));
+    const auto rect = tree.visualRect(testItem);
+    QVERIFY(rect.isValid());
+
+    const auto inside = tree.dropPreviewAt(rect.center());
+    QCOMPARE(inside.placement,
+             SequenceEditorTreeView::DropPlacement::Into);
+    QCOMPARE(inside.parentIndex, testItem);
+    QCOMPARE(inside.row, model.rowCount(testItem));
+
+    const auto after = tree.dropPreviewAt(
+        QPoint(rect.center().x(), rect.bottom()));
+    QCOMPARE(after.placement,
+             SequenceEditorTreeView::DropPlacement::After);
+    QCOMPARE(after.parentIndex, group);
+    QCOMPARE(after.row, testItem.row() + 1);
+}
+
 void MainWindowLifecycleTests::proportionalHeaderDistributesAvailableWidthByWeight()
 {
     QTableView view;
@@ -834,6 +908,8 @@ void MainWindowLifecycleTests::pluginPropertyEditorInsertsPreviousStepOutputExpr
         QStringLiteral("expressionPickerButton"));
     QVERIFY(limitPicker);
     QVERIFY(limitPicker->isEnabled());
+    QVERIFY(QMetaObject::invokeMethod(limitPicker->menu(), "aboutToShow",
+                                      Qt::DirectConnection));
     auto* limitSourceMenu = limitPicker->menu()->actions().first()->menu();
     QVERIFY(limitSourceMenu);
     limitSourceMenu->actions().first()->trigger();

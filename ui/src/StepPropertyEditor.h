@@ -52,6 +52,7 @@ private:
     void buildDataPage();
     void buildPolicyPage();
     void loadCurrentObject();
+    void applyEditableState();
     void updateKindRows();
     void updateLimitRows();
     void updateLoopRows();

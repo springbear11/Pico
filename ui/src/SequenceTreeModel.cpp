@@ -1,4 +1,5 @@
 #include "SequenceTreeModel.h"
+#include "ApplicationDiagnostics.h"
 #include "PluginFunctionModel.h"
 
 #include <QColor>
@@ -157,7 +158,7 @@ SequenceTreeModel::SequenceTreeModel(SequenceDocument* document, QObject* parent
 {
     Q_ASSERT(m_document);
     connect(m_document, &SequenceDocument::documentChanged,
-            this, &SequenceTreeModel::rebuild);
+            this, &SequenceTreeModel::refreshFromDocument);
     rebuild();
 }
 
@@ -620,10 +621,25 @@ bool SequenceTreeModel::dropMimeData(const QMimeData* data,
         return false;
     }
     SequenceItemPath movedPath;
-    if (!m_document->relocateStep(
-            sourcePath, destinationParent, row, &movedPath)) {
+    m_deferDocumentRefresh = true;
+    const bool moved = m_document->relocateStep(
+        sourcePath, destinationParent, row, &movedPath);
+    m_deferDocumentRefresh = false;
+    const bool refreshWasRequested = std::exchange(
+        m_documentRefreshPending, false);
+    if (!moved) {
+        if (refreshWasRequested) {
+            refreshFromDocument();
+        }
         return false;
     }
+    if (!applyModelMove(sourcePath, destinationParent, movedPath)) {
+        ApplicationDiagnostics::recordAction(
+            QStringLiteral("FLOW_MOVE_FALLBACK"),
+            QStringLiteral("from=%1 to=%2")
+                .arg(sourcePath.jsonPath(), movedPath.jsonPath()));
+    }
+    refreshFromDocument();
     emit itemMoved(sourcePath, movedPath);
     return true;
 }
@@ -644,6 +660,12 @@ SequenceTreeModel::ItemType SequenceTreeModel::itemType(
 {
     auto* item = itemForIndex(modelIndex);
     return item ? item->type : ItemType::Step;
+}
+
+bool SequenceTreeModel::canContainSteps(const QModelIndex& modelIndex) const
+{
+    const auto path = pathForIndex(modelIndex);
+    return m_document && path.isValid() && m_document->canContainSteps(path);
 }
 
 QModelIndex SequenceTreeModel::indexForPath(const SequenceItemPath& path) const
@@ -742,6 +764,571 @@ void SequenceTreeModel::setCurrentDebugNodePath(const QString& nodePath)
     emitRowChanged(m_currentDebugNodePath);
 }
 
+void SequenceTreeModel::refreshFromDocument()
+{
+    if (m_deferDocumentRefresh) {
+        m_documentRefreshPending = true;
+        return;
+    }
+    ScopedOperationTimer timer(
+        QStringLiteral("SequenceTreeModel.refreshFromDocument"), 20);
+    const auto changedItemPaths = m_document
+        ? m_document->lastChangedItemPaths()
+        : QVector<SequenceItemPath>{};
+    if (!changedItemPaths.isEmpty() &&
+        tryRefreshChangedItems(changedItemPaths)) {
+        return;
+    }
+    if (!structureMatchesDocument()) {
+        if (tryApplySingleStructuralChange()) {
+            return;
+        }
+        ApplicationDiagnostics::recordAction(
+            QStringLiteral("FLOW_MODEL_RESET"),
+            QStringLiteral("reason=structure_changed"));
+        rebuild();
+        return;
+    }
+
+    struct ItemSnapshot {
+        Item* item = nullptr;
+        QJsonObject object;
+        SequenceItemPath path;
+        QString nodePath;
+        QString localPath;
+        QString resourceRegionId;
+        bool effectiveEnabled = true;
+        bool disabledByAncestor = false;
+        Item::ResourceMarker resourceMarker = Item::ResourceMarker::None;
+    };
+
+    QVector<ItemSnapshot> snapshots;
+    const std::function<void(Item&)> collect = [&](Item& parent) {
+        for (auto& child : parent.children) {
+            snapshots.push_back({child.get(),
+                                 child->object,
+                                 child->path,
+                                 child->nodePath,
+                                 child->localPath,
+                                 child->resourceRegionId,
+                                 child->effectiveEnabled,
+                                 child->disabledByAncestor,
+                                 child->resourceMarker});
+            collect(*child);
+        }
+    };
+    collect(*m_root);
+
+    const auto previousInspectionColors = m_inspectionColors;
+    const int previousInspectionCount = m_inspectionMatchCount;
+    updateTreeFromDocument();
+    rebuildInspectionColors();
+
+    for (const auto& snapshot : snapshots) {
+        const auto* item = snapshot.item;
+        if (!item ||
+            (snapshot.object == item->object &&
+             snapshot.path == item->path &&
+             snapshot.nodePath == item->nodePath &&
+             snapshot.localPath == item->localPath &&
+             snapshot.resourceRegionId == item->resourceRegionId &&
+             snapshot.effectiveEnabled == item->effectiveEnabled &&
+             snapshot.disabledByAncestor == item->disabledByAncestor &&
+             snapshot.resourceMarker == item->resourceMarker)) {
+            continue;
+        }
+        const auto changed = indexForItem(item);
+        if (changed.isValid()) {
+            emit dataChanged(changed.siblingAtColumn(0),
+                             changed.siblingAtColumn(ColumnCount - 1), {});
+        }
+    }
+
+    if (previousInspectionColors != m_inspectionColors ||
+        previousInspectionCount != m_inspectionMatchCount) {
+        const std::function<void(const QModelIndex&)> refreshInspection =
+            [&](const QModelIndex& parentIndex) {
+                for (int row = 0; row < rowCount(parentIndex); ++row) {
+                    const auto item = index(row, InspectionColumn, parentIndex);
+                    emit dataChanged(item, item,
+                                     {Qt::DisplayRole, Qt::BackgroundRole,
+                                      Qt::ToolTipRole});
+                    refreshInspection(index(row, NameColumn, parentIndex));
+                }
+            };
+        refreshInspection({});
+    }
+}
+
+bool SequenceTreeModel::tryRefreshChangedItems(
+    const QVector<SequenceItemPath>& changedItemPaths)
+{
+    if (!m_document || !m_root || !m_inspectionField.isEmpty()) {
+        return false;
+    }
+
+    QVector<SequenceItemPath> roots;
+    for (const auto& path : changedItemPaths) {
+        if (!path.isValid()) {
+            return false;
+        }
+        bool coveredByAncestor = false;
+        for (const auto& existing : roots) {
+            if (existing.groupIndex == path.groupIndex &&
+                existing.stepIndices.size() <= path.stepIndices.size() &&
+                std::equal(existing.stepIndices.cbegin(),
+                           existing.stepIndices.cend(),
+                           path.stepIndices.cbegin())) {
+                coveredByAncestor = true;
+                break;
+            }
+        }
+        if (!coveredByAncestor) {
+            roots.erase(std::remove_if(
+                roots.begin(), roots.end(), [&](const auto& existing) {
+                    return existing.groupIndex == path.groupIndex &&
+                           path.stepIndices.size() <=
+                               existing.stepIndices.size() &&
+                           std::equal(path.stepIndices.cbegin(),
+                                      path.stepIndices.cend(),
+                                      existing.stepIndices.cbegin());
+                }), roots.end());
+            roots.push_back(path);
+        }
+    }
+
+    struct RefreshTarget {
+        Item* item = nullptr;
+        QJsonObject object;
+    };
+    QVector<RefreshTarget> targets;
+    targets.reserve(roots.size());
+    for (const auto& path : roots) {
+        const auto modelIndex = indexForPath(path);
+        if (!modelIndex.isValid()) {
+            return false;
+        }
+        auto* item = itemForIndex(modelIndex);
+        const auto object = m_document->objectAt(path);
+        if (!item || object.isEmpty() ||
+            !stepStructureMatches(*item, object) ||
+            item->object.value(QStringLiteral("resourceRegionStart")) !=
+                object.value(QStringLiteral("resourceRegionStart")) ||
+            item->object.value(QStringLiteral("resourceRegionEnd")) !=
+                object.value(QStringLiteral("resourceRegionEnd"))) {
+            return false;
+        }
+        targets.push_back({item, object});
+    }
+
+    for (auto& target : targets) {
+        updateItemFromObject(*target.item, target.object);
+        for (auto* ancestor = target.item->parent;
+             ancestor && ancestor != m_root.get();
+             ancestor = ancestor->parent) {
+            ancestor->object = m_document->objectAt(ancestor->path);
+        }
+        emitSubtreeChanged(*target.item);
+    }
+    return true;
+}
+
+void SequenceTreeModel::updateItemFromObject(
+    Item& item,
+    const QJsonObject& object)
+{
+    item.object = object;
+    if (item.type == ItemType::Group) {
+        item.nodePath.clear();
+        item.localPath.clear();
+        item.disabledByAncestor = false;
+        item.effectiveEnabled = itemEnabled(item.object);
+    } else {
+        const auto* parent = item.parent;
+        const bool parentEnabled = parent ? parent->effectiveEnabled : true;
+        const QString parentNodePath = parent ? parent->nodePath : QString{};
+        const QString parentLocalPath = parent ? parent->localPath : QString{};
+        item.nodePath = childNodePath(parentNodePath, item.object);
+        item.localPath = childLocalPath(parentLocalPath, item.object);
+        item.disabledByAncestor = !parentEnabled;
+        item.effectiveEnabled = parentEnabled && itemEnabled(item.object);
+    }
+
+    const auto steps = item.object.value(QStringLiteral("steps")).toArray();
+    for (int index = 0; index < steps.size(); ++index) {
+        updateItemFromObject(*item.children[index],
+                             steps.at(index).toObject());
+    }
+}
+
+void SequenceTreeModel::emitSubtreeChanged(Item& item)
+{
+    const auto changed = indexForItem(&item);
+    if (changed.isValid()) {
+        emit dataChanged(changed.siblingAtColumn(0),
+                         changed.siblingAtColumn(ColumnCount - 1), {});
+    }
+    for (auto& child : item.children) {
+        emitSubtreeChanged(*child);
+    }
+}
+
+bool SequenceTreeModel::applyModelMove(
+    const SequenceItemPath& sourcePath,
+    const SequenceItemPath& destinationParent,
+    const SequenceItemPath& movedPath)
+{
+    if (!m_root || sourcePath.stepIndices.isEmpty() ||
+        movedPath.stepIndices.isEmpty()) {
+        return false;
+    }
+
+    const auto sourceIndex = indexForPath(sourcePath);
+    const auto destinationParentIndex = indexForPath(destinationParent);
+    auto* sourceItem = itemForIndex(sourceIndex);
+    auto* destinationParentItem = itemForIndex(destinationParentIndex);
+    if (!sourceItem || !sourceItem->parent || !destinationParentItem) {
+        return false;
+    }
+
+    auto* sourceParentItem = sourceItem->parent;
+    const auto sourceParentIndex = indexForItem(sourceParentItem);
+    const int sourceRow = sourcePath.stepIndices.last();
+    const int destinationRow = movedPath.stepIndices.last();
+    if (sourceRow < 0 || sourceRow >= sourceParentItem->children.size() ||
+        destinationRow < 0 ||
+        destinationRow > destinationParentItem->children.size()) {
+        return false;
+    }
+
+    const bool sameParent = sourceParentItem == destinationParentItem;
+    if (sameParent && sourceRow == destinationRow) {
+        return true;
+    }
+    int qtDestinationRow = destinationRow;
+    if (sameParent && destinationRow > sourceRow) {
+        ++qtDestinationRow;
+    }
+    if (!beginMoveRows(sourceParentIndex, sourceRow, sourceRow,
+                       destinationParentIndex, qtDestinationRow)) {
+        return false;
+    }
+
+    auto moving = std::move(sourceParentItem->children[sourceRow]);
+    sourceParentItem->children.erase(
+        sourceParentItem->children.begin() + sourceRow);
+    moving->parent = destinationParentItem;
+    destinationParentItem->children.insert(
+        destinationParentItem->children.begin() + destinationRow,
+        std::move(moving));
+    endMoveRows();
+
+    ApplicationDiagnostics::recordAction(
+        QStringLiteral("FLOW_ROW_MOVED"),
+        QStringLiteral("from=%1 to=%2")
+            .arg(sourcePath.jsonPath(), movedPath.jsonPath()));
+    return true;
+}
+
+bool SequenceTreeModel::tryApplySingleStructuralChange()
+{
+    if (!m_document || !m_root) {
+        return false;
+    }
+    const auto groups = m_document->rootObject()
+                            .value(QStringLiteral("groups")).toArray();
+    if (groups.size() != m_root->children.size()) {
+        return false;
+    }
+
+    StructuralChange change;
+    for (int groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+        if (!groups.at(groupIndex).isObject() ||
+            !locateSingleStructuralChange(
+                *m_root->children[groupIndex],
+                groups.at(groupIndex).toObject()
+                    .value(QStringLiteral("steps")).toArray(),
+                change)) {
+            return false;
+        }
+    }
+    if (change.kind == StructuralChange::Kind::None || !change.parent ||
+        change.row < 0) {
+        return false;
+    }
+
+    const auto parentIndex = indexForItem(change.parent);
+    if (!parentIndex.isValid()) {
+        return false;
+    }
+
+    if (change.kind == StructuralChange::Kind::Insert) {
+        Item stagingParent;
+        appendSteps(stagingParent,
+                    QJsonArray{change.insertedObject},
+                    change.parent->path,
+                    change.parent->nodePath,
+                    change.parent->localPath,
+                    change.parent->effectiveEnabled);
+        if (stagingParent.children.size() != 1) {
+            return false;
+        }
+        auto inserted = std::move(stagingParent.children.front());
+        inserted->parent = change.parent;
+        beginInsertRows(parentIndex, change.row, change.row);
+        change.parent->children.insert(
+            change.parent->children.begin() + change.row,
+            std::move(inserted));
+        endInsertRows();
+        ApplicationDiagnostics::recordAction(
+            QStringLiteral("FLOW_ROW_INSERTED"),
+            QStringLiteral("row=%1").arg(change.row));
+    } else {
+        if (change.row >= change.parent->children.size()) {
+            return false;
+        }
+        beginRemoveRows(parentIndex, change.row, change.row);
+        change.parent->children.erase(
+            change.parent->children.begin() + change.row);
+        endRemoveRows();
+        ApplicationDiagnostics::recordAction(
+            QStringLiteral("FLOW_ROW_REMOVED"),
+            QStringLiteral("row=%1").arg(change.row));
+    }
+
+    refreshFromDocument();
+    return true;
+}
+
+bool SequenceTreeModel::locateSingleStructuralChange(
+    Item& parent,
+    const QJsonArray& newSteps,
+    StructuralChange& change) const
+{
+    for (const auto& value : newSteps) {
+        if (!value.isObject()) {
+            return false;
+        }
+    }
+
+    const int oldCount = int(parent.children.size());
+    const int newCount = newSteps.size();
+    const int delta = newCount - oldCount;
+    if (delta == 0) {
+        for (int index = 0; index < newCount; ++index) {
+            if (!locateSingleStructuralChange(
+                    *parent.children[index],
+                    newSteps.at(index).toObject()
+                        .value(QStringLiteral("steps")).toArray(),
+                    change)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (delta != 1 && delta != -1) {
+        return false;
+    }
+    if (change.kind != StructuralChange::Kind::None) {
+        return false;
+    }
+
+    QVector<int> candidates;
+    const int candidateCount = delta > 0 ? newCount : oldCount;
+    for (int candidate = 0; candidate < candidateCount; ++candidate) {
+        bool matches = true;
+        if (delta > 0) {
+            for (int oldIndex = 0; oldIndex < oldCount; ++oldIndex) {
+                const int newIndex = oldIndex < candidate
+                    ? oldIndex
+                    : oldIndex + 1;
+                if (parent.children[oldIndex]->object !=
+                    newSteps.at(newIndex).toObject()) {
+                    matches = false;
+                    break;
+                }
+            }
+        } else {
+            for (int newIndex = 0; newIndex < newCount; ++newIndex) {
+                const int oldIndex = newIndex < candidate
+                    ? newIndex
+                    : newIndex + 1;
+                if (parent.children[oldIndex]->object !=
+                    newSteps.at(newIndex).toObject()) {
+                    matches = false;
+                    break;
+                }
+            }
+        }
+        if (matches) {
+            candidates.push_back(candidate);
+        }
+    }
+    if (candidates.size() != 1) {
+        return false;
+    }
+
+    change.kind = delta > 0 ? StructuralChange::Kind::Insert
+                            : StructuralChange::Kind::Remove;
+    change.parent = &parent;
+    change.row = candidates.first();
+    if (delta > 0) {
+        change.insertedObject = newSteps.at(change.row).toObject();
+    }
+    return true;
+}
+
+bool SequenceTreeModel::structureMatchesDocument() const
+{
+    if (!m_document || !m_root) {
+        return false;
+    }
+    const auto groups = m_document->rootObject()
+                            .value(QStringLiteral("groups")).toArray();
+    if (groups.size() != m_root->children.size()) {
+        return false;
+    }
+    for (int index = 0; index < groups.size(); ++index) {
+        if (!groups.at(index).isObject() ||
+            m_root->children[index]->type != ItemType::Group ||
+            !stepStructureMatches(*m_root->children[index],
+                                  groups.at(index).toObject())) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool SequenceTreeModel::stepStructureMatches(const Item& item,
+                                             const QJsonObject& object) const
+{
+    const auto steps = object.value(QStringLiteral("steps")).toArray();
+    if (steps.size() != item.children.size()) {
+        return false;
+    }
+    for (int index = 0; index < steps.size(); ++index) {
+        if (!steps.at(index).isObject() ||
+            !stepStructureMatches(*item.children[index],
+                                  steps.at(index).toObject())) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void SequenceTreeModel::updateTreeFromDocument()
+{
+    const auto groups = m_document->rootObject()
+                            .value(QStringLiteral("groups")).toArray();
+    for (int groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+        auto& group = *m_root->children[groupIndex];
+        group.type = ItemType::Group;
+        group.path = SequenceItemPath{groupIndex, {}};
+        group.object = groups.at(groupIndex).toObject();
+        group.nodePath.clear();
+        group.localPath.clear();
+        group.disabledByAncestor = false;
+        group.effectiveEnabled = itemEnabled(group.object);
+        group.resourceMarker = Item::ResourceMarker::None;
+        group.resourceRegionId.clear();
+        updateStepsFromDocument(
+            group, group.object.value(QStringLiteral("steps")).toArray(),
+            group.path, {}, {}, group.effectiveEnabled);
+        applyResourceRegions(group);
+    }
+}
+
+void SequenceTreeModel::updateStepsFromDocument(
+    Item& parent,
+    const QJsonArray& steps,
+    const SequenceItemPath& parentPath,
+    const QString& parentNodePath,
+    const QString& parentLocalPath,
+    bool parentEffectiveEnabled)
+{
+    for (int index = 0; index < steps.size(); ++index) {
+        auto& child = *parent.children[index];
+        child.type = ItemType::Step;
+        child.path = parentPath;
+        child.path.stepIndices.push_back(index);
+        child.object = steps.at(index).toObject();
+        child.nodePath = childNodePath(parentNodePath, child.object);
+        child.localPath = childLocalPath(parentLocalPath, child.object);
+        child.disabledByAncestor = !parentEffectiveEnabled;
+        child.effectiveEnabled = parentEffectiveEnabled && itemEnabled(child.object);
+        child.resourceMarker = Item::ResourceMarker::None;
+        child.resourceRegionId.clear();
+        updateStepsFromDocument(
+            child, child.object.value(QStringLiteral("steps")).toArray(),
+            child.path, child.nodePath, child.localPath,
+            child.effectiveEnabled);
+    }
+}
+
+void SequenceTreeModel::applyResourceRegions(Item& parent)
+{
+    const auto markRegion = [&](Item& item,
+                                const QString& regionId,
+                                const auto& markRef) -> void {
+        item.resourceRegionId = regionId;
+        for (auto& child : item.children) {
+            markRef(*child, regionId, markRef);
+        }
+    };
+    const std::function<void(Item&)> markSiblingRegions =
+        [&](Item& regionParent) {
+            for (int entryRow = 0;
+                 entryRow < regionParent.children.size(); ++entryRow) {
+                auto& entry = regionParent.children[entryRow];
+                const auto start = entry->object
+                                       .value(QStringLiteral("resourceRegionStart"))
+                                       .toObject();
+                const auto regionId = start.value(QStringLiteral("id"))
+                                          .toString();
+                if (regionId.isEmpty()) {
+                    continue;
+                }
+
+                entry->resourceMarker = Item::ResourceMarker::Entry;
+                entry->resourceRegionId = regionId;
+                int exitRow = entry->object
+                                      .value(QStringLiteral("resourceRegionEnd"))
+                                      .toString() == regionId
+                    ? entryRow
+                    : -1;
+                for (int candidate = entryRow + 1;
+                     exitRow < 0 && candidate < regionParent.children.size();
+                     ++candidate) {
+                    if (regionParent.children[candidate]->object
+                            .value(QStringLiteral("resourceRegionEnd"))
+                            .toString() == regionId) {
+                        exitRow = candidate;
+                        break;
+                    }
+                }
+                if (exitRow < 0) {
+                    continue;
+                }
+
+                markRegion(*entry, regionId, markRegion);
+                if (exitRow == entryRow) {
+                    entry->resourceMarker = Item::ResourceMarker::SingleItem;
+                    continue;
+                }
+                for (int row = entryRow + 1; row < exitRow; ++row) {
+                    markRegion(*regionParent.children[row], regionId, markRegion);
+                }
+                auto& exit = regionParent.children[exitRow];
+                markRegion(*exit, regionId, markRegion);
+                exit->resourceMarker = Item::ResourceMarker::Exit;
+            }
+            for (auto& child : regionParent.children) {
+                markSiblingRegions(*child);
+            }
+        };
+    markSiblingRegions(parent);
+}
+
 void SequenceTreeModel::rebuild()
 {
     beginResetModel();
@@ -767,66 +1354,7 @@ void SequenceTreeModel::rebuild()
                         {},
                         {},
                         group->effectiveEnabled);
-            const auto markRegion = [&](Item& item,
-                                        const QString& regionId,
-                                        const auto& markRef) -> void {
-                item.resourceRegionId = regionId;
-                for (auto& child : item.children) {
-                    markRef(*child, regionId, markRef);
-                }
-            };
-            const std::function<void(Item&)> markSiblingRegions =
-                [&](Item& parent) {
-                    for (int entryRow = 0;
-                         entryRow < parent.children.size(); ++entryRow) {
-                        auto& entry = parent.children[entryRow];
-                        const auto start = entry->object
-                                               .value(QStringLiteral("resourceRegionStart"))
-                                               .toObject();
-                        const auto regionId = start.value(QStringLiteral("id"))
-                                                  .toString();
-                        if (regionId.isEmpty()) {
-                            continue;
-                        }
-
-                        entry->resourceMarker = Item::ResourceMarker::Entry;
-                        entry->resourceRegionId = regionId;
-                        int exitRow = entry->object
-                                              .value(QStringLiteral("resourceRegionEnd"))
-                                              .toString() == regionId
-                            ? entryRow
-                            : -1;
-                        for (int candidate = entryRow + 1;
-                             exitRow < 0 &&
-                             candidate < parent.children.size(); ++candidate) {
-                            if (parent.children[candidate]->object
-                                    .value(QStringLiteral("resourceRegionEnd"))
-                                    .toString() == regionId) {
-                                exitRow = candidate;
-                                break;
-                            }
-                        }
-                        if (exitRow < 0) {
-                            continue;
-                        }
-
-                        markRegion(*entry, regionId, markRegion);
-                        if (exitRow == entryRow) {
-                            entry->resourceMarker = Item::ResourceMarker::SingleItem;
-                            continue;
-                        }
-                        for (int row = entryRow + 1; row < exitRow; ++row) {
-                            markRegion(*parent.children[row], regionId, markRegion);
-                        }
-                        auto& exit = parent.children[exitRow];
-                        markRegion(*exit, regionId, markRegion);
-                        exit->resourceMarker = Item::ResourceMarker::Exit;
-                    }
-                    for (auto& child : parent.children) {
-                        markSiblingRegions(*child);
-                    }
-                };
-            markSiblingRegions(*group);
+            applyResourceRegions(*group);
             m_root->children.push_back(std::move(group));
         }
     }
@@ -874,6 +1402,20 @@ SequenceTreeModel::Item* SequenceTreeModel::itemForIndex(
         return m_root.get();
     }
     return static_cast<Item*>(modelIndex.internalPointer());
+}
+
+QModelIndex SequenceTreeModel::indexForItem(const Item* item) const
+{
+    if (!item || item == m_root.get() || !item->parent) {
+        return {};
+    }
+    const auto* parentItem = item->parent;
+    for (int row = 0; row < parentItem->children.size(); ++row) {
+        if (parentItem->children[row].get() == item) {
+            return createIndex(row, NameColumn, const_cast<Item*>(item));
+        }
+    }
+    return {};
 }
 
 QModelIndex SequenceTreeModel::findIndex(const Item& parentItem,

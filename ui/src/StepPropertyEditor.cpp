@@ -334,7 +334,17 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
     connect(m_kindCombo,
             &QComboBox::currentIndexChanged,
             this,
-            [this] { if (!m_loading) updateKindRows(); });
+            [this] {
+                if (m_loading) {
+                    return;
+                }
+                updateKindRows();
+                if (m_kindCombo->currentData().toString() ==
+                    QStringLiteral("operatorPrompt")) {
+                    rebuildPromptImageChoices(selectedPromptImage());
+                    rebuildPromptCloseStepChoices(selectedPromptCloseStep());
+                }
+            });
     connect(m_limitComparisonCombo,
             &QComboBox::currentIndexChanged,
             this,
@@ -480,6 +490,14 @@ void StepPropertyEditor::setDraftDirty(bool dirty)
 
 void StepPropertyEditor::setCurrentItem(const SequenceItemPath& path)
 {
+    if (!m_previewing && path == m_path && m_document) {
+        const auto currentObject = path.isValid()
+            ? m_document->objectAt(path)
+            : QJsonObject{};
+        if (currentObject == m_sourceObject) {
+            return;
+        }
+    }
     m_previewing = false;
     m_previewObject = {};
     m_path = path;
@@ -496,9 +514,17 @@ void StepPropertyEditor::setPreviewObject(QJsonObject object)
 
 void StepPropertyEditor::setEditable(bool editable)
 {
+    if (m_editable == editable) {
+        return;
+    }
     m_editable = editable;
+    applyEditableState();
+}
+
+void StepPropertyEditor::applyEditableState()
+{
     const bool hasObject = !m_sourceObject.isEmpty();
-    const bool canEdit = editable && m_path.isValid() && !m_previewing;
+    const bool canEdit = m_editable && m_path.isValid() && !m_previewing;
     m_tabs->setEnabled(hasObject);
     for (auto* edit : m_tabs->findChildren<QLineEdit*>()) {
         edit->setReadOnly(!canEdit || edit->property("stationInherited").toBool());
@@ -538,7 +564,6 @@ void StepPropertyEditor::setEditable(bool editable)
     if (m_advancedJsonToggle) {
         m_advancedJsonToggle->setEnabled(hasObject);
     }
-    rebuildFunctionChoices();
 }
 
 void StepPropertyEditor::setPluginRegistry(QVector<PluginManifest> plugins)
@@ -1222,10 +1247,15 @@ void StepPropertyEditor::loadCurrentObject()
     m_promptTitleEdit->setText(
         prompt.value("title").toString(tr("Message")));
     m_promptMessageEdit->setPlainText(prompt.value("message").toString());
-    rebuildPromptImageChoices(prompt.value("image").toString());
+    const auto editorKind = m_kindCombo->currentData().toString();
+    if (editorKind == QStringLiteral("operatorPrompt")) {
+        rebuildPromptImageChoices(prompt.value("image").toString());
+    }
     m_promptConfirmTextEdit->setText(
         prompt.value("confirmText").toString(QStringLiteral("OK")));
-    rebuildPromptCloseStepChoices(prompt.value("closeOnStep").toString());
+    if (editorKind == QStringLiteral("operatorPrompt")) {
+        rebuildPromptCloseStepChoices(prompt.value("closeOnStep").toString());
+    }
     m_promptTimeoutSpin->setValue(prompt.value("timeoutMs").toInt(60000));
 
     const auto loop = m_sourceObject.value("loop").toObject();
@@ -1277,10 +1307,6 @@ void StepPropertyEditor::loadCurrentObject()
 
     rebuildDeviceChoices();
     rebuildPluginInputEditors();
-    rebuildExpressionMenu(m_limitExpressionMenu, m_limitActualEdit);
-    rebuildExpressionMenu(m_counterConditionMenu, m_counterConditionEdit);
-    rebuildExpressionMenu(m_aggregateValueMenu, m_aggregateValueEdit);
-
     setFormRowVisible(m_generalForm, m_idEdit, !standardGroup);
     setFormRowVisible(m_generalForm, m_kindCombo, !standardGroup);
     setFormRowVisible(m_generalForm, m_keyEdit, !m_isGroup);
@@ -1298,7 +1324,7 @@ void StepPropertyEditor::loadCurrentObject()
     updateKindRows();
     m_loading = false;
     setDraftDirty(false);
-    setEditable(m_editable);
+    applyEditableState();
 }
 
 void StepPropertyEditor::updateKindRows()
@@ -2313,9 +2339,12 @@ void StepPropertyEditor::rebuildExpressionMenu(QMenu* menu, QLineEdit* editor)
                     editor->selectAll();
                 });
     }
+    if (variableCount == 0 && candidates.isEmpty()) {
+        auto* unavailable = menu->addAction(tr("No runtime values available"));
+        unavailable->setEnabled(false);
+    }
     if (auto* button = qobject_cast<QToolButton*>(menu->parentWidget())) {
-        button->setEnabled(m_editable &&
-                           (variableCount > 0 || !candidates.isEmpty()));
+        button->setEnabled(m_editable && !m_previewing);
     }
 }
 
@@ -3088,11 +3117,16 @@ bool StepPropertyEditor::commitPendingChanges()
         return true;
     }
 
+    const auto previousSourceObject = m_sourceObject;
+    // replaceItemObject emits documentChanged synchronously. Publish the new
+    // source first so MainWindow does not rebuild this editor while the same
+    // draft is being committed.
+    m_sourceObject = updated;
     if (!m_document->replaceItemObject(targetPath, updated)) {
+        m_sourceObject = previousSourceObject;
         showError(tr("The selected sequence item no longer exists"));
         return false;
     }
-    m_sourceObject = updated;
     clearSuccessfulDraft();
     emit itemApplied(targetPath);
     return true;

@@ -44,6 +44,8 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/LoginDialog.cpp
     ../src/LoginDialog.h
     ../src/PicoATE.qrc
+    ../src/PicoATEStyle.cpp
+    ../src/PicoATEStyle.h
     ../src/ProductionWindow.cpp
     ../src/ProductionWindow.h
     ../src/ProportionalHeaderView.cpp
@@ -54,6 +56,8 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/OperatorPromptPresenter.h
     ../src/ScanDialog.cpp
     ../src/ScanDialog.h
+    ../src/SequenceEditorTreeView.cpp
+    ../src/SequenceEditorTreeView.h
     ../src/SequenceVariablesDialog.cpp
     ../src/SequenceVariablesDialog.h
     MainWindowLifecycleTests.cpp

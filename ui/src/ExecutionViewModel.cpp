@@ -202,6 +202,15 @@ void ExecutionViewModel::setSequenceDocument(const QString& path, const QByteArr
     invalidateCompilation();
 }
 
+void ExecutionViewModel::invalidateSequenceDocument()
+{
+    if (!canChangeSources() ||
+        (m_state == UiRunState::SourceSelected && !m_hasCompiledArtifact)) {
+        return;
+    }
+    invalidateCompilation();
+}
+
 void ExecutionViewModel::setStationPath(const QString& path)
 {
     if (!canChangeSources()) {

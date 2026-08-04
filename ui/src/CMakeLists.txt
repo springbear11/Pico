@@ -1,4 +1,6 @@
 add_library(PicoATEUiRuntime STATIC
+    ApplicationDiagnostics.cpp
+    ApplicationDiagnostics.h
     BufferedRuntimeEventSink.cpp
     BufferedRuntimeEventSink.h
     CoreExecutionService.cpp
@@ -50,6 +52,10 @@ target_link_libraries(PicoATEUiRuntime
         Qt6::Gui
 )
 
+if(WIN32)
+    target_link_libraries(PicoATEUiRuntime PRIVATE Dbghelp)
+endif()
+
 target_compile_definitions(PicoATEUiRuntime
     PRIVATE
         PICOATE_PROJECT_DIR="${PICOATE_ROOT_DIR}"
@@ -83,6 +89,8 @@ qt_add_executable(PicoATEUi WIN32
     OnOffControl.cpp
     OnOffControl.h
     PicoATE.qrc
+    PicoATEStyle.cpp
+    PicoATEStyle.h
     OperatorPromptPresenter.cpp
     OperatorPromptPresenter.h
     ProductionWindow.cpp
@@ -91,6 +99,8 @@ qt_add_executable(PicoATEUi WIN32
     ProportionalHeaderView.h
     ScanDialog.cpp
     ScanDialog.h
+    SequenceEditorTreeView.cpp
+    SequenceEditorTreeView.h
     SequenceVariablesDialog.cpp
     SequenceVariablesDialog.h
     StepPropertyEditor.cpp

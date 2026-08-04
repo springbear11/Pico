@@ -43,6 +43,8 @@ struct UiDiagnostic {
     QString path;
     QString message;
     QString suggestion;
+
+    friend bool operator==(const UiDiagnostic&, const UiDiagnostic&) = default;
 };
 
 struct CompileRequest {

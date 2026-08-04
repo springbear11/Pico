@@ -51,6 +51,7 @@ public:
 public slots:
     void setSequencePath(const QString& path);
     void setSequenceDocument(const QString& path, const QByteArray& jsonSnapshot);
+    void invalidateSequenceDocument();
     void setStationPath(const QString& path);
     void setStationDocument(const QString& path, const QByteArray& jsonSnapshot);
     void compile();
