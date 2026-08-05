@@ -373,6 +373,26 @@ void PluginFunctionModel::rebuild()
         parserCategoryPointer->children.push_back(std::move(function));
     }
 
+    const auto valueToolsManifest = builtInValueToolsManifest();
+    auto valueToolsCategory = std::make_unique<Item>();
+    valueToolsCategory->kind = ItemKind::Category;
+    valueToolsCategory->text = tr("Value Tools");
+    valueToolsCategory->tooltip = tr(
+        "Calculate statistics, arithmetic results, and number representations");
+    valueToolsCategory->parent = basicSectionPointer;
+    auto* valueToolsCategoryPointer = valueToolsCategory.get();
+    basicSectionPointer->children.push_back(std::move(valueToolsCategory));
+    for (const auto& definition : valueToolsManifest.functions) {
+        auto function = std::make_unique<Item>();
+        function->kind = ItemKind::Function;
+        function->text = definition.name;
+        function->tooltip = definition.description;
+        function->stepTemplate = PluginCatalog::createStep(
+            valueToolsManifest, definition, {});
+        function->parent = valueToolsCategoryPointer;
+        valueToolsCategoryPointer->children.push_back(std::move(function));
+    }
+
     auto pluginSection = std::make_unique<Item>();
     pluginSection->kind = ItemKind::Section;
     pluginSection->text = tr("Plugin Functions");

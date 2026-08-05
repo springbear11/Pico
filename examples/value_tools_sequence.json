@@ -1,0 +1,101 @@
+{
+  "id": "value-tools-sequence",
+  "name": "Value Tools Example",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "setup",
+      "name": "Setup",
+      "kind": "setup",
+      "steps": []
+    },
+    {
+      "id": "main",
+      "name": "Main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "measure-gun-1",
+          "name": "Measure Gun 1 Temperature",
+          "kind": "action",
+          "moduleId": "mock.action",
+          "function": "measure",
+          "inputs": { "outputs": { "temperature": 40.0 } }
+        },
+        {
+          "id": "measure-gun-2",
+          "name": "Measure Gun 2 Temperature",
+          "kind": "action",
+          "moduleId": "mock.action",
+          "function": "measure",
+          "inputs": { "outputs": { "temperature": 44.5 } }
+        },
+        {
+          "id": "measure-gun-3",
+          "name": "Measure Gun 3 Temperature",
+          "kind": "action",
+          "moduleId": "mock.action",
+          "function": "measure",
+          "inputs": { "outputs": { "temperature": 38.0 } }
+        },
+        {
+          "id": "measure-gun-4",
+          "name": "Measure Gun 4 Temperature",
+          "kind": "action",
+          "moduleId": "mock.action",
+          "function": "measure",
+          "inputs": { "outputs": { "temperature": 41.0 } }
+        },
+        {
+          "id": "temperature-statistics",
+          "name": "Calculate Temperature Statistics",
+          "kind": "action",
+          "moduleId": "builtin.value-tools",
+          "function": "statistics",
+          "inputs": {
+            "values": [
+              { "name": "Gun 1", "value": "${step:measure-gun-1.outputs.temperature}" },
+              { "name": "Gun 2", "value": "${step:measure-gun-2.outputs.temperature}" },
+              { "name": "Gun 3", "value": "${step:measure-gun-3.outputs.temperature}" },
+              { "name": "Gun 4", "value": "${step:measure-gun-4.outputs.temperature}" }
+            ]
+          }
+        },
+        {
+          "id": "check-temperature-range",
+          "name": "Check Temperature Difference",
+          "kind": "limit",
+          "inputs": {
+            "actual": "${step:temperature-statistics.outputs.range}"
+          },
+          "parameters": {
+            "comparison": "lessOrEqual",
+            "expected": 10.0,
+            "measurementName": "TEMPERATURE_RANGE",
+            "unit": "degC"
+          }
+        },
+        {
+          "id": "format-heartbeat-example",
+          "name": "Format 200 As Hexadecimal Text",
+          "kind": "action",
+          "moduleId": "builtin.value-tools",
+          "function": "numberToText",
+          "inputs": {
+            "value": 200,
+            "base": 16,
+            "width": 2,
+            "prefix": true,
+            "uppercase": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "name": "Cleanup",
+      "kind": "cleanup",
+      "steps": []
+    }
+  ]
+}

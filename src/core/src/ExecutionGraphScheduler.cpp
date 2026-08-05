@@ -263,6 +263,9 @@ SchedulerStepResult ExecutionGraphScheduler::pumpPeriodicTaskOnce()
     context.requestId = attempt.requestId;
     context.currentNodeId = node->id;
     context.attemptIndex = invocation->invocationIndex;
+    context.periodicInvocation = true;
+    context.periodicIndex = invocation->invocationIndex;
+    context.periodicCounter = invocation->counterValue;
     context.variables = execution->variables;
     context.resultStore = &m_results;
     context.executionControl = m_executionControl;
@@ -1144,6 +1147,9 @@ NodeResult ExecutionGraphScheduler::registerPeriodicTask(
     registration.activationId = activation.id;
     registration.intervalMs = node.periodic.intervalMs;
     registration.runImmediately = node.periodic.runImmediately;
+    registration.counterStart = node.periodic.counterStart;
+    registration.counterIncrement = node.periodic.counterIncrement;
+    registration.counterWrapAt = node.periodic.counterWrapAt;
 
     NodeResult result;
     result.nodeId = node.id;
@@ -1154,6 +1160,9 @@ NodeResult ExecutionGraphScheduler::registerPeriodicTask(
         result.outputs.insert(QStringLiteral("taskId"), node.id);
         result.outputs.insert(QStringLiteral("intervalMs"), node.periodic.intervalMs);
         result.outputs.insert(QStringLiteral("runImmediately"), node.periodic.runImmediately);
+        result.outputs.insert(QStringLiteral("counterStart"), node.periodic.counterStart);
+        result.outputs.insert(QStringLiteral("counterIncrement"), node.periodic.counterIncrement);
+        result.outputs.insert(QStringLiteral("counterWrapAt"), node.periodic.counterWrapAt);
     } else {
         result.outcome = NodeOutcome::Error;
         result.errorCode = QStringLiteral("PeriodicTaskRegistrationFailed");

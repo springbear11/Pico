@@ -16,6 +16,20 @@ bool periodicOutcomeFailed(NodeOutcome outcome)
            outcome == NodeOutcome::Timeout;
 }
 
+qint64 counterValue(const PeriodicTaskRegistration& registration,
+                    int invocationIndex)
+{
+    const qint64 start = registration.counterStart;
+    const qint64 increment = registration.counterIncrement;
+    if (registration.counterWrapAt > 0 &&
+        registration.counterWrapAt >= registration.counterStart) {
+        const qint64 range = qint64(registration.counterWrapAt) - start + 1;
+        const qint64 offset = (qint64(invocationIndex) * increment) % range;
+        return start + offset;
+    }
+    return start + qint64(invocationIndex) * increment;
+}
+
 } // namespace
 
 bool PeriodicTaskController::registerTask(PeriodicTaskRegistration registration,
@@ -70,6 +84,8 @@ std::optional<PeriodicTaskInvocation> PeriodicTaskController::takeReady()
         invocation.execution = taskIt->registration.execution;
         invocation.frameId = taskIt->registration.frameId;
         invocation.invocationIndex = taskIt->executionCount;
+        invocation.counterValue = counterValue(taskIt->registration,
+                                               invocation.invocationIndex);
         return invocation;
     }
     return std::nullopt;

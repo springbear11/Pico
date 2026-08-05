@@ -228,7 +228,13 @@ void collectPeriodicTaskWarnings(const QJsonObject& object,
                                  const QString& path,
                                  QVector<CompileWarning>& warnings)
 {
-    warnUnknownFields(object, path, {"intervalMs", "runImmediately"}, warnings);
+    warnUnknownFields(object, path, {"intervalMs", "runImmediately", "counter"}, warnings);
+    if (object.value("counter").isObject()) {
+        warnUnknownFields(object.value("counter").toObject(),
+                          path + ".counter",
+                          {"start", "increment", "wrapAt"},
+                          warnings);
+    }
 }
 
 void collectLoopWarnings(const QJsonObject& object,
@@ -1315,6 +1321,17 @@ PeriodicTaskPolicyDef SequenceCompiler::parsePeriodicTask(
     periodic.enabled = true;
     periodic.intervalMs = readInt(object, "intervalMs", path, errors, 5000);
     periodic.runImmediately = readBool(object, "runImmediately", path, errors, true);
+    if (object.contains("counter") && !object.value("counter").isObject()) {
+        addTypeError(errors,
+                     childPath(path, "counter"),
+                     QString("object, got %1").arg(jsonTypeName(object.value("counter"))));
+    } else if (object.value("counter").isObject()) {
+        const auto counter = object.value("counter").toObject();
+        const auto counterPath = childPath(path, "counter");
+        periodic.counterStart = readInt(counter, "start", counterPath, errors, 1);
+        periodic.counterIncrement = readInt(counter, "increment", counterPath, errors, 1);
+        periodic.counterWrapAt = readInt(counter, "wrapAt", counterPath, errors, 0);
+    }
     return periodic;
 }
 

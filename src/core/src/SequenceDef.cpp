@@ -37,6 +37,9 @@ PeriodicTaskPolicy PeriodicTaskPolicyDef::toRuntimePolicy() const
     policy.enabled = enabled;
     policy.intervalMs = intervalMs;
     policy.runImmediately = runImmediately;
+    policy.counterStart = counterStart;
+    policy.counterIncrement = counterIncrement;
+    policy.counterWrapAt = counterWrapAt;
     return policy;
 }
 

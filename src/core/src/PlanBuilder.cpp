@@ -424,6 +424,19 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
                     "Periodic task interval must be positive",
                     QString("Set periodic.intervalMs to at least 1 for %1").arg(step.id)});
             }
+            if (step.periodic.counterIncrement <= 0) {
+                result.errors.push_back({
+                    "Periodic counter increment must be positive",
+                    QString("Set periodic.counter.increment to at least 1 for %1")
+                        .arg(step.id)});
+            }
+            if (step.periodic.counterWrapAt > 0 &&
+                step.periodic.counterWrapAt < step.periodic.counterStart) {
+                result.errors.push_back({
+                    "Periodic counter wrapAt must not be less than start",
+                    QString("Increase wrapAt or reduce counter.start for %1")
+                        .arg(step.id)});
+            }
             if (step.retry.maxAttempts != 1) {
                 result.errors.push_back({
                     "Periodic task does not support Step retry",

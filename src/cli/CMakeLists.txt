@@ -102,6 +102,16 @@ add_test(
 )
 
 add_test(
+    NAME PicoATECliValueToolsExample
+    COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/value_tools_sequence.json" --uuts 1
+)
+
+add_test(
+    NAME PicoATECliPeriodicHeartbeatExample
+    COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/periodic_heartbeat_sequence.json" --uuts 1
+)
+
+add_test(
     NAME PicoATECliCustomDisabledExample
     COMMAND PicoATECli run "${CMAKE_SOURCE_DIR}/examples/custom_disabled_sequence.json" --uuts 1
 )

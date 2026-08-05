@@ -64,6 +64,7 @@ private:
                                      const QString& name,
                                      const QString& outputType);
     void updateParserFieldMappingVisibility();
+    void updateValueToolInputVisibility();
     bool mergeParserFieldMappings(QJsonObject& inputs,
                                   QString& errorMessage,
                                   QWidget** invalidWidget) const;
@@ -74,6 +75,9 @@ private:
     void markDraftDirty();
     void setDraftDirty(bool dirty);
     QWidget* wrapExpressionEditor(QLineEdit* editor);
+    void appendExpressionListRow(QTableWidget* table,
+                                 const QString& name,
+                                 const QVariant& value);
     void rebuildExpressionMenu(QMenu* menu, QLineEdit* editor);
     QWidget* wrapPromptMessageEditor(QPlainTextEdit* editor);
     void rebuildPromptExpressionMenu(QMenu* menu, QPlainTextEdit* editor);
@@ -200,6 +204,9 @@ private:
     QCheckBox* m_periodicEnabledCheck = nullptr;
     QSpinBox* m_periodicIntervalSpin = nullptr;
     QCheckBox* m_periodicRunImmediatelyCheck = nullptr;
+    QSpinBox* m_periodicCounterStartSpin = nullptr;
+    QSpinBox* m_periodicCounterIncrementSpin = nullptr;
+    QSpinBox* m_periodicCounterWrapAtSpin = nullptr;
     QPlainTextEdit* m_resourcesEdit = nullptr;
 };
 

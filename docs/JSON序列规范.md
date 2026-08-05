@@ -405,6 +405,46 @@ runtime variables.
 替换为 `group`。完整规则和示例见 `docs/通用数据解析.md` 与
 `examples/named_text_fields_sequence.json`。
 
+## 基础数值工具
+
+`builtin.value-tools` 是 Core 内置模块，不依赖业务 DLL。Flow Editor 的
+`Basic Functions > Value Tools` 提供以下功能：
+
+| function | UI 名称 | 主要用途 |
+|---|---|---|
+| `statistics` | Numeric Statistics | 对多路数值计算最小值、最大值、温差、平均值和总和 |
+| `calculate` | Basic Calculation | 加减乘除、取模、幂、绝对差、取整、限幅等基础运算 |
+| `textToNumber` | Text To Number | 把 `0xC8`、十进制、八进制或二进制文本解析成整数 |
+| `numberToText` | Number To Text | 需要文本报文时，把整数格式化为指定进制字符串 |
+
+四路温度统计示例：
+
+```json
+{
+  "id": "temperature-statistics",
+  "kind": "action",
+  "moduleId": "builtin.value-tools",
+  "function": "statistics",
+  "inputs": {
+    "values": [
+      { "name": "Gun 1", "value": "${step:read-1.outputs.temperature}" },
+      { "name": "Gun 2", "value": "${step:read-2.outputs.temperature}" },
+      { "name": "Gun 3", "value": "${step:read-3.outputs.temperature}" },
+      { "name": "Gun 4", "value": "${step:read-4.outputs.temperature}" }
+    ]
+  }
+}
+```
+
+`statistics` 输出 `count`、`sum`、`minimum`、`maximum`、`range`、`average`、
+`minimumIndex`、`maximumIndex`、`minimumName` 和 `maximumName`。例如后续 Limit
+通过 `${step:temperature-statistics.outputs.range}` 判断四把充电枪的最大温差。
+
+数值和显示格式必须区分：整数 `200` 在内存中已经可以由 Modbus/CAN 插件写成
+`0x00C8`，通常不需要先转换；只有插件接口明确要求文本报文时，才使用
+`numberToText` 得到 `C8`、`00C8` 或 `0xC8`。完整可运行示例见
+`examples/value_tools_sequence.json`。
+
 ## Limit 比较节点
 
 `limit` 是引擎内置的纯比较节点，不调用业务 DLL。典型用法是让前面的
@@ -971,11 +1011,16 @@ Potential future strict mode:
   "inputs": {
     "deviceId": "MODBUS1",
     "address": 1,
-    "value": 1
+    "value": "${periodic.counter}"
   },
   "periodic": {
     "intervalMs": 5000,
-    "runImmediately": true
+    "runImmediately": true,
+    "counter": {
+      "start": 1,
+      "increment": 1,
+      "wrapAt": 255
+    }
   }
 }
 ```
@@ -984,6 +1029,23 @@ Potential future strict mode:
 |---|---|---|
 | `intervalMs` | 否 | 两次执行之间的间隔，默认 5000 ms，必须大于 0 |
 | `runImmediately` | 否 | 注册后是否立即执行一次，默认 `true` |
+| `counter.start` | 否 | 第一次实际执行使用的计数值，默认 `1` |
+| `counter.increment` | 否 | 每次实际执行后的递增量，默认 `1`，必须大于 0 |
+| `counter.wrapAt` | 否 | 包含式回绕上限；`0` 表示不回绕，默认 `0` |
+
+周期 Action 的输入可以使用：
+
+| 表达式 | 含义 |
+|---|---|
+| `${periodic.counter}` | 按 `start/increment/wrapAt` 生成的业务计数值 |
+| `${periodic.index}` | 本任务实际执行序号，从 `0` 开始 |
+| `${periodic.number}` | 本任务实际执行次数，从 `1` 开始 |
+| `${periodic.requestId}` | 本次调用唯一 requestId |
+
+资源暂时被事务锁占用时，本次触发只会延后，不会增加计数；插件实际返回后才进入
+下一计数值。Fail、Error、Timeout 也属于一次已经完成的调用，因此下一周期继续递增。
+若 `start=1`、`increment=1`、`wrapAt=255`，计数顺序为
+`1, 2, ... 255, 1, ...`。
 
 当前约束：
 

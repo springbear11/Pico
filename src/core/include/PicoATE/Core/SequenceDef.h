@@ -73,6 +73,9 @@ struct PeriodicTaskPolicyDef {
     bool enabled = false;
     int intervalMs = 5000;
     bool runImmediately = true;
+    int counterStart = 1;
+    int counterIncrement = 1;
+    int counterWrapAt = 0;
 
     PeriodicTaskPolicy toRuntimePolicy() const;
 };

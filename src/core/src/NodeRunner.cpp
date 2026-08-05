@@ -1,5 +1,6 @@
 #include "PicoATE/Core/NodeRunner.h"
 #include "PicoATE/Core/DataParserModule.h"
+#include "PicoATE/Core/ValueToolsModule.h"
 #include "PicoATE/Core/InstrumentAdapterModules.h"
 #include "PicoATE/Core/ExecutionControl.h"
 #include "PicoATE/Core/ExecutionResultStore.h"
@@ -178,6 +179,7 @@ NodeRunner::NodeRunner()
     registerModule(std::make_shared<MockActionModule>("mock.action"));
     registerModule(std::make_shared<MockActionModule>("mock.measurement"));
     registerModule(std::make_shared<DataParserModule>());
+    registerModule(std::make_shared<ValueToolsModule>());
     registerModule(std::make_shared<ExampleDmmAdapterModule>());
     registerModule(std::make_shared<ExampleCanAdapterModule>());
     registerHandler(std::make_shared<NoopNodeHandler>());
@@ -217,8 +219,12 @@ NodeResult NodeRunner::run(const ExecNode& node, const NodeExecutionContext& con
     variableContext.uutId = context.uutId;
     variableContext.frameId = context.frameId;
     variableContext.attemptId = context.attemptId;
+    variableContext.requestId = context.requestId;
     variableContext.currentNodeId = node.id;
     variableContext.attemptIndex = context.attemptIndex;
+    variableContext.periodicInvocation = context.periodicInvocation;
+    variableContext.periodicIndex = context.periodicIndex;
+    variableContext.periodicCounter = context.periodicCounter;
     variableContext.variables = context.variables;
     variableContext.resultStore = context.resultStore;
 

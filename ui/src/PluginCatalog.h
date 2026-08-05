@@ -17,7 +17,8 @@ enum class PluginParameterType {
     Number,
     Boolean,
     Enumeration,
-    HexBytes
+    HexBytes,
+    ExpressionList
 };
 
 struct PluginCatalogDiagnostic {
@@ -137,5 +138,6 @@ public:
 
 QString pluginParameterTypeName(PluginParameterType type);
 PluginManifest builtInDataParserManifest();
+PluginManifest builtInValueToolsManifest();
 
 } // namespace PicoATE::Ui

@@ -15,8 +15,12 @@ struct RuntimeVariableContext {
     UutId uutId;
     FrameId frameId;
     AttemptId attemptId;
+    RequestId requestId;
     NodeId currentNodeId;
     int attemptIndex = 0;
+    bool periodicInvocation = false;
+    int periodicIndex = 0;
+    qint64 periodicCounter = 1;
     QVariantMap variables;
     const ExecutionResultStore* resultStore = nullptr;
 };

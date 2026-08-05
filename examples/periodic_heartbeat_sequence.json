@@ -1,0 +1,57 @@
+{
+  "id": "periodic-heartbeat-sequence",
+  "name": "Periodic Heartbeat Counter Example",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "setup",
+      "name": "Setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "heartbeat",
+          "name": "Send Periodic Heartbeat",
+          "kind": "action",
+          "moduleId": "mock.action",
+          "function": "writeHeartbeat",
+          "inputs": {
+            "deviceId": "HEARTBEAT1",
+            "outputs": {
+              "heartbeat": "${periodic.counter}",
+              "invocation": "${periodic.number}",
+              "requestId": "${periodic.requestId}"
+            }
+          },
+          "periodic": {
+            "intervalMs": 20,
+            "runImmediately": true,
+            "counter": {
+              "start": 1,
+              "increment": 1,
+              "wrapAt": 255
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "name": "Main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "run-for-120ms",
+          "name": "Keep Main Flow Running",
+          "kind": "wait",
+          "ms": 120
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "name": "Cleanup",
+      "kind": "cleanup",
+      "steps": []
+    }
+  ]
+}

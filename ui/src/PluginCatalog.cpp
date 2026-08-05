@@ -80,6 +80,7 @@ std::optional<PluginParameterType> parameterType(const QString& value)
     if (normalized == QStringLiteral("boolean")) return PluginParameterType::Boolean;
     if (normalized == QStringLiteral("enum")) return PluginParameterType::Enumeration;
     if (normalized == QStringLiteral("hex-bytes")) return PluginParameterType::HexBytes;
+    if (normalized == QStringLiteral("expression-list")) return PluginParameterType::ExpressionList;
     return std::nullopt;
 }
 
@@ -692,6 +693,7 @@ QString pluginParameterTypeName(PluginParameterType type)
     case PluginParameterType::Boolean: return QStringLiteral("boolean");
     case PluginParameterType::Enumeration: return QStringLiteral("enum");
     case PluginParameterType::HexBytes: return QStringLiteral("hex-bytes");
+    case PluginParameterType::ExpressionList: return QStringLiteral("expression-list");
     }
     return {};
 }
@@ -961,6 +963,179 @@ PluginManifest builtInDataParserManifest()
                PluginParameterType::Integer)
     };
     manifest.functions.push_back(std::move(regex));
+
+    return manifest;
+}
+
+PluginManifest builtInValueToolsManifest()
+{
+    const auto input = [](QString key, QString name, PluginParameterType type,
+                          QVariant defaultValue = {}, bool required = false,
+                          std::optional<double> minimum = {},
+                          std::optional<double> maximum = {}) {
+        PluginParameterDefinition value;
+        value.key = std::move(key);
+        value.name = std::move(name);
+        value.type = type;
+        value.required = required;
+        value.defaultValue = std::move(defaultValue);
+        value.minimum = minimum;
+        value.maximum = maximum;
+        return value;
+    };
+    const auto enumeration = [&input](
+                                 QString key, QString name, QVariant defaultValue,
+                                 std::initializer_list<PluginParameterOption> options) {
+        auto value = input(std::move(key), std::move(name),
+                           PluginParameterType::Enumeration,
+                           std::move(defaultValue));
+        value.options = QVector<PluginParameterOption>(options);
+        return value;
+    };
+    const auto output = [](QString key, QString name,
+                           PluginParameterType type = PluginParameterType::Number) {
+        PluginOutputDefinition value;
+        value.key = std::move(key);
+        value.name = std::move(name);
+        value.type = type;
+        return value;
+    };
+
+    PluginManifest manifest;
+    manifest.abiVersion = 1;
+    manifest.moduleId = QStringLiteral("builtin.value-tools");
+    manifest.name = QStringLiteral("Value Tools");
+    manifest.category = QStringLiteral("BASIC");
+    manifest.version = QStringLiteral("1");
+
+    PluginFunctionDefinition statistics;
+    statistics.id = QStringLiteral("statistics");
+    statistics.name = QStringLiteral("Numeric Statistics");
+    statistics.description = QStringLiteral(
+        "Calculate minimum, maximum, range, average, sum, and source names from runtime values.");
+    statistics.inputs = {
+        input(QStringLiteral("values"), QStringLiteral("Values"),
+              PluginParameterType::ExpressionList, {}, true)
+    };
+    statistics.outputs = {
+        output(QStringLiteral("count"), QStringLiteral("Count"),
+               PluginParameterType::Integer),
+        output(QStringLiteral("sum"), QStringLiteral("Sum")),
+        output(QStringLiteral("minimum"), QStringLiteral("Minimum")),
+        output(QStringLiteral("maximum"), QStringLiteral("Maximum")),
+        output(QStringLiteral("range"), QStringLiteral("Range (Maximum - Minimum)")),
+        output(QStringLiteral("average"), QStringLiteral("Average")),
+        output(QStringLiteral("minimumIndex"), QStringLiteral("Minimum Index"),
+               PluginParameterType::Integer),
+        output(QStringLiteral("maximumIndex"), QStringLiteral("Maximum Index"),
+               PluginParameterType::Integer),
+        output(QStringLiteral("minimumName"), QStringLiteral("Minimum Source"),
+               PluginParameterType::String),
+        output(QStringLiteral("maximumName"), QStringLiteral("Maximum Source"),
+               PluginParameterType::String)
+    };
+    manifest.functions.push_back(std::move(statistics));
+
+    PluginFunctionDefinition calculate;
+    calculate.id = QStringLiteral("calculate");
+    calculate.name = QStringLiteral("Basic Calculation");
+    calculate.description = QStringLiteral(
+        "Run a typed arithmetic operation without executing a free-form script.");
+    calculate.inputs = {
+        enumeration(QStringLiteral("operation"), QStringLiteral("Operation"),
+                    QStringLiteral("add"),
+                    {{QStringLiteral("Add"), QStringLiteral("add")},
+                     {QStringLiteral("Subtract"), QStringLiteral("subtract")},
+                     {QStringLiteral("Multiply"), QStringLiteral("multiply")},
+                     {QStringLiteral("Divide"), QStringLiteral("divide")},
+                     {QStringLiteral("Modulo"), QStringLiteral("modulo")},
+                     {QStringLiteral("Power"), QStringLiteral("power")},
+                     {QStringLiteral("Minimum"), QStringLiteral("minimum")},
+                     {QStringLiteral("Maximum"), QStringLiteral("maximum")},
+                     {QStringLiteral("Absolute Difference"), QStringLiteral("absoluteDifference")},
+                     {QStringLiteral("Absolute"), QStringLiteral("absolute")},
+                     {QStringLiteral("Negate"), QStringLiteral("negate")},
+                     {QStringLiteral("Square Root"), QStringLiteral("squareRoot")},
+                     {QStringLiteral("Round"), QStringLiteral("round")},
+                     {QStringLiteral("Floor"), QStringLiteral("floor")},
+                     {QStringLiteral("Ceiling"), QStringLiteral("ceil")},
+                     {QStringLiteral("Clamp"), QStringLiteral("clamp")}}),
+        input(QStringLiteral("a"), QStringLiteral("Operand A"),
+              PluginParameterType::Number, {}, true),
+        input(QStringLiteral("b"), QStringLiteral("Operand B"),
+              PluginParameterType::Number),
+        input(QStringLiteral("minimum"), QStringLiteral("Minimum"),
+              PluginParameterType::Number),
+        input(QStringLiteral("maximum"), QStringLiteral("Maximum"),
+              PluginParameterType::Number),
+        input(QStringLiteral("decimals"), QStringLiteral("Decimal Places"),
+              PluginParameterType::Integer, 0, false, 0, 12)
+    };
+    calculate.outputs = {
+        output(QStringLiteral("value"), QStringLiteral("Result")),
+        output(QStringLiteral("operation"), QStringLiteral("Operation"),
+               PluginParameterType::String)
+    };
+    manifest.functions.push_back(std::move(calculate));
+
+    PluginFunctionDefinition textToNumber;
+    textToNumber.id = QStringLiteral("textToNumber");
+    textToNumber.name = QStringLiteral("Text To Number");
+    textToNumber.description = QStringLiteral(
+        "Parse decimal, hexadecimal, octal, or binary text into an integer.");
+    textToNumber.inputs = {
+        input(QStringLiteral("text"), QStringLiteral("Text"),
+              PluginParameterType::String, {}, true),
+        enumeration(QStringLiteral("base"), QStringLiteral("Input Base"), 0,
+                    {{QStringLiteral("Auto Detect"), 0},
+                     {QStringLiteral("Binary (2)"), 2},
+                     {QStringLiteral("Octal (8)"), 8},
+                     {QStringLiteral("Decimal (10)"), 10},
+                     {QStringLiteral("Hexadecimal (16)"), 16}})
+    };
+    textToNumber.outputs = {
+        output(QStringLiteral("number"), QStringLiteral("Number"),
+               PluginParameterType::Integer),
+        output(QStringLiteral("decimalText"), QStringLiteral("Decimal Text"),
+               PluginParameterType::String),
+        output(QStringLiteral("hexText"), QStringLiteral("Hexadecimal Text"),
+               PluginParameterType::String),
+        output(QStringLiteral("binaryText"), QStringLiteral("Binary Text"),
+               PluginParameterType::String),
+        output(QStringLiteral("base"), QStringLiteral("Detected Base"),
+               PluginParameterType::Integer)
+    };
+    manifest.functions.push_back(std::move(textToNumber));
+
+    PluginFunctionDefinition numberToText;
+    numberToText.id = QStringLiteral("numberToText");
+    numberToText.name = QStringLiteral("Number To Text");
+    numberToText.description = QStringLiteral(
+        "Format an integer as decimal, hexadecimal, octal, or binary text.");
+    numberToText.inputs = {
+        input(QStringLiteral("value"), QStringLiteral("Value"),
+              PluginParameterType::Integer, {}, true),
+        enumeration(QStringLiteral("base"), QStringLiteral("Output Base"), 16,
+                    {{QStringLiteral("Binary (2)"), 2},
+                     {QStringLiteral("Octal (8)"), 8},
+                     {QStringLiteral("Decimal (10)"), 10},
+                     {QStringLiteral("Hexadecimal (16)"), 16}}),
+        input(QStringLiteral("width"), QStringLiteral("Minimum Width"),
+              PluginParameterType::Integer, 0, false, 0, 64),
+        input(QStringLiteral("prefix"), QStringLiteral("Include Prefix"),
+              PluginParameterType::Boolean, false),
+        input(QStringLiteral("uppercase"), QStringLiteral("Uppercase"),
+              PluginParameterType::Boolean, true)
+    };
+    numberToText.outputs = {
+        output(QStringLiteral("number"), QStringLiteral("Number"),
+               PluginParameterType::Integer),
+        output(QStringLiteral("text"), QStringLiteral("Formatted Text"),
+               PluginParameterType::String),
+        output(QStringLiteral("base"), QStringLiteral("Base"),
+               PluginParameterType::Integer)
+    };
+    manifest.functions.push_back(std::move(numberToText));
 
     return manifest;
 }

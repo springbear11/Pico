@@ -156,6 +156,7 @@ private slots:
     void parserPropertyEditorCreatesNamedOutputsForFx();
     void parserPropertyEditorPreservesExplicitEmptyEndMarker();
     void whileLoopPropertyEditorUsesTypedFields();
+    void valueToolsPropertyEditorUsesExpressionList();
     void periodicActionPropertyEditorUsesTypedPolicyFields();
 
 private:
@@ -4505,6 +4506,91 @@ void MainWindowLifecycleTests::whileLoopPropertyEditorUsesTypedFields()
     QVERIFY(!loop.contains(QStringLiteral("variable")));
 }
 
+void MainWindowLifecycleTests::valueToolsPropertyEditorUsesExpressionList()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("value_tools_editor.json"));
+    QFile file(sequencePath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"json({
+      "id":"value-tools-editor","name":"Value Tools Editor","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"temperature-statistics","kind":"action",
+          "moduleId":"builtin.value-tools","function":"statistics",
+          "inputs":{"values":[
+            {"name":"Gun 1","value":"${var.temperature1}"},
+            {"name":"Gun 2","value":42.5}
+          ]}
+        },{
+          "id":"calculate","kind":"action",
+          "moduleId":"builtin.value-tools","function":"calculate",
+          "inputs":{"operation":"add","a":5,"b":2}
+        }]
+      }]
+    })json");
+    file.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(sequencePath));
+    StepPropertyEditor editor(&document);
+    editor.setPluginRegistry({});
+    const SequenceItemPath stepPath{0, {0}};
+    editor.setCurrentItem(stepPath);
+
+    auto* function = editor.findChild<QComboBox*>(
+        QStringLiteral("propertyFunctionEdit"));
+    auto* arguments = editor.findChild<QGroupBox*>(
+        QStringLiteral("pluginInputsGroup"));
+    QVERIFY(function);
+    QVERIFY(arguments);
+    QCOMPARE(function->currentData().toString(), QStringLiteral("statistics"));
+    QVERIFY(!arguments->isHidden());
+    auto* values = editor.findChild<QTableWidget*>(
+        QStringLiteral("pluginInput_values"));
+    QVERIFY(values);
+    QCOMPARE(values->rowCount(), 2);
+    auto* secondValueField = values->cellWidget(1, 1);
+    QVERIFY(secondValueField);
+    auto* secondValue = secondValueField->findChild<QLineEdit*>(
+        QStringLiteral("expressionListValue"));
+    QVERIFY(secondValue);
+    QCOMPARE(secondValue->text(), QStringLiteral("42.5"));
+    secondValue->setText(QStringLiteral("44.5"));
+    QVERIFY(editor.commitPendingChanges());
+
+    const auto savedValues = document.objectAt(stepPath)
+        .value(QStringLiteral("inputs")).toObject()
+        .value(QStringLiteral("values")).toArray();
+    QCOMPARE(savedValues.size(), 2);
+    QCOMPARE(savedValues[0].toObject().value(QStringLiteral("name")).toString(),
+             QStringLiteral("Gun 1"));
+    QCOMPARE(savedValues[0].toObject().value(QStringLiteral("value")).toString(),
+             QStringLiteral("${var.temperature1}"));
+    QCOMPARE(savedValues[1].toObject().value(QStringLiteral("value")).toDouble(),
+             44.5);
+
+    const SequenceItemPath calculatePath{0, {1}};
+    editor.setCurrentItem(calculatePath);
+    auto* operation = editor.findChild<QComboBox*>(
+        QStringLiteral("pluginInput_operation"));
+    auto* operandB = editor.findChild<QLineEdit*>(
+        QStringLiteral("pluginInput_b"));
+    QVERIFY(operation);
+    QVERIFY(operandB);
+    QCOMPARE(operandB->text(), QStringLiteral("2"));
+    const int absoluteIndex = operation->findData(QStringLiteral("absolute"));
+    QVERIFY(absoluteIndex >= 0);
+    operation->setCurrentIndex(absoluteIndex);
+    QVERIFY(operandB->parentWidget()->property("valueToolInactive").toBool());
+    QVERIFY(editor.commitPendingChanges());
+    const auto calculateInputs = document.objectAt(calculatePath)
+        .value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(calculateInputs.value(QStringLiteral("operation")).toString(),
+             QStringLiteral("absolute"));
+    QVERIFY(!calculateInputs.contains(QStringLiteral("b")));
+}
+
 void MainWindowLifecycleTests::periodicActionPropertyEditorUsesTypedPolicyFields()
 {
     QTemporaryDir directory;
@@ -4535,22 +4621,40 @@ void MainWindowLifecycleTests::periodicActionPropertyEditorUsesTypedPolicyFields
         QStringLiteral("propertyPeriodicIntervalSpin"));
     auto* immediate = editor.findChild<QCheckBox*>(
         QStringLiteral("propertyPeriodicRunImmediatelyCheck"));
+    auto* counterStart = editor.findChild<QSpinBox*>(
+        QStringLiteral("propertyPeriodicCounterStartSpin"));
+    auto* counterIncrement = editor.findChild<QSpinBox*>(
+        QStringLiteral("propertyPeriodicCounterIncrementSpin"));
+    auto* counterWrapAt = editor.findChild<QSpinBox*>(
+        QStringLiteral("propertyPeriodicCounterWrapAtSpin"));
     QVERIFY(enabled);
     QVERIFY(interval);
     QVERIFY(immediate);
+    QVERIFY(counterStart);
+    QVERIFY(counterIncrement);
+    QVERIFY(counterWrapAt);
     QVERIFY(!enabled->isHidden());
     QVERIFY(interval->isHidden());
+    QVERIFY(counterStart->isHidden());
 
     enabled->setChecked(true);
     QVERIFY(!interval->isHidden());
+    QVERIFY(!counterStart->isHidden());
     interval->setValue(5000);
     immediate->setChecked(false);
+    counterStart->setValue(1);
+    counterIncrement->setValue(1);
+    counterWrapAt->setValue(255);
     QVERIFY(editor.commitPendingChanges());
 
     const auto periodic = document.objectAt(heartbeatPath)
         .value(QStringLiteral("periodic")).toObject();
     QCOMPARE(periodic.value(QStringLiteral("intervalMs")).toInt(), 5000);
     QCOMPARE(periodic.value(QStringLiteral("runImmediately")).toBool(), false);
+    const auto counter = periodic.value(QStringLiteral("counter")).toObject();
+    QCOMPARE(counter.value(QStringLiteral("start")).toInt(), 1);
+    QCOMPARE(counter.value(QStringLiteral("increment")).toInt(), 1);
+    QCOMPARE(counter.value(QStringLiteral("wrapAt")).toInt(), 255);
 }
 
 QTEST_MAIN(MainWindowLifecycleTests)

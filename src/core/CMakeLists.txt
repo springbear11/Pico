@@ -39,6 +39,7 @@ add_library(PicoATECore SHARED
     src/StationRuntime.cpp
     src/StopToken.cpp
     src/TimerService.cpp
+    src/ValueToolsModule.cpp
     src/VariableResolver.cpp
 )
 

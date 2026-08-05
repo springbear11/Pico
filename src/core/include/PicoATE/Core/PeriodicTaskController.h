@@ -18,6 +18,9 @@ struct PeriodicTaskRegistration {
     ActivationId activationId;
     int intervalMs = 5000;
     bool runImmediately = true;
+    int counterStart = 1;
+    int counterIncrement = 1;
+    int counterWrapAt = 0;
 };
 
 struct PeriodicTaskInvocation {
@@ -27,6 +30,7 @@ struct PeriodicTaskInvocation {
     UutExecution* execution = nullptr;
     FrameId frameId;
     int invocationIndex = 0;
+    qint64 counterValue = 1;
 };
 
 struct PeriodicTaskSummary {

@@ -577,6 +577,15 @@ void StepPropertyEditor::setPluginRegistry(QVector<PluginManifest> plugins)
     if (!hasDataParser) {
         plugins.push_back(builtInDataParserManifest());
     }
+    const auto hasValueTools = std::any_of(
+        plugins.cbegin(), plugins.cend(), [](const PluginManifest& plugin) {
+            return plugin.moduleId.compare(
+                       QStringLiteral("builtin.value-tools"),
+                       Qt::CaseInsensitive) == 0;
+        });
+    if (!hasValueTools) {
+        plugins.push_back(builtInValueToolsManifest());
+    }
     m_plugins = std::move(plugins);
     rebuildFunctionChoices();
     rebuildDeviceChoices();
@@ -1146,6 +1155,24 @@ void StepPropertyEditor::buildPolicyPage()
     m_periodicRunImmediatelyCheck->setObjectName(
         QStringLiteral("propertyPeriodicRunImmediatelyCheck"));
     m_policyForm->addRow(tr("First run"), m_periodicRunImmediatelyCheck);
+    m_periodicCounterStartSpin = new QSpinBox(content);
+    m_periodicCounterStartSpin->setObjectName(
+        QStringLiteral("propertyPeriodicCounterStartSpin"));
+    m_periodicCounterStartSpin->setRange(0, std::numeric_limits<int>::max());
+    m_periodicCounterStartSpin->setValue(1);
+    m_policyForm->addRow(tr("Counter start"), m_periodicCounterStartSpin);
+    m_periodicCounterIncrementSpin = new QSpinBox(content);
+    m_periodicCounterIncrementSpin->setObjectName(
+        QStringLiteral("propertyPeriodicCounterIncrementSpin"));
+    m_periodicCounterIncrementSpin->setRange(1, std::numeric_limits<int>::max());
+    m_periodicCounterIncrementSpin->setValue(1);
+    m_policyForm->addRow(tr("Counter increment"), m_periodicCounterIncrementSpin);
+    m_periodicCounterWrapAtSpin = new QSpinBox(content);
+    m_periodicCounterWrapAtSpin->setObjectName(
+        QStringLiteral("propertyPeriodicCounterWrapAtSpin"));
+    m_periodicCounterWrapAtSpin->setRange(0, std::numeric_limits<int>::max());
+    m_periodicCounterWrapAtSpin->setSpecialValueText(tr("No wrap"));
+    m_policyForm->addRow(tr("Counter wrap at"), m_periodicCounterWrapAtSpin);
 
     m_resourcesEdit = new QPlainTextEdit(content);
     m_resourcesEdit->setObjectName(QStringLiteral("propertyResourcesEdit"));
@@ -1299,10 +1326,17 @@ void StepPropertyEditor::loadCurrentObject()
     m_timeoutSpin->setValue(timeout.value("timeoutMs").toInt(
         m_sourceObject.value("timeoutMs").toInt(0)));
     const auto periodic = m_sourceObject.value("periodic").toObject();
+    const auto periodicCounter = periodic.value(QStringLiteral("counter")).toObject();
     m_periodicEnabledCheck->setChecked(!periodic.isEmpty());
     m_periodicIntervalSpin->setValue(periodic.value("intervalMs").toInt(5000));
     m_periodicRunImmediatelyCheck->setChecked(
         periodic.value("runImmediately").toBool(true));
+    m_periodicCounterStartSpin->setValue(
+        periodicCounter.value(QStringLiteral("start")).toInt(1));
+    m_periodicCounterIncrementSpin->setValue(
+        periodicCounter.value(QStringLiteral("increment")).toInt(1));
+    m_periodicCounterWrapAtSpin->setValue(
+        periodicCounter.value(QStringLiteral("wrapAt")).toInt(0));
     m_resourcesEdit->setPlainText(arrayText(m_sourceObject.value("resources").toArray()));
 
     rebuildDeviceChoices();
@@ -1385,6 +1419,9 @@ void StepPropertyEditor::updateKindRows()
     setFormRowVisible(m_policyForm, m_periodicEnabledCheck, action);
     setFormRowVisible(m_policyForm, m_periodicIntervalSpin, periodic);
     setFormRowVisible(m_policyForm, m_periodicRunImmediatelyCheck, periodic);
+    setFormRowVisible(m_policyForm, m_periodicCounterStartSpin, periodic);
+    setFormRowVisible(m_policyForm, m_periodicCounterIncrementSpin, periodic);
+    setFormRowVisible(m_policyForm, m_periodicCounterWrapAtSpin, periodic);
     updateLoopRows();
     updateLimitRows();
     updateAdvancedJsonVisibility();
@@ -1788,6 +1825,7 @@ void StepPropertyEditor::rebuildPluginInputEditors()
         }
 
         QWidget* editor = nullptr;
+        QWidget* customFieldWidget = nullptr;
         if (definition.type == PluginParameterType::Boolean) {
             if (!definition.required && !definition.defaultValue.isValid()) {
                 auto* combo = new QComboBox(m_pluginInputsGroup);
@@ -1816,6 +1854,74 @@ void StepPropertyEditor::rebuildPluginInputEditors()
             const int selected = value.isValid() ? combo->findData(value) : 0;
             combo->setCurrentIndex(selected >= 0 ? selected : 0);
             editor = combo;
+        } else if (definition.type == PluginParameterType::ExpressionList) {
+            auto* container = new QWidget(m_pluginInputsGroup);
+            auto* layout = new QVBoxLayout(container);
+            layout->setContentsMargins(0, 0, 0, 0);
+            layout->setSpacing(4);
+
+            auto* table = new QTableWidget(container);
+            table->setColumnCount(2);
+            table->setHorizontalHeaderLabels({tr("Name"), tr("Value / Expression")});
+            table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+            table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+            table->verticalHeader()->hide();
+            table->setSelectionBehavior(QAbstractItemView::SelectRows);
+            table->setSelectionMode(QAbstractItemView::SingleSelection);
+            table->setMinimumHeight(150);
+
+            const auto configured = value.toList();
+            for (int valueIndex = 0; valueIndex < configured.size(); ++valueIndex) {
+                const auto item = configured[valueIndex].toMap();
+                appendExpressionListRow(
+                    table,
+                    item.value(QStringLiteral("name"),
+                               QStringLiteral("Value %1").arg(valueIndex + 1)).toString(),
+                    item.contains(QStringLiteral("value"))
+                        ? item.value(QStringLiteral("value"))
+                        : configured[valueIndex]);
+            }
+            if (table->rowCount() == 0) {
+                appendExpressionListRow(table, tr("Value 1"), {});
+            }
+
+            auto* controls = new QWidget(container);
+            auto* controlsLayout = new QHBoxLayout(controls);
+            controlsLayout->setContentsMargins(0, 0, 0, 0);
+            controlsLayout->setSpacing(4);
+            controlsLayout->addStretch(1);
+            auto* add = new QToolButton(controls);
+            add->setText(QStringLiteral("+"));
+            add->setToolTip(tr("Add value"));
+            add->setFixedSize(28, 28);
+            auto* remove = new QToolButton(controls);
+            remove->setText(QStringLiteral("-"));
+            remove->setToolTip(tr("Remove selected value"));
+            remove->setFixedSize(28, 28);
+            controlsLayout->addWidget(add);
+            controlsLayout->addWidget(remove);
+            layout->addWidget(table);
+            layout->addWidget(controls);
+
+            connect(add, &QToolButton::clicked, this, [this, table] {
+                appendExpressionListRow(
+                    table,
+                    tr("Value %1").arg(table->rowCount() + 1),
+                    {});
+                table->selectRow(table->rowCount() - 1);
+                markDraftDirty();
+            });
+            connect(remove, &QToolButton::clicked, this, [this, table] {
+                const int row = table->currentRow();
+                if (row < 0) {
+                    return;
+                }
+                table->removeRow(row);
+                markDraftDirty();
+            });
+
+            editor = table;
+            customFieldWidget = container;
         } else {
             auto* edit = new QLineEdit(m_pluginInputsGroup);
             if (value.isValid()) {
@@ -1882,7 +1988,7 @@ void StepPropertyEditor::rebuildPluginInputEditors()
         } else if (logicalDeviceConnection) {
             label += tr(" (Step override)");
         }
-        auto* fieldWidget = editor;
+        auto* fieldWidget = customFieldWidget ? customFieldWidget : editor;
         if (auto* lineEdit = qobject_cast<QLineEdit*>(editor)) {
             fieldWidget = wrapExpressionEditor(lineEdit);
             if (inheritedFromStation) {
@@ -2020,6 +2126,16 @@ void StepPropertyEditor::rebuildPluginInputEditors()
         }
         refreshCanIdentifierHints();
     }
+    for (const auto& item : std::as_const(m_pluginInputEditors)) {
+        if (item.definition.key != QStringLiteral("operation")) {
+            continue;
+        }
+        if (auto* combo = qobject_cast<QComboBox*>(item.widget)) {
+            connect(combo, &QComboBox::currentIndexChanged, this,
+                    [this] { updateValueToolInputVisibility(); });
+        }
+    }
+    updateValueToolInputVisibility();
     m_pluginInputsGroup->show();
 }
 
@@ -2272,6 +2388,71 @@ QWidget* StepPropertyEditor::wrapExpressionEditor(QLineEdit* editor)
     return container;
 }
 
+void StepPropertyEditor::updateValueToolInputVisibility()
+{
+    if (!m_pluginInputsForm || !m_moduleIdEdit || !m_functionEdit ||
+        m_moduleIdEdit->text().trimmed().compare(
+            QStringLiteral("builtin.value-tools"), Qt::CaseInsensitive) != 0 ||
+        m_functionEdit->currentData().toString().compare(
+            QStringLiteral("calculate"), Qt::CaseInsensitive) != 0) {
+        return;
+    }
+
+    QString operation;
+    for (const auto& item : std::as_const(m_pluginInputEditors)) {
+        if (item.definition.key == QStringLiteral("operation")) {
+            if (const auto* combo = qobject_cast<const QComboBox*>(item.widget)) {
+                operation = combo->currentData().toString().trimmed().toLower();
+            }
+            break;
+        }
+    }
+    const QSet<QString> unary = {
+        QStringLiteral("absolute"), QStringLiteral("negate"),
+        QStringLiteral("squareroot"), QStringLiteral("round"),
+        QStringLiteral("floor"), QStringLiteral("ceil"),
+        QStringLiteral("clamp")};
+
+    for (const auto& item : std::as_const(m_pluginInputEditors)) {
+        bool visible = true;
+        if (item.definition.key == QStringLiteral("b")) {
+            visible = !unary.contains(operation);
+        } else if (item.definition.key == QStringLiteral("minimum") ||
+                   item.definition.key == QStringLiteral("maximum")) {
+            visible = operation == QStringLiteral("clamp");
+        } else if (item.definition.key == QStringLiteral("decimals")) {
+            visible = operation == QStringLiteral("round");
+        }
+        item.fieldWidget->setProperty("valueToolInactive", !visible);
+        setFormRowVisible(m_pluginInputsForm, item.fieldWidget, visible);
+    }
+}
+
+void StepPropertyEditor::appendExpressionListRow(QTableWidget* table,
+                                                 const QString& name,
+                                                 const QVariant& value)
+{
+    if (!table) {
+        return;
+    }
+    const int row = table->rowCount();
+    table->insertRow(row);
+
+    auto* nameEdit = new QLineEdit(table);
+    nameEdit->setObjectName(QStringLiteral("expressionListName"));
+    nameEdit->setText(name);
+    auto* valueEdit = new QLineEdit(table);
+    valueEdit->setObjectName(QStringLiteral("expressionListValue"));
+    valueEdit->setPlaceholderText(tr("Number or ${step:...outputs...}"));
+    if (value.isValid()) {
+        valueEdit->setText(value.toString());
+    }
+    table->setCellWidget(row, 0, nameEdit);
+    table->setCellWidget(row, 1, wrapExpressionEditor(valueEdit));
+    observeDraftWidget(nameEdit);
+    observeDraftWidget(valueEdit);
+}
+
 void StepPropertyEditor::rebuildExpressionMenu(QMenu* menu, QLineEdit* editor)
 {
     if (!menu || !editor) {
@@ -2305,6 +2486,28 @@ void StepPropertyEditor::rebuildExpressionMenu(QMenu* menu, QLineEdit* editor)
                 definition.value(QStringLiteral("description")).toString());
             connect(action, &QAction::triggered, editor,
                     [editor, expression = QStringLiteral("${var.%1}").arg(name)] {
+                        editor->setText(expression);
+                        editor->setFocus();
+                        editor->selectAll();
+                    });
+            ++variableCount;
+        }
+    }
+    if (!m_isGroup &&
+        m_kindCombo->currentData().toString() == QStringLiteral("action") &&
+        m_periodicEnabledCheck->isChecked()) {
+        auto* periodicMenu = menu->addMenu(tr("Periodic Task"));
+        const std::array<std::pair<QString, QString>, 4> periodicValues = {{
+            {tr("Counter value"), QStringLiteral("${periodic.counter}")},
+            {tr("Invocation number (1-based)"), QStringLiteral("${periodic.number}")},
+            {tr("Invocation index (0-based)"), QStringLiteral("${periodic.index}")},
+            {tr("Request ID"), QStringLiteral("${periodic.requestId}")},
+        }};
+        for (const auto& [label, expression] : periodicValues) {
+            auto* action = periodicMenu->addAction(label);
+            action->setToolTip(expression);
+            connect(action, &QAction::triggered, editor,
+                    [editor, expression] {
                         editor->setText(expression);
                         editor->setFocus();
                         editor->selectAll();
@@ -2604,6 +2807,62 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
         const auto& definition = item.definition;
         if (item.inheritedFromStation) {
             inputs.remove(definition.key);
+            continue;
+        }
+        if (item.fieldWidget &&
+            item.fieldWidget->property("valueToolInactive").toBool()) {
+            inputs.remove(definition.key);
+            continue;
+        }
+        if (definition.type == PluginParameterType::ExpressionList) {
+            const auto* table = qobject_cast<const QTableWidget*>(item.widget);
+            QJsonArray values;
+            if (table) {
+                for (int row = 0; row < table->rowCount(); ++row) {
+                    const auto* nameEdit = qobject_cast<const QLineEdit*>(
+                        table->cellWidget(row, 0));
+                    const auto* valueField = table->cellWidget(row, 1);
+                    const auto* valueEdit = valueField
+                        ? valueField->findChild<QLineEdit*>(
+                              QStringLiteral("expressionListValue"))
+                        : nullptr;
+                    if (!valueEdit || valueEdit->text().trimmed().isEmpty()) {
+                        continue;
+                    }
+                    const auto text = valueEdit->text().trimmed();
+                    QJsonValue parsedValue;
+                    if (isExpression(text)) {
+                        parsedValue = text;
+                    } else {
+                        bool ok = false;
+                        const double number = text.toDouble(&ok);
+                        if (!ok || !std::isfinite(number)) {
+                            errorMessage = tr("Statistics value %1 must be a number or expression")
+                                               .arg(row + 1);
+                            if (invalidWidget) {
+                                *invalidWidget = const_cast<QLineEdit*>(valueEdit);
+                            }
+                            return false;
+                        }
+                        parsedValue = number;
+                    }
+                    auto name = nameEdit ? nameEdit->text().trimmed() : QString{};
+                    if (name.isEmpty()) {
+                        name = tr("Value %1").arg(row + 1);
+                    }
+                    values.push_back(QJsonObject{
+                        {QStringLiteral("name"), name},
+                        {QStringLiteral("value"), parsedValue}});
+                }
+            }
+            if (definition.required && values.isEmpty()) {
+                errorMessage = tr("%1 requires at least one value")
+                                   .arg(definition.name);
+                if (invalidWidget) *invalidWidget = item.fieldWidget;
+                return false;
+            }
+            if (values.isEmpty()) inputs.remove(definition.key);
+            else inputs.insert(definition.key, values);
             continue;
         }
         if (const auto* toggle =
@@ -3030,6 +3289,14 @@ bool StepPropertyEditor::commitPendingChanges()
                             m_periodicIntervalSpin->value());
             periodic.insert(QStringLiteral("runImmediately"),
                             m_periodicRunImmediatelyCheck->isChecked());
+            QJsonObject counter;
+            counter.insert(QStringLiteral("start"),
+                           m_periodicCounterStartSpin->value());
+            counter.insert(QStringLiteral("increment"),
+                           m_periodicCounterIncrementSpin->value());
+            counter.insert(QStringLiteral("wrapAt"),
+                           m_periodicCounterWrapAtSpin->value());
+            periodic.insert(QStringLiteral("counter"), counter);
             updated.insert(QStringLiteral("periodic"), periodic);
         } else {
             updated.remove(QStringLiteral("periodic"));

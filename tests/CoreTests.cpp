@@ -29,6 +29,7 @@
 #include "PicoATE/Core/StationConfig.h"
 #include "PicoATE/Core/StationRunPreparation.h"
 #include "PicoATE/Core/StationRuntime.h"
+#include "PicoATE/Core/ValueToolsModule.h"
 #include "PicoATE/Core/VariableResolver.h"
 
 #include <algorithm>
@@ -236,6 +237,7 @@ public:
     {
         requestIds.push_back(context.requestId);
         callTimesMs.push_back(clock.isValid() ? clock.elapsed() : 0);
+        heartbeatValues.push_back(context.inputs.value(QStringLiteral("heartbeat")));
         ModuleResult result;
         result.outputs.insert(QStringLiteral("callCount"), requestIds.size());
         if (failFirst && requestIds.size() == 1) {
@@ -250,6 +252,7 @@ public:
     QElapsedTimer clock;
     QVector<RequestId> requestIds;
     QVector<qint64> callTimesMs;
+    QVector<QVariant> heartbeatValues;
 };
 
 class MultiUutLifecycleModule final : public IModule {
@@ -605,6 +608,7 @@ private slots:
     void dataParserDecodesBinaryAndModbusValues();
     void dataParserExtractsStructuredTextAndReportsFailures();
     void dataParserExtractsMultipleNamedFields();
+    void valueToolsCalculateStatisticsAndConvertNumbers();
     void moduleTransportJsonSerializesRequestAndResponse();
     void pluginLogHandlesEmptyCallbackAndMixedValues();
     void variableResolverResolvesBuiltInsExplicitVariablesAndEnvironment();
@@ -1617,6 +1621,60 @@ void CoreTests::dataParserExtractsMultipleNamedFields()
     }));
 }
 
+void CoreTests::valueToolsCalculateStatisticsAndConvertNumbers()
+{
+    ValueToolsModule module;
+    CollectingModuleLogSink logs;
+    ModuleExecutionContext context;
+    context.logSink = &logs;
+    context.inputs.insert(QStringLiteral("values"), QVariantList{
+        QVariantMap{{QStringLiteral("name"), QStringLiteral("Gun 1")},
+                    {QStringLiteral("value"), 40.0}},
+        QVariantMap{{QStringLiteral("name"), QStringLiteral("Gun 2")},
+                    {QStringLiteral("value"), 44.5}},
+        QVariantMap{{QStringLiteral("name"), QStringLiteral("Gun 3")},
+                    {QStringLiteral("value"), 38.0}},
+        QVariantMap{{QStringLiteral("name"), QStringLiteral("Gun 4")},
+                    {QStringLiteral("value"), 41.0}}
+    });
+
+    auto result = module.execute(QStringLiteral("statistics"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("minimum")).toDouble(), 38.0);
+    QCOMPARE(result.outputs.value(QStringLiteral("maximum")).toDouble(), 44.5);
+    QCOMPARE(result.outputs.value(QStringLiteral("range")).toDouble(), 6.5);
+    QCOMPARE(result.outputs.value(QStringLiteral("minimumName")).toString(),
+             QStringLiteral("Gun 3"));
+    QCOMPARE(result.outputs.value(QStringLiteral("maximumName")).toString(),
+             QStringLiteral("Gun 2"));
+
+    context.inputs = {{QStringLiteral("operation"), QStringLiteral("absoluteDifference")},
+                      {QStringLiteral("a"), 44.5},
+                      {QStringLiteral("b"), 38.0}};
+    result = module.execute(QStringLiteral("calculate"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("value")).toDouble(), 6.5);
+
+    context.inputs = {{QStringLiteral("text"), QStringLiteral("0xC8")},
+                      {QStringLiteral("base"), 0}};
+    result = module.execute(QStringLiteral("textToNumber"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("number")).toLongLong(), qint64(200));
+    QCOMPARE(result.outputs.value(QStringLiteral("hexText")).toString(),
+             QStringLiteral("0xC8"));
+
+    context.inputs = {{QStringLiteral("value"), 200},
+                      {QStringLiteral("base"), 16},
+                      {QStringLiteral("width"), 4},
+                      {QStringLiteral("prefix"), false},
+                      {QStringLiteral("uppercase"), true}};
+    result = module.execute(QStringLiteral("numberToText"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("text")).toString(),
+             QStringLiteral("00C8"));
+    QVERIFY(logs.records().size() >= 4);
+}
+
 void CoreTests::moduleTransportJsonSerializesRequestAndResponse()
 {
     ModuleTransportRequest request;
@@ -1788,6 +1846,10 @@ void CoreTests::runtimeVariableResolverPreservesTypesAndInterpolatesStrings()
     context.frameId = "root";
     context.attemptId = "attempt-2";
     context.attemptIndex = 1;
+    context.requestId = QStringLiteral("periodic-request-8");
+    context.periodicInvocation = true;
+    context.periodicIndex = 7;
+    context.periodicCounter = 200;
     context.variables.insert("channelIndex", 3);
     context.variables.insert("loop.index", 2);
     context.variables.insert("loop.value", 42);
@@ -1802,6 +1864,10 @@ void CoreTests::runtimeVariableResolverPreservesTypesAndInterpolatesStrings()
     input.insert("loopIndex", "${loop.index}");
     input.insert("loopValue", "${loop.value}");
     input.insert("limitEnabled", "${var.limits.enabled}");
+    input.insert("periodicIndex", "${periodic.index}");
+    input.insert("periodicNumber", "${periodic.number}");
+    input.insert("periodicCounter", "${periodic.counter}");
+    input.insert("periodicRequestId", "${periodic.requestId}");
 
     RuntimeVariableResolver resolver(context);
     QVector<VariableResolutionError> errors;
@@ -1815,6 +1881,11 @@ void CoreTests::runtimeVariableResolverPreservesTypesAndInterpolatesStrings()
     QCOMPARE(resolved.value("loopValue").toInt(), 42);
     QCOMPARE(resolved.value("limitEnabled").metaType().id(), QMetaType::Bool);
     QCOMPARE(resolved.value("limitEnabled").toBool(), true);
+    QCOMPARE(resolved.value("periodicIndex").toInt(), 7);
+    QCOMPARE(resolved.value("periodicNumber").toInt(), 8);
+    QCOMPARE(resolved.value("periodicCounter").toLongLong(), qint64(200));
+    QCOMPARE(resolved.value("periodicRequestId").toString(),
+             QStringLiteral("periodic-request-8"));
 }
 
 void CoreTests::nodeRunnerResolvesRuntimeVariablesBeforeModuleExecution()
@@ -8399,8 +8470,9 @@ void CoreTests::sequenceCompilerRunsCooperativePeriodicAction()
         {"id":"setup","kind":"setup","steps":[{
           "id":"heartbeat","name":"Heartbeat","kind":"action",
           "moduleId":"test.periodic","function":"send",
-          "inputs":{"deviceId":"DEVICE1"},
-          "periodic":{"intervalMs":10,"runImmediately":true}
+          "inputs":{"deviceId":"DEVICE1","heartbeat":"${periodic.counter}"},
+          "periodic":{"intervalMs":10,"runImmediately":true,
+                      "counter":{"start":1,"increment":1,"wrapAt":3}}
         }]},
         {"id":"main","kind":"main","steps":[
           {"id":"wait-main","kind":"wait","ms":75}
@@ -8420,6 +8492,9 @@ void CoreTests::sequenceCompilerRunsCooperativePeriodicAction()
     QVERIFY(heartbeat);
     QVERIFY(heartbeat->periodic.enabled);
     QCOMPARE(heartbeat->periodic.intervalMs, 10);
+    QCOMPARE(heartbeat->periodic.counterStart, 1);
+    QCOMPARE(heartbeat->periodic.counterIncrement, 1);
+    QCOMPARE(heartbeat->periodic.counterWrapAt, 3);
     QCOMPARE(heartbeat->resources.size(), 1);
     QCOMPARE(heartbeat->resources.first().resourceId, QStringLiteral("DEVICE1"));
 
@@ -8431,7 +8506,11 @@ void CoreTests::sequenceCompilerRunsCooperativePeriodicAction()
     const auto result = session.run();
 
     QVERIFY(result.completed);
-    QVERIFY(module->requestIds.size() >= 3);
+    QVERIFY(module->requestIds.size() >= 4);
+    QCOMPARE(module->heartbeatValues[0].toLongLong(), qint64(1));
+    QCOMPARE(module->heartbeatValues[1].toLongLong(), qint64(2));
+    QCOMPARE(module->heartbeatValues[2].toLongLong(), qint64(3));
+    QCOMPARE(module->heartbeatValues[3].toLongLong(), qint64(1));
     QSet<RequestId> uniqueRequests(module->requestIds.cbegin(), module->requestIds.cend());
     QCOMPARE(uniqueRequests.size(), module->requestIds.size());
     const auto countAtCompletion = module->requestIds.size();
@@ -8531,7 +8610,8 @@ void CoreTests::sequenceCompilerRejectsUnsupportedPeriodicTaskShapes()
           "id":"bad-heartbeat","kind":"action","moduleId":"test.periodic","function":"send",
           "inputs":{"deviceId":"${variables.deviceId}"},
           "retry":{"maxAttempts":2},
-          "periodic":{"intervalMs":0,"runImmediately":true}
+          "periodic":{"intervalMs":0,"runImmediately":true,
+                      "counter":{"start":5,"increment":0,"wrapAt":3}}
         }]
       }]
     })json";
@@ -8549,6 +8629,8 @@ void CoreTests::sequenceCompilerRejectsUnsupportedPeriodicTaskShapes()
     QVERIFY(hasMessage(QStringLiteral("interval")));
     QVERIFY(hasMessage(QStringLiteral("retry")));
     QVERIFY(hasMessage(QStringLiteral("exclusive resource")));
+    QVERIFY(hasMessage(QStringLiteral("counter increment")));
+    QVERIFY(hasMessage(QStringLiteral("wrapAt")));
 }
 
 QTEST_MAIN(CoreTests)

@@ -1212,7 +1212,7 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     QCOMPARE(functionModel.rowCount(), 2);
     const auto basicSection = functionModel.index(0, 0);
     QCOMPARE(basicSection.data().toString(), QStringLiteral("Basic Functions"));
-    QCOMPARE(functionModel.rowCount(basicSection), 12);
+    QCOMPARE(functionModel.rowCount(basicSection), 13);
     const auto messageBoxFunction = functionModel.index(1, 0, basicSection);
     QCOMPARE(messageBoxFunction.data().toString(), QStringLiteral("MessageBox"));
     QCOMPARE(messageBoxFunction.data(PluginFunctionModel::FunctionIdRole).toString(),
@@ -1267,6 +1267,16 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
              QStringLiteral("action"));
     QCOMPARE(binaryParserTemplate.value(QStringLiteral("moduleId")).toString(),
              QStringLiteral("builtin.data-parser"));
+    const auto valueToolsCategory = functionModel.index(12, 0, basicSection);
+    QCOMPARE(valueToolsCategory.data().toString(), QStringLiteral("Value Tools"));
+    QCOMPARE(functionModel.rowCount(valueToolsCategory), 4);
+    const auto statisticsFunction = functionModel.index(0, 0, valueToolsCategory);
+    QCOMPARE(statisticsFunction.data().toString(), QStringLiteral("Numeric Statistics"));
+    const auto statisticsTemplate = functionModel.stepTemplate(statisticsFunction);
+    QCOMPARE(statisticsTemplate.value(QStringLiteral("moduleId")).toString(),
+             QStringLiteral("builtin.value-tools"));
+    QCOMPARE(statisticsTemplate.value(QStringLiteral("function")).toString(),
+             QStringLiteral("statistics"));
     QCOMPARE(binaryParserTemplate.value(QStringLiteral("function")).toString(),
              QStringLiteral("decodeBinary"));
     QCOMPARE(binaryParserTemplate.value(QStringLiteral("inputs")).toObject()

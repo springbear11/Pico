@@ -97,6 +97,27 @@ bool RuntimeVariableResolver::resolvedValue(const QString& name,
         value = m_context.attemptIndex + 1;
         return true;
     }
+    if (normalized == "periodic.requestId") {
+        if (!m_context.periodicInvocation) {
+            errorMessage = "Periodic runtime variables are only available inside a periodic Action";
+            suggestion = "Enable the periodic policy on this Action";
+            return false;
+        }
+        value = m_context.requestId;
+        return true;
+    }
+    if (normalized == "periodic.index" || normalized == "periodic.number" ||
+        normalized == "periodic.counter") {
+        if (!m_context.periodicInvocation) {
+            errorMessage = "Periodic runtime variables are only available inside a periodic Action";
+            suggestion = "Enable the periodic policy on this Action";
+            return false;
+        }
+        if (normalized == "periodic.index") value = m_context.periodicIndex;
+        else if (normalized == "periodic.number") value = m_context.periodicIndex + 1;
+        else value = m_context.periodicCounter;
+        return true;
+    }
 
     if (normalized.startsWith("var.")) {
         return variableFromMapPath(normalized.mid(4), value);
