@@ -715,6 +715,8 @@ private slots:
     void sequenceCompilerRunsForLoopExampleFile();
     void whileLoopBreakCounterAndAggregateWorkTogether();
     void whileLoopRunsInsideTestItem();
+    void whileLoopResultFeedsLaterSiblingInsideTestItem();
+    void compilerRejectsForwardLoopResultInsideTestItem();
     void whileLoopBreakSkipsRemainingBody();
     void whileLoopStopsAtFiniteGuard();
     void forLoopSupportsBreakIf();
@@ -6157,6 +6159,78 @@ void CoreTests::whileLoopRunsInsideTestItem()
     QCOMPARE(uut.outcomeOf("voltage-item"), NodeOutcome::Passed);
     QCOMPARE(uut.outcomeOf("voltage-item.poll"), NodeOutcome::Passed);
     QCOMPARE(uut.activations.value("voltage-item.poll.done").attempts.size(), 2);
+}
+
+void CoreTests::whileLoopResultFeedsLaterSiblingInsideTestItem()
+{
+    const auto document = QJsonDocument::fromJson(R"json({
+      "id":"while-result-test-item","name":"While result in TestItem","groups":[
+        {"id":"main","kind":"main","steps":[{
+          "id":"voltage-item","kind":"testItem","steps":[
+            {
+              "id":"poll","kind":"loop",
+              "loop":{"type":"while","maxIterations":10,"timeoutMs":1000},
+              "steps":[
+                {"id":"sample","kind":"action",
+                 "parameters":{"outputs":{"voltage":"${loop.number}"}}},
+                {"id":"done","kind":"break",
+                 "inputs":{"actual":"${loop.number}"},
+                 "parameters":{"comparison":"greaterOrEqual","expected":2}}
+              ]
+            },
+            {"id":"parse","kind":"action",
+             "inputs":{"voltage":"${step:poll.sample.outputs.voltage}"},
+             "parameters":{"echoInputs":true}}
+          ]
+        }]}
+      ]
+    })json");
+    QVERIFY(document.isObject());
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(document.object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QString() : compiled.errors.first().message));
+
+    ExecutionSession session(compiled.plan);
+    session.addUut("uut-1");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(!run.hasError);
+    const auto parsed = session.results().latest("uut-1", "root", "voltage-item.parse");
+    QVERIFY(parsed.has_value());
+    QCOMPARE(parsed->result.outputs.value("voltage").toInt(), 2);
+}
+
+void CoreTests::compilerRejectsForwardLoopResultInsideTestItem()
+{
+    const auto document = QJsonDocument::fromJson(R"json({
+      "id":"forward-while-result","name":"Forward While Result","groups":[
+        {"id":"main","kind":"main","steps":[{
+          "id":"item","kind":"testItem","steps":[
+            {"id":"consumer","kind":"action",
+             "inputs":{"value":"${step:poll.sample.outputs.value}"}},
+            {"id":"poll","kind":"loop",
+             "loop":{"type":"while","maxIterations":1,"timeoutMs":1000},
+             "steps":[
+               {"id":"sample","kind":"action","parameters":{"outputs":{"value":1}}},
+               {"id":"done","kind":"break","inputs":{"actual":true},
+                "parameters":{"comparison":"isTrue"}}
+             ]}
+          ]
+        }]}
+      ]
+    })json");
+    QVERIFY(document.isObject());
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(document.object());
+    QVERIFY(!compiled.ok());
+    QVERIFY(std::any_of(compiled.errors.cbegin(), compiled.errors.cend(),
+                        [](const CompileError& error) {
+                            return error.message.contains("not guaranteed",
+                                                          Qt::CaseInsensitive);
+                        }));
 }
 
 void CoreTests::whileLoopBreakSkipsRemainingBody()

@@ -52,14 +52,18 @@ bool hasPlanPath(const ExecutionPlan& plan, const NodeId& from, const NodeId& to
     return false;
 }
 
-NodeId structuralRoot(const ExecutionPlan& plan, NodeId nodeId)
+QVector<NodeId> structuralLineage(const ExecutionPlan& plan, NodeId nodeId)
 {
+    QVector<NodeId> lineage{nodeId};
+    QSet<NodeId> visited{nodeId};
     auto parent = plan.structuralParentOf(nodeId);
-    while (parent) {
+    while (parent && !visited.contains(*parent)) {
         nodeId = *parent;
+        lineage.push_back(nodeId);
+        visited.insert(nodeId);
         parent = plan.structuralParentOf(nodeId);
     }
-    return nodeId;
+    return lineage;
 }
 
 bool sourceRunsBeforeConsumer(const ExecutionPlan& plan,
@@ -72,9 +76,25 @@ bool sourceRunsBeforeConsumer(const ExecutionPlan& plan,
     if (hasPlanPath(plan, source, consumer)) {
         return true;
     }
-    const auto sourceRoot = structuralRoot(plan, source);
-    const auto consumerRoot = structuralRoot(plan, consumer);
-    return sourceRoot != consumerRoot && hasPlanPath(plan, sourceRoot, consumerRoot);
+
+    const auto sourceLineage = structuralLineage(plan, source);
+    const auto consumerLineage = structuralLineage(plan, consumer);
+    int sourceIndex = sourceLineage.size() - 1;
+    int consumerIndex = consumerLineage.size() - 1;
+    while (sourceIndex >= 0 && consumerIndex >= 0 &&
+           sourceLineage[sourceIndex] == consumerLineage[consumerIndex]) {
+        --sourceIndex;
+        --consumerIndex;
+    }
+
+    // Compare the two branches directly below their nearest common structural
+    // parent. A completed container guarantees that all of its descendants ran.
+    if (sourceIndex < 0 || consumerIndex < 0) {
+        return false;
+    }
+    return hasPlanPath(plan,
+                       sourceLineage[sourceIndex],
+                       consumerLineage[consumerIndex]);
 }
 
 std::optional<NodeId> resolveOperatorPromptCloseTarget(const ExecutionPlan& plan,
