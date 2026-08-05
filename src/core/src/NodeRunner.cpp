@@ -347,7 +347,12 @@ NodeResult OperatorPromptNodeHandler::run(const ExecNode& node,
 
     const auto acceptedResponse = mode == OperatorPromptMode::Notice
         ? OperatorPromptResponse::Shown
-        : OperatorPromptResponse::Confirmed;
+        : (mode == OperatorPromptMode::Judgment
+               ? OperatorPromptResponse::Passed
+               : OperatorPromptResponse::Confirmed);
+    const auto rejectedResponse = mode == OperatorPromptMode::Judgment
+        ? OperatorPromptResponse::Failed
+        : OperatorPromptResponse::None;
     int timeoutMs = node.payload.value("timeoutMs", 60000).toInt();
     if (mode == OperatorPromptMode::Notice) {
         timeoutMs = timeoutMs > 0 ? qMin(timeoutMs, 5000) : 5000;
@@ -355,11 +360,27 @@ NodeResult OperatorPromptNodeHandler::run(const ExecNode& node,
     const auto waitStatus = controller.waitForResponse(instanceId,
                                                        acceptedResponse,
                                                        timeoutMs,
-                                                       *context.stopToken);
+                                                       *context.stopToken,
+                                                       rejectedResponse);
     switch (waitStatus) {
     case OperatorPromptWaitStatus::Accepted:
         result.outcome = NodeOutcome::Passed;
         result.outputs = promptDetails;
+        result.outputs.insert(
+            "response",
+            mode == OperatorPromptMode::Judgment
+                ? QStringLiteral("pass")
+                : (mode == OperatorPromptMode::Notice
+                       ? QStringLiteral("shown")
+                       : QStringLiteral("confirmed")));
+        break;
+    case OperatorPromptWaitStatus::Rejected:
+        result.outcome = NodeOutcome::Failed;
+        result.errorCode = node.payload.value(
+            "failureCode", QStringLiteral("OperatorCheckFailed")).toString();
+        result.errorMessage = QStringLiteral("Operator marked the check as failed");
+        result.outputs = promptDetails;
+        result.outputs.insert("response", QStringLiteral("fail"));
         break;
     case OperatorPromptWaitStatus::Timeout:
         result.outcome = NodeOutcome::Timeout;
@@ -378,17 +399,27 @@ NodeResult OperatorPromptNodeHandler::run(const ExecNode& node,
         break;
     }
 
-    if (mode == OperatorPromptMode::Confirm || waitStatus != OperatorPromptWaitStatus::Accepted) {
+    if (mode != OperatorPromptMode::Notice ||
+        waitStatus != OperatorPromptWaitStatus::Accepted) {
         RuntimeEvent closed = requested;
         closed.kind = RuntimeEventKind::OperatorPromptClosed;
         closed.outcome = result.outcome;
+        QString reason;
+        if (waitStatus == OperatorPromptWaitStatus::Accepted) {
+            reason = mode == OperatorPromptMode::Judgment
+                ? QStringLiteral("pass")
+                : QStringLiteral("confirmed");
+        } else if (waitStatus == OperatorPromptWaitStatus::Rejected) {
+            reason = QStringLiteral("fail");
+        } else if (waitStatus == OperatorPromptWaitStatus::Timeout) {
+            reason = QStringLiteral("timeout");
+        } else {
+            reason = QStringLiteral("cancelled");
+        }
         closed.message = result.outcome == NodeOutcome::Passed
-            ? QStringLiteral("operator confirmed")
+            ? reason
             : result.errorMessage;
-        closed.details.insert("reason",
-                              result.outcome == NodeOutcome::Passed
-                                  ? QStringLiteral("confirmed")
-                                  : QStringLiteral("cancelled"));
+        closed.details.insert("reason", reason);
         context.runtimeEvents->publish(closed);
     }
 

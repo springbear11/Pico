@@ -46,6 +46,7 @@
 #include <QMenu>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QPixmap>
@@ -151,7 +152,9 @@ private slots:
     void flowEnableTogglePreservesTreePosition();
     void flowDropTargetPrefersTestItemInterior();
     void operatorPromptDialogCannotBeDismissedByKeyboardOrWindowControls();
+    void operatorPromptDialogReusesKeyForJudgment();
     void messageBoxPropertyEditorSwitchesConfirmationMode();
+    void messageBoxPropertyEditorConfiguresJudgmentMode();
     void messageBoxPropertyEditorInsertsRuntimeValues();
     void parserPropertyEditorCreatesNamedOutputsForFx();
     void parserPropertyEditorPreservesExplicitEmptyEndMarker();
@@ -4174,6 +4177,72 @@ void MainWindowLifecycleTests::operatorPromptDialogCannotBeDismissedByKeyboardOr
     QVERIFY(QFile::remove(imagePath));
 }
 
+void MainWindowLifecycleTests::operatorPromptDialogReusesKeyForJudgment()
+{
+    QWidget owner;
+    owner.show();
+    ExecutionViewModel viewModel;
+    OperatorPromptPresenter presenter(&viewModel, &owner);
+
+    PicoATE::Core::RuntimeEvent notice;
+    notice.kind = PicoATE::Core::RuntimeEventKind::OperatorPromptRequested;
+    notice.uutId = QStringLiteral("UUT-1");
+    notice.details = {
+        {QStringLiteral("promptInstanceId"), QStringLiteral("notice-1")},
+        {QStringLiteral("dialogKey"), QStringLiteral("rgb-lamp")},
+        {QStringLiteral("mode"), QStringLiteral("notice")},
+        {QStringLiteral("title"), QStringLiteral("RGB Lamp")},
+        {QStringLiteral("message"), QStringLiteral("Observe the lamp cycle")},
+    };
+    presenter.applyRuntimeEvents({notice});
+
+    auto dialogs = owner.findChildren<QDialog*>(
+        QStringLiteral("operatorPromptDialog"));
+    QCOMPARE(dialogs.size(), 1);
+    auto* dialog = dialogs.first();
+    QTRY_VERIFY(dialog->isVisible());
+
+    PicoATE::Core::RuntimeEvent judgment = notice;
+    judgment.details.insert(QStringLiteral("promptInstanceId"),
+                            QStringLiteral("judgment-1"));
+    judgment.details.insert(QStringLiteral("mode"), QStringLiteral("judgment"));
+    judgment.details.insert(QStringLiteral("message"),
+                            QStringLiteral("Did all three colors illuminate?"));
+    judgment.details.insert(QStringLiteral("passText"), QStringLiteral("Looks Good"));
+    judgment.details.insert(QStringLiteral("failText"), QStringLiteral("Fault Found"));
+    presenter.applyRuntimeEvents({judgment});
+
+    dialogs = owner.findChildren<QDialog*>(QStringLiteral("operatorPromptDialog"));
+    QCOMPARE(dialogs.size(), 1);
+    QCOMPARE(dialogs.first(), dialog);
+    QPointer<QDialog> guardedDialog(dialog);
+    QCOMPARE(dialog->findChild<QLabel*>(QStringLiteral("operatorPromptMessage"))->text(),
+             QStringLiteral("Did all three colors illuminate?"));
+    auto* pass = dialog->findChild<QPushButton*>(
+        QStringLiteral("operatorPromptPassButton"));
+    auto* fail = dialog->findChild<QPushButton*>(
+        QStringLiteral("operatorPromptFailButton"));
+    QVERIFY(pass && fail);
+    QVERIFY(!pass->isHidden());
+    QVERIFY(!fail->isHidden());
+    QCOMPARE(pass->text(), QStringLiteral("Looks Good"));
+    QCOMPARE(fail->text(), QStringLiteral("Fault Found"));
+
+    PicoATE::Core::RuntimeEvent oldNoticeClosed;
+    oldNoticeClosed.kind = PicoATE::Core::RuntimeEventKind::OperatorPromptClosed;
+    oldNoticeClosed.details.insert(QStringLiteral("promptInstanceId"),
+                                   QStringLiteral("notice-1"));
+    presenter.applyRuntimeEvents({oldNoticeClosed});
+    QVERIFY(dialog->isVisible());
+
+    PicoATE::Core::RuntimeEvent judgmentClosed = oldNoticeClosed;
+    judgmentClosed.details.insert(QStringLiteral("promptInstanceId"),
+                                  QStringLiteral("judgment-1"));
+    presenter.applyRuntimeEvents({judgmentClosed});
+    QTRY_VERIFY(guardedDialog.isNull() || !guardedDialog->isVisible());
+    viewModel.shutdown();
+}
+
 void MainWindowLifecycleTests::messageBoxPropertyEditorSwitchesConfirmationMode()
 {
     const auto imageDirectory = QDir(QCoreApplication::applicationDirPath())
@@ -4233,6 +4302,57 @@ void MainWindowLifecycleTests::messageBoxPropertyEditorSwitchesConfirmationMode(
     QCOMPARE(prompt.value(QStringLiteral("image")).toString(), imageFileName);
     QVERIFY(!prompt.contains(QStringLiteral("confirmText")));
     QVERIFY(QFile::remove(imagePath));
+}
+
+void MainWindowLifecycleTests::messageBoxPropertyEditorConfiguresJudgmentMode()
+{
+    const auto path = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+        + QStringLiteral("/examples/operator_prompt_sequence.json");
+    SequenceDocument document;
+    QVERIFY(document.load(path));
+    StepPropertyEditor editor(&document);
+    editor.setCurrentItem(SequenceItemPath{0, {0}});
+
+    auto* mode = editor.findChild<QComboBox*>(
+        QStringLiteral("propertyPromptModeCombo"));
+    auto* dialogKey = editor.findChild<QLineEdit*>(
+        QStringLiteral("propertyPromptDialogKeyEdit"));
+    auto* passText = editor.findChild<QLineEdit*>(
+        QStringLiteral("propertyPromptPassTextEdit"));
+    auto* failText = editor.findChild<QLineEdit*>(
+        QStringLiteral("propertyPromptFailTextEdit"));
+    auto* failureCode = editor.findChild<QLineEdit*>(
+        QStringLiteral("propertyPromptFailureCodeEdit"));
+    auto* confirmText = editor.findChild<QLineEdit*>(
+        QStringLiteral("propertyPromptConfirmTextEdit"));
+    auto* closeOnStep = editor.findChild<QComboBox*>(
+        QStringLiteral("propertyPromptCloseOnStepCombo"));
+    QVERIFY(mode && dialogKey && passText && failText && failureCode);
+    QVERIFY(confirmText && closeOnStep);
+
+    mode->setCurrentIndex(mode->findData(QStringLiteral("judgment")));
+    QVERIFY(!dialogKey->isHidden());
+    QVERIFY(!passText->isHidden());
+    QVERIFY(!failText->isHidden());
+    QVERIFY(!failureCode->isHidden());
+    QVERIFY(confirmText->isHidden());
+    QVERIFY(closeOnStep->isHidden());
+    dialogKey->setText(QStringLiteral("rgb-lamp"));
+    passText->setText(QStringLiteral("PASS"));
+    failText->setText(QStringLiteral("FAIL"));
+    failureCode->setText(QStringLiteral("RgbLampOperatorFail"));
+    QVERIFY(editor.commitPendingChanges());
+
+    const auto prompt = document.objectAt(SequenceItemPath{0, {0}})
+                            .value(QStringLiteral("prompt")).toObject();
+    QCOMPARE(prompt.value(QStringLiteral("mode")).toString(),
+             QStringLiteral("judgment"));
+    QCOMPARE(prompt.value(QStringLiteral("dialogKey")).toString(),
+             QStringLiteral("rgb-lamp"));
+    QCOMPARE(prompt.value(QStringLiteral("failureCode")).toString(),
+             QStringLiteral("RgbLampOperatorFail"));
+    QVERIFY(!prompt.contains(QStringLiteral("confirmText")));
+    QVERIFY(!prompt.contains(QStringLiteral("closeOnStep")));
 }
 
 void MainWindowLifecycleTests::messageBoxPropertyEditorInsertsRuntimeValues()

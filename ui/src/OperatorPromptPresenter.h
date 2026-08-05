@@ -28,10 +28,13 @@ public:
 private:
     void showPrompt(const PicoATE::Core::RuntimeEvent& event);
     void closePrompt(const QString& instanceId);
+    void removeDialogMappings(QDialog* dialog);
+    QString presentationKey(const PicoATE::Core::RuntimeEvent& event) const;
 
     ExecutionViewModel* m_viewModel = nullptr;
     QWidget* m_owner = nullptr;
     QHash<QString, QPointer<QDialog>> m_dialogs;
+    QHash<QString, QPointer<QDialog>> m_dialogsByKey;
 };
 
 } // namespace PicoATE::Ui

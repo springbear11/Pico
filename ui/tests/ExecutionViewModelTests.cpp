@@ -424,6 +424,8 @@ private slots:
     void sequenceDocumentBatchEditsSelectedStepsAtomically();
     void sequenceDocumentDuplicatesMixedSelectionAtomically();
     void sequenceDocumentCopiesTestItemReferencesIntoNewScope();
+    void sequenceDocumentCopiesNestedTestItemReferencesIntoNewScope();
+    void sequenceDocumentRelocatesNestedTestItemReferences();
     void sequenceDocumentDestructionSilencesUndoStack();
     void sequenceDiagnosticPathsResolveNestedFields();
     void sequenceTreeModelBuildsHierarchyAndEditsSteps();
@@ -4382,6 +4384,103 @@ void ExecutionViewModelTests::sequenceDocumentCopiesTestItemReferencesIntoNewSco
                       .value(QStringLiteral("inputs")).toObject();
     QCOMPARE(copiedLimit.value(QStringLiteral("actual")).toString(),
              QStringLiteral("${step:003.01.outputs.frame}"));
+}
+
+void ExecutionViewModelTests::sequenceDocumentCopiesNestedTestItemReferencesIntoNewScope()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath(QStringLiteral("nested-scoped-copy.json"));
+    QFile source(path);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write(R"json({
+      "id":"nested-copy","name":"Nested Copy","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"001","name":"Outer","kind":"testItem","steps":[
+            {"id":"01","key":"first","name":"First Check","kind":"testItem","steps":[
+              {"id":"01","key":"rx","kind":"action","parameters":{"outputs":{"value":7}}},
+              {"id":"02","key":"parse","kind":"action","inputs":{
+                "absolute":"${step:001.first.rx.outputs.value}",
+                "local":"${step:01.rx.outputs.value}",
+                "external":"${step:900.outputs.value}"
+              },"parameters":{"echoInputs":true}}
+            ]},
+            {"id":"02","name":"Second Check","kind":"testItem","steps":[
+              {"id":"01","kind":"noop"}
+            ]}
+          ]
+        }]
+      }]}
+    )json");
+    source.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(path));
+    const SequenceItemPath sourcePath{0, {0, 0}};
+    const auto clipboard = document.copiedSteps({sourcePath});
+    QVector<SequenceItemPath> pasted;
+    QVERIFY(document.pasteSteps(SequenceItemPath{0, {0}}, -1,
+                                clipboard, &pasted));
+    QCOMPARE(pasted, QVector<SequenceItemPath>({SequenceItemPath{0, {0, 2}}}));
+
+    const auto inputs = document.objectAt(SequenceItemPath{0, {0, 2, 1}})
+                            .value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(inputs.value(QStringLiteral("absolute")).toString(),
+             QStringLiteral("${step:001.03.rx.outputs.value}"));
+    QCOMPARE(inputs.value(QStringLiteral("local")).toString(),
+             QStringLiteral("${step:03.rx.outputs.value}"));
+    QCOMPARE(inputs.value(QStringLiteral("external")).toString(),
+             QStringLiteral("${step:900.outputs.value}"));
+}
+
+void ExecutionViewModelTests::sequenceDocumentRelocatesNestedTestItemReferences()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath(QStringLiteral("nested-scoped-move.json"));
+    QFile source(path);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write(R"json({
+      "id":"nested-move","name":"Nested Move","groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"001","name":"Outer","kind":"testItem","steps":[
+            {"id":"01","key":"small","name":"Small Check","kind":"testItem","steps":[
+              {"id":"01","key":"rx","kind":"action","parameters":{"outputs":{"value":9}}},
+              {"id":"02","key":"parse","kind":"action",
+               "inputs":{"value":"${step:001.small.rx.outputs.value}"},
+               "parameters":{"echoInputs":true}}
+            ]},
+            {"id":"02","kind":"noop"}
+          ]},
+          {"id":"002","name":"Consumer","kind":"action",
+           "inputs":{"value":"${step:001.small.rx.outputs.value}"},
+           "parameters":{"echoInputs":true}}
+        ]
+      }]}
+    )json");
+    source.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(path));
+    SequenceItemPath relocated;
+    QVERIFY(document.relocateStep(SequenceItemPath{0, {0, 0}},
+                                  SequenceItemPath{0, {}}, 1, &relocated));
+    const SequenceItemPath expectedRelocatedPath{0, {1}};
+    QCOMPARE(relocated, expectedRelocatedPath);
+
+    const auto internalInputs = document.objectAt(SequenceItemPath{0, {1, 1}})
+                                    .value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(internalInputs.value(QStringLiteral("value")).toString(),
+             QStringLiteral("${step:01.rx.outputs.value}"));
+    const auto externalInputs = document.objectAt(SequenceItemPath{0, {2}})
+                                    .value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(externalInputs.value(QStringLiteral("value")).toString(),
+             QStringLiteral("${step:01.rx.outputs.value}"));
+
+    PicoATE::Core::SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(document.rootObject());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QString() : compiled.errors.first().message));
 }
 
 void ExecutionViewModelTests::stationDocumentGeneratesTypedIdsAndMovesConfigurations()

@@ -35,7 +35,8 @@
             "mode": "notice",
             "title": "Operator Action",
             "message": "Press and hold the product button.",
-            "closeOnStep": "003",
+            "dialogKey": "button-check",
+            "closeOnStep": "004",
             "timeoutMs": 5000
           }
         },
@@ -43,6 +44,21 @@
           "id": "003",
           "name": "Button State Detected",
           "kind": "noop"
+        },
+        {
+          "id": "004",
+          "name": "Judge Button Operation",
+          "kind": "operatorPrompt",
+          "prompt": {
+            "mode": "judgment",
+            "title": "Button Check Result",
+            "message": "Did the button operate correctly?",
+            "dialogKey": "button-check",
+            "passText": "PASS",
+            "failText": "FAIL",
+            "failureCode": "OperatorButtonCheckFailed",
+            "timeoutMs": 60000
+          }
         }
       ]
     },
@@ -52,7 +68,7 @@
       "kind": "cleanup",
       "steps": [
         {
-          "id": "004",
+          "id": "005",
           "name": "Release Fixture",
           "kind": "noop"
         }

@@ -12,18 +12,22 @@ class StopToken;
 
 enum class OperatorPromptMode {
     Confirm,
-    Notice
+    Notice,
+    Judgment
 };
 
 enum class OperatorPromptResponse {
     None,
     Shown,
     Confirmed,
+    Passed,
+    Failed,
     Cancelled
 };
 
 enum class OperatorPromptWaitStatus {
     Accepted,
+    Rejected,
     Timeout,
     Cancelled,
     Unavailable
@@ -41,7 +45,8 @@ public:
         const QString& instanceId,
         OperatorPromptResponse acceptedResponse,
         int timeoutMs,
-        const StopToken& stopToken);
+        const StopToken& stopToken,
+        OperatorPromptResponse rejectedResponse = OperatorPromptResponse::None);
     void cancelAll();
 
 private:

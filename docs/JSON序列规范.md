@@ -255,8 +255,8 @@ RuntimeEvent 并等待 UI 回应，不依赖 Qt Widgets；TEST 和 Admin 使用�
 Presenter，因此不会破坏 UI、调度器、业务插件三层解耦。
 
 Flow Editor 对工程师只展示一个 `MessageBox` 基础功能。拖入时默认是人工确认，
-在右侧 `Mode` 下拉框中可以切换为条件确认。`operatorPrompt` 只是 JSON 和 Core
-内部名称，避免与 Qt 的 `QMessageBox` 类型混淆。
+在右侧 `Mode` 下拉框中可以切换为提示后继续或人工 PASS/FAIL 判断。`operatorPrompt`
+只是 JSON 和 Core 内部名称，避免与 Qt 的 `QMessageBox` 类型混淆。
 
 ### 等待人工确认
 
@@ -285,6 +285,9 @@ Esc 和标题栏关闭都不能误确认；Stop/Abort 仍可取消等待并进�
 Error、Timeout 或 Cancelled。Retry 期间只代表一次 Attempt 结束，不会关闭弹窗；
 只有该 Step 不再重试并进入最终状态后才关闭。
 
+如果 `notice` 配置了 `dialogKey` 且没有配置 `closeOnStep`，弹窗不会在下一个 Step
+结束时自动关闭。它会一直保留，供后续相同 `dialogKey` 的 `judgment` 节点原位更新。
+
 Flow Editor 的 `Close after step` 使用可编辑下拉框：第一项是“下一启用 Step
 （默认）”，其余候选只列出当前 MessageBox 之后且已启用的步骤。TestItem/Loop
 子步骤使用完整作用域地址，例如 `002.checkButton`。下拉框仍允许手工输入高级地址；
@@ -303,6 +306,47 @@ Flow Editor 的 `Close after step` 使用可编辑下拉框：第一项是“下
   }
 }
 ```
+
+### 提示期间继续，结束后人工判定
+
+需要操作员在自动测试期间持续观察灯光、声音或机构动作时，可以先放一个 `notice`，
+让流程继续执行；自动步骤完成后，再放一个同 `dialogKey` 的 `judgment`。UI 会复用同一
+窗口，不会先关闭再弹出另一个窗口。每个 UUT 的窗口独立，相同 Key 不会串到其他 UUT。
+
+```json
+{
+  "id": "001",
+  "kind": "operatorPrompt",
+  "prompt": {
+    "mode": "notice",
+    "dialogKey": "rgb-lamp-check",
+    "title": "指示灯观察",
+    "message": "请观察红、绿、蓝指示灯是否依次点亮。"
+  }
+}
+```
+
+中间可以放普通 Step、TestItem 或 Loop。最后使用同一个 `dialogKey`：
+
+```json
+{
+  "id": "010",
+  "kind": "operatorPrompt",
+  "prompt": {
+    "mode": "judgment",
+    "dialogKey": "rgb-lamp-check",
+    "title": "确认指示灯结果",
+    "message": "红、绿、蓝指示灯是否全部正常？",
+    "passText": "PASS",
+    "failText": "FAIL",
+    "failureCode": "RgbLampOperatorFail",
+    "timeoutMs": 60000
+  }
+}
+```
+
+操作员点击 PASS 时该 Step 返回 Passed；点击 FAIL 时返回 Failed，并使用
+`failureCode` 作为错误码。后续停止还是继续，仍由 Station 的失败策略统一决定。
 
 ### 在弹窗中显示运行值
 
@@ -331,13 +375,17 @@ Sequence 变量或前序 Step 输出，不会覆盖已经写好的提示文字�
 
 | prompt 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `mode` | string | no | `confirm` | `confirm` 或 `notice` |
+| `mode` | string | no | `confirm` | `confirm`、`notice` 或 `judgment` |
 | `title` | string | no | `Operator Action Required` | 弹窗标题 |
 | `message` | string | yes | empty | 给操作员看的明确动作说明 |
 | `image` | string | no | empty | 可选 PNG/JPG/JPEG 文件名；默认从程序根目录的 `image` 文件夹加载 |
 | `confirmText` | string | confirm 模式 | `OK` | 确认按钮文字 |
 | `closeOnStep` | string | no | 下一正常 Step | notice 模式关闭目标；该 Step 完成全部 Retry 并进入最终状态后关闭弹窗 |
-| `timeoutMs` | number | no | `60000` | confirm 等待超时；0 表示不限制。notice 用于确认 UI 已成功显示，内部最多等待 5 秒 |
+| `dialogKey` | string | no | empty | 将前面的 notice 与后面的 judgment 绑定到同一个窗口；按 UUT 隔离 |
+| `passText` | string | judgment 模式 | `PASS` | 人工通过按钮文字 |
+| `failText` | string | judgment 模式 | `FAIL` | 人工失败按钮文字 |
+| `failureCode` | string | judgment 模式 | `OperatorCheckFailed` | 点击 FAIL 后写入结果的错误码 |
+| `timeoutMs` | number | no | `60000` | confirm/judgment 等待超时；0 表示不限制。notice 用于确认 UI 已成功显示，内部最多等待 5 秒 |
 
 CLI 或其他没有注册交互响应器的运行环境会立即返回
 `OperatorPromptResponderUnavailable`，不会无期限卡住。完整示例见

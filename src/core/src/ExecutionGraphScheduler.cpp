@@ -1336,6 +1336,12 @@ NodeId ExecutionGraphScheduler::operatorPromptCloseTarget(const ExecNode& node) 
         return {};
     }
 
+    // A keyed notice stays open so a later judgment prompt can reuse the same
+    // window. It is closed by that judgment or by session shutdown.
+    if (!node.payload.value("dialogKey").toString().trimmed().isEmpty()) {
+        return {};
+    }
+
     auto edges = m_plan.outgoingEdges(node.id);
     std::sort(edges.begin(), edges.end(), [](const ExecEdge& left, const ExecEdge& right) {
         return left.priority > right.priority;
@@ -1362,6 +1368,7 @@ void ExecutionGraphScheduler::trackOperatorPrompt(const UutExecution& uut,
     prompt.uutId = uut.uutId;
     prompt.sourceNodeId = node.id;
     prompt.closeTargetNodeId = operatorPromptCloseTarget(node);
+    prompt.dialogKey = result.outputs.value("dialogKey").toString().trimmed();
     m_activeOperatorPrompts.push_back(std::move(prompt));
 }
 
@@ -1372,16 +1379,28 @@ void ExecutionGraphScheduler::closeOperatorPromptsForNode(const UutExecution& uu
     if (!isTerminalOutcome(result.outcome)) {
         return;
     }
+    const bool completedJudgment =
+        completedNode.kind == ExecNodeKind::OperatorPrompt &&
+        completedNode.payload.value("mode").toString().compare(
+            QStringLiteral("judgment"), Qt::CaseInsensitive) == 0;
+    const auto completedDialogKey = completedNode.payload.value("dialogKey")
+                                        .toString().trimmed();
     for (int index = m_activeOperatorPrompts.size() - 1; index >= 0; --index) {
         const auto& prompt = m_activeOperatorPrompts[index];
+        const bool targetCompleted = prompt.closeTargetNodeId == completedNode.id;
+        const bool judgmentCompleted = completedJudgment &&
+            !completedDialogKey.isEmpty() &&
+            prompt.dialogKey == completedDialogKey;
         if (prompt.uutId != uut.uutId || prompt.sourceNodeId == completedNode.id ||
-            prompt.closeTargetNodeId != completedNode.id) {
+            (!targetCompleted && !judgmentCompleted)) {
             continue;
         }
         publishOperatorPromptClosed(prompt.uutId,
                                     prompt.sourceNodeId,
                                     prompt.instanceId,
-                                    "target-completed",
+                                    judgmentCompleted
+                                        ? QStringLiteral("judgment-completed")
+                                        : QStringLiteral("target-completed"),
                                     completedNode.id);
         m_activeOperatorPrompts.removeAt(index);
     }

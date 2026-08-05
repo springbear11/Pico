@@ -185,6 +185,7 @@ private:
         UutId uutId;
         NodeId sourceNodeId;
         NodeId closeTargetNodeId;
+        QString dialogKey;
     };
 
     struct PendingWait {

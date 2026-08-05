@@ -173,6 +173,10 @@ private:
     QComboBox* m_promptImageCombo = nullptr;
     QLineEdit* m_promptConfirmTextEdit = nullptr;
     QComboBox* m_promptCloseOnStepCombo = nullptr;
+    QLineEdit* m_promptDialogKeyEdit = nullptr;
+    QLineEdit* m_promptPassTextEdit = nullptr;
+    QLineEdit* m_promptFailTextEdit = nullptr;
+    QLineEdit* m_promptFailureCodeEdit = nullptr;
     QSpinBox* m_promptTimeoutSpin = nullptr;
     QLineEdit* m_loopVariableEdit = nullptr;
     QComboBox* m_loopTypeCombo = nullptr;

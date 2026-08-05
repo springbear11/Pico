@@ -57,7 +57,8 @@ OperatorPromptWaitStatus OperatorPromptController::waitForResponse(
     const QString& instanceId,
     OperatorPromptResponse acceptedResponse,
     int timeoutMs,
-    const StopToken& stopToken)
+    const StopToken& stopToken,
+    OperatorPromptResponse rejectedResponse)
 {
     std::unique_lock lock(m_mutex);
     if (!m_responderAvailable) {
@@ -78,6 +79,11 @@ OperatorPromptWaitStatus OperatorPromptController::waitForResponse(
         if (it->response == acceptedResponse) {
             m_prompts.erase(it);
             return OperatorPromptWaitStatus::Accepted;
+        }
+        if (rejectedResponse != OperatorPromptResponse::None &&
+            it->response == rejectedResponse) {
+            m_prompts.erase(it);
+            return OperatorPromptWaitStatus::Rejected;
         }
         if (timeoutMs > 0 &&
             std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -102,15 +108,30 @@ void OperatorPromptController::cancelAll()
 
 QString operatorPromptModeName(OperatorPromptMode mode)
 {
-    return mode == OperatorPromptMode::Notice ? QStringLiteral("notice")
-                                               : QStringLiteral("confirm");
+    switch (mode) {
+    case OperatorPromptMode::Confirm:
+        return QStringLiteral("confirm");
+    case OperatorPromptMode::Notice:
+        return QStringLiteral("notice");
+    case OperatorPromptMode::Judgment:
+        return QStringLiteral("judgment");
+    }
+    return QStringLiteral("confirm");
 }
 
 OperatorPromptMode operatorPromptModeFromName(const QString& name)
 {
-    return name.trimmed().compare(QStringLiteral("notice"), Qt::CaseInsensitive) == 0
-        ? OperatorPromptMode::Notice
-        : OperatorPromptMode::Confirm;
+    const auto normalized = name.trimmed().toLower();
+    if (normalized == QStringLiteral("notice") ||
+        normalized == QStringLiteral("continue")) {
+        return OperatorPromptMode::Notice;
+    }
+    if (normalized == QStringLiteral("judgment") ||
+        normalized == QStringLiteral("passfail") ||
+        normalized == QStringLiteral("operatorcheck")) {
+        return OperatorPromptMode::Judgment;
+    }
+    return OperatorPromptMode::Confirm;
 }
 
 } // namespace PicoATE::Core

@@ -255,7 +255,9 @@ void collectOperatorPromptWarnings(const QJsonObject& object,
 {
     warnUnknownFields(object,
                       path,
-                      {"mode", "title", "message", "confirmText", "closeOnStep", "timeoutMs"},
+                      {"mode", "title", "message", "image", "confirmText",
+                       "closeOnStep", "dialogKey", "passText", "failText",
+                       "failureCode", "timeoutMs"},
                       warnings);
 }
 
@@ -1406,11 +1408,14 @@ OperatorPromptDef SequenceCompiler::parseOperatorPrompt(const QJsonObject& objec
         prompt.mode = "confirm";
     } else if (mode == "notice" || mode == "continue") {
         prompt.mode = "notice";
+    } else if (mode == "judgment" || mode == "passfail" ||
+               mode == "operatorcheck") {
+        prompt.mode = "judgment";
     } else {
         addError(errors,
                  childPath(path, "mode"),
                  "Unsupported operator prompt mode",
-                 "Use confirm or notice");
+                 "Use confirm, notice, or judgment");
     }
 
     prompt.title = readString(object, "title", path, errors, "Message");
@@ -1418,6 +1423,11 @@ OperatorPromptDef SequenceCompiler::parseOperatorPrompt(const QJsonObject& objec
     prompt.image = readString(object, "image", path, errors).trimmed();
     prompt.confirmText = readString(object, "confirmText", path, errors, "OK").trimmed();
     prompt.closeOnStep = readString(object, "closeOnStep", path, errors).trimmed();
+    prompt.dialogKey = readString(object, "dialogKey", path, errors).trimmed();
+    prompt.passText = readString(object, "passText", path, errors, "PASS").trimmed();
+    prompt.failText = readString(object, "failText", path, errors, "FAIL").trimmed();
+    prompt.failureCode = readString(object, "failureCode", path, errors,
+                                    "OperatorCheckFailed").trimmed();
     prompt.timeoutMs = readInt(object, "timeoutMs", path, errors, 60000);
 
     if (prompt.message.isEmpty()) {
@@ -1442,6 +1452,19 @@ OperatorPromptDef SequenceCompiler::parseOperatorPrompt(const QJsonObject& objec
                  childPath(path, "confirmText"),
                  "Confirm button text must not be empty",
                  "Use OK, Confirm, or another short command");
+    }
+    if (prompt.mode == "judgment" &&
+        (prompt.passText.isEmpty() || prompt.failText.isEmpty())) {
+        addError(errors,
+                 childPath(path, prompt.passText.isEmpty() ? "passText" : "failText"),
+                 "Judgment button text must not be empty",
+                 "Use PASS and FAIL or another pair of short labels");
+    }
+    if (prompt.mode == "judgment" && prompt.failureCode.isEmpty()) {
+        addError(errors,
+                 childPath(path, "failureCode"),
+                 "Judgment failure code must not be empty",
+                 "Use OperatorCheckFailed or a project-specific error code");
     }
     if (prompt.timeoutMs < 0) {
         addError(errors,

@@ -171,6 +171,14 @@ QVariantMap OperatorPromptDef::toPayload() const
     }
     payload.insert("confirmText", confirmText);
     payload.insert("closeOnStep", closeOnStep);
+    if (!dialogKey.isEmpty()) {
+        payload.insert("dialogKey", dialogKey);
+    }
+    if (mode == QStringLiteral("judgment")) {
+        payload.insert("passText", passText);
+        payload.insert("failText", failText);
+        payload.insert("failureCode", failureCode);
+    }
     payload.insert("timeoutMs", timeoutMs);
     return payload;
 }

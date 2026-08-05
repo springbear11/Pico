@@ -684,6 +684,10 @@ bool StepPropertyEditor::focusField(const QString& fieldPath)
         else if (nested == "image") widget = m_promptImageCombo;
         else if (nested == "confirmText") widget = m_promptConfirmTextEdit;
         else if (nested == "closeOnStep") widget = m_promptCloseOnStepCombo;
+        else if (nested == "dialogKey") widget = m_promptDialogKeyEdit;
+        else if (nested == "passText") widget = m_promptPassTextEdit;
+        else if (nested == "failText") widget = m_promptFailTextEdit;
+        else if (nested == "failureCode") widget = m_promptFailureCodeEdit;
         else if (nested == "timeoutMs") widget = m_promptTimeoutSpin;
         else widget = m_promptMessageEdit;
     }
@@ -944,6 +948,8 @@ void StepPropertyEditor::buildDataPage()
                                QStringLiteral("confirm"));
     m_promptModeCombo->addItem(tr("Conditional confirmation (Step PASS)"),
                                QStringLiteral("notice"));
+    m_promptModeCombo->addItem(tr("Operator PASS / FAIL judgment"),
+                               QStringLiteral("judgment"));
     m_dataForm->addRow(tr("Mode"), m_promptModeCombo);
     m_promptTitleEdit = new QLineEdit(content);
     m_promptTitleEdit->setObjectName(QStringLiteral("propertyPromptTitleEdit"));
@@ -971,6 +977,22 @@ void StepPropertyEditor::buildDataPage()
     m_promptCloseOnStepCombo->setToolTip(
         tr("Select a later enabled step. The prompt closes after that step finishes."));
     m_dataForm->addRow(tr("Close after step"), m_promptCloseOnStepCombo);
+    m_promptDialogKeyEdit = new QLineEdit(content);
+    m_promptDialogKeyEdit->setObjectName(QStringLiteral("propertyPromptDialogKeyEdit"));
+    m_promptDialogKeyEdit->setPlaceholderText(tr("Example: rgb-lamp-check"));
+    m_promptDialogKeyEdit->setToolTip(
+        tr("Use the same key on an observation prompt and a later judgment to reuse one window."));
+    m_dataForm->addRow(tr("Dialog key (optional)"), m_promptDialogKeyEdit);
+    m_promptPassTextEdit = new QLineEdit(content);
+    m_promptPassTextEdit->setObjectName(QStringLiteral("propertyPromptPassTextEdit"));
+    m_dataForm->addRow(tr("PASS button text"), m_promptPassTextEdit);
+    m_promptFailTextEdit = new QLineEdit(content);
+    m_promptFailTextEdit->setObjectName(QStringLiteral("propertyPromptFailTextEdit"));
+    m_dataForm->addRow(tr("FAIL button text"), m_promptFailTextEdit);
+    m_promptFailureCodeEdit = new QLineEdit(content);
+    m_promptFailureCodeEdit->setObjectName(QStringLiteral("propertyPromptFailureCodeEdit"));
+    m_promptFailureCodeEdit->setPlaceholderText(QStringLiteral("OperatorCheckFailed"));
+    m_dataForm->addRow(tr("FAIL error code"), m_promptFailureCodeEdit);
     m_promptTimeoutSpin = new QSpinBox(content);
     m_promptTimeoutSpin->setObjectName(QStringLiteral("propertyPromptTimeoutSpin"));
     m_promptTimeoutSpin->setRange(0, std::numeric_limits<int>::max());
@@ -1283,6 +1305,13 @@ void StepPropertyEditor::loadCurrentObject()
     if (editorKind == QStringLiteral("operatorPrompt")) {
         rebuildPromptCloseStepChoices(prompt.value("closeOnStep").toString());
     }
+    m_promptDialogKeyEdit->setText(prompt.value("dialogKey").toString());
+    m_promptPassTextEdit->setText(
+        prompt.value("passText").toString(QStringLiteral("PASS")));
+    m_promptFailTextEdit->setText(
+        prompt.value("failText").toString(QStringLiteral("FAIL")));
+    m_promptFailureCodeEdit->setText(
+        prompt.value("failureCode").toString(QStringLiteral("OperatorCheckFailed")));
     m_promptTimeoutSpin->setValue(prompt.value("timeoutMs").toInt(60000));
 
     const auto loop = m_sourceObject.value("loop").toObject();
@@ -1382,6 +1411,8 @@ void StepPropertyEditor::updateKindRows()
     const bool operatorPrompt = kind == "operatorPrompt";
     const bool noticePrompt = operatorPrompt &&
         m_promptModeCombo->currentData().toString() == QStringLiteral("notice");
+    const bool judgmentPrompt = operatorPrompt &&
+        m_promptModeCombo->currentData().toString() == QStringLiteral("judgment");
     const bool periodic = action && m_periodicEnabledCheck->isChecked();
 
     setFormRowVisible(m_dataForm, m_moduleIdEdit, action || moduleCall);
@@ -1403,8 +1434,13 @@ void StepPropertyEditor::updateKindRows()
     setFormRowVisible(m_dataForm, m_promptMessageField, operatorPrompt);
     setFormRowVisible(m_dataForm, m_promptImageCombo, operatorPrompt);
     setFormRowVisible(m_dataForm, m_promptConfirmTextEdit,
-                      operatorPrompt && !noticePrompt);
+                      operatorPrompt && !noticePrompt && !judgmentPrompt);
     setFormRowVisible(m_dataForm, m_promptCloseOnStepCombo, noticePrompt);
+    setFormRowVisible(m_dataForm, m_promptDialogKeyEdit,
+                      noticePrompt || judgmentPrompt);
+    setFormRowVisible(m_dataForm, m_promptPassTextEdit, judgmentPrompt);
+    setFormRowVisible(m_dataForm, m_promptFailTextEdit, judgmentPrompt);
+    setFormRowVisible(m_dataForm, m_promptFailureCodeEdit, judgmentPrompt);
     setFormRowVisible(m_dataForm, m_promptTimeoutSpin, operatorPrompt);
     setFormRowVisible(m_dataForm, m_loopTypeCombo, loop);
     const std::array<QWidget*, 12> barrierFields = {
@@ -3256,9 +3292,31 @@ bool StepPropertyEditor::commitPendingChanges()
                 }
                 prompt.insert("confirmText", buttonText);
                 prompt.remove("closeOnStep");
-            } else {
+                prompt.remove("dialogKey");
+                prompt.remove("passText");
+                prompt.remove("failText");
+                prompt.remove("failureCode");
+            } else if (mode == QStringLiteral("notice")) {
                 prompt.remove("confirmText");
                 insertOrRemove(prompt, "closeOnStep", selectedPromptCloseStep());
+                insertOrRemove(prompt, "dialogKey", m_promptDialogKeyEdit->text());
+                prompt.remove("passText");
+                prompt.remove("failText");
+                prompt.remove("failureCode");
+            } else {
+                const auto passText = m_promptPassTextEdit->text().trimmed();
+                const auto failText = m_promptFailTextEdit->text().trimmed();
+                const auto failureCode = m_promptFailureCodeEdit->text().trimmed();
+                if (passText.isEmpty() || failText.isEmpty() || failureCode.isEmpty()) {
+                    showError(tr("PASS text, FAIL text, and FAIL error code are required"));
+                    return false;
+                }
+                prompt.remove("confirmText");
+                prompt.remove("closeOnStep");
+                insertOrRemove(prompt, "dialogKey", m_promptDialogKeyEdit->text());
+                prompt.insert("passText", passText);
+                prompt.insert("failText", failText);
+                prompt.insert("failureCode", failureCode);
             }
             prompt.insert("timeoutMs", m_promptTimeoutSpin->value());
             updated.insert("prompt", prompt);

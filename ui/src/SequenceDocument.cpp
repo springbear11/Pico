@@ -139,6 +139,46 @@ QString idScopeKey(const SequenceItemPath& parentPath)
     return key;
 }
 
+constexpr auto clipboardSourceNodePathKey = "__picoateClipboardSourceNodePath";
+
+QString sequenceNodePath(const QJsonObject& root, const SequenceItemPath& path)
+{
+    const auto groups = root.value(QStringLiteral("groups")).toArray();
+    if (!path.isValid() || path.groupIndex < 0 || path.groupIndex >= groups.size() ||
+        !groups[path.groupIndex].isObject()) {
+        return {};
+    }
+    if (path.stepIndices.isEmpty()) {
+        return {};
+    }
+
+    auto owner = groups[path.groupIndex].toObject();
+    QStringList segments;
+    for (int depth = 0; depth < path.stepIndices.size(); ++depth) {
+        const auto steps = owner.value(QStringLiteral("steps")).toArray();
+        const int index = path.stepIndices[depth];
+        if (index < 0 || index >= steps.size() || !steps[index].isObject()) {
+            return {};
+        }
+        const auto step = steps[index].toObject();
+        const auto id = step.value(QStringLiteral("id")).toString().trimmed();
+        const auto key = step.value(QStringLiteral("key")).toString().trimmed();
+        const auto segment = depth == 0 || key.isEmpty() ? id : key;
+        if (segment.isEmpty()) {
+            return {};
+        }
+        segments.push_back(segment);
+        owner = step;
+    }
+    return segments.join(QLatin1Char('.'));
+}
+
+QString childNodePath(const QString& parentPath, const QString& segment)
+{
+    return parentPath.isEmpty() ? segment
+                                : QStringLiteral("%1.%2").arg(parentPath, segment);
+}
+
 bool insertStepCopy(QJsonObject& root,
                     const SequenceItemPath& sourcePath,
                     const QJsonObject& copy)
@@ -632,38 +672,57 @@ QUndoStack* SequenceDocument::undoStack() const
 }
 
 QJsonValue rewriteScopedStepReferences(const QJsonValue& value,
-                                       const QString& oldRootId,
-                                       const QString& newRootId)
+                                       const QString& oldRootPath,
+                                       const QString& newRootPath)
 {
+    if (oldRootPath.isEmpty() || newRootPath.isEmpty() ||
+        oldRootPath == newRootPath) {
+        return value;
+    }
     if (value.isString()) {
         auto text = value.toString();
-        text.replace(QStringLiteral("${step:%1.").arg(oldRootId),
-                     QStringLiteral("${step:%1.").arg(newRootId));
-        text.replace(QStringLiteral("${step:%1}").arg(oldRootId),
-                     QStringLiteral("${step:%1}").arg(newRootId));
+        text.replace(QStringLiteral("${step:%1.").arg(oldRootPath),
+                     QStringLiteral("${step:%1.").arg(newRootPath));
+        text.replace(QStringLiteral("${step:%1}").arg(oldRootPath),
+                     QStringLiteral("${step:%1}").arg(newRootPath));
         return text;
     }
     if (value.isArray()) {
         auto array = value.toArray();
         for (int index = 0; index < array.size(); ++index) {
-            array[index] = rewriteScopedStepReferences(array[index], oldRootId, newRootId);
+            array[index] = rewriteScopedStepReferences(array[index], oldRootPath, newRootPath);
         }
         return array;
     }
     if (value.isObject()) {
         auto object = value.toObject();
         for (auto it = object.begin(); it != object.end(); ++it) {
-            it.value() = rewriteScopedStepReferences(it.value(), oldRootId, newRootId);
+            it.value() = rewriteScopedStepReferences(it.value(), oldRootPath, newRootPath);
         }
         return object;
     }
     return value;
 }
 
-void assignCopiedRootId(QJsonObject& copy, const QString& newRootId)
+void assignCopiedRootId(QJsonObject& copy,
+                        QString oldRootPath,
+                        const QString& newParentPath,
+                        const QString& newRootId)
 {
-    const auto oldRootId = copy.value(QStringLiteral("id")).toString();
-    copy = rewriteScopedStepReferences(copy, oldRootId, newRootId).toObject();
+    const auto oldRootId = copy.value(QStringLiteral("id")).toString().trimmed();
+    const auto oldRootSegment = oldRootPath.section(QLatin1Char('.'), -1);
+    if (oldRootPath.isEmpty()) {
+        oldRootPath = oldRootId;
+    }
+    const auto newRootPath = childNodePath(newParentPath, newRootId);
+    copy.remove(QString::fromLatin1(clipboardSourceNodePathKey));
+    copy = rewriteScopedStepReferences(copy, oldRootPath, newRootPath).toObject();
+    if (!oldRootSegment.isEmpty() && oldRootSegment != oldRootPath) {
+        copy = rewriteScopedStepReferences(copy, oldRootSegment, newRootId).toObject();
+    }
+    if (!oldRootId.isEmpty() && oldRootId != oldRootSegment) {
+        copy = rewriteScopedStepReferences(copy, oldRootId, newRootId).toObject();
+    }
     copy.insert(QStringLiteral("id"), newRootId);
 }
 
@@ -1052,10 +1111,14 @@ QVector<QJsonObject> SequenceDocument::copiedSteps(
             roots.cbegin(), roots.cend(), [&path](const auto& root) {
                 return root.groupIndex == path.groupIndex &&
                        pathStartsWith(path.stepIndices, root.stepIndices);
-            });
+        });
         if (!coveredByParent) {
             roots.push_back(path);
-            result.push_back(object);
+            auto clipboardObject = object;
+            clipboardObject.insert(
+                QString::fromLatin1(clipboardSourceNodePathKey),
+                sequenceNodePath(m_root, path));
+            result.push_back(std::move(clipboardObject));
         }
     }
     return result;
@@ -1083,6 +1146,7 @@ bool SequenceDocument::pasteSteps(
         return false;
     }
     const int idWidth = firstId.size();
+    const auto destinationParentNodePath = sequenceNodePath(m_root, parentPath);
     QVector<QJsonObject> copies;
     copies.reserve(sourceSteps.size());
     for (const auto& source : sourceSteps) {
@@ -1090,10 +1154,15 @@ bool SequenceDocument::pasteSteps(
         stripResourceRegionMarkers(copy);
         const auto originalName = copy.value(QStringLiteral("name")).toString(
             copy.value(QStringLiteral("id")).toString());
-        assignCopiedRootId(copy,
-                           QStringLiteral("%1").arg(
-                               nextNumber++, idWidth, 10, QLatin1Char('0')));
+        const auto oldRootPath = copy.take(
+            QString::fromLatin1(clipboardSourceNodePathKey)).toString();
+        const auto newRootId = QStringLiteral("%1").arg(
+            nextNumber++, idWidth, 10, QLatin1Char('0'));
         copy.remove(QStringLiteral("key"));
+        assignCopiedRootId(copy,
+                           oldRootPath,
+                           destinationParentNodePath,
+                           newRootId);
         copy.insert(QStringLiteral("name"), tr("%1 Copy").arg(originalName));
         copies.push_back(std::move(copy));
     }
@@ -1210,8 +1279,13 @@ bool SequenceDocument::duplicateSteps(QVector<SequenceItemPath> paths)
         stripResourceRegionMarkers(copy);
         const auto originalName = copy.value(QStringLiteral("name")).toString(
             copy.value(QStringLiteral("id")).toString());
-        assignCopiedRootId(copy, nextId(parentPath));
+        const auto oldRootPath = sequenceNodePath(m_root, path);
+        const auto newRootId = nextId(parentPath);
         copy.remove(QStringLiteral("key"));
+        assignCopiedRootId(copy,
+                           oldRootPath,
+                           sequenceNodePath(m_root, parentPath),
+                           newRootId);
         copy.insert(QStringLiteral("name"), tr("%1 Copy").arg(originalName));
         copies.push_back({path, std::move(copy)});
     }
@@ -1264,9 +1338,26 @@ bool SequenceDocument::relocateStep(
         pathStartsWith(destinationParent.stepIndices, sourcePath.stepIndices)) {
         return false;
     }
-    const auto sourceObject = objectAt(sourcePath);
+    auto sourceObject = objectAt(sourcePath);
     if (sourceObject.isEmpty()) {
         return false;
+    }
+    const auto oldRootPath = sequenceNodePath(m_root, sourcePath);
+    const auto destinationParentNodePath = sequenceNodePath(m_root, destinationParent);
+    const auto sourceId = sourceObject.value(QStringLiteral("id")).toString().trimmed();
+    const auto sourceKey = sourceObject.value(QStringLiteral("key")).toString().trimmed();
+    const auto newRootSegment = destinationParent.stepIndices.isEmpty() || sourceKey.isEmpty()
+        ? sourceId
+        : sourceKey;
+    const auto newRootPath = childNodePath(destinationParentNodePath, newRootSegment);
+    const auto oldRootSegment = oldRootPath.section(QLatin1Char('.'), -1);
+    sourceObject = rewriteScopedStepReferences(sourceObject,
+                                               oldRootPath,
+                                               newRootPath).toObject();
+    if (!oldRootSegment.isEmpty() && oldRootSegment != newRootSegment) {
+        sourceObject = rewriteScopedStepReferences(sourceObject,
+                                                   oldRootSegment,
+                                                   newRootSegment).toObject();
     }
 
     auto sourceParent = sourcePath;
@@ -1321,6 +1412,7 @@ bool SequenceDocument::relocateStep(
     }
     groups[adjustedDestination.groupIndex] = destinationGroup;
     root.insert(QStringLiteral("groups"), groups);
+    root = rewriteScopedStepReferences(root, oldRootPath, newRootPath).toObject();
     if (!commitRoot(std::move(root), tr("Move Step"))) {
         return false;
     }

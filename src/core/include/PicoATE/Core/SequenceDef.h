@@ -131,6 +131,10 @@ struct OperatorPromptDef {
     QString image;
     QString confirmText = "OK";
     QString closeOnStep;
+    QString dialogKey;
+    QString passText = "PASS";
+    QString failText = "FAIL";
+    QString failureCode = "OperatorCheckFailed";
     int timeoutMs = 60000;
 
     QVariantMap toPayload() const;

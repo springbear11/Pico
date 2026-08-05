@@ -36,6 +36,7 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <QDir>
 #include <QElapsedTimer>
@@ -373,8 +374,11 @@ private:
 
 class OperatorPromptResponderSink final : public IRuntimeEventSink {
 public:
-    explicit OperatorPromptResponderSink(std::shared_ptr<ExecutionControl> control)
+    explicit OperatorPromptResponderSink(
+        std::shared_ptr<ExecutionControl> control,
+        OperatorPromptResponse judgmentResponse = OperatorPromptResponse::Passed)
         : m_control(std::move(control))
+        , m_judgmentResponse(judgmentResponse)
     {
     }
 
@@ -387,9 +391,12 @@ public:
         if (event.kind != RuntimeEventKind::OperatorPromptRequested || !m_control) {
             return;
         }
-        const auto response = event.details.value("mode").toString() == "notice"
+        const auto mode = event.details.value("mode").toString();
+        const auto response = mode == QStringLiteral("notice")
             ? OperatorPromptResponse::Shown
-            : OperatorPromptResponse::Confirmed;
+            : (mode == QStringLiteral("judgment")
+                   ? m_judgmentResponse
+                   : OperatorPromptResponse::Confirmed);
         m_control->operatorPrompts().respond(
             event.details.value("promptInstanceId").toString(), response);
     }
@@ -402,6 +409,7 @@ public:
 
 private:
     std::shared_ptr<ExecutionControl> m_control;
+    OperatorPromptResponse m_judgmentResponse;
     mutable QMutex m_mutex;
     QVector<RuntimeEvent> m_events;
 };
@@ -691,6 +699,7 @@ private slots:
     void sequenceCompilerBindsTypedVariablesPerUut();
     void sequenceCompilerRejectsInvalidSequenceVariables();
     void operatorPromptsConfirmAndCloseOnCompletedStep();
+    void operatorPromptJudgmentMapsPassAndFail();
     void operatorPromptInterpolatesRuntimeValues();
     void operatorPromptWaitsForFinalRetryAttemptBeforeClosing();
     void operatorPromptWithoutResponderFailsWithoutBlocking();
@@ -8320,6 +8329,72 @@ void CoreTests::operatorPromptsConfirmAndCloseOnCompletedStep()
     QCOMPARE(closed, 2);
     QVERIFY(imageForwarded);
     QVERIFY(conditionClosedNotice);
+}
+
+void CoreTests::operatorPromptJudgmentMapsPassAndFail()
+{
+    const auto json = R"json({
+      "id":"operator-judgment","name":"Operator Judgment","groups":[
+        {"id":"main","kind":"main","steps":[
+          {"id":"observe","kind":"operatorPrompt","prompt":{
+            "mode":"notice","title":"RGB Lamp","message":"Observe the RGB lamp cycle.",
+            "dialogKey":"rgb-lamp","timeoutMs":1000
+          }},
+          {"id":"exercise","kind":"wait","ms":1},
+          {"id":"judge","kind":"operatorPrompt","prompt":{
+            "mode":"judgment","title":"RGB Lamp Result",
+            "message":"Did red, green, and blue all illuminate correctly?",
+            "dialogKey":"rgb-lamp","passText":"PASS","failText":"FAIL",
+            "failureCode":"RgbLampOperatorFail","timeoutMs":1000
+          }}
+        ]},
+        {"id":"cleanup","kind":"cleanup","steps":[{"id":"close","kind":"noop"}]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QString() : compiled.errors.first().message));
+
+    const auto runWithResponse = [&](OperatorPromptResponse response) {
+        auto control = std::make_shared<ExecutionControl>();
+        control->operatorPrompts().setResponderAvailable(true);
+        OperatorPromptResponderSink events(control, response);
+        ExecutionSession session(compiled.plan, {}, &events, control);
+        session.addUut("uut-1");
+        const auto run = session.run();
+        const auto judgment = session.results().latest("uut-1", "root", "judge");
+        return std::tuple<ExecutionSessionResult, std::optional<StoredStepResult>,
+                          QVector<RuntimeEvent>>{run, judgment, events.records()};
+    };
+
+    const auto [passRun, passJudgment, passEvents] =
+        runWithResponse(OperatorPromptResponse::Passed);
+    QVERIFY(passRun.completed);
+    QVERIFY(!passRun.hasError);
+    QVERIFY(passJudgment.has_value());
+    QCOMPARE(passJudgment->result.outcome, NodeOutcome::Passed);
+    QCOMPARE(passJudgment->result.outputs.value("response").toString(),
+             QStringLiteral("pass"));
+    QVERIFY(std::any_of(passEvents.cbegin(), passEvents.cend(),
+                        [](const RuntimeEvent& event) {
+                            return event.kind == RuntimeEventKind::OperatorPromptRequested &&
+                                   event.nodeId == QStringLiteral("judge") &&
+                                   event.details.value("dialogKey").toString() ==
+                                       QStringLiteral("rgb-lamp");
+                        }));
+
+    const auto [failRun, failJudgment, failEvents] =
+        runWithResponse(OperatorPromptResponse::Failed);
+    Q_UNUSED(failEvents);
+    QVERIFY(failRun.completed);
+    QVERIFY(failRun.hasError);
+    QVERIFY(failJudgment.has_value());
+    QCOMPARE(failJudgment->result.outcome, NodeOutcome::Failed);
+    QCOMPARE(failJudgment->result.errorCode, QStringLiteral("RgbLampOperatorFail"));
+    QCOMPARE(failJudgment->result.outputs.value("response").toString(),
+             QStringLiteral("fail"));
 }
 
 void CoreTests::operatorPromptInterpolatesRuntimeValues()
