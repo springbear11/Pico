@@ -95,6 +95,8 @@ public:
 signals:
     void itemMoved(const PicoATE::Ui::SequenceItemPath& from,
                    const PicoATE::Ui::SequenceItemPath& to);
+    void itemsMoved(const QVector<PicoATE::Ui::SequenceItemPath>& from,
+                    const QVector<PicoATE::Ui::SequenceItemPath>& to);
     void itemInserted(const PicoATE::Ui::SequenceItemPath& path);
     void breakpointsChanged();
 

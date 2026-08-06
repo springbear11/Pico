@@ -905,6 +905,38 @@ MainWindow::MainWindow(QWidget* parent)
                 }
                 updateCommandState();
             });
+    connect(m_sequenceTreeModel, &SequenceTreeModel::itemsMoved,
+            this,
+            [this](const QVector<SequenceItemPath>&,
+                   const QVector<SequenceItemPath>& destinations) {
+                if (destinations.isEmpty()) {
+                    return;
+                }
+                auto* selection = m_sequenceTreeView->selectionModel();
+                selection->clearSelection();
+                for (const auto& destination : destinations) {
+                    const auto index = m_sequenceTreeModel->indexForPath(destination);
+                    if (index.isValid()) {
+                        selection->select(
+                            index,
+                            QItemSelectionModel::Select |
+                                QItemSelectionModel::Rows);
+                    }
+                }
+                m_selectedSequencePath = destinations.first();
+                const auto current = m_sequenceTreeModel->indexForPath(
+                    m_selectedSequencePath);
+                if (current.isValid()) {
+                    m_selectedSequenceNodePath =
+                        m_sequenceTreeModel->nodePathForIndex(current);
+                    m_sequenceTreeView->setCurrentIndex(current);
+                    m_sequenceTreeView->scrollTo(
+                        current, QAbstractItemView::EnsureVisible);
+                    m_stepPropertyEditor->setCurrentItem(
+                        m_selectedSequencePath);
+                }
+                updateCommandState();
+            });
     connect(m_sequenceTreeModel, &SequenceTreeModel::itemInserted,
             this, [this](const SequenceItemPath& path) {
                 m_selectedSequencePath = path;

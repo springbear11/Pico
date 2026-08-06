@@ -17,25 +17,18 @@ namespace {
 
 constexpr auto sequencePathMimeType = "application/x-picoate-sequence-item-path";
 
-QByteArray encodePath(const SequenceItemPath& path)
+QJsonObject pathToJson(const SequenceItemPath& path)
 {
     QJsonArray steps;
     for (const int index : path.stepIndices) {
         steps.push_back(index);
     }
-    return QJsonDocument(QJsonObject{{"group", path.groupIndex},
-                                     {"steps", steps}})
-        .toJson(QJsonDocument::Compact);
+    return QJsonObject{{"group", path.groupIndex}, {"steps", steps}};
 }
 
-SequenceItemPath decodePath(const QByteArray& bytes)
+SequenceItemPath pathFromJson(const QJsonObject& object)
 {
     SequenceItemPath path;
-    const auto document = QJsonDocument::fromJson(bytes);
-    if (!document.isObject()) {
-        return path;
-    }
-    const auto object = document.object();
     if (!object.value("group").isDouble() || !object.value("steps").isArray()) {
         return path;
     }
@@ -47,6 +40,45 @@ SequenceItemPath decodePath(const QByteArray& bytes)
         path.stepIndices.push_back(value.toInt(-1));
     }
     return path;
+}
+
+QByteArray encodePaths(const QVector<SequenceItemPath>& paths)
+{
+    QJsonArray items;
+    for (const auto& path : paths) {
+        items.push_back(pathToJson(path));
+    }
+    return QJsonDocument(QJsonObject{{QStringLiteral("items"), items}})
+        .toJson(QJsonDocument::Compact);
+}
+
+QVector<SequenceItemPath> decodePaths(const QByteArray& bytes)
+{
+    QVector<SequenceItemPath> paths;
+    const auto document = QJsonDocument::fromJson(bytes);
+    if (!document.isObject()) {
+        return paths;
+    }
+    const auto object = document.object();
+    const auto items = object.value(QStringLiteral("items"));
+    if (!items.isArray()) {
+        const auto path = pathFromJson(object);
+        if (path.isValid()) {
+            paths.push_back(path);
+        }
+        return paths;
+    }
+    for (const auto& value : items.toArray()) {
+        if (!value.isObject()) {
+            return {};
+        }
+        const auto path = pathFromJson(value.toObject());
+        if (!path.isValid() || paths.contains(path)) {
+            return {};
+        }
+        paths.push_back(path);
+    }
+    return paths;
 }
 
 QString itemKind(const QJsonObject& object, const QString& fallback)
@@ -560,16 +592,31 @@ QStringList SequenceTreeModel::mimeTypes() const
 
 QMimeData* SequenceTreeModel::mimeData(const QModelIndexList& indexes) const
 {
+    QVector<SequenceItemPath> paths;
     for (const auto& index : indexes) {
         if (!index.isValid() || index.column() != NameColumn ||
             itemType(index) != ItemType::Step) {
             continue;
         }
-        auto* data = new QMimeData;
-        data->setData(sequencePathMimeType, encodePath(pathForIndex(index)));
-        return data;
+        const auto path = pathForIndex(index);
+        if (path.isValid() && !paths.contains(path)) {
+            paths.push_back(path);
+        }
     }
-    return nullptr;
+    if (paths.isEmpty()) {
+        return nullptr;
+    }
+    std::sort(paths.begin(), paths.end(), [](const auto& left, const auto& right) {
+        if (left.groupIndex != right.groupIndex) {
+            return left.groupIndex < right.groupIndex;
+        }
+        return std::lexicographical_compare(
+            left.stepIndices.cbegin(), left.stepIndices.cend(),
+            right.stepIndices.cbegin(), right.stepIndices.cend());
+    });
+    auto* data = new QMimeData;
+    data->setData(sequencePathMimeType, encodePaths(paths));
+    return data;
 }
 
 bool SequenceTreeModel::dropMimeData(const QMimeData* data,
@@ -616,14 +663,20 @@ bool SequenceTreeModel::dropMimeData(const QMimeData* data,
         return false;
     }
 
-    const auto sourcePath = decodePath(data->data(sequencePathMimeType));
-    if (!sourcePath.isValid() || sourcePath.stepIndices.isEmpty()) {
+    const auto sourcePaths = decodePaths(data->data(sequencePathMimeType));
+    if (sourcePaths.isEmpty()) {
         return false;
     }
-    SequenceItemPath movedPath;
+    for (const auto& sourcePath : sourcePaths) {
+        if (!sourcePath.isValid() || sourcePath.stepIndices.isEmpty()) {
+            return false;
+        }
+    }
+
+    QVector<SequenceItemPath> movedPaths;
     m_deferDocumentRefresh = true;
-    const bool moved = m_document->relocateStep(
-        sourcePath, destinationParent, row, &movedPath);
+    const bool moved = m_document->relocateSteps(
+        sourcePaths, destinationParent, row, &movedPaths);
     m_deferDocumentRefresh = false;
     const bool refreshWasRequested = std::exchange(
         m_documentRefreshPending, false);
@@ -633,14 +686,21 @@ bool SequenceTreeModel::dropMimeData(const QMimeData* data,
         }
         return false;
     }
-    if (!applyModelMove(sourcePath, destinationParent, movedPath)) {
+    if (sourcePaths.size() == 1 && movedPaths.size() == 1 &&
+        !applyModelMove(sourcePaths.first(), destinationParent,
+                        movedPaths.first())) {
         ApplicationDiagnostics::recordAction(
             QStringLiteral("FLOW_MOVE_FALLBACK"),
             QStringLiteral("from=%1 to=%2")
-                .arg(sourcePath.jsonPath(), movedPath.jsonPath()));
+                .arg(sourcePaths.first().jsonPath(),
+                     movedPaths.first().jsonPath()));
     }
     refreshFromDocument();
-    emit itemMoved(sourcePath, movedPath);
+    if (sourcePaths.size() == 1) {
+        emit itemMoved(sourcePaths.first(), movedPaths.first());
+    } else {
+        emit itemsMoved(sourcePaths, movedPaths);
+    }
     return true;
 }
 

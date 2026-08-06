@@ -420,6 +420,7 @@ private slots:
     void sequenceDocumentReplacesItemAtomically();
     void sequenceDocumentUndoRedoTracksCleanState();
     void sequenceDocumentRelocatesAcrossShiftedParentPaths();
+    void sequenceDocumentRelocatesMultipleSiblingsAcrossShiftedParent();
     void sequenceDocumentWrapsContiguousStepsInTestItem();
     void sequenceDocumentWrapUpdatesScopedReferences();
     void sequenceDocumentBatchEditsSelectedStepsAtomically();
@@ -435,6 +436,7 @@ private slots:
     void sequenceTreeModelShowsInheritedDisabledState();
     void sequenceTreeModelTogglesTransientBreakpoints();
     void sequenceTreeModelMovesAcrossValidParents();
+    void sequenceTreeModelMovesMultipleSelectedSiblings();
     void sequenceTreeModelMovesRowsWithoutReset();
     void sequenceTreeModelHandlesLargeSequenceIncrementally();
     void stationDocumentPreservesUnknownFieldsAndUndoHistory();
@@ -4044,6 +4046,67 @@ void ExecutionViewModelTests::sequenceDocumentRelocatesAcrossShiftedParentPaths(
         SequenceItemPath{0, {2}}, SequenceItemPath{0, {2, 0}}, -1));
 }
 
+void ExecutionViewModelTests::sequenceDocumentRelocatesMultipleSiblingsAcrossShiftedParent()
+{
+    SequenceDocument document;
+    QVERIFY(document.replaceRootObject(QJsonObject{
+        {QStringLiteral("id"), QStringLiteral("batch-relocate")},
+        {QStringLiteral("name"), QStringLiteral("Batch Relocate")},
+        {QStringLiteral("groups"), QJsonArray{QJsonObject{
+            {QStringLiteral("id"), QStringLiteral("main")},
+            {QStringLiteral("kind"), QStringLiteral("main")},
+            {QStringLiteral("steps"), QJsonArray{
+                QJsonObject{{QStringLiteral("id"), QStringLiteral("001")},
+                            {QStringLiteral("kind"), QStringLiteral("noop")}},
+                QJsonObject{{QStringLiteral("id"), QStringLiteral("002")},
+                            {QStringLiteral("kind"), QStringLiteral("noop")}},
+                QJsonObject{{QStringLiteral("id"), QStringLiteral("003")},
+                            {QStringLiteral("kind"), QStringLiteral("action")},
+                            {QStringLiteral("inputs"), QJsonObject{
+                                {QStringLiteral("value"),
+                                 QStringLiteral("${step:001.outputs.value}")}}}},
+                QJsonObject{{QStringLiteral("id"), QStringLiteral("004")},
+                            {QStringLiteral("kind"), QStringLiteral("noop")}},
+                QJsonObject{{QStringLiteral("id"), QStringLiteral("005")},
+                            {QStringLiteral("kind"), QStringLiteral("testItem")},
+                            {QStringLiteral("steps"), QJsonArray{}}}}}}}}}));
+    document.undoStack()->clear();
+
+    QVector<SequenceItemPath> relocated;
+    QVERIFY(document.relocateSteps(
+        {SequenceItemPath{0, {2}}, SequenceItemPath{0, {0}}},
+        SequenceItemPath{0, {4}}, -1, &relocated));
+    QCOMPARE(relocated,
+             QVector<SequenceItemPath>({SequenceItemPath{0, {2, 0}},
+                                        SequenceItemPath{0, {2, 1}}}));
+
+    SequenceItemPath mainPath;
+    mainPath.groupIndex = 0;
+    const auto topSteps = document.objectAt(mainPath)
+                              .value(QStringLiteral("steps")).toArray();
+    QCOMPARE(topSteps.size(), 3);
+    QCOMPARE(topSteps.at(0).toObject().value(QStringLiteral("id")).toString(),
+             QStringLiteral("002"));
+    QCOMPARE(topSteps.at(1).toObject().value(QStringLiteral("id")).toString(),
+             QStringLiteral("004"));
+    QCOMPARE(topSteps.at(2).toObject().value(QStringLiteral("id")).toString(),
+             QStringLiteral("005"));
+    const auto children = topSteps.at(2).toObject()
+                              .value(QStringLiteral("steps")).toArray();
+    QCOMPARE(children.size(), 2);
+    QCOMPARE(children.at(0).toObject().value(QStringLiteral("id")).toString(),
+             QStringLiteral("001"));
+    QCOMPARE(children.at(1).toObject().value(QStringLiteral("id")).toString(),
+             QStringLiteral("003"));
+    QCOMPARE(children.at(1).toObject().value(QStringLiteral("inputs"))
+                 .toObject().value(QStringLiteral("value")).toString(),
+             QStringLiteral("${step:005.001.outputs.value}"));
+
+    document.undoStack()->undo();
+    QCOMPARE(document.objectAt(mainPath).value(QStringLiteral("steps"))
+                 .toArray().size(), 5);
+}
+
 void ExecutionViewModelTests::sequenceDocumentDestructionSilencesUndoStack()
 {
     QTemporaryDir temporaryDirectory;
@@ -4200,6 +4263,72 @@ void ExecutionViewModelTests::sequenceTreeModelMovesAcrossValidParents()
     const auto children = document.objectAt(testItemPath).value("steps").toArray();
     QCOMPARE(children.at(0).toObject().value("id").toString(),
              QString("measure-3v3"));
+}
+
+void ExecutionViewModelTests::sequenceTreeModelMovesMultipleSelectedSiblings()
+{
+    SequenceDocument document;
+    QJsonArray steps;
+    for (int index = 1; index <= 4; ++index) {
+        const auto id = QStringLiteral("%1").arg(
+            index, 3, 10, QLatin1Char('0'));
+        steps.push_back(QJsonObject{{QStringLiteral("id"), id},
+                                    {QStringLiteral("name"), id},
+                                    {QStringLiteral("kind"),
+                                     QStringLiteral("noop")},
+                                    {QStringLiteral("enabled"), true}});
+    }
+    QVERIFY(document.replaceRootObject(QJsonObject{
+        {QStringLiteral("id"), QStringLiteral("multi-drag")},
+        {QStringLiteral("name"), QStringLiteral("Multi Drag")},
+        {QStringLiteral("groups"), QJsonArray{QJsonObject{
+            {QStringLiteral("id"), QStringLiteral("main")},
+            {QStringLiteral("name"), QStringLiteral("Main")},
+            {QStringLiteral("kind"), QStringLiteral("main")},
+            {QStringLiteral("enabled"), true},
+            {QStringLiteral("steps"), steps}}}}}));
+    document.undoStack()->clear();
+
+    SequenceTreeModel model(&document);
+    QAbstractItemModelTester tester(
+        &model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+    auto mainGroup = model.index(0, SequenceTreeModel::NameColumn);
+    const auto first = model.index(0, SequenceTreeModel::NameColumn, mainGroup);
+    const auto third = model.index(2, SequenceTreeModel::NameColumn, mainGroup);
+    std::unique_ptr<QMimeData> selected(model.mimeData({third, first}));
+    QVERIFY(selected);
+    QSignalSpy batchMovedSpy(&model, &SequenceTreeModel::itemsMoved);
+    QSignalSpy singleMovedSpy(&model, &SequenceTreeModel::itemMoved);
+
+    QVERIFY(model.dropMimeData(
+        selected.get(), Qt::MoveAction, 4, 0, mainGroup));
+    QCOMPARE(batchMovedSpy.count(), 1);
+    QCOMPARE(singleMovedSpy.count(), 0);
+    QCOMPARE(document.undoStack()->undoText(),
+             QStringLiteral("Move Selected Steps"));
+
+    SequenceItemPath mainPath;
+    mainPath.groupIndex = 0;
+    auto moved = document.objectAt(mainPath).value(QStringLiteral("steps"))
+                     .toArray();
+    QCOMPARE(moved.size(), 4);
+    QCOMPARE(moved.at(0).toObject().value(QStringLiteral("id")).toString(),
+             QStringLiteral("002"));
+    QCOMPARE(moved.at(1).toObject().value(QStringLiteral("id")).toString(),
+             QStringLiteral("004"));
+    QCOMPARE(moved.at(2).toObject().value(QStringLiteral("id")).toString(),
+             QStringLiteral("001"));
+    QCOMPARE(moved.at(3).toObject().value(QStringLiteral("id")).toString(),
+             QStringLiteral("003"));
+
+    document.undoStack()->undo();
+    moved = document.objectAt(mainPath).value(QStringLiteral("steps")).toArray();
+    for (int index = 0; index < moved.size(); ++index) {
+        QCOMPARE(moved.at(index).toObject().value(QStringLiteral("id"))
+                     .toString(),
+                 QStringLiteral("%1").arg(
+                     index + 1, 3, 10, QLatin1Char('0')));
+    }
 }
 
 void ExecutionViewModelTests::sequenceTreeModelMovesRowsWithoutReset()

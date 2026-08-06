@@ -410,7 +410,8 @@ bool removeStepFromRoot(QJsonObject& root, const SequenceItemPath& path)
 
 bool normalizeSiblingPaths(QVector<SequenceItemPath> paths,
                            SequenceItemPath& parentPath,
-                           QVector<int>& rows)
+                           QVector<int>& rows,
+                           bool requireContiguous = true)
 {
     if (paths.isEmpty()) {
         return false;
@@ -440,9 +441,11 @@ bool normalizeSiblingPaths(QVector<SequenceItemPath> paths,
         rows.push_back(row);
     }
     std::sort(rows.begin(), rows.end());
-    for (int index = 1; index < rows.size(); ++index) {
-        if (rows[index] != rows[index - 1] + 1) {
-            return false;
+    if (requireContiguous) {
+        for (int index = 1; index < rows.size(); ++index) {
+            if (rows[index] != rows[index - 1] + 1) {
+                return false;
+            }
         }
     }
     return true;
@@ -1330,72 +1333,130 @@ bool SequenceDocument::relocateStep(
     int destinationRow,
     SequenceItemPath* relocatedPath)
 {
-    if (!sourcePath.isValid() || sourcePath.stepIndices.isEmpty() ||
+    QVector<SequenceItemPath> relocatedPaths;
+    if (!relocateSteps({sourcePath}, destinationParent, destinationRow,
+                       &relocatedPaths) || relocatedPaths.size() != 1) {
+        return false;
+    }
+    if (relocatedPath) {
+        *relocatedPath = relocatedPaths.first();
+    }
+    return true;
+}
+
+bool SequenceDocument::relocateSteps(
+    QVector<SequenceItemPath> sourcePaths,
+    const SequenceItemPath& destinationParent,
+    int destinationRow,
+    QVector<SequenceItemPath>* relocatedPaths)
+{
+    SequenceItemPath sourceParent;
+    QVector<int> sourceRows;
+    if (!normalizeSiblingPaths(std::move(sourcePaths), sourceParent,
+                               sourceRows, false) ||
         !destinationParent.isValid() || !canContainSteps(destinationParent)) {
         return false;
     }
-    if (sourcePath.groupIndex == destinationParent.groupIndex &&
-        pathStartsWith(destinationParent.stepIndices, sourcePath.stepIndices)) {
-        return false;
-    }
-    auto sourceObject = objectAt(sourcePath);
-    if (sourceObject.isEmpty()) {
-        return false;
-    }
-    const auto oldRootPath = sequenceNodePath(m_root, sourcePath);
-    const auto destinationParentNodePath = sequenceNodePath(m_root, destinationParent);
-    const auto sourceId = sourceObject.value(QStringLiteral("id")).toString().trimmed();
-    const auto sourceKey = sourceObject.value(QStringLiteral("key")).toString().trimmed();
-    const auto newRootSegment = destinationParent.stepIndices.isEmpty() || sourceKey.isEmpty()
-        ? sourceId
-        : sourceKey;
-    const auto newRootPath = childNodePath(destinationParentNodePath, newRootSegment);
-    const auto oldRootSegment = oldRootPath.section(QLatin1Char('.'), -1);
-    sourceObject = rewriteScopedStepReferences(sourceObject,
-                                               oldRootPath,
-                                               newRootPath).toObject();
-    if (!oldRootSegment.isEmpty() && oldRootSegment != newRootSegment) {
-        sourceObject = rewriteScopedStepReferences(sourceObject,
-                                                   oldRootSegment,
-                                                   newRootSegment).toObject();
+
+    QVector<SequenceItemPath> orderedSourcePaths;
+    QVector<QJsonObject> sourceObjects;
+    QVector<QString> oldRootPaths;
+    QVector<QString> newRootPaths;
+    orderedSourcePaths.reserve(sourceRows.size());
+    sourceObjects.reserve(sourceRows.size());
+    oldRootPaths.reserve(sourceRows.size());
+    newRootPaths.reserve(sourceRows.size());
+
+    const auto destinationParentNodePath = sequenceNodePath(
+        m_root, destinationParent);
+    for (const int sourceRow : std::as_const(sourceRows)) {
+        auto sourcePath = sourceParent;
+        sourcePath.stepIndices.push_back(sourceRow);
+        if (sourcePath.groupIndex == destinationParent.groupIndex &&
+            pathStartsWith(destinationParent.stepIndices,
+                           sourcePath.stepIndices)) {
+            return false;
+        }
+
+        auto sourceObject = objectAt(sourcePath);
+        if (sourceObject.isEmpty()) {
+            return false;
+        }
+        const auto oldRootPath = sequenceNodePath(m_root, sourcePath);
+        const auto sourceId = sourceObject.value(QStringLiteral("id"))
+                                  .toString().trimmed();
+        const auto sourceKey = sourceObject.value(QStringLiteral("key"))
+                                   .toString().trimmed();
+        const auto newRootSegment = destinationParent.stepIndices.isEmpty() ||
+                sourceKey.isEmpty()
+            ? sourceId
+            : sourceKey;
+        const auto newRootPath = childNodePath(destinationParentNodePath,
+                                               newRootSegment);
+        const auto oldRootSegment = oldRootPath.section(QLatin1Char('.'), -1);
+        sourceObject = rewriteScopedStepReferences(
+            sourceObject, oldRootPath, newRootPath).toObject();
+        if (!oldRootSegment.isEmpty() && oldRootSegment != newRootSegment) {
+            sourceObject = rewriteScopedStepReferences(
+                sourceObject, oldRootSegment, newRootSegment).toObject();
+        }
+
+        orderedSourcePaths.push_back(std::move(sourcePath));
+        sourceObjects.push_back(std::move(sourceObject));
+        oldRootPaths.push_back(oldRootPath);
+        newRootPaths.push_back(newRootPath);
     }
 
-    auto sourceParent = sourcePath;
-    const int sourceRow = sourceParent.stepIndices.takeLast();
     auto adjustedDestination = destinationParent;
     int adjustedRow = destinationRow;
-    if (sourceParent == destinationParent && adjustedRow > sourceRow) {
-        --adjustedRow;
-    }
-    if (sourcePath.groupIndex == destinationParent.groupIndex &&
-        sourceParent.stepIndices.size() < adjustedDestination.stepIndices.size() &&
-        pathStartsWith(adjustedDestination.stepIndices, sourceParent.stepIndices)) {
-        const int depth = sourceParent.stepIndices.size();
-        if (adjustedDestination.stepIndices[depth] > sourceRow) {
-            --adjustedDestination.stepIndices[depth];
+    if (sourceParent.groupIndex == destinationParent.groupIndex &&
+        pathStartsWith(adjustedDestination.stepIndices,
+                       sourceParent.stepIndices)) {
+        if (sourceParent == adjustedDestination) {
+            if (adjustedRow >= 0) {
+                adjustedRow -= static_cast<int>(std::count_if(
+                    sourceRows.cbegin(), sourceRows.cend(),
+                    [adjustedRow](int sourceRow) {
+                        return sourceRow < adjustedRow;
+                    }));
+            }
+        } else {
+            const int depth = sourceParent.stepIndices.size();
+            const int destinationBranch = adjustedDestination.stepIndices[depth];
+            adjustedDestination.stepIndices[depth] -=
+                static_cast<int>(std::count_if(
+                    sourceRows.cbegin(), sourceRows.cend(),
+                    [destinationBranch](int sourceRow) {
+                        return sourceRow < destinationBranch;
+                    }));
         }
     }
 
     auto root = m_root;
     auto groups = root.value(QStringLiteral("groups")).toArray();
-    if (sourcePath.groupIndex < 0 || sourcePath.groupIndex >= groups.size() ||
-        destinationParent.groupIndex < 0 ||
-        destinationParent.groupIndex >= groups.size()) {
+    if (sourceParent.groupIndex < 0 ||
+        sourceParent.groupIndex >= groups.size() ||
+        adjustedDestination.groupIndex < 0 ||
+        adjustedDestination.groupIndex >= groups.size()) {
         return false;
     }
-    auto sourceGroup = groups[sourcePath.groupIndex].toObject();
+
+    auto sourceGroup = groups[sourceParent.groupIndex].toObject();
     if (!mutateNestedSteps(
             sourceGroup, sourceParent.stepIndices, 0,
-            [sourceRow](QJsonArray& steps) {
-                if (sourceRow < 0 || sourceRow >= steps.size()) {
-                    return false;
+            [&sourceRows](QJsonArray& steps) {
+                for (auto it = sourceRows.crbegin();
+                     it != sourceRows.crend(); ++it) {
+                    if (*it < 0 || *it >= steps.size()) {
+                        return false;
+                    }
+                    steps.removeAt(*it);
                 }
-                steps.removeAt(sourceRow);
                 return true;
             })) {
         return false;
     }
-    groups[sourcePath.groupIndex] = sourceGroup;
+    groups[sourceParent.groupIndex] = sourceGroup;
 
     auto destinationGroup = groups[adjustedDestination.groupIndex].toObject();
     int insertedRow = -1;
@@ -1405,20 +1466,32 @@ bool SequenceDocument::relocateStep(
                 insertedRow = adjustedRow < 0
                     ? steps.size()
                     : qBound(0, adjustedRow, steps.size());
-                steps.insert(insertedRow, sourceObject);
+                for (int index = 0; index < sourceObjects.size(); ++index) {
+                    steps.insert(insertedRow + index, sourceObjects[index]);
+                }
                 return true;
             })) {
         return false;
     }
     groups[adjustedDestination.groupIndex] = destinationGroup;
     root.insert(QStringLiteral("groups"), groups);
-    root = rewriteScopedStepReferences(root, oldRootPath, newRootPath).toObject();
-    if (!commitRoot(std::move(root), tr("Move Step"))) {
+    for (int index = 0; index < oldRootPaths.size(); ++index) {
+        root = rewriteScopedStepReferences(
+            root, oldRootPaths[index], newRootPaths[index]).toObject();
+    }
+    if (!commitRoot(std::move(root), sourceObjects.size() == 1
+            ? tr("Move Step") : tr("Move Selected Steps"))) {
         return false;
     }
-    if (relocatedPath) {
-        *relocatedPath = adjustedDestination;
-        relocatedPath->stepIndices.push_back(insertedRow);
+
+    if (relocatedPaths) {
+        relocatedPaths->clear();
+        relocatedPaths->reserve(sourceObjects.size());
+        for (int index = 0; index < sourceObjects.size(); ++index) {
+            auto relocatedPath = adjustedDestination;
+            relocatedPath.stepIndices.push_back(insertedRow + index);
+            relocatedPaths->push_back(std::move(relocatedPath));
+        }
     }
     return true;
 }

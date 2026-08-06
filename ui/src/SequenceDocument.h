@@ -98,6 +98,10 @@ public:
                       const SequenceItemPath& destinationParent,
                       int destinationRow = -1,
                       SequenceItemPath* relocatedPath = nullptr);
+    bool relocateSteps(QVector<SequenceItemPath> sourcePaths,
+                       const SequenceItemPath& destinationParent,
+                       int destinationRow = -1,
+                       QVector<SequenceItemPath>* relocatedPaths = nullptr);
     bool canWrapStepsInTestItem(const QVector<SequenceItemPath>& paths) const;
     bool wrapStepsInTestItem(QVector<SequenceItemPath> paths,
                              SequenceItemPath* testItemPath = nullptr);
