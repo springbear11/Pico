@@ -88,12 +88,25 @@ private:
     std::optional<NodeResult> completeReadyWait(
         UutExecution& uut,
         const FrameId& frameId,
+        const TimerCompletion& completion,
         std::optional<ExecutionPhase> phase = std::nullopt);
+    bool scheduleRetryDelay(UutExecution& uut,
+                            const ExecNode& node,
+                            const FrameId& frameId);
+    bool completeReadyRetry(UutExecution& uut,
+                            const FrameId& frameId,
+                            const TimerCompletion& completion,
+                            std::optional<ExecutionPhase> phase = std::nullopt);
     bool cancelPendingWait(UutExecution& uut,
                            const ExecNode& node,
                            const FrameId& frameId,
                            const QString& reason);
+    bool cancelPendingRetry(UutExecution& uut,
+                            const ExecNode& node,
+                            const FrameId& frameId,
+                            const QString& reason);
     void discardObsoletePendingWaits(UutExecution& uut);
+    void discardObsoletePendingRetries(UutExecution& uut);
     NodeResult executeNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
     NodeResult registerPeriodicTask(UutExecution& uut,
                                     const ExecNode& node,
@@ -197,6 +210,14 @@ private:
         ResourceLeaseId leaseId;
     };
 
+    struct PendingRetry {
+        RequestId requestId;
+        UutId uutId;
+        FrameId frameId;
+        NodeId nodeId;
+        ActivationId activationId;
+    };
+
     const ExecutionPlan& m_plan;
     ResourceManager& m_resources;
     BarrierController& m_barriers;
@@ -214,6 +235,7 @@ private:
     QVector<ActiveOperatorPrompt> m_activeOperatorPrompts;
     TimerService m_timers;
     QHash<RequestId, PendingWait> m_pendingWaits;
+    QHash<RequestId, PendingRetry> m_pendingRetries;
     PeriodicTaskController m_periodicTasks;
     struct ActiveResourceRegion {
         ResourceRegionId regionId;

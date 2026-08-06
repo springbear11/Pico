@@ -338,9 +338,16 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
                 if (m_loading) {
                     return;
                 }
+                const auto kind = m_kindCombo->currentData().toString();
+                const auto sourceKind = m_sourceObject.value("kind").toString(
+                    m_sourceObject.value("type").toString());
+                if (kind == QStringLiteral("testItem") &&
+                    sourceKind != QStringLiteral("testItem") &&
+                    m_maxAttemptsSpin->value() == 1) {
+                    m_maxAttemptsSpin->setValue(3);
+                }
                 updateKindRows();
-                if (m_kindCombo->currentData().toString() ==
-                    QStringLiteral("operatorPrompt")) {
+                if (kind == QStringLiteral("operatorPrompt")) {
                     rebuildPromptImageChoices(selectedPromptImage());
                     rebuildPromptCloseStepChoices(selectedPromptCloseStep());
                 }
@@ -1152,6 +1159,7 @@ void StepPropertyEditor::buildPolicyPage()
     m_policyForm->setContentsMargins(8, 8, 8, 8);
 
     m_maxAttemptsSpin = new QSpinBox(content);
+    m_maxAttemptsSpin->setObjectName(QStringLiteral("propertyMaxAttemptsSpin"));
     m_maxAttemptsSpin->setRange(1, 100000);
     m_policyForm->addRow(tr("Max attempts"), m_maxAttemptsSpin);
     m_retryDelaySpin = new QSpinBox(content);
@@ -1350,7 +1358,9 @@ void StepPropertyEditor::loadCurrentObject()
     m_releaseResourcesCheck->setChecked(barrier.value("releaseHeldResourcesOnWait").toBool(true));
 
     const auto retry = m_sourceObject.value("retry").toObject();
-    m_maxAttemptsSpin->setValue(retry.value("maxAttempts").toInt(1));
+    const int defaultMaxAttempts = editorKind == QStringLiteral("testItem") ? 3 : 1;
+    m_maxAttemptsSpin->setValue(
+        retry.value("maxAttempts").toInt(defaultMaxAttempts));
     m_retryDelaySpin->setValue(retry.value("delayMs").toInt(0));
     m_retryWhenEdit->setText(retry.value("retryWhen").toString());
     const auto timeout = m_sourceObject.value("timeout").toObject();

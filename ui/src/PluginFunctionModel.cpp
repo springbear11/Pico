@@ -294,8 +294,12 @@ void PluginFunctionModel::rebuild()
                            {QStringLiteral("tolerance"), 0.0},
                            {QStringLiteral("inclusive"), true},
                            {QStringLiteral("measurementName"), tr("Measurement")}}}})},
-        {tr("Test Item"), basicStep(tr("Test Item"), QStringLiteral("testItem"),
-                                    {{QStringLiteral("steps"), QJsonArray{}}})},
+        {tr("Test Item"), basicStep(
+             tr("Test Item"), QStringLiteral("testItem"),
+             {{QStringLiteral("retry"),
+               QJsonObject{{QStringLiteral("maxAttempts"), 3},
+                           {QStringLiteral("delayMs"), 0}}},
+              {QStringLiteral("steps"), QJsonArray{}}})},
         {tr("For Loop"), basicStep(
              tr("For Loop"), QStringLiteral("loop"),
              {{QStringLiteral("loop"),

@@ -381,6 +381,7 @@ SchedulerStepResult ExecutionGraphScheduler::pumpOnce(
     const auto readyNodes = findReadyNodes(uut, phase);
     if (readyNodes.isEmpty()) {
         if ((!phase || *phase == ExecutionPhase::Cleanup) &&
+            !hasPendingRequestForUut(uut.uutId) &&
             finalizeBlockedCleanup(uut, frameId)) {
             step.progressed = true;
             return step;
@@ -445,15 +446,24 @@ SchedulerStepResult ExecutionGraphScheduler::pumpPendingRequestOnce(
 {
     SchedulerStepResult step;
     discardObsoletePendingWaits(uut);
-    if (auto completedWait = completeReadyWait(uut, frameId, phase)) {
-        step.progressed = true;
-        step.nodeId = completedWait->nodeId;
-        step.nodeResults.push_back(*completedWait);
-        releaseCompletedResourceRegions(uut, frameId);
+    discardObsoletePendingRetries(uut);
+    const auto completion = m_timers.takeReadyForContext(uut.uutId, frameId);
+    if (!completion) {
+        step.blocked = true;
         return step;
     }
 
-    step.blocked = true;
+    step.progressed = true;
+    step.nodeId = completion->nodeId;
+    if (m_pendingWaits.contains(completion->requestId)) {
+        if (auto completedWait = completeReadyWait(
+                uut, frameId, *completion, phase)) {
+            step.nodeResults.push_back(*completedWait);
+        }
+    } else if (m_pendingRetries.contains(completion->requestId)) {
+        completeReadyRetry(uut, frameId, *completion, phase);
+    }
+    releaseCompletedResourceRegions(uut, frameId);
     return step;
 }
 
@@ -546,7 +556,8 @@ void ExecutionGraphScheduler::skipPendingNonAlwaysRun(
             continue;
         }
 
-        if (cancelPendingWait(uut, node, frameId, reason)) {
+        if (cancelPendingWait(uut, node, frameId, reason) ||
+            cancelPendingRetry(uut, node, frameId, reason)) {
             continue;
         }
 
@@ -768,14 +779,10 @@ NodeResult ExecutionGraphScheduler::scheduleWaitNode(UutExecution& uut,
 std::optional<NodeResult> ExecutionGraphScheduler::completeReadyWait(
     UutExecution& uut,
     const FrameId& frameId,
+    const TimerCompletion& completion,
     std::optional<ExecutionPhase> phase)
 {
-    const auto completion = m_timers.takeReadyForContext(uut.uutId, frameId);
-    if (!completion) {
-        return std::nullopt;
-    }
-
-    auto pendingIt = m_pendingWaits.find(completion->requestId);
+    auto pendingIt = m_pendingWaits.find(completion.requestId);
     if (pendingIt == m_pendingWaits.end()) {
         return std::nullopt;
     }
@@ -793,7 +800,7 @@ std::optional<NodeResult> ExecutionGraphScheduler::completeReadyWait(
     auto activationIt = uut.activations.find(pending.nodeId);
     if (activationIt == uut.activations.end() ||
         activationIt->state != ActivationState::WaitingForTimer ||
-        activationIt->id != completion->activationId) {
+        activationIt->id != completion.activationId) {
         if (!pending.leaseId.isEmpty()) {
             m_resources.release(pending.leaseId);
         }
@@ -804,8 +811,8 @@ std::optional<NodeResult> ExecutionGraphScheduler::completeReadyWait(
         activationIt->attempts.begin(),
         activationIt->attempts.end(),
         [&completion](const NodeAttempt& attempt) {
-            return attempt.id == completion->attemptId &&
-                   attempt.requestId == completion->requestId;
+            return attempt.id == completion.attemptId &&
+                   attempt.requestId == completion.requestId;
         });
     if (attemptIt == activationIt->attempts.end() ||
         attemptIt->state != AttemptState::Running) {
@@ -819,7 +826,7 @@ std::optional<NodeResult> ExecutionGraphScheduler::completeReadyWait(
     result.nodeId = node->id;
     result.outcome = NodeOutcome::Passed;
     result.startedAt = attemptIt->result.startedAt;
-    result.finishedAt = completion->finishedAt;
+    result.finishedAt = completion.finishedAt;
 
     attemptIt->state = AttemptState::Completed;
     attemptIt->result = result;
@@ -842,10 +849,98 @@ std::optional<NodeResult> ExecutionGraphScheduler::completeReadyWait(
     return result;
 }
 
+bool ExecutionGraphScheduler::scheduleRetryDelay(UutExecution& uut,
+                                                  const ExecNode& node,
+                                                  const FrameId& frameId)
+{
+    if (node.retry.delayMs <= 0) {
+        return false;
+    }
+
+    auto& activation = uut.ensureActivation(node.id, frameId);
+    if (activation.attempts.isEmpty()) {
+        return false;
+    }
+
+    TimerRequest timer;
+    timer.requestId = createRequestId(QStringLiteral("retry"));
+    timer.uutId = uut.uutId;
+    timer.frameId = frameId;
+    timer.nodeId = node.id;
+    timer.activationId = activation.id;
+    timer.attemptId = activation.attempts.last().id;
+    timer.durationMs = node.retry.delayMs;
+    timer.startedAt = QDateTime::currentDateTimeUtc();
+    if (!m_timers.schedule(timer)) {
+        return false;
+    }
+
+    PendingRetry pending;
+    pending.requestId = timer.requestId;
+    pending.uutId = timer.uutId;
+    pending.frameId = timer.frameId;
+    pending.nodeId = timer.nodeId;
+    pending.activationId = timer.activationId;
+    m_pendingRetries.insert(timer.requestId, pending);
+
+    activation.state = ActivationState::WaitingForTimer;
+    activation.completedAt = {};
+    publishNodeEvent(RuntimeEventKind::NodeStateChanged,
+                     uut,
+                     node,
+                     activation.state,
+                     NodeOutcome::Unknown,
+                     QStringLiteral("waiting %1 ms before retry")
+                         .arg(timer.durationMs),
+                     activation.attempts.last().loopIteration);
+    return true;
+}
+
+bool ExecutionGraphScheduler::completeReadyRetry(
+    UutExecution& uut,
+    const FrameId& frameId,
+    const TimerCompletion& completion,
+    std::optional<ExecutionPhase> phase)
+{
+    auto pendingIt = m_pendingRetries.find(completion.requestId);
+    if (pendingIt == m_pendingRetries.end()) {
+        return false;
+    }
+    const auto pending = pendingIt.value();
+    m_pendingRetries.erase(pendingIt);
+
+    const auto* node = m_plan.node(pending.nodeId);
+    if (!node || pending.frameId != frameId ||
+        (phase && executionPhaseOf(*node) != *phase)) {
+        return false;
+    }
+
+    auto activationIt = uut.activations.find(pending.nodeId);
+    if (activationIt == uut.activations.end() ||
+        activationIt->state != ActivationState::WaitingForTimer ||
+        activationIt->id != completion.activationId ||
+        activationIt->id != pending.activationId) {
+        return false;
+    }
+
+    activationIt->state = ActivationState::Created;
+    activationIt->completedAt = {};
+    publishNodeEvent(RuntimeEventKind::NodeStateChanged,
+                     uut,
+                     *node,
+                     activationIt->state,
+                     NodeOutcome::Unknown,
+                     QStringLiteral("retry delay completed"),
+                     activationIt->attempts.isEmpty()
+                         ? LoopIterationContext{}
+                         : activationIt->attempts.last().loopIteration);
+    return true;
+}
+
 bool ExecutionGraphScheduler::cancelPendingWait(UutExecution& uut,
-                                                const ExecNode& node,
-                                                const FrameId& frameId,
-                                                const QString& reason)
+                                                 const ExecNode& node,
+                                                 const FrameId& frameId,
+                                                 const QString& reason)
 {
     auto pendingIt = std::find_if(
         m_pendingWaits.begin(),
@@ -911,6 +1006,54 @@ bool ExecutionGraphScheduler::cancelPendingWait(UutExecution& uut,
     return true;
 }
 
+bool ExecutionGraphScheduler::cancelPendingRetry(UutExecution& uut,
+                                                  const ExecNode& node,
+                                                  const FrameId& frameId,
+                                                  const QString& reason)
+{
+    auto pendingIt = std::find_if(
+        m_pendingRetries.begin(),
+        m_pendingRetries.end(),
+        [&uut, &node, &frameId](const PendingRetry& pending) {
+            return pending.uutId == uut.uutId && pending.nodeId == node.id &&
+                   pending.frameId == frameId;
+        });
+    if (pendingIt == m_pendingRetries.end()) {
+        return false;
+    }
+
+    const auto pending = pendingIt.value();
+    m_pendingRetries.erase(pendingIt);
+    m_timers.cancel(pending.requestId);
+
+    auto activationIt = uut.activations.find(node.id);
+    if (activationIt == uut.activations.end()) {
+        return true;
+    }
+
+    appendSyntheticAttempt(*activationIt, NodeOutcome::Skipped, reason);
+    activationIt->state = ActivationState::Skipped;
+    activationIt->completedAt = activationIt->attempts.last().result.finishedAt;
+    m_results.commit(uut.uutId,
+                     frameId,
+                     node.id,
+                     activationIt->attempts.last().attemptIndex,
+                     activationIt->attempts.last().result);
+    publishAttemptEvent(RuntimeEventKind::AttemptCompleted,
+                        uut,
+                        node,
+                        activationIt->attempts.last(),
+                        reason);
+    publishNodeEvent(RuntimeEventKind::NodeStateChanged,
+                     uut,
+                     node,
+                     activationIt->state,
+                     NodeOutcome::Skipped,
+                     reason,
+                     activationIt->attempts.last().loopIteration);
+    return true;
+}
+
 void ExecutionGraphScheduler::discardObsoletePendingWaits(UutExecution& uut)
 {
     QVector<RequestId> obsolete;
@@ -931,6 +1074,27 @@ void ExecutionGraphScheduler::discardObsoletePendingWaits(UutExecution& uut)
         if (!pending.leaseId.isEmpty()) {
             m_resources.release(pending.leaseId);
         }
+    }
+}
+
+void ExecutionGraphScheduler::discardObsoletePendingRetries(UutExecution& uut)
+{
+    QVector<RequestId> obsolete;
+    for (auto it = m_pendingRetries.cbegin(); it != m_pendingRetries.cend(); ++it) {
+        if (it->uutId != uut.uutId) {
+            continue;
+        }
+        const auto activation = uut.activations.constFind(it->nodeId);
+        if (activation == uut.activations.constEnd() ||
+            activation->state != ActivationState::WaitingForTimer ||
+            activation->id != it->activationId) {
+            obsolete.push_back(it.key());
+        }
+    }
+
+    for (const auto& requestId : obsolete) {
+        m_pendingRetries.remove(requestId);
+        m_timers.cancel(requestId);
     }
 }
 
@@ -1010,6 +1174,7 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
     NodeResult result;
     ErrorDecision finalDecision;
     bool shouldRetry = true;
+    bool retryDelayScheduled = false;
     const auto loopIteration = loopIterationForAttempt(uut, node);
     while (shouldRetry) {
         NodeAttempt attempt;
@@ -1066,12 +1231,30 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
                                 uut,
                                 node,
                                 activation.attempts.last(),
-                                decision.reason);
+                                node.retry.delayMs > 0
+                                    ? QStringLiteral("%1; delay %2 ms")
+                                          .arg(decision.reason)
+                                          .arg(node.retry.delayMs)
+                                    : decision.reason);
+            retryDelayScheduled = scheduleRetryDelay(uut, node, frameId);
+            if (retryDelayScheduled) {
+                shouldRetry = false;
+            }
         }
         if (decision.action == ErrorAction::RunCleanup &&
             !isTestItemChild && !isWhileLoopChild) {
             activateCleanup(uut, decision.cleanupRegionId);
         }
+    }
+
+    if (retryDelayScheduled) {
+        if (hasLease) {
+            m_resources.release(lease.leaseId);
+        }
+        NodeResult pending;
+        pending.nodeId = node.id;
+        pending.outcome = NodeOutcome::Unknown;
+        return pending;
     }
 
     if (result.outcome != NodeOutcome::Passed &&
@@ -1716,10 +1899,15 @@ NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
                                 uut,
                                 node,
                                 activation.attempts.last(),
-                                decision.reason);
+                                node.retry.delayMs > 0
+                                    ? QStringLiteral("%1; delay %2 ms")
+                                          .arg(decision.reason)
+                                          .arg(node.retry.delayMs)
+                                    : decision.reason);
             // Reset before the scheduler checks region completion. A single-item
             // region anchored to this TestItem then keeps its existing lease.
             resetTestItemForRetry(uut, node, frameId);
+            scheduleRetryDelay(uut, node, frameId);
 
             NodeResult pending;
             pending.nodeId = node.id;
@@ -2186,6 +2374,7 @@ bool ExecutionGraphScheduler::finalizeBlockedCleanup(UutExecution& uut,
             if (isTerminalActivation(activation.state) ||
                 activation.state == ActivationState::Running ||
                 activation.state == ActivationState::WaitingForResource ||
+                activation.state == ActivationState::WaitingForTimer ||
                 activation.state == ActivationState::WaitingAtBarrier) {
                 continue;
             }

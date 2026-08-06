@@ -4860,10 +4860,14 @@ void MainWindowLifecycleTests::whileLoopPropertyEditorUsesTypedFields()
 
     auto* kind = editor.findChild<QComboBox*>(
         QStringLiteral("propertyKindCombo"));
+    auto* maxAttempts = editor.findChild<QSpinBox*>(
+        QStringLiteral("propertyMaxAttemptsSpin"));
     QVERIFY(kind);
+    QVERIFY(maxAttempts);
     const int testItemIndex = kind->findData(QStringLiteral("testItem"));
     QVERIFY(testItemIndex >= 0);
     kind->setCurrentIndex(testItemIndex);
+    QCOMPARE(maxAttempts->value(), 3);
     QVERIFY(editor.commitPendingChanges());
 
     const auto converted = document.objectAt(loopPath);

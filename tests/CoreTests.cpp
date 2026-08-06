@@ -738,6 +738,7 @@ private slots:
     void stationFailureHandlingControlsTestItemChildren();
     void stationContinueEvaluatesFailedDataDependency();
     void testItemRetriesWholeSubtreeAndEventuallyPasses();
+    void testItemHonorsConfiguredRetryDelay();
     void testItemRetryResetsChildRetryBudget();
     void testItemRetryResetsNestedLoopState();
     void testItemRetryExhaustionKeepsFinalFailure();
@@ -3207,6 +3208,7 @@ void CoreTests::schedulerRetriesAndRunsCleanup()
     action.kind = ExecNodeKind::Action;
     action.payload.insert("failUntilAttempt", 0);
     action.retry.maxAttempts = 2;
+    action.retry.delayMs = 40;
     action.errorPolicy.cleanupRegionId = "main-cleanup";
     QVERIFY(plan.addNode(action));
 
@@ -3241,8 +3243,13 @@ void CoreTests::schedulerRetriesAndRunsCleanup()
     UutExecution uut;
     uut.uutId = "uut-1";
 
+    QElapsedTimer elapsed;
+    elapsed.start();
     const auto result = scheduler.run(uut);
     QVERIFY(result.completed);
+    QVERIFY2(elapsed.elapsed() >= 25,
+             qPrintable(QStringLiteral("Retry delay elapsed only %1 ms")
+                            .arg(elapsed.elapsed())));
     QCOMPARE(uut.activations["measure"].attempts.size(), 2);
     QCOMPARE(uut.outcomeOf("measure"), NodeOutcome::Passed);
     QCOMPARE(uut.outcomeOf("power-off"), NodeOutcome::Passed);
@@ -7155,6 +7162,46 @@ void CoreTests::testItemRetriesWholeSubtreeAndEventuallyPasses()
     QVERIFY(!session.report().hasError);
 }
 
+void CoreTests::testItemHonorsConfiguredRetryDelay()
+{
+    const auto json = R"json({
+      "id":"test-item-default-retry","name":"TestItem Default Retry","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"parent","kind":"testItem",
+          "retry":{"maxAttempts":3,"delayMs":40},"steps":[{
+            "id":"sample","kind":"action","parameters":{"failUntilAttempt":1}
+          }]
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compile.ok(), qPrintable(compile.errors.isEmpty()
+                                          ? QString()
+                                          : compile.errors.first().message));
+    const auto* parentNode = compile.plan.node(QStringLiteral("parent"));
+    QVERIFY(parentNode);
+    QCOMPARE(parentNode->retry.maxAttempts, 3);
+    QCOMPARE(parentNode->retry.delayMs, 40);
+
+    ExecutionSession session(compile.plan);
+    session.addUut(QStringLiteral("uut-1"));
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(!run.hasError);
+    QVERIFY2(elapsed.elapsed() >= 60,
+             qPrintable(QStringLiteral("Two TestItem retry delays elapsed only %1 ms")
+                            .arg(elapsed.elapsed())));
+
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.outcomeOf(QStringLiteral("parent")), NodeOutcome::Passed);
+    QCOMPARE(uut.activations.value(QStringLiteral("parent")).attempts.size(), 3);
+    QCOMPARE(uut.activations.value(QStringLiteral("parent.sample")).attempts.size(), 3);
+}
+
 void CoreTests::testItemRetryResetsChildRetryBudget()
 {
     const auto json = R"json({
@@ -7397,6 +7444,7 @@ void CoreTests::cleanupFailureContinuesBestEffortAndCompletesSession()
         ]},
         {"id":"cleanup","kind":"cleanup","steps":[
           {"id":"output-off","name":"Set Output OFF","kind":"action",
+           "retry":{"maxAttempts":2,"delayMs":20},
            "parameters":{"outcome":"Error","errorCode":"DeviceConnectFailed",
                          "errorMessage":"resource not found"}},
           {"id":"set-ovp","name":"Set OVP","kind":"action"},
@@ -7428,6 +7476,7 @@ void CoreTests::cleanupFailureContinuesBestEffortAndCompletesSession()
     const auto& uut = session.uuts().first();
     QCOMPARE(uut.outcomeOf("measure"), NodeOutcome::Skipped);
     QCOMPARE(sessionExecution.outcomeOf("output-off"), NodeOutcome::Error);
+    QCOMPARE(sessionExecution.activations.value("output-off").attempts.size(), 2);
     QCOMPARE(sessionExecution.outcomeOf("set-ovp"), NodeOutcome::Passed);
     QCOMPARE(sessionExecution.outcomeOf("set-ocp"), NodeOutcome::Passed);
     QCOMPARE(sessionExecution.outcomeOf("close-psu"), NodeOutcome::Passed);
