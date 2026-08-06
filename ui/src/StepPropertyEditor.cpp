@@ -3506,6 +3506,8 @@ bool StepPropertyEditor::commitPendingChanges()
                 loop.insert("step", m_loopStepSpin->value());
             }
             updated.insert("loop", loop);
+        } else {
+            updated.remove("loop");
         }
         if (kind == "barrier") {
             auto barrier = updated.value("barrier").toObject();

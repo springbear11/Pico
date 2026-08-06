@@ -4857,6 +4857,20 @@ void MainWindowLifecycleTests::whileLoopPropertyEditorUsesTypedFields()
     QVERIFY(!loop.contains(QStringLiteral("sample")));
     QVERIFY(!loop.contains(QStringLiteral("completionMode")));
     QVERIFY(!loop.contains(QStringLiteral("variable")));
+
+    auto* kind = editor.findChild<QComboBox*>(
+        QStringLiteral("propertyKindCombo"));
+    QVERIFY(kind);
+    const int testItemIndex = kind->findData(QStringLiteral("testItem"));
+    QVERIFY(testItemIndex >= 0);
+    kind->setCurrentIndex(testItemIndex);
+    QVERIFY(editor.commitPendingChanges());
+
+    const auto converted = document.objectAt(loopPath);
+    QCOMPARE(converted.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("testItem"));
+    QVERIFY(!converted.contains(QStringLiteral("loop")));
+    QCOMPARE(converted.value(QStringLiteral("steps")).toArray().size(), 5);
 }
 
 void MainWindowLifecycleTests::valueToolsPropertyEditorUsesExpressionList()
