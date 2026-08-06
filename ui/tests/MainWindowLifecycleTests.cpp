@@ -896,12 +896,27 @@ void MainWindowLifecycleTests::pluginPropertyEditorInsertsPreviousStepOutputExpr
         QStringLiteral("expressionPickerButton"));
     QVERIFY(picker);
     QVERIFY(picker->menu());
-    QCOMPARE(picker->menu()->actions().size(), 1);
-    auto* sourceMenu = picker->menu()->actions().first()->menu();
+    const auto findExpressionMenu = [](QMenu* menu,
+                                       const QString& expression) -> QMenu* {
+        for (auto* topLevelAction : menu->actions()) {
+            auto* candidateMenu = topLevelAction->menu();
+            if (!candidateMenu) {
+                continue;
+            }
+            for (auto* action : candidateMenu->actions()) {
+                if (action->data().toString() == expression) {
+                    return candidateMenu;
+                }
+            }
+        }
+        return nullptr;
+    };
+    const auto outputExpression = QStringLiteral("${step:001.outputs.dlc}");
+    auto* sourceMenu = findExpressionMenu(picker->menu(), outputExpression);
     QVERIFY(sourceMenu);
     QCOMPARE(sourceMenu->actions().size(), 1);
     sourceMenu->actions().first()->trigger();
-    QCOMPARE(timeout->text(), QStringLiteral("${step:001.outputs.dlc}"));
+    QCOMPARE(timeout->text(), outputExpression);
     QVERIFY(editor.commitPendingChanges());
 
     editor.setCurrentItem(SequenceItemPath{0, {2}});
@@ -914,10 +929,10 @@ void MainWindowLifecycleTests::pluginPropertyEditorInsertsPreviousStepOutputExpr
     QVERIFY(limitPicker->isEnabled());
     QVERIFY(QMetaObject::invokeMethod(limitPicker->menu(), "aboutToShow",
                                       Qt::DirectConnection));
-    auto* limitSourceMenu = limitPicker->menu()->actions().first()->menu();
+    auto* limitSourceMenu = findExpressionMenu(limitPicker->menu(), outputExpression);
     QVERIFY(limitSourceMenu);
     limitSourceMenu->actions().first()->trigger();
-    QCOMPARE(actual->text(), QStringLiteral("${step:001.outputs.dlc}"));
+    QCOMPARE(actual->text(), outputExpression);
     QVERIFY(editor.commitPendingChanges());
     QCOMPARE(document.objectAt(SequenceItemPath{0, {2}})
                  .value(QStringLiteral("inputs")).toObject()
@@ -1554,6 +1569,33 @@ void MainWindowLifecycleTests::sequenceVariablesToolbarEditsPerUutValuesAndFeeds
         }
     }
     QVERIFY(expressionInserted);
+
+    QMenu* runtimeMenu = nullptr;
+    for (auto* menuAction : expressionButton->menu()->actions()) {
+        if (menuAction->menu() &&
+            menuAction->text() == QStringLiteral("Runtime Values")) {
+            runtimeMenu = menuAction->menu();
+            break;
+        }
+    }
+    QVERIFY(runtimeMenu);
+    const auto runtimeActions = runtimeMenu->actions();
+    const auto serialAction = std::find_if(
+        runtimeActions.cbegin(), runtimeActions.cend(),
+        [](const QAction* action) {
+            return action->data().toString() ==
+                   QStringLiteral("${var.serialNumber}");
+        });
+    QVERIFY(serialAction != runtimeActions.cend());
+    (*serialAction)->trigger();
+    bool serialExpressionInserted = false;
+    for (auto* lineEdit : editor.findChildren<QLineEdit*>()) {
+        if (lineEdit->text() == QStringLiteral("${var.serialNumber}")) {
+            serialExpressionInserted = true;
+            break;
+        }
+    }
+    QVERIFY(serialExpressionInserted);
 
     document->undoStack()->undo();
     QVERIFY(document->sequenceVariables().isEmpty());

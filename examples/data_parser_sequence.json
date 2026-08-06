@@ -104,6 +104,34 @@
           }
         },
         {
+          "id": "decode-modbus-register-text",
+          "name": "Decode Modbus Register Text",
+          "kind": "action",
+          "moduleId": "builtin.data-parser",
+          "function": "decodeRegisterText",
+          "inputs": {
+            "source": [21845, 21549, 12544, 0],
+            "registerOffset": 0,
+            "registerCount": 4,
+            "byteOrder": "highByteFirst",
+            "encoding": "ascii",
+            "padding": "trimTrailingNulls"
+          }
+        },
+        {
+          "id": "check-modbus-register-text",
+          "name": "Check Modbus Register Text",
+          "kind": "limit",
+          "inputs": {
+            "actual": "${step:decode-modbus-register-text.outputs.text}"
+          },
+          "parameters": {
+            "comparison": "equal",
+            "expected": "${var.serialNumber}",
+            "measurementName": "MODBUS_REGISTER_TEXT"
+          }
+        },
+        {
           "id": "split-visa-value",
           "name": "Split VISA Text Value",
           "kind": "action",

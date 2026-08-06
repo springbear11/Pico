@@ -614,6 +614,7 @@ private slots:
     void nodeRunnerRunsRegisteredModuleAndMapsModuleResult();
     void nodeRunnerReportsMissingModule();
     void dataParserDecodesBinaryAndModbusValues();
+    void dataParserDecodesRegisterText();
     void dataParserExtractsStructuredTextAndReportsFailures();
     void dataParserExtractsMultipleNamedFields();
     void valueToolsCalculateStatisticsAndConvertNumbers();
@@ -714,6 +715,7 @@ private slots:
     void sequenceCompilerRunsSimpleExampleFile();
     void sequenceCompilerRunsBasicExampleFile();
     void sequenceCompilerRunsDataParserExampleFile();
+    void sequenceCompilerCompilesModbusRegisterTextReadbackExampleFile();
     void sequenceCompilerRunsCustomDisabledExampleFile();
     void sequenceCompilerRunsExternalEchoExampleFile();
     void sequenceCompilerRunsPythonEchoExampleFile();
@@ -1456,6 +1458,111 @@ void CoreTests::dataParserDecodesBinaryAndModbusValues()
     QCOMPARE(result.outcome, ModuleOutcome::Error);
     QCOMPARE(result.errorCode, QStringLiteral("ParserRangeError"));
     QVERIFY(logs.records().size() >= 5);
+}
+
+void CoreTests::dataParserDecodesRegisterText()
+{
+    DataParserModule parser;
+    CollectingModuleLogSink logs;
+    ModuleExecutionContext context;
+    context.logSink = &logs;
+
+    const auto toRegisters = [](QByteArray bytes) {
+        if ((bytes.size() % 2) != 0) {
+            bytes.push_back('\0');
+        }
+        QVariantList registers;
+        registers.reserve(bytes.size() / 2);
+        for (int index = 0; index < bytes.size(); index += 2) {
+            registers.push_back(
+                (static_cast<quint16>(static_cast<uchar>(bytes[index])) << 8) |
+                static_cast<quint16>(static_cast<uchar>(bytes[index + 1])));
+        }
+        return registers;
+    };
+
+    const auto serialNumber = QStringLiteral("BTSN1234567890");
+    auto padded = serialNumber.toUtf8();
+    padded.append(QByteArray(48 - padded.size(), '\0'));
+    context.inputs = {
+        {QStringLiteral("source"), toRegisters(padded)},
+        {QStringLiteral("registerOffset"), 0},
+        {QStringLiteral("registerCount"), 24},
+        {QStringLiteral("byteOrder"), QStringLiteral("highByteFirst")},
+        {QStringLiteral("encoding"), QStringLiteral("ascii")},
+        {QStringLiteral("padding"), QStringLiteral("trimTrailingNulls")}
+    };
+    auto result = parser.execute(QStringLiteral("decodeRegisterText"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("text")).toString(), serialNumber);
+    QCOMPARE(result.outputs.value(QStringLiteral("value")).toString(), serialNumber);
+    QCOMPARE(result.outputs.value(QStringLiteral("rawBytes")).toList().size(), 48);
+    QCOMPARE(result.outputs.value(QStringLiteral("parsedLength")).toInt(),
+             serialNumber.toUtf8().size());
+    QCOMPARE(result.outputs.value(QStringLiteral("characterCount")).toInt(),
+             serialNumber.size());
+    QCOMPARE(result.outputs.value(QStringLiteral("registerCount")).toInt(), 24);
+    QVERIFY(result.outputs.value(QStringLiteral("rawHex")).toString()
+                .startsWith(QStringLiteral("42 54 53 4E")));
+
+    context.inputs = {
+        {QStringLiteral("source"), QVariantList{0x4241, 0x4443}},
+        {QStringLiteral("registerCount"), 2},
+        {QStringLiteral("byteOrder"), QStringLiteral("lowByteFirst")},
+        {QStringLiteral("encoding"), QStringLiteral("ascii")},
+        {QStringLiteral("padding"), QStringLiteral("keep")}
+    };
+    result = parser.execute(QStringLiteral("decodeRegisterText"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("text")).toString(),
+             QStringLiteral("ABCD"));
+
+    const auto utf8Text = QStringLiteral("充电枪");
+    context.inputs = {
+        {QStringLiteral("source"), toRegisters(utf8Text.toUtf8())},
+        {QStringLiteral("registerCount"), 0},
+        {QStringLiteral("encoding"), QStringLiteral("utf8")}
+    };
+    result = parser.execute(QStringLiteral("decodeRegisterText"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("text")).toString(), utf8Text);
+    QCOMPARE(result.outputs.value(QStringLiteral("characterCount")).toInt(),
+             utf8Text.size());
+
+    context.inputs = {
+        {QStringLiteral("source"), QVariantList{0x4180}},
+        {QStringLiteral("registerCount"), 1},
+        {QStringLiteral("encoding"), QStringLiteral("ascii")}
+    };
+    result = parser.execute(QStringLiteral("decodeRegisterText"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Error);
+    QCOMPARE(result.errorCode, QStringLiteral("ParserConversionError"));
+
+    context.inputs = {
+        {QStringLiteral("source"), QVariantList{0xC328}},
+        {QStringLiteral("registerCount"), 1},
+        {QStringLiteral("encoding"), QStringLiteral("utf8")}
+    };
+    result = parser.execute(QStringLiteral("decodeRegisterText"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Error);
+    QCOMPARE(result.errorCode, QStringLiteral("ParserConversionError"));
+
+    context.inputs = {
+        {QStringLiteral("source"), QVariantList{0x4142}},
+        {QStringLiteral("registerCount"), 2}
+    };
+    result = parser.execute(QStringLiteral("decodeRegisterText"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Error);
+    QCOMPARE(result.errorCode, QStringLiteral("ParserRangeError"));
+
+    context.inputs = {
+        {QStringLiteral("source"), QVariantList{0x4142}},
+        {QStringLiteral("padding"), QStringLiteral("removeEveryNull")}
+    };
+    result = parser.execute(QStringLiteral("decodeRegisterText"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Error);
+    QCOMPARE(result.errorCode, QStringLiteral("ParserConfigurationError"));
+    QVERIFY(logs.records().size() >= 7);
 }
 
 void CoreTests::dataParserExtractsStructuredTextAndReportsFailures()
@@ -5534,37 +5641,104 @@ void CoreTests::sequenceCompilerRunsDataParserExampleFile()
              QStringLiteral("builtin.data-parser"));
 
     ExecutionSession session(compiled.plan);
-    session.addUut(QStringLiteral("uut-1"));
+    const auto uutId = QStringLiteral("UUT-1");
+    const auto variableBinding = bindSequenceVariablesForUut(
+        compiled.plan.variables, 0, uutId);
+    QVERIFY(variableBinding.ok());
+    auto& uut = session.addUut(uutId);
+    uut.variables = variableBinding.variables;
     const auto run = session.run();
     QVERIFY(run.completed);
     QVERIFY(!run.hasError);
     QCOMPARE(run.state, ExecutionState::Completed);
 
     const auto canValue = session.results().latest(
-        QStringLiteral("uut-1"), QStringLiteral("root"),
+        uutId, QStringLiteral("root"),
         QStringLiteral("decode-can-voltage"));
     QVERIFY(canValue.has_value());
     QVERIFY(qAbs(canValue->result.outputs.value(QStringLiteral("value")).toDouble()
                  - 12.5) < 0.0001);
 
     const auto serialNumber = session.results().latest(
-        QStringLiteral("uut-1"), QStringLiteral("root"),
+        uutId, QStringLiteral("root"),
         QStringLiteral("extract-serial-number"));
     QVERIFY(serialNumber.has_value());
     QCOMPARE(serialNumber->result.outputs.value(QStringLiteral("value")).toString(),
              QStringLiteral("1234567890"));
 
+    const auto registerText = session.results().latest(
+        uutId, QStringLiteral("root"),
+        QStringLiteral("decode-modbus-register-text"));
+    QVERIFY(registerText.has_value());
+    QCOMPARE(registerText->result.outputs.value(QStringLiteral("text")).toString(),
+             QStringLiteral("UUT-1"));
+    QCOMPARE(registerText->result.outputs.value(
+                 QStringLiteral("parsedLength")).toInt(), 5);
+
     for (const auto& stepId : {
              QStringLiteral("check-can-voltage"),
              QStringLiteral("check-serial-number"),
              QStringLiteral("check-modbus-power"),
+             QStringLiteral("check-modbus-register-text"),
              QStringLiteral("check-visa-value"),
              QStringLiteral("check-second-temperature")}) {
         const auto checked = session.results().latest(
-            QStringLiteral("uut-1"), QStringLiteral("root"), stepId);
+            uutId, QStringLiteral("root"), stepId);
         QVERIFY2(checked.has_value(), qPrintable(stepId));
         QCOMPARE(checked->result.outcome, NodeOutcome::Passed);
     }
+}
+
+void CoreTests::sequenceCompilerCompilesModbusRegisterTextReadbackExampleFile()
+{
+    const auto sequencePath = QDir(projectRootPath()).filePath(
+        QStringLiteral("templates/Modbus/Tcp/sinexcel_charger_protocol_sequence.json"));
+    QFile file(sequencePath);
+    QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.errorString()));
+
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    QCOMPARE(parseError.error, QJsonParseError::NoError);
+    QVERIFY(document.isObject());
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(document.object());
+    QVERIFY2(compiled.ok(),
+             qPrintable(compiled.errors.isEmpty()
+                            ? QStringLiteral("Compilation failed without diagnostics")
+                            : compiled.errors.first().message));
+
+    const auto* write = compiled.plan.node(QStringLiteral("write-asset-code"));
+    const auto* read = compiled.plan.node(QStringLiteral("read-asset-code"));
+    const auto* decode = compiled.plan.node(QStringLiteral("decode-asset-code"));
+    const auto* check = compiled.plan.node(QStringLiteral("check-asset-code"));
+    QVERIFY(write && read && decode && check);
+
+    const auto writeInputs = write->payload.value(QStringLiteral("inputs")).toMap();
+    QCOMPARE(write->payload.value(QStringLiteral("function")).toString(),
+             QStringLiteral("writeMultipleRegisters"));
+    QCOMPARE(writeInputs.value(QStringLiteral("text")).toString(),
+             QStringLiteral("${var.serialNumber}"));
+    QCOMPARE(writeInputs.value(QStringLiteral("registerCount")).toInt(), 24);
+
+    const auto readInputs = read->payload.value(QStringLiteral("inputs")).toMap();
+    QCOMPARE(read->payload.value(QStringLiteral("function")).toString(),
+             QStringLiteral("readHoldingRegisters"));
+    QCOMPARE(readInputs.value(QStringLiteral("count")).toInt(), 24);
+
+    const auto decodeInputs = decode->payload.value(QStringLiteral("inputs")).toMap();
+    QCOMPARE(decode->payload.value(QStringLiteral("moduleId")).toString(),
+             QStringLiteral("builtin.data-parser"));
+    QCOMPARE(decode->payload.value(QStringLiteral("function")).toString(),
+             QStringLiteral("decodeRegisterText"));
+    QCOMPARE(decodeInputs.value(QStringLiteral("source")).toString(),
+             QStringLiteral("${step:read-asset-code.outputs.registers}"));
+
+    const auto checkInputs = check->payload.value(QStringLiteral("inputs")).toMap();
+    QCOMPARE(checkInputs.value(QStringLiteral("actual")).toString(),
+             QStringLiteral("${step:decode-asset-code.outputs.text}"));
+    QCOMPARE(check->payload.value(QStringLiteral("expected")).toString(),
+             QStringLiteral("${var.serialNumber}"));
 }
 
 void CoreTests::sequenceCompilerRunsCustomDisabledExampleFile()

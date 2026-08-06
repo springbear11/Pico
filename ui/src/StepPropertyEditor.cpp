@@ -2496,6 +2496,31 @@ void StepPropertyEditor::rebuildExpressionMenu(QMenu* menu, QLineEdit* editor)
     }
     menu->clear();
     int variableCount = 0;
+    auto* runtimeMenu = menu->addMenu(tr("Runtime Values"));
+    const std::array<std::pair<QString, QString>, 11> runtimeValues = {{
+        {tr("Serial Number (SN)"), QStringLiteral("${var.serialNumber}")},
+        {tr("Serial Number (legacy alias)"), QStringLiteral("${sn}")},
+        {tr("UUT Serial Number"), QStringLiteral("${uut.serialNumber}")},
+        {tr("UUT ID"), QStringLiteral("${uut.id}")},
+        {tr("UUT Index (0-based)"), QStringLiteral("${uut.index}")},
+        {tr("UUT Number (1-based)"), QStringLiteral("${uut.number}")},
+        {tr("UUT Slot (1-based)"), QStringLiteral("${uut.slot}")},
+        {tr("Frame ID"), QStringLiteral("${frame.id}")},
+        {tr("Attempt ID"), QStringLiteral("${attempt.id}")},
+        {tr("Attempt Index (0-based)"), QStringLiteral("${attempt.index}")},
+        {tr("Attempt Number (1-based)"), QStringLiteral("${attempt.number}")},
+    }};
+    for (const auto& [label, expression] : runtimeValues) {
+        auto* action = runtimeMenu->addAction(label);
+        action->setData(expression);
+        action->setToolTip(expression);
+        connect(action, &QAction::triggered, editor, [editor, expression] {
+            editor->setText(expression);
+            editor->setFocus();
+            editor->selectAll();
+        });
+        ++variableCount;
+    }
     if (m_document) {
         const auto definitions = m_document->sequenceVariables();
         QMenu* variableMenu = nullptr;
@@ -2518,6 +2543,7 @@ void StepPropertyEditor::rebuildExpressionMenu(QMenu* menu, QLineEdit* editor)
                                    .toString(QStringLiteral("shared"));
             auto* action = variableMenu->addAction(
                 QStringLiteral("%1  [%2 / %3]").arg(name, type, scope));
+            action->setData(QStringLiteral("${var.%1}").arg(name));
             action->setToolTip(
                 definition.value(QStringLiteral("description")).toString());
             connect(action, &QAction::triggered, editor,
@@ -2541,6 +2567,7 @@ void StepPropertyEditor::rebuildExpressionMenu(QMenu* menu, QLineEdit* editor)
         }};
         for (const auto& [label, expression] : periodicValues) {
             auto* action = periodicMenu->addAction(label);
+            action->setData(expression);
             action->setToolTip(expression);
             connect(action, &QAction::triggered, editor,
                     [editor, expression] {
@@ -2566,6 +2593,7 @@ void StepPropertyEditor::rebuildExpressionMenu(QMenu* menu, QLineEdit* editor)
         auto* action = sourceMenu->addAction(
             QStringLiteral("%1 [%2]")
                 .arg(candidate.outputName, candidate.outputKey));
+        action->setData(candidate.expression);
         auto details = pluginParameterTypeName(candidate.type);
         if (!candidate.unit.isEmpty()) {
             details += QStringLiteral(" / %1").arg(candidate.unit);
@@ -2637,14 +2665,22 @@ void StepPropertyEditor::rebuildPromptExpressionMenu(
     };
 
     auto* runtimeMenu = menu->addMenu(tr("Runtime Values"));
-    addExpression(runtimeMenu, tr("Serial Number (SN)"),
-                  QStringLiteral("${sn}"));
-    addExpression(runtimeMenu, tr("UUT ID"),
-                  QStringLiteral("${uut.id}"));
-    addExpression(runtimeMenu, tr("Frame ID"),
-                  QStringLiteral("${frame.id}"));
-    addExpression(runtimeMenu, tr("Attempt Number"),
-                  QStringLiteral("${attempt.number}"));
+    const std::array<std::pair<QString, QString>, 11> runtimeValues = {{
+        {tr("Serial Number (SN)"), QStringLiteral("${var.serialNumber}")},
+        {tr("Serial Number (legacy alias)"), QStringLiteral("${sn}")},
+        {tr("UUT Serial Number"), QStringLiteral("${uut.serialNumber}")},
+        {tr("UUT ID"), QStringLiteral("${uut.id}")},
+        {tr("UUT Index (0-based)"), QStringLiteral("${uut.index}")},
+        {tr("UUT Number (1-based)"), QStringLiteral("${uut.number}")},
+        {tr("UUT Slot (1-based)"), QStringLiteral("${uut.slot}")},
+        {tr("Frame ID"), QStringLiteral("${frame.id}")},
+        {tr("Attempt ID"), QStringLiteral("${attempt.id}")},
+        {tr("Attempt Index (0-based)"), QStringLiteral("${attempt.index}")},
+        {tr("Attempt Number (1-based)"), QStringLiteral("${attempt.number}")},
+    }};
+    for (const auto& [label, expression] : runtimeValues) {
+        addExpression(runtimeMenu, label, expression, expression);
+    }
 
     if (m_document) {
         QMenu* variableMenu = nullptr;

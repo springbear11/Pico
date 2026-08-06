@@ -863,6 +863,51 @@ PluginManifest builtInDataParserManifest()
     };
     manifest.functions.push_back(std::move(registers));
 
+    PluginFunctionDefinition registerText;
+    registerText.id = QStringLiteral("decodeRegisterText");
+    registerText.name = QStringLiteral("Decode Register Text");
+    registerText.description = QStringLiteral(
+        "Decode ASCII or UTF-8 text stored as two bytes per Modbus register.");
+    registerText.inputs = {
+        input(QStringLiteral("source"), QStringLiteral("Registers"),
+              PluginParameterType::String, {}, true),
+        input(QStringLiteral("registerOffset"), QStringLiteral("Register Offset"),
+              PluginParameterType::Integer, 0, false, 0),
+        input(QStringLiteral("registerCount"),
+              QStringLiteral("Register Count (0 = Remaining)"),
+              PluginParameterType::Integer, 0, false, 0),
+        enumeration(QStringLiteral("byteOrder"), QStringLiteral("Byte Order"),
+                    QStringLiteral("highByteFirst"),
+                    {{QStringLiteral("High Byte First"),
+                      QStringLiteral("highByteFirst")},
+                     {QStringLiteral("Low Byte First"),
+                      QStringLiteral("lowByteFirst")}}),
+        enumeration(QStringLiteral("encoding"), QStringLiteral("Text Encoding"),
+                    QStringLiteral("utf8"),
+                    {{QStringLiteral("UTF-8"), QStringLiteral("utf8")},
+                     {QStringLiteral("ASCII"), QStringLiteral("ascii")}}),
+        enumeration(QStringLiteral("padding"), QStringLiteral("Padding Bytes"),
+                    QStringLiteral("trimTrailingNulls"),
+                    {{QStringLiteral("Trim Trailing 0x00"),
+                      QStringLiteral("trimTrailingNulls")},
+                     {QStringLiteral("Keep All Bytes"), QStringLiteral("keep")}})
+    };
+    registerText.outputs = {
+        output(QStringLiteral("value"), QStringLiteral("Decoded Text")),
+        output(QStringLiteral("text"), QStringLiteral("Text")),
+        output(QStringLiteral("rawBytes"), QStringLiteral("Raw Bytes")),
+        output(QStringLiteral("rawHex"), QStringLiteral("Raw Hex")),
+        output(QStringLiteral("parsedLength"), QStringLiteral("Parsed Byte Length"),
+               PluginParameterType::Integer),
+        output(QStringLiteral("characterCount"), QStringLiteral("Character Count"),
+               PluginParameterType::Integer),
+        output(QStringLiteral("registerOffset"), QStringLiteral("Register Offset"),
+               PluginParameterType::Integer),
+        output(QStringLiteral("registerCount"), QStringLiteral("Register Count"),
+               PluginParameterType::Integer)
+    };
+    manifest.functions.push_back(std::move(registerText));
+
     auto betweenInputs = textConversionInputs();
     betweenInputs.insert(1, input(QStringLiteral("startMarker"),
                                   QStringLiteral("Start Marker"),

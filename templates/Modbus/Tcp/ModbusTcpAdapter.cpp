@@ -645,10 +645,13 @@ Plugin::Json pluginDescription()
                      {{"label", "ASCII Text"}, {"value", "asciiText"}},
                      {{"label", "UTF-8 Text"}, {"value", "utf8Text"}}
                  })}},
-                 {{"key", "values"}, {"name", "Register Values (JSON Array)"}, {"type", "string"}, {"required", true}, {"description", "Required when dataFormat=registers. Example: [1, 100, 0xFFFF]"}},
-                 {{"key", "text"}, {"name", "Text"}, {"type", "string"}, {"description", "Required when dataFormat=asciiText or utf8Text. Variables such as ${var.serialNumber} are supported."}},
-                 {{"key", "registerCount"}, {"name", "Register Count"}, {"type", "integer"}, {"minimum", 1}, {"maximum", 123}, {"description", "Required for text formats; number of FC10 registers to write."}},
-                 {{"key", "byteOrder"}, {"name", "Byte Order"}, {"type", "string"}, {"default", "highByteFirst"}},
+                  {{"key", "values"}, {"name", "Register Values (JSON Array)"}, {"type", "string"}, {"description", "Required when dataFormat=registers. Example: [1, 100, 0xFFFF]"}},
+                  {{"key", "text"}, {"name", "Text"}, {"type", "string"}, {"description", "Required when dataFormat=asciiText or utf8Text. Variables such as ${var.serialNumber} are supported."}},
+                  {{"key", "registerCount"}, {"name", "Register Count"}, {"type", "integer"}, {"minimum", 1}, {"maximum", 123}, {"description", "Required for text formats; number of FC10 registers to write."}},
+                  {{"key", "byteOrder"}, {"name", "Byte Order"}, {"type", "enum"}, {"default", "highByteFirst"}, {"options", Json::array({
+                      {{"label", "High Byte First"}, {"value", "highByteFirst"}},
+                      {{"label", "Low Byte First"}, {"value", "lowByteFirst"}}
+                  })}},
                  {{"key", "padByte"}, {"name", "Padding Byte"}, {"type", "integer"}, {"default", 0}, {"minimum", 0}, {"maximum", 255}}
              })}, {"outputs", Json::array({
                  {{"key", "count"}, {"name", "Written Register Count"}, {"type", "integer"}},

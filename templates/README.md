@@ -98,7 +98,8 @@ VISA 厂商实现提供 `createVisaAdapter()`，Modbus 厂商实现提供
 
 当前 `Modbus/Tcp` 是不依赖 Qt 和第三方 Modbus 运行库的 Winsock 实现，支持 FC01、FC02、
 FC03、FC04、FC05、FC06、FC0F 和 FC10。`unitId`、寄存器地址和值既可使用十进制，
-也可使用 `0x` 十六进制字符串；FC10 还支持寄存器数组及 ASCII/UTF-8 文本打包。
+也可使用 `0x` 十六进制字符串；FC10 还支持寄存器数组及 ASCII/UTF-8 文本打包。FC03/FC04
+读回的 `registers` 可交给 Core 内置 `Decode Register Text`，不在 TCP 插件中重复实现文本解析。
 
 `IxxxAdapter` 才是 C++ 抽象接口；`XxxPluginBridge.cpp` 不是抽象类，而是把稳定的
 PicoATE C ABI/JSON 请求桥接到抽象接口。这里不使用 `VirtualXxxPlugin` 命名，避免

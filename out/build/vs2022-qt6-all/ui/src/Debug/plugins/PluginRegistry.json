@@ -1759,7 +1759,6 @@
                                 "description": "Required when dataFormat=registers. Example: [1, 100, 0xFFFF]",
                                 "key": "values",
                                 "name": "Register Values (JSON Array)",
-                                "required": true,
                                 "type": "string"
                             },
                             {
@@ -1780,7 +1779,17 @@
                                 "default": "highByteFirst",
                                 "key": "byteOrder",
                                 "name": "Byte Order",
-                                "type": "string"
+                                "options": [
+                                    {
+                                        "label": "High Byte First",
+                                        "value": "highByteFirst"
+                                    },
+                                    {
+                                        "label": "Low Byte First",
+                                        "value": "lowByteFirst"
+                                    }
+                                ],
+                                "type": "enum"
                             },
                             {
                                 "default": 0,

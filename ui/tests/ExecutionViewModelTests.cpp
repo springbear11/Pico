@@ -1261,7 +1261,7 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
              QStringLiteral("Aggregate"));
     const auto parserCategory = functionModel.index(11, 0, basicSection);
     QCOMPARE(parserCategory.data().toString(), QStringLiteral("Data Parsing"));
-    QCOMPARE(functionModel.rowCount(parserCategory), 5);
+    QCOMPARE(functionModel.rowCount(parserCategory), 6);
     const auto binaryParser = functionModel.index(0, 0, parserCategory);
     QCOMPARE(binaryParser.data().toString(), QStringLiteral("Decode Binary Field"));
     const auto binaryParserTemplate = functionModel.stepTemplate(binaryParser);
@@ -1284,6 +1284,18 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     QCOMPARE(binaryParserTemplate.value(QStringLiteral("inputs")).toObject()
                  .value(QStringLiteral("byteOrder")).toString(),
              QStringLiteral("big"));
+    const auto registerTextParser = functionModel.index(2, 0, parserCategory);
+    QCOMPARE(registerTextParser.data().toString(),
+             QStringLiteral("Decode Register Text"));
+    const auto registerTextTemplate = functionModel.stepTemplate(registerTextParser);
+    QCOMPARE(registerTextTemplate.value(QStringLiteral("function")).toString(),
+             QStringLiteral("decodeRegisterText"));
+    QCOMPARE(registerTextTemplate.value(QStringLiteral("inputs")).toObject()
+                 .value(QStringLiteral("byteOrder")).toString(),
+             QStringLiteral("highByteFirst"));
+    QCOMPARE(registerTextTemplate.value(QStringLiteral("inputs")).toObject()
+                 .value(QStringLiteral("padding")).toString(),
+             QStringLiteral("trimTrailingNulls"));
     std::unique_ptr<QMimeData> parserMime(functionModel.mimeData({binaryParser}));
     QVERIFY(parserMime);
 
@@ -1467,6 +1479,8 @@ void ExecutionViewModelTests::stepOutputExpressionsUsePreviousScopedPluginOutput
         {"id":"main","kind":"main","steps":[
           {"id":"decode","kind":"action","moduleId":"builtin.data-parser",
            "function":"decodeBinary","inputs":{"source":"01 02"}},
+          {"id":"decode-text","kind":"action","moduleId":"builtin.data-parser",
+           "function":"decodeRegisterText","inputs":{"source":[16706]}},
           {"id":"parse-names","kind":"action","moduleId":"builtin.data-parser",
            "function":"splitText","inputs":{
              "source":"SN001,812.5","delimiter":",","resultMode":"multiple",
@@ -1479,7 +1493,7 @@ void ExecutionViewModelTests::stepOutputExpressionsUsePreviousScopedPluginOutput
       ]
     })json").object();
     const auto parserCandidates = buildStepOutputExpressionCandidates(
-        parserSequence, SequenceItemPath{0, {2}}, {builtInDataParserManifest()});
+        parserSequence, SequenceItemPath{0, {3}}, {builtInDataParserManifest()});
     QStringList parserExpressions;
     for (const auto& candidate : parserCandidates) {
         parserExpressions.push_back(candidate.expression);
@@ -1488,6 +1502,12 @@ void ExecutionViewModelTests::stepOutputExpressionsUsePreviousScopedPluginOutput
         QStringLiteral("${step:decode.outputs.value}")));
     QVERIFY(parserExpressions.contains(
         QStringLiteral("${step:decode.outputs.rawHex}")));
+    QVERIFY(parserExpressions.contains(
+        QStringLiteral("${step:decode-text.outputs.text}")));
+    QVERIFY(parserExpressions.contains(
+        QStringLiteral("${step:decode-text.outputs.rawHex}")));
+    QVERIFY(parserExpressions.contains(
+        QStringLiteral("${step:decode-text.outputs.parsedLength}")));
     QVERIFY(parserExpressions.contains(
         QStringLiteral("${step:parse-names.outputs.fields.SN1}")));
     QVERIFY(parserExpressions.contains(

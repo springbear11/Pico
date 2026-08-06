@@ -72,6 +72,8 @@ UUT2 使用 `values[1]`，以此类推。脚本中不要写 `CAN_ID[i]`，也不
 编译/运行准备会返回带变量路径的错误，不会退回 UUT1 的值。UI 与 CLI 调用同一个 Core
 绑定函数，二者行为一致。当前 UUT 的内置信息还可使用 `${uut.index}`（从 0 开始）、
 `${uut.number}` / `${uut.slot}`（从 1 开始）和 `${uut.id}`。
+Flow 属性编辑器的 `fx -> Runtime Values` 可直接插入 `${var.serialNumber}`、`${uut.id}`、
+`${frame.id}`、`${attempt.number}` 等内建表达式，不要求工程师记住或手写变量名。
 
 完整示例见 `examples/sequence_variables.json`。
 

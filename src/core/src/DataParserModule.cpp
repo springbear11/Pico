@@ -4,6 +4,7 @@
 #include <QMetaType>
 #include <QRegularExpression>
 #include <QSet>
+#include <QStringDecoder>
 
 #include <algorithm>
 #include <cstring>
@@ -1034,6 +1035,167 @@ ModuleResult decodeRegisters(const ModuleExecutionContext& context)
     return result;
 }
 
+ModuleResult decodeRegisterText(const ModuleExecutionContext& context)
+{
+    const auto& inputs = context.inputs;
+    if (!inputs.contains(QStringLiteral("source"))) {
+        return parserError(context, QStringLiteral("ParserSourceMissing"),
+                           QStringLiteral("decodeRegisterText requires source"));
+    }
+
+    QString error;
+    QVector<quint16> registers;
+    if (!variantToRegisters(inputs.value(QStringLiteral("source")), registers, error)) {
+        return parserError(context, QStringLiteral("ParserSourceTypeError"), error);
+    }
+    if (registers.isEmpty()) {
+        return parserError(context, QStringLiteral("ParserRangeError"),
+                           QStringLiteral("register source must not be empty"));
+    }
+
+    qint64 registerOffset = 0;
+    if (!readInteger(inputs, QStringLiteral("registerOffset"), 0, 0,
+                     std::numeric_limits<int>::max(), registerOffset, error)) {
+        return parserError(context, QStringLiteral("ParserConfigurationError"), error);
+    }
+    qint64 requestedCount = 0;
+    if (!readInteger(inputs, QStringLiteral("registerCount"), 0, 0,
+                     std::numeric_limits<int>::max(), requestedCount, error)) {
+        return parserError(context, QStringLiteral("ParserConfigurationError"), error);
+    }
+    if (registerOffset >= registers.size()) {
+        return parserError(
+            context, QStringLiteral("ParserRangeError"),
+            QStringLiteral("registerOffset=%1 is outside the %2-register source")
+                .arg(registerOffset)
+                .arg(registers.size()));
+    }
+
+    const qint64 registerCount = requestedCount == 0
+        ? registers.size() - registerOffset
+        : requestedCount;
+    if (registerCount <= 0 || registerOffset + registerCount > registers.size()) {
+        return parserError(
+            context, QStringLiteral("ParserRangeError"),
+            QStringLiteral("registerOffset=%1 and registerCount=%2 exceed the %3-register source")
+                .arg(registerOffset)
+                .arg(registerCount)
+                .arg(registers.size()));
+    }
+    if (registerCount * 2 > MaximumParserTextCharacters) {
+        return parserError(
+            context, QStringLiteral("ParserRangeError"),
+            QStringLiteral("selected register text exceeds the %1-byte safety limit")
+                .arg(MaximumParserTextCharacters));
+    }
+
+    const auto byteOrder = inputs.value(
+        QStringLiteral("byteOrder"), QStringLiteral("highByteFirst")).toString();
+    const auto normalizedByteOrder = normalized(byteOrder);
+    const bool highByteFirst = normalizedByteOrder == QStringLiteral("highbytefirst");
+    if (!highByteFirst && normalizedByteOrder != QStringLiteral("lowbytefirst")) {
+        return parserError(context, QStringLiteral("ParserConfigurationError"),
+                           QStringLiteral("unsupported register text byteOrder: %1")
+                               .arg(byteOrder));
+    }
+
+    QByteArray rawBytes;
+    rawBytes.reserve(static_cast<int>(registerCount * 2));
+    for (qint64 index = 0; index < registerCount; ++index) {
+        const auto value = registers[static_cast<int>(registerOffset + index)];
+        const auto high = static_cast<char>((value >> 8) & 0xFF);
+        const auto low = static_cast<char>(value & 0xFF);
+        rawBytes.push_back(highByteFirst ? high : low);
+        rawBytes.push_back(highByteFirst ? low : high);
+    }
+
+    const auto padding = inputs.value(
+        QStringLiteral("padding"), QStringLiteral("trimTrailingNulls")).toString();
+    const auto normalizedPadding = normalized(padding);
+    QByteArray parsedBytes = rawBytes;
+    QString canonicalPadding;
+    if (normalizedPadding == QStringLiteral("trimtrailingnulls") ||
+        normalizedPadding == QStringLiteral("striptrailingnulls") ||
+        normalizedPadding == QStringLiteral("striptrailingzeros")) {
+        while (!parsedBytes.isEmpty() && parsedBytes.endsWith('\0')) {
+            parsedBytes.chop(1);
+        }
+        canonicalPadding = QStringLiteral("trimTrailingNulls");
+    } else if (normalizedPadding == QStringLiteral("keep") ||
+               normalizedPadding == QStringLiteral("keepall")) {
+        canonicalPadding = QStringLiteral("keep");
+    } else {
+        return parserError(context, QStringLiteral("ParserConfigurationError"),
+                           QStringLiteral("unsupported register text padding: %1")
+                               .arg(padding));
+    }
+
+    const auto encoding = inputs.value(
+        QStringLiteral("encoding"), QStringLiteral("utf8")).toString();
+    const auto normalizedEncoding = normalized(encoding);
+    QString text;
+    QString canonicalEncoding;
+    if (normalizedEncoding == QStringLiteral("ascii")) {
+        for (int index = 0; index < parsedBytes.size(); ++index) {
+            if (static_cast<uchar>(parsedBytes[index]) > 0x7F) {
+                return parserError(
+                    context, QStringLiteral("ParserConversionError"),
+                    QStringLiteral("ASCII register text contains byte 0x%1 at byte offset %2")
+                        .arg(static_cast<uchar>(parsedBytes[index]), 2, 16,
+                             QLatin1Char('0'))
+                        .arg(index));
+            }
+        }
+        text = QString::fromLatin1(parsedBytes);
+        canonicalEncoding = QStringLiteral("ascii");
+    } else if (normalizedEncoding == QStringLiteral("utf8")) {
+        QStringDecoder decoder(QStringDecoder::Utf8);
+        text = decoder(parsedBytes);
+        if (decoder.hasError()) {
+            return parserError(context, QStringLiteral("ParserConversionError"),
+                               QStringLiteral("register text contains invalid UTF-8"));
+        }
+        canonicalEncoding = QStringLiteral("utf8");
+    } else {
+        return parserError(context, QStringLiteral("ParserConfigurationError"),
+                           QStringLiteral("unsupported register text encoding: %1")
+                               .arg(encoding));
+    }
+
+    QVariantList rawByteValues;
+    rawByteValues.reserve(rawBytes.size());
+    for (const auto byte : rawBytes) {
+        rawByteValues.push_back(static_cast<uchar>(byte));
+    }
+
+    ModuleResult result;
+    result.outputs.insert(QStringLiteral("value"), text);
+    result.outputs.insert(QStringLiteral("text"), text);
+    result.outputs.insert(QStringLiteral("rawBytes"), rawByteValues);
+    result.outputs.insert(QStringLiteral("rawHex"), bytesToHex(rawBytes));
+    result.outputs.insert(QStringLiteral("parsedLength"), parsedBytes.size());
+    result.outputs.insert(QStringLiteral("characterCount"), text.toUcs4().size());
+    result.outputs.insert(QStringLiteral("registerOffset"), registerOffset);
+    result.outputs.insert(QStringLiteral("registerCount"), registerCount);
+    result.outputs.insert(QStringLiteral("byteOrder"),
+                          highByteFirst ? QStringLiteral("highByteFirst")
+                                        : QStringLiteral("lowByteFirst"));
+    result.outputs.insert(QStringLiteral("encoding"), canonicalEncoding);
+    result.outputs.insert(QStringLiteral("padding"), canonicalPadding);
+    publishLog(
+        context,
+        QStringLiteral("PARSE_REGISTER_TEXT offset=%1 count=%2 byteOrder=%3 encoding=%4 padding=%5 raw=%6 parsedBytes=%7 text=%8")
+            .arg(registerOffset)
+            .arg(registerCount)
+            .arg(result.outputs.value(QStringLiteral("byteOrder")).toString())
+            .arg(canonicalEncoding)
+            .arg(canonicalPadding)
+            .arg(bytesToHex(rawBytes))
+            .arg(parsedBytes.size())
+            .arg(visibleText(text)));
+    return result;
+}
+
 bool prepareText(const ModuleExecutionContext& context,
                  QString& source,
                  QString& error)
@@ -1386,6 +1548,9 @@ ModuleResult DataParserModule::execute(const ModuleFunction& functionName,
     }
     if (function == QStringLiteral("decoderegisters")) {
         return decodeRegisters(context);
+    }
+    if (function == QStringLiteral("decoderegistertext")) {
+        return decodeRegisterText(context);
     }
     if (function == QStringLiteral("extractbetween")) {
         return extractBetween(context);

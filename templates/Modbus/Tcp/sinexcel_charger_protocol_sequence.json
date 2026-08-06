@@ -71,6 +71,70 @@
       "kind": "main",
       "steps": [
         {
+          "id": "write-asset-code",
+          "key": "write-asset-code",
+          "name": "Write Scanned SN to Asset Code (FC10 0x1802~0x1819)",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "writeMultipleRegisters",
+          "inputs": {
+            "deviceId": "MODBUS1",
+            "unitId": 0,
+            "address": "0x1802",
+            "dataFormat": "utf8Text",
+            "text": "${var.serialNumber}",
+            "registerCount": 24,
+            "byteOrder": "highByteFirst",
+            "padByte": 0
+          },
+          "timeoutMs": 5000
+        },
+        {
+          "id": "read-asset-code",
+          "key": "read-asset-code",
+          "name": "Read Asset Code (FC03 0x1802~0x1819)",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "readHoldingRegisters",
+          "inputs": {
+            "deviceId": "MODBUS1",
+            "unitId": 0,
+            "address": "0x1802",
+            "count": 24
+          },
+          "timeoutMs": 5000
+        },
+        {
+          "id": "decode-asset-code",
+          "key": "decode-asset-code",
+          "name": "Decode Asset Code Register Text",
+          "kind": "action",
+          "moduleId": "builtin.data-parser",
+          "function": "decodeRegisterText",
+          "inputs": {
+            "source": "${step:read-asset-code.outputs.registers}",
+            "registerOffset": 0,
+            "registerCount": 24,
+            "byteOrder": "highByteFirst",
+            "encoding": "utf8",
+            "padding": "trimTrailingNulls"
+          }
+        },
+        {
+          "id": "check-asset-code",
+          "key": "check-asset-code",
+          "name": "Check Asset Code Equals Scanned SN",
+          "kind": "limit",
+          "inputs": {
+            "actual": "${step:decode-asset-code.outputs.text}"
+          },
+          "parameters": {
+            "comparison": "equal",
+            "expected": "${var.serialNumber}",
+            "measurementName": "ASSET_CODE_READBACK"
+          }
+        },
+        {
           "id": "read-login-status",
           "key": "read-login-status",
           "name": "Read Charger Login Status (FC03 0x0011)",
