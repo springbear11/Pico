@@ -150,6 +150,7 @@ private:
     QMenu* m_limitExpressionMenu = nullptr;
     QComboBox* m_limitComparisonCombo = nullptr;
     QLineEdit* m_limitExpectedEdit = nullptr;
+    QWidget* m_limitExpectedField = nullptr;
     QLineEdit* m_limitLowerEdit = nullptr;
     QLineEdit* m_limitUpperEdit = nullptr;
     QDoubleSpinBox* m_limitToleranceSpin = nullptr;

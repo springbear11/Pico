@@ -1924,9 +1924,37 @@ void MainWindowLifecycleTests::limitPropertyEditorSwitchesComparisonFieldsAndRem
     auto* tolerance = editor.findChild<QDoubleSpinBox*>(
         QStringLiteral("propertyLimitToleranceSpin"));
     QVERIFY(comparison && expected && lower && upper && tolerance);
+    auto* expectedField = editor.findChild<QWidget*>(
+        QStringLiteral("propertyLimitExpectedField"));
+    QVERIFY(expectedField);
+    auto* expectedPicker = expectedField->findChild<QToolButton*>(
+        QStringLiteral("expressionPickerButton"));
+    QVERIFY(expectedPicker);
+    QVERIFY(expectedPicker->menu());
+    QVERIFY(QMetaObject::invokeMethod(expectedPicker->menu(), "aboutToShow",
+                                      Qt::DirectConnection));
+    QAction* serialNumberAction = nullptr;
+    for (auto* sourceAction : expectedPicker->menu()->actions()) {
+        if (!sourceAction->menu()) {
+            continue;
+        }
+        for (auto* expressionAction : sourceAction->menu()->actions()) {
+            if (expressionAction->data().toString() ==
+                QStringLiteral("${var.serialNumber}")) {
+                serialNumberAction = expressionAction;
+                break;
+            }
+        }
+        if (serialNumberAction) {
+            break;
+        }
+    }
+    QVERIFY(serialNumberAction);
+    serialNumberAction->trigger();
+    QCOMPARE(expected->text(), QStringLiteral("${var.serialNumber}"));
     QCOMPARE(comparison->currentData().toString(),
              QStringLiteral("betweenTolerance"));
-    QVERIFY(!expected->isHidden());
+    QVERIFY(!expectedField->isHidden());
     QVERIFY(!tolerance->isHidden());
     QVERIFY(lower->isHidden());
 
@@ -1945,7 +1973,7 @@ void MainWindowLifecycleTests::limitPropertyEditorSwitchesComparisonFieldsAndRem
     upper->setText(QStringLiteral("9.5"));
     QVERIFY(!lower->isHidden());
     QVERIFY(!upper->isHidden());
-    QVERIFY(expected->isHidden());
+    QVERIFY(expectedField->isHidden());
     QVERIFY(editor.commitPendingChanges());
     parameters = document.objectAt(path).value(QStringLiteral("parameters")).toObject();
     QCOMPARE(parameters.value(QStringLiteral("comparison")).toString(),
@@ -1955,7 +1983,7 @@ void MainWindowLifecycleTests::limitPropertyEditorSwitchesComparisonFieldsAndRem
     QVERIFY(!parameters.contains(QStringLiteral("expected")));
 
     comparison->setCurrentIndex(comparison->findData(QStringLiteral("isTrue")));
-    QVERIFY(expected->isHidden());
+    QVERIFY(expectedField->isHidden());
     QVERIFY(lower->isHidden());
     QVERIFY(editor.commitPendingChanges());
     parameters = document.objectAt(path).value(QStringLiteral("parameters")).toObject();

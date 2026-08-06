@@ -877,7 +877,9 @@ void StepPropertyEditor::buildDataPage()
     m_limitExpectedEdit = new QLineEdit(content);
     m_limitExpectedEdit->setObjectName(QStringLiteral("propertyLimitExpectedEdit"));
     m_limitExpectedEdit->setPlaceholderText(tr("Expected value or threshold"));
-    m_dataForm->addRow(tr("Expected / threshold"), m_limitExpectedEdit);
+    m_limitExpectedField = wrapExpressionEditor(m_limitExpectedEdit);
+    m_limitExpectedField->setObjectName(QStringLiteral("propertyLimitExpectedField"));
+    m_dataForm->addRow(tr("Expected / threshold"), m_limitExpectedField);
     m_limitLowerEdit = new QLineEdit(content);
     m_limitLowerEdit->setObjectName(QStringLiteral("propertyLimitLowerEdit"));
     m_dataForm->addRow(tr("Lower limit"), m_limitLowerEdit);
@@ -1495,7 +1497,7 @@ void StepPropertyEditor::updateLimitRows()
     const bool boolean = mode == QStringLiteral("isTrue") ||
                          mode == QStringLiteral("isFalse");
     if (auto* label = qobject_cast<QLabel*>(
-            m_dataForm->labelForField(m_limitExpectedEdit))) {
+            m_dataForm->labelForField(m_limitExpectedField))) {
         if (mode == QStringLiteral("greaterThan") ||
             mode == QStringLiteral("greaterOrEqual")) {
             label->setText(tr("Lower threshold"));
@@ -1514,7 +1516,7 @@ void StepPropertyEditor::updateLimitRows()
             m_limitExpectedEdit->setPlaceholderText(tr("Expected value"));
         }
     }
-    setFormRowVisible(m_dataForm, m_limitExpectedEdit,
+    setFormRowVisible(m_dataForm, m_limitExpectedField,
                       predicate && !betweenLimits && !boolean);
     setFormRowVisible(m_dataForm, m_limitLowerEdit, predicate && betweenLimits);
     setFormRowVisible(m_dataForm, m_limitUpperEdit, predicate && betweenLimits);
