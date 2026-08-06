@@ -1460,9 +1460,20 @@ bool SequenceDocument::wrapStepsInTestItem(
     testItem.insert(QStringLiteral("kind"), QStringLiteral("testItem"));
     testItem.insert(QStringLiteral("enabled"), true);
 
-    const bool changed = mutateSteps(
-        parentPath,
-        [&](QJsonArray& steps) {
+    const auto parentNodePath = sequenceNodePath(m_root, parentPath);
+    const auto testItemNodePath = childNodePath(parentNodePath, id);
+    QVector<std::pair<QString, QString>> referenceRemaps;
+
+    auto root = m_root;
+    auto groups = root.value(QStringLiteral("groups")).toArray();
+    if (parentPath.groupIndex < 0 || parentPath.groupIndex >= groups.size() ||
+        !groups[parentPath.groupIndex].isObject()) {
+        return false;
+    }
+    auto group = groups[parentPath.groupIndex].toObject();
+    if (!mutateNestedSteps(
+            group, parentPath.stepIndices, 0,
+            [&](QJsonArray& steps) {
             QJsonArray children;
             QSet<QString> childIds;
             for (const int row : rows) {
@@ -1487,6 +1498,20 @@ bool SequenceDocument::wrapStepsInTestItem(
                     childIds.insert(childId);
                     children[index] = child;
                 }
+
+                auto sourcePath = parentPath;
+                sourcePath.stepIndices.push_back(rows[index]);
+                const auto oldNodePath = sequenceNodePath(m_root, sourcePath);
+                const auto childKey = child.value(QStringLiteral("key"))
+                                          .toString().trimmed();
+                const auto childId = child.value(QStringLiteral("id"))
+                                         .toString().trimmed();
+                const auto newNodePath = childNodePath(
+                    testItemNodePath, childKey.isEmpty() ? childId : childKey);
+                if (!oldNodePath.isEmpty() && !newNodePath.isEmpty() &&
+                    oldNodePath != newNodePath) {
+                    referenceRemaps.push_back({oldNodePath, newNodePath});
+                }
             }
             for (int index = rows.size() - 1; index >= 0; --index) {
                 steps.removeAt(rows[index]);
@@ -1495,8 +1520,16 @@ bool SequenceDocument::wrapStepsInTestItem(
             container.insert(QStringLiteral("steps"), children);
             steps.insert(firstRow, container);
             return true;
-        },
-        tr("Wrap Steps in TestItem"));
+        })) {
+        return false;
+    }
+    groups[parentPath.groupIndex] = group;
+    root.insert(QStringLiteral("groups"), groups);
+    for (const auto& [oldNodePath, newNodePath] : referenceRemaps) {
+        root = rewriteScopedStepReferences(root, oldNodePath, newNodePath).toObject();
+    }
+
+    const bool changed = commitRoot(std::move(root), tr("Wrap Steps in TestItem"));
     if (changed && testItemPath) {
         *testItemPath = parentPath;
         testItemPath->stepIndices.push_back(firstRow);

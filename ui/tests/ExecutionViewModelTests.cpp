@@ -421,6 +421,7 @@ private slots:
     void sequenceDocumentUndoRedoTracksCleanState();
     void sequenceDocumentRelocatesAcrossShiftedParentPaths();
     void sequenceDocumentWrapsContiguousStepsInTestItem();
+    void sequenceDocumentWrapUpdatesScopedReferences();
     void sequenceDocumentBatchEditsSelectedStepsAtomically();
     void sequenceDocumentDuplicatesMixedSelectionAtomically();
     void sequenceDocumentCopiesTestItemReferencesIntoNewScope();
@@ -3781,6 +3782,77 @@ void ExecutionViewModelTests::sequenceDocumentWrapsContiguousStepsInTestItem()
     QCOMPARE(document.rootObject().value("groups").toArray().at(0)
                  .toObject().value("steps").toArray().size(),
              3);
+}
+
+void ExecutionViewModelTests::sequenceDocumentWrapUpdatesScopedReferences()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath(QStringLiteral("wrap-references.json"));
+    QFile source(path);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write(R"json({
+      "id":"asset-code","name":"Asset Code","groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"038","name":"Set Asset Code","kind":"testItem","steps":[
+            {"id":"035","name":"Write","kind":"noop"},
+            {"id":"036","name":"Read","kind":"noop"},
+            {"id":"038","name":"Decode","kind":"action","inputs":{
+              "source":"${step:038.036.outputs.registers}"}},
+            {"id":"039","name":"Check","kind":"limit","inputs":{
+              "actual":"${step:038.038.outputs.text}"}}
+          ]},
+          {"id":"040","name":"External Consumer","kind":"action","inputs":{
+            "source":"${step:038.038.outputs.text}"}}
+        ]
+      }]
+    })json");
+    source.close();
+
+    SequenceDocument document;
+    const bool loaded = document.load(path);
+    const auto loadDiagnostics = document.diagnostics();
+    const auto loadError = loadDiagnostics.isEmpty()
+        ? QStringLiteral("unknown load error")
+        : loadDiagnostics.first().message;
+    QVERIFY2(loaded, qPrintable(loadError));
+    const QVector<SequenceItemPath> selected = {
+        SequenceItemPath{0, {0, 0}},
+        SequenceItemPath{0, {0, 1}},
+        SequenceItemPath{0, {0, 2}}};
+    SequenceItemPath wrappedPath;
+    QVERIFY(document.wrapStepsInTestItem(selected, &wrappedPath));
+    QVERIFY(wrappedPath == (SequenceItemPath{0, {0, 0}}));
+
+    const auto outer = document.objectAt(SequenceItemPath{0, {0}});
+    const auto outerChildren = outer.value(QStringLiteral("steps")).toArray();
+    QCOMPARE(outerChildren.size(), 2);
+    const auto wrapped = outerChildren.at(0).toObject();
+    QCOMPARE(wrapped.value(QStringLiteral("id")).toString(), QStringLiteral("040"));
+    const auto wrappedChildren = wrapped.value(QStringLiteral("steps")).toArray();
+    QCOMPARE(wrappedChildren.size(), 3);
+    QCOMPARE(wrappedChildren.at(2).toObject()
+                 .value(QStringLiteral("inputs")).toObject()
+                 .value(QStringLiteral("source")).toString(),
+             QStringLiteral("${step:038.040.036.outputs.registers}"));
+    QCOMPARE(outerChildren.at(1).toObject()
+                 .value(QStringLiteral("inputs")).toObject()
+                 .value(QStringLiteral("actual")).toString(),
+             QStringLiteral("${step:038.040.038.outputs.text}"));
+
+    const auto groups = document.rootObject().value(QStringLiteral("groups")).toArray();
+    const auto topLevelSteps = groups.at(0).toObject()
+                                   .value(QStringLiteral("steps")).toArray();
+    QCOMPARE(topLevelSteps.at(1).toObject()
+                 .value(QStringLiteral("inputs")).toObject()
+                 .value(QStringLiteral("source")).toString(),
+             QStringLiteral("${step:038.040.038.outputs.text}"));
+
+    document.undoStack()->undo();
+    QCOMPARE(document.objectAt(SequenceItemPath{0, {0, 2}})
+                 .value(QStringLiteral("inputs")).toObject()
+                 .value(QStringLiteral("source")).toString(),
+             QStringLiteral("${step:038.036.outputs.registers}"));
 }
 
 void ExecutionViewModelTests::sequenceDocumentBatchEditsSelectedStepsAtomically()
