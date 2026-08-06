@@ -65,6 +65,8 @@ private:
                                      const QString& outputType);
     void updateParserFieldMappingVisibility();
     void updateValueToolInputVisibility();
+    void updateConditionalPluginInputVisibility();
+    void refreshPluginInputRowVisibility();
     bool mergeParserFieldMappings(QJsonObject& inputs,
                                   QString& errorMessage,
                                   QWidget** invalidWidget) const;

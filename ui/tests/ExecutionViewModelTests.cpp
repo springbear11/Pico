@@ -1018,9 +1018,12 @@ void ExecutionViewModelTests::pluginCatalogRejectsDuplicateAndInvalidDefinitions
           "id": "send",
           "name": "Send",
           "stepKind": "teleport",
+          "paletteVisible": "sometimes",
           "inputs": [
             {"key": "mode", "name": "Mode", "type": "enum"},
-            {"key": "mode", "name": "Mode 2", "type": "string", "minimum": 5, "maximum": 1}
+            {"key": "mode", "name": "Mode 2", "type": "string", "minimum": 5, "maximum": 1},
+            {"key": "text", "name": "Text", "type": "string",
+             "visibleWhen": {"key": "missing", "values": ["text"]}}
           ]
         },
         {"id": "send", "name": "Duplicate", "stepKind": "action"}
@@ -1033,9 +1036,11 @@ void ExecutionViewModelTests::pluginCatalogRejectsDuplicateAndInvalidDefinitions
                            [&path](const auto& error) { return error.path == path; });
     };
     QVERIFY(containsPath(QStringLiteral("functions[0].stepKind")));
+    QVERIFY(containsPath(QStringLiteral("functions[0].paletteVisible")));
     QVERIFY(containsPath(QStringLiteral("functions[0].inputs[0].options")));
     QVERIFY(containsPath(QStringLiteral("functions[0].inputs[1].key")));
     QVERIFY(containsPath(QStringLiteral("functions[0].inputs[1]")));
+    QVERIFY(containsPath(QStringLiteral("functions[0].inputs[2].visibleWhen.key")));
     QVERIFY(containsPath(QStringLiteral("functions[1].id")));
 }
 
@@ -1067,8 +1072,14 @@ void ExecutionViewModelTests::pluginCatalogParsesCompactDescriptionAndRoundTrips
         {
           "id": "write",
           "name": "Send CAN Frame",
+          "paletteVisible": false,
           "inputs": [
-            {"key": "data", "name": "Frame Data", "type": "hex-bytes", "required": true}
+            {"key": "format", "name": "Format", "type": "enum", "default": "raw",
+             "options": [{"label": "Raw", "value": "raw"},
+                         {"label": "Text", "value": "text"}]},
+            {"key": "data", "name": "Frame Data", "type": "hex-bytes",
+             "required": true,
+             "visibleWhen": {"key": "format", "values": ["raw"]}}
           ],
           "outputs": []
         }
@@ -1080,7 +1091,12 @@ void ExecutionViewModelTests::pluginCatalogParsesCompactDescriptionAndRoundTrips
         : parsed.errors.first().message));
     QCOMPARE(parsed.manifest.moduleId, QStringLiteral("plugin.can.gcan"));
     QCOMPARE(parsed.manifest.category, QStringLiteral("CAN"));
-    QCOMPARE(parsed.manifest.functions[1].inputs[0].required, true);
+    QCOMPARE(parsed.manifest.functions[1].paletteVisible, false);
+    QCOMPARE(parsed.manifest.functions[1].inputs[1].required, true);
+    QCOMPARE(parsed.manifest.functions[1].inputs[1].visibleWhenKey,
+             QStringLiteral("format"));
+    QCOMPARE(parsed.manifest.functions[1].inputs[1].visibleWhenValues,
+             QVector<QVariant>{QStringLiteral("raw")});
 
     const auto discovered = PluginCatalog::discoverPluginFiles(
         directory.filePath(QStringLiteral("plugin")));
@@ -1261,7 +1277,7 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
              QStringLiteral("Aggregate"));
     const auto parserCategory = functionModel.index(11, 0, basicSection);
     QCOMPARE(parserCategory.data().toString(), QStringLiteral("Data Parsing"));
-    QCOMPARE(functionModel.rowCount(parserCategory), 6);
+    QCOMPARE(functionModel.rowCount(parserCategory), 5);
     const auto binaryParser = functionModel.index(0, 0, parserCategory);
     QCOMPARE(binaryParser.data().toString(), QStringLiteral("Decode Binary Field"));
     const auto binaryParserTemplate = functionModel.stepTemplate(binaryParser);
@@ -1284,18 +1300,20 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     QCOMPARE(binaryParserTemplate.value(QStringLiteral("inputs")).toObject()
                  .value(QStringLiteral("byteOrder")).toString(),
              QStringLiteral("big"));
-    const auto registerTextParser = functionModel.index(2, 0, parserCategory);
-    QCOMPARE(registerTextParser.data().toString(),
-             QStringLiteral("Decode Register Text"));
-    const auto registerTextTemplate = functionModel.stepTemplate(registerTextParser);
-    QCOMPARE(registerTextTemplate.value(QStringLiteral("function")).toString(),
-             QStringLiteral("decodeRegisterText"));
-    QCOMPARE(registerTextTemplate.value(QStringLiteral("inputs")).toObject()
-                 .value(QStringLiteral("byteOrder")).toString(),
-             QStringLiteral("highByteFirst"));
-    QCOMPARE(registerTextTemplate.value(QStringLiteral("inputs")).toObject()
-                 .value(QStringLiteral("padding")).toString(),
-             QStringLiteral("trimTrailingNulls"));
+    const auto registerParser = functionModel.index(1, 0, parserCategory);
+    QCOMPARE(registerParser.data().toString(),
+             QStringLiteral("Decode Modbus Registers"));
+    const auto registerTemplate = functionModel.stepTemplate(registerParser);
+    QCOMPARE(registerTemplate.value(QStringLiteral("function")).toString(),
+             QStringLiteral("decodeRegisters"));
+    const auto registerInputs = registerTemplate.value(
+        QStringLiteral("inputs")).toObject();
+    QCOMPARE(registerInputs.value(QStringLiteral("dataType")).toString(),
+             QStringLiteral("uint16"));
+    QVERIFY(registerInputs.contains(QStringLiteral("layout")));
+    QVERIFY(!registerInputs.contains(QStringLiteral("registerCount")));
+    QVERIFY(!registerInputs.contains(QStringLiteral("byteOrder")));
+    QVERIFY(!registerInputs.contains(QStringLiteral("padding")));
     std::unique_ptr<QMimeData> parserMime(functionModel.mimeData({binaryParser}));
     QVERIFY(parserMime);
 
@@ -1480,7 +1498,8 @@ void ExecutionViewModelTests::stepOutputExpressionsUsePreviousScopedPluginOutput
           {"id":"decode","kind":"action","moduleId":"builtin.data-parser",
            "function":"decodeBinary","inputs":{"source":"01 02"}},
           {"id":"decode-text","kind":"action","moduleId":"builtin.data-parser",
-           "function":"decodeRegisterText","inputs":{"source":[16706]}},
+           "function":"decodeRegisters","inputs":{"source":[16706],
+             "dataType":"asciiText"}},
           {"id":"parse-names","kind":"action","moduleId":"builtin.data-parser",
            "function":"splitText","inputs":{
              "source":"SN001,812.5","delimiter":",","resultMode":"multiple",

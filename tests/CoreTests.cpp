@@ -1488,11 +1488,11 @@ void CoreTests::dataParserDecodesRegisterText()
         {QStringLiteral("source"), toRegisters(padded)},
         {QStringLiteral("registerOffset"), 0},
         {QStringLiteral("registerCount"), 24},
+        {QStringLiteral("dataType"), QStringLiteral("asciiText")},
         {QStringLiteral("byteOrder"), QStringLiteral("highByteFirst")},
-        {QStringLiteral("encoding"), QStringLiteral("ascii")},
         {QStringLiteral("padding"), QStringLiteral("trimTrailingNulls")}
     };
-    auto result = parser.execute(QStringLiteral("decodeRegisterText"), context);
+    auto result = parser.execute(QStringLiteral("decodeRegisters"), context);
     QCOMPARE(result.outcome, ModuleOutcome::Passed);
     QCOMPARE(result.outputs.value(QStringLiteral("text")).toString(), serialNumber);
     QCOMPARE(result.outputs.value(QStringLiteral("value")).toString(), serialNumber);
@@ -1504,6 +1504,18 @@ void CoreTests::dataParserDecodesRegisterText()
     QCOMPARE(result.outputs.value(QStringLiteral("registerCount")).toInt(), 24);
     QVERIFY(result.outputs.value(QStringLiteral("rawHex")).toString()
                 .startsWith(QStringLiteral("42 54 53 4E")));
+    QCOMPARE(result.outputs.value(QStringLiteral("dataType")).toString(),
+             QStringLiteral("asciiText"));
+
+    auto legacyContext = context;
+    legacyContext.inputs.remove(QStringLiteral("dataType"));
+    legacyContext.inputs.insert(QStringLiteral("encoding"),
+                                QStringLiteral("ascii"));
+    const auto legacyResult = parser.execute(
+        QStringLiteral("decodeRegisterText"), legacyContext);
+    QCOMPARE(legacyResult.outcome, ModuleOutcome::Passed);
+    QCOMPARE(legacyResult.outputs.value(QStringLiteral("text")).toString(),
+             serialNumber);
 
     context.inputs = {
         {QStringLiteral("source"), QVariantList{0x4241, 0x4443}},
@@ -1521,9 +1533,9 @@ void CoreTests::dataParserDecodesRegisterText()
     context.inputs = {
         {QStringLiteral("source"), toRegisters(utf8Text.toUtf8())},
         {QStringLiteral("registerCount"), 0},
-        {QStringLiteral("encoding"), QStringLiteral("utf8")}
+        {QStringLiteral("dataType"), QStringLiteral("utf8Text")}
     };
-    result = parser.execute(QStringLiteral("decodeRegisterText"), context);
+    result = parser.execute(QStringLiteral("decodeRegisters"), context);
     QCOMPARE(result.outcome, ModuleOutcome::Passed);
     QCOMPARE(result.outputs.value(QStringLiteral("text")).toString(), utf8Text);
     QCOMPARE(result.outputs.value(QStringLiteral("characterCount")).toInt(),
@@ -1562,7 +1574,7 @@ void CoreTests::dataParserDecodesRegisterText()
     result = parser.execute(QStringLiteral("decodeRegisterText"), context);
     QCOMPARE(result.outcome, ModuleOutcome::Error);
     QCOMPARE(result.errorCode, QStringLiteral("ParserConfigurationError"));
-    QVERIFY(logs.records().size() >= 7);
+    QVERIFY(logs.records().size() >= 8);
 }
 
 void CoreTests::dataParserExtractsStructuredTextAndReportsFailures()
@@ -5730,9 +5742,11 @@ void CoreTests::sequenceCompilerCompilesModbusRegisterTextReadbackExampleFile()
     QCOMPARE(decode->payload.value(QStringLiteral("moduleId")).toString(),
              QStringLiteral("builtin.data-parser"));
     QCOMPARE(decode->payload.value(QStringLiteral("function")).toString(),
-             QStringLiteral("decodeRegisterText"));
+             QStringLiteral("decodeRegisters"));
     QCOMPARE(decodeInputs.value(QStringLiteral("source")).toString(),
              QStringLiteral("${step:read-asset-code.outputs.registers}"));
+    QCOMPARE(decodeInputs.value(QStringLiteral("dataType")).toString(),
+             QStringLiteral("utf8Text"));
 
     const auto checkInputs = check->payload.value(QStringLiteral("inputs")).toMap();
     QCOMPARE(checkInputs.value(QStringLiteral("actual")).toString(),

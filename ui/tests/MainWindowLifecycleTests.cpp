@@ -131,6 +131,7 @@ private slots:
     void pluginPropertyEditorValidatesRequiredAndRangeAndSavesInputs();
     void pluginPropertyEditorAcceptsRevertedInvalidDraftAsNoOp();
     void pluginPropertyEditorInsertsPreviousStepOutputExpression();
+    void pluginPropertyEditorSwitchesConditionalInputs();
     void logicalDeviceOpenKeepsStationParametersOutOfStepInputs();
     void pluginPropertyEditorPrefersTypedControlsAndPreservesAdvancedJson();
     void flowEditorAddsAndLocksStandardSequenceGroups();
@@ -157,6 +158,7 @@ private slots:
     void messageBoxPropertyEditorConfiguresJudgmentMode();
     void messageBoxPropertyEditorInsertsRuntimeValues();
     void parserPropertyEditorCreatesNamedOutputsForFx();
+    void parserPropertyEditorSwitchesRegisterModes();
     void parserPropertyEditorPreservesExplicitEmptyEndMarker();
     void whileLoopPropertyEditorUsesTypedFields();
     void valueToolsPropertyEditorUsesExpressionList();
@@ -938,6 +940,89 @@ void MainWindowLifecycleTests::pluginPropertyEditorInsertsPreviousStepOutputExpr
                  .value(QStringLiteral("inputs")).toObject()
                  .value(QStringLiteral("actual")).toString(),
              QStringLiteral("${step:001.outputs.dlc}"));
+}
+
+void MainWindowLifecycleTests::pluginPropertyEditorSwitchesConditionalInputs()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(
+        QStringLiteral("conditional_plugin_inputs.json"));
+    QFile sequenceFile(sequencePath);
+    QVERIFY(sequenceFile.open(QIODevice::WriteOnly));
+    sequenceFile.write(R"json({
+      "id":"conditional-inputs","name":"Conditional Inputs","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"write","name":"Write Registers","kind":"action",
+          "moduleId":"plugin.modbus.test","function":"writeMultipleRegisters",
+          "inputs":{"dataFormat":"registers","values":"[1,2]",
+                    "text":"stale","registerCount":24}
+        }]
+      }]
+    })json");
+    sequenceFile.close();
+
+    const auto plugin = PluginCatalog::parseDescription(R"json({
+      "name":"Modbus Test","category":"MODBUS","functions":[{
+        "id":"writeMultipleRegisters","name":"Write Multiple Registers",
+        "inputs":[
+          {"key":"dataFormat","name":"Data Format","type":"enum",
+           "default":"registers","options":[
+             {"label":"Registers","value":"registers"},
+             {"label":"ASCII Text","value":"asciiText"},
+             {"label":"UTF-8 Text","value":"utf8Text"}]},
+          {"key":"values","name":"Values","type":"string","required":true,
+           "visibleWhen":{"key":"dataFormat","values":["registers"]}},
+          {"key":"text","name":"Text","type":"string","required":true,
+           "visibleWhen":{"key":"dataFormat","values":["asciiText","utf8Text"]}},
+          {"key":"registerCount","name":"Register Count","type":"integer",
+           "required":true,"visibleWhen":{"key":"dataFormat",
+                                             "values":["asciiText","utf8Text"]}}
+        ],"outputs":[]
+      }]
+    })json", directory.filePath(QStringLiteral("PicoATE.Modbus.Test.dll")), 1);
+    QVERIFY(plugin.ok());
+
+    const SequenceItemPath stepPath{0, {0}};
+    SequenceDocument document;
+    QVERIFY(document.load(sequencePath));
+    StepPropertyEditor editor(&document);
+    editor.setPluginRegistry({plugin.manifest});
+    editor.setCurrentItem(stepPath);
+    editor.show();
+    QTest::qWait(20);
+
+    auto* format = editor.findChild<QComboBox*>(
+        QStringLiteral("pluginInput_dataFormat"));
+    auto* values = editor.findChild<QLineEdit*>(
+        QStringLiteral("pluginInput_values"));
+    auto* text = editor.findChild<QLineEdit*>(
+        QStringLiteral("pluginInput_text"));
+    auto* count = editor.findChild<QLineEdit*>(
+        QStringLiteral("pluginInput_registerCount"));
+    QVERIFY(format && values && text && count);
+    QVERIFY(!values->isHidden());
+    QVERIFY(text->parentWidget()->isHidden());
+    QVERIFY(count->parentWidget()->isHidden());
+
+    const int utf8Index = format->findData(QStringLiteral("utf8Text"));
+    QVERIFY(utf8Index >= 0);
+    format->setCurrentIndex(utf8Index);
+    QVERIFY(values->parentWidget()->isHidden());
+    QVERIFY(!text->isHidden());
+    QVERIFY(!count->isHidden());
+    text->setText(QStringLiteral("${var.serialNumber}"));
+    count->setText(QStringLiteral("24"));
+    QVERIFY(editor.commitPendingChanges());
+
+    const auto inputs = document.objectAt(stepPath)
+                            .value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(inputs.value(QStringLiteral("dataFormat")).toString(),
+             QStringLiteral("utf8Text"));
+    QCOMPARE(inputs.value(QStringLiteral("text")).toString(),
+             QStringLiteral("${var.serialNumber}"));
+    QCOMPARE(inputs.value(QStringLiteral("registerCount")).toInt(), 24);
+    QVERIFY(!inputs.contains(QStringLiteral("values")));
 }
 
 void MainWindowLifecycleTests::logicalDeviceOpenKeepsStationParametersOutOfStepInputs()
@@ -4574,6 +4659,79 @@ void MainWindowLifecycleTests::parserPropertyEditorCreatesNamedOutputsForFx()
     QCOMPARE(actual->text(),
              QStringLiteral("${step:parse.outputs.fields.voltage}"));
     QVERIFY(editor.commitPendingChanges());
+}
+
+void MainWindowLifecycleTests::parserPropertyEditorSwitchesRegisterModes()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(
+        QStringLiteral("register_parser_modes.json"));
+    QFile sequenceFile(sequencePath);
+    QVERIFY(sequenceFile.open(QIODevice::WriteOnly));
+    sequenceFile.write(R"json({
+      "id":"register-parser-modes","name":"Register Parser Modes","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"decode","name":"Decode Registers","kind":"action",
+          "moduleId":"builtin.data-parser","function":"decodeRegisters",
+          "inputs":{"source":"${step:read.outputs.registers}","registerOffset":0,
+                    "dataType":"uint32","layout":"normal","scale":1,
+                    "valueOffset":0,"registerCount":2,
+                    "byteOrder":"highByteFirst","padding":"keep"}
+        }]
+      }]
+    })json");
+    sequenceFile.close();
+
+    const SequenceItemPath parserPath{0, {0}};
+    SequenceDocument document;
+    QVERIFY(document.load(sequencePath));
+    StepPropertyEditor editor(&document);
+    editor.setPluginRegistry({});
+    editor.setCurrentItem(parserPath);
+    editor.show();
+    QTest::qWait(20);
+
+    auto* dataType = editor.findChild<QComboBox*>(
+        QStringLiteral("pluginInput_dataType"));
+    auto* layout = editor.findChild<QComboBox*>(
+        QStringLiteral("pluginInput_layout"));
+    auto* scale = editor.findChild<QLineEdit*>(
+        QStringLiteral("pluginInput_scale"));
+    auto* registerCount = editor.findChild<QLineEdit*>(
+        QStringLiteral("pluginInput_registerCount"));
+    auto* byteOrder = editor.findChild<QComboBox*>(
+        QStringLiteral("pluginInput_byteOrder"));
+    auto* padding = editor.findChild<QComboBox*>(
+        QStringLiteral("pluginInput_padding"));
+    QVERIFY(dataType && layout && scale && registerCount && byteOrder && padding);
+    QVERIFY(!layout->isHidden());
+    QVERIFY(!scale->isHidden());
+    QVERIFY(registerCount->parentWidget()->isHidden());
+    QVERIFY(byteOrder->isHidden());
+    QVERIFY(padding->isHidden());
+
+    const int textIndex = dataType->findData(QStringLiteral("asciiText"));
+    QVERIFY(textIndex >= 0);
+    dataType->setCurrentIndex(textIndex);
+    QVERIFY(layout->isHidden());
+    QVERIFY(scale->parentWidget()->isHidden());
+    QVERIFY(!registerCount->isHidden());
+    QVERIFY(!byteOrder->isHidden());
+    QVERIFY(!padding->isHidden());
+    registerCount->setText(QStringLiteral("24"));
+    QVERIFY(editor.commitPendingChanges());
+
+    const auto inputs = document.objectAt(parserPath)
+                            .value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(inputs.value(QStringLiteral("dataType")).toString(),
+             QStringLiteral("asciiText"));
+    QCOMPARE(inputs.value(QStringLiteral("registerCount")).toInt(), 24);
+    QVERIFY(inputs.contains(QStringLiteral("byteOrder")));
+    QVERIFY(inputs.contains(QStringLiteral("padding")));
+    QVERIFY(!inputs.contains(QStringLiteral("layout")));
+    QVERIFY(!inputs.contains(QStringLiteral("scale")));
+    QVERIFY(!inputs.contains(QStringLiteral("valueOffset")));
 }
 
 void MainWindowLifecycleTests::parserPropertyEditorPreservesExplicitEmptyEndMarker()

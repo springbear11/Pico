@@ -49,6 +49,8 @@ struct PluginParameterDefinition {
     std::optional<double> maximum;
     QString unit;
     QVector<PluginParameterOption> options;
+    QString visibleWhenKey;
+    QVector<QVariant> visibleWhenValues;
 };
 
 struct PluginOutputDefinition {
@@ -62,6 +64,7 @@ struct PluginFunctionDefinition {
     QString id;
     QString name;
     QString description;
+    bool paletteVisible = true;
     QString stepKind = QStringLiteral("action");
     int timeoutMs = 0;
     QVector<PluginParameterDefinition> inputs;

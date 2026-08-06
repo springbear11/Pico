@@ -132,6 +132,36 @@ PluginParameterDefinition parseInput(
     }
     result.unit = object.value(QStringLiteral("unit")).toString();
 
+    if (object.contains(QStringLiteral("visibleWhen"))) {
+        const auto conditionValue = object.value(QStringLiteral("visibleWhen"));
+        const auto conditionPath = path + QStringLiteral(".visibleWhen");
+        if (!conditionValue.isObject()) {
+            addError(errors, conditionPath, QStringLiteral("Expected object"));
+        } else {
+            const auto condition = conditionValue.toObject();
+            result.visibleWhenKey = requiredString(
+                condition, QStringLiteral("key"), conditionPath, errors);
+            const auto values = condition.value(QStringLiteral("values"));
+            if (!values.isArray() || values.toArray().isEmpty()) {
+                addError(errors, conditionPath + QStringLiteral(".values"),
+                         QStringLiteral("Expected a non-empty array"));
+            } else {
+                const auto array = values.toArray();
+                for (int index = 0; index < array.size(); ++index) {
+                    if (array[index].isArray() || array[index].isObject() ||
+                        array[index].isNull() || array[index].isUndefined()) {
+                        addError(errors,
+                                 QStringLiteral("%1.values[%2]")
+                                     .arg(conditionPath).arg(index),
+                                 QStringLiteral("Expected string, number, or bool"));
+                        continue;
+                    }
+                    result.visibleWhenValues.push_back(array[index].toVariant());
+                }
+            }
+        }
+    }
+
     const auto optionsValue = object.value(QStringLiteral("options"));
     if (result.type == PluginParameterType::Enumeration) {
         if (!optionsValue.isArray() || optionsValue.toArray().isEmpty()) {
@@ -190,6 +220,15 @@ PluginFunctionDefinition parseFunction(
     result.id = requiredString(object, QStringLiteral("id"), path, errors);
     result.name = requiredString(object, QStringLiteral("name"), path, errors);
     result.description = object.value(QStringLiteral("description")).toString();
+    if (object.contains(QStringLiteral("paletteVisible"))) {
+        if (!object.value(QStringLiteral("paletteVisible")).isBool()) {
+            addError(errors, path + QStringLiteral(".paletteVisible"),
+                     QStringLiteral("Expected bool"));
+        } else {
+            result.paletteVisible = object.value(
+                QStringLiteral("paletteVisible")).toBool();
+        }
+    }
     result.stepKind = object.value(QStringLiteral("stepKind")).toString(
         QStringLiteral("action")).trimmed().toLower();
     const QSet<QString> supportedKinds = {QStringLiteral("action"),
@@ -236,6 +275,29 @@ PluginFunctionDefinition parseFunction(
             }
             keys.insert(input.key);
             result.inputs.push_back(std::move(input));
+        }
+    }
+    for (int inputIndex = 0; inputIndex < result.inputs.size(); ++inputIndex) {
+        const auto& input = result.inputs[inputIndex];
+        if (input.visibleWhenKey.isEmpty()) {
+            continue;
+        }
+        const auto conditionPath = QStringLiteral("%1.inputs[%2].visibleWhen")
+                                       .arg(path).arg(inputIndex);
+        if (input.visibleWhenKey == input.key) {
+            addError(errors, conditionPath,
+                     QStringLiteral("An input cannot control its own visibility"));
+            continue;
+        }
+        const auto controller = std::find_if(
+            result.inputs.cbegin(), result.inputs.cend(),
+            [&input](const PluginParameterDefinition& candidate) {
+                return candidate.key == input.visibleWhenKey;
+            });
+        if (controller == result.inputs.cend()) {
+            addError(errors, conditionPath + QStringLiteral(".key"),
+                     QStringLiteral("Unknown controlling input: %1")
+                         .arg(input.visibleWhenKey));
         }
     }
 
@@ -678,6 +740,16 @@ QJsonObject PluginCatalog::createStep(const PluginManifest& manifest,
             inputs.insert(input.key, QJsonValue::fromVariant(input.defaultValue));
         }
     }
+    for (const auto& input : function.inputs) {
+        if (input.visibleWhenKey.isEmpty()) {
+            continue;
+        }
+        const auto controllerValue = inputs.value(
+            input.visibleWhenKey).toVariant();
+        if (!input.visibleWhenValues.contains(controllerValue)) {
+            inputs.remove(input.key);
+        }
+    }
     if (!inputs.isEmpty()) {
         step.insert(QStringLiteral("inputs"), inputs);
     }
@@ -721,6 +793,14 @@ PluginManifest builtInDataParserManifest()
                            PluginParameterType::Enumeration,
                            std::move(defaultValue));
         value.options = QVector<PluginParameterOption>(options);
+        return value;
+    };
+    const auto visibleWhen = [](
+                                 PluginParameterDefinition value,
+                                 QString key,
+                                 std::initializer_list<QVariant> allowedValues) {
+        value.visibleWhenKey = std::move(key);
+        value.visibleWhenValues = QVector<QVariant>(allowedValues);
         return value;
     };
     const auto output = [](QString key, QString name,
@@ -843,29 +923,79 @@ PluginManifest builtInDataParserManifest()
                      {QStringLiteral("Float 32"), QStringLiteral("float32")},
                      {QStringLiteral("UInt 64"), QStringLiteral("uint64")},
                      {QStringLiteral("Int 64"), QStringLiteral("int64")},
-                     {QStringLiteral("Float 64"), QStringLiteral("float64")}}),
-        enumeration(QStringLiteral("layout"), QStringLiteral("Register Layout"),
-                    QStringLiteral("normal"),
-                    {{QStringLiteral("Normal (ABCD)"), QStringLiteral("normal")},
-                     {QStringLiteral("Swap Bytes (BADC)"), QStringLiteral("swapBytes")},
-                     {QStringLiteral("Reverse Words (CDAB)"), QStringLiteral("reverseWords")},
-                     {QStringLiteral("Reverse All (DCBA)"), QStringLiteral("reverseAll")}}),
-        input(QStringLiteral("scale"), QStringLiteral("Scale"),
-              PluginParameterType::Number, 1.0),
-        input(QStringLiteral("valueOffset"), QStringLiteral("Value Offset"),
-              PluginParameterType::Number, 0.0)
+                     {QStringLiteral("Float 64"), QStringLiteral("float64")},
+                     {QStringLiteral("ASCII Text"), QStringLiteral("asciiText")},
+                     {QStringLiteral("UTF-8 Text"), QStringLiteral("utf8Text")}}),
+        visibleWhen(
+            enumeration(QStringLiteral("layout"), QStringLiteral("Register Layout"),
+                        QStringLiteral("normal"),
+                        {{QStringLiteral("Normal (ABCD)"), QStringLiteral("normal")},
+                         {QStringLiteral("Swap Bytes (BADC)"), QStringLiteral("swapBytes")},
+                         {QStringLiteral("Reverse Words (CDAB)"), QStringLiteral("reverseWords")},
+                         {QStringLiteral("Reverse All (DCBA)"), QStringLiteral("reverseAll")}}),
+            QStringLiteral("dataType"),
+            {QStringLiteral("uint16"), QStringLiteral("int16"),
+             QStringLiteral("uint32"), QStringLiteral("int32"),
+             QStringLiteral("float32"), QStringLiteral("uint64"),
+             QStringLiteral("int64"), QStringLiteral("float64")}),
+        visibleWhen(
+            input(QStringLiteral("scale"), QStringLiteral("Scale"),
+                  PluginParameterType::Number, 1.0),
+            QStringLiteral("dataType"),
+            {QStringLiteral("uint16"), QStringLiteral("int16"),
+             QStringLiteral("uint32"), QStringLiteral("int32"),
+             QStringLiteral("float32"), QStringLiteral("uint64"),
+             QStringLiteral("int64"), QStringLiteral("float64")}),
+        visibleWhen(
+            input(QStringLiteral("valueOffset"), QStringLiteral("Value Offset"),
+                  PluginParameterType::Number, 0.0),
+            QStringLiteral("dataType"),
+            {QStringLiteral("uint16"), QStringLiteral("int16"),
+             QStringLiteral("uint32"), QStringLiteral("int32"),
+             QStringLiteral("float32"), QStringLiteral("uint64"),
+             QStringLiteral("int64"), QStringLiteral("float64")}),
+        visibleWhen(
+            input(QStringLiteral("registerCount"),
+                  QStringLiteral("Register Count (0 = Remaining)"),
+                  PluginParameterType::Integer, 0, false, 0),
+            QStringLiteral("dataType"),
+            {QStringLiteral("asciiText"), QStringLiteral("utf8Text")}),
+        visibleWhen(
+            enumeration(QStringLiteral("byteOrder"), QStringLiteral("Byte Order"),
+                        QStringLiteral("highByteFirst"),
+                        {{QStringLiteral("High Byte First"),
+                          QStringLiteral("highByteFirst")},
+                         {QStringLiteral("Low Byte First"),
+                          QStringLiteral("lowByteFirst")}}),
+            QStringLiteral("dataType"),
+            {QStringLiteral("asciiText"), QStringLiteral("utf8Text")}),
+        visibleWhen(
+            enumeration(QStringLiteral("padding"), QStringLiteral("Padding Bytes"),
+                        QStringLiteral("trimTrailingNulls"),
+                        {{QStringLiteral("Trim Trailing 0x00"),
+                          QStringLiteral("trimTrailingNulls")},
+                         {QStringLiteral("Keep All Bytes"), QStringLiteral("keep")}}),
+            QStringLiteral("dataType"),
+            {QStringLiteral("asciiText"), QStringLiteral("utf8Text")})
     };
     registers.outputs = {
         output(QStringLiteral("value"), QStringLiteral("Decoded Value")),
         output(QStringLiteral("rawValue"), QStringLiteral("Raw Value")),
         output(QStringLiteral("rawHex"), QStringLiteral("Raw Hex")),
-        output(QStringLiteral("rawRegisters"), QStringLiteral("Raw Registers"))
+        output(QStringLiteral("rawRegisters"), QStringLiteral("Raw Registers")),
+        output(QStringLiteral("text"), QStringLiteral("Decoded Text")),
+        output(QStringLiteral("rawBytes"), QStringLiteral("Raw Bytes")),
+        output(QStringLiteral("parsedLength"), QStringLiteral("Parsed Byte Length"),
+               PluginParameterType::Integer),
+        output(QStringLiteral("characterCount"), QStringLiteral("Character Count"),
+               PluginParameterType::Integer)
     };
     manifest.functions.push_back(std::move(registers));
 
     PluginFunctionDefinition registerText;
     registerText.id = QStringLiteral("decodeRegisterText");
     registerText.name = QStringLiteral("Decode Register Text");
+    registerText.paletteVisible = false;
     registerText.description = QStringLiteral(
         "Decode ASCII or UTF-8 text stored as two bytes per Modbus register.");
     registerText.inputs = {

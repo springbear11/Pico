@@ -1759,13 +1759,28 @@
                                 "description": "Required when dataFormat=registers. Example: [1, 100, 0xFFFF]",
                                 "key": "values",
                                 "name": "Register Values (JSON Array)",
-                                "type": "string"
+                                "required": true,
+                                "type": "string",
+                                "visibleWhen": {
+                                    "key": "dataFormat",
+                                    "values": [
+                                        "registers"
+                                    ]
+                                }
                             },
                             {
                                 "description": "Required when dataFormat=asciiText or utf8Text. Variables such as ${var.serialNumber} are supported.",
                                 "key": "text",
                                 "name": "Text",
-                                "type": "string"
+                                "required": true,
+                                "type": "string",
+                                "visibleWhen": {
+                                    "key": "dataFormat",
+                                    "values": [
+                                        "asciiText",
+                                        "utf8Text"
+                                    ]
+                                }
                             },
                             {
                                 "description": "Required for text formats; number of FC10 registers to write.",
@@ -1773,7 +1788,15 @@
                                 "maximum": 123,
                                 "minimum": 1,
                                 "name": "Register Count",
-                                "type": "integer"
+                                "required": true,
+                                "type": "integer",
+                                "visibleWhen": {
+                                    "key": "dataFormat",
+                                    "values": [
+                                        "asciiText",
+                                        "utf8Text"
+                                    ]
+                                }
                             },
                             {
                                 "default": "highByteFirst",
@@ -1789,7 +1812,14 @@
                                         "value": "lowByteFirst"
                                     }
                                 ],
-                                "type": "enum"
+                                "type": "enum",
+                                "visibleWhen": {
+                                    "key": "dataFormat",
+                                    "values": [
+                                        "asciiText",
+                                        "utf8Text"
+                                    ]
+                                }
                             },
                             {
                                 "default": 0,
@@ -1797,7 +1827,14 @@
                                 "maximum": 255,
                                 "minimum": 0,
                                 "name": "Padding Byte",
-                                "type": "integer"
+                                "type": "integer",
+                                "visibleWhen": {
+                                    "key": "dataFormat",
+                                    "values": [
+                                        "asciiText",
+                                        "utf8Text"
+                                    ]
+                                }
                             }
                         ],
                         "name": "Write Multiple Registers",

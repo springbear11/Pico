@@ -645,14 +645,14 @@ Plugin::Json pluginDescription()
                      {{"label", "ASCII Text"}, {"value", "asciiText"}},
                      {{"label", "UTF-8 Text"}, {"value", "utf8Text"}}
                  })}},
-                  {{"key", "values"}, {"name", "Register Values (JSON Array)"}, {"type", "string"}, {"description", "Required when dataFormat=registers. Example: [1, 100, 0xFFFF]"}},
-                  {{"key", "text"}, {"name", "Text"}, {"type", "string"}, {"description", "Required when dataFormat=asciiText or utf8Text. Variables such as ${var.serialNumber} are supported."}},
-                  {{"key", "registerCount"}, {"name", "Register Count"}, {"type", "integer"}, {"minimum", 1}, {"maximum", 123}, {"description", "Required for text formats; number of FC10 registers to write."}},
-                  {{"key", "byteOrder"}, {"name", "Byte Order"}, {"type", "enum"}, {"default", "highByteFirst"}, {"options", Json::array({
+                 {{"key", "values"}, {"name", "Register Values (JSON Array)"}, {"type", "string"}, {"required", true}, {"description", "Required when dataFormat=registers. Example: [1, 100, 0xFFFF]"}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"registers"})}}}},
+                 {{"key", "text"}, {"name", "Text"}, {"type", "string"}, {"required", true}, {"description", "Required when dataFormat=asciiText or utf8Text. Variables such as ${var.serialNumber} are supported."}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"asciiText", "utf8Text"})}}}},
+                 {{"key", "registerCount"}, {"name", "Register Count"}, {"type", "integer"}, {"required", true}, {"minimum", 1}, {"maximum", 123}, {"description", "Required for text formats; number of FC10 registers to write."}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"asciiText", "utf8Text"})}}}},
+                 {{"key", "byteOrder"}, {"name", "Byte Order"}, {"type", "enum"}, {"default", "highByteFirst"}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"asciiText", "utf8Text"})}}}, {"options", Json::array({
                       {{"label", "High Byte First"}, {"value", "highByteFirst"}},
                       {{"label", "Low Byte First"}, {"value", "lowByteFirst"}}
                   })}},
-                 {{"key", "padByte"}, {"name", "Padding Byte"}, {"type", "integer"}, {"default", 0}, {"minimum", 0}, {"maximum", 255}}
+                 {{"key", "padByte"}, {"name", "Padding Byte"}, {"type", "integer"}, {"default", 0}, {"minimum", 0}, {"maximum", 255}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"asciiText", "utf8Text"})}}}}
              })}, {"outputs", Json::array({
                  {{"key", "count"}, {"name", "Written Register Count"}, {"type", "integer"}},
                  {{"key", "dataFormat"}, {"name", "Data Format"}, {"type", "string"}},

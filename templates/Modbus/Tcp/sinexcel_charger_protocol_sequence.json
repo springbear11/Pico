@@ -110,13 +110,13 @@
           "name": "Decode Asset Code Register Text",
           "kind": "action",
           "moduleId": "builtin.data-parser",
-          "function": "decodeRegisterText",
+          "function": "decodeRegisters",
           "inputs": {
             "source": "${step:read-asset-code.outputs.registers}",
             "registerOffset": 0,
             "registerCount": 24,
+            "dataType": "utf8Text",
             "byteOrder": "highByteFirst",
-            "encoding": "utf8",
             "padding": "trimTrailingNulls"
           }
         },

@@ -1656,6 +1656,9 @@ void StepPropertyEditor::rebuildFunctionChoices(const QString& selectedFunction)
             continue;
         }
         for (const auto& function : plugin.functions) {
+            if (!function.paletteVisible && function.id != selected) {
+                continue;
+            }
             if (function.id.isEmpty() || addedFunctions.contains(function.id)) {
                 continue;
             }
@@ -2171,6 +2174,28 @@ void StepPropertyEditor::rebuildPluginInputEditors()
                     [this] { updateValueToolInputVisibility(); });
         }
     }
+    QSet<QString> visibilityControllers;
+    for (const auto& item : std::as_const(m_pluginInputEditors)) {
+        if (!item.definition.visibleWhenKey.isEmpty()) {
+            visibilityControllers.insert(item.definition.visibleWhenKey);
+        }
+    }
+    for (const auto& item : std::as_const(m_pluginInputEditors)) {
+        if (!visibilityControllers.contains(item.definition.key)) {
+            continue;
+        }
+        if (auto* combo = qobject_cast<QComboBox*>(item.widget)) {
+            connect(combo, &QComboBox::currentIndexChanged, this,
+                    [this] { updateConditionalPluginInputVisibility(); });
+        } else if (auto* button = qobject_cast<QAbstractButton*>(item.widget)) {
+            connect(button, &QAbstractButton::toggled, this,
+                    [this] { updateConditionalPluginInputVisibility(); });
+        } else if (auto* edit = qobject_cast<QLineEdit*>(item.widget)) {
+            connect(edit, &QLineEdit::textChanged, this,
+                    [this] { updateConditionalPluginInputVisibility(); });
+        }
+    }
+    updateConditionalPluginInputVisibility();
     updateValueToolInputVisibility();
     m_pluginInputsGroup->show();
 }
@@ -2278,9 +2303,10 @@ void StepPropertyEditor::updateParserFieldMappingVisibility()
                                 item.definition.key == QStringLiteral("captureGroup") ||
                                 item.definition.key == QStringLiteral("outputType");
         if (singleOnly) {
-            setFormRowVisible(m_pluginInputsForm, item.fieldWidget, !multiple);
+            item.fieldWidget->setProperty("parserInputInactive", multiple);
         }
     }
+    refreshPluginInputRowVisibility();
     setFormRowVisible(m_pluginInputsForm, m_parserFieldsField, multiple);
     if (multiple && m_parserFieldsTable &&
         m_parserFieldsTable->rowCount() == 0) {
@@ -2460,6 +2486,64 @@ void StepPropertyEditor::updateValueToolInputVisibility()
             visible = operation == QStringLiteral("round");
         }
         item.fieldWidget->setProperty("valueToolInactive", !visible);
+    }
+    refreshPluginInputRowVisibility();
+}
+
+void StepPropertyEditor::updateConditionalPluginInputVisibility()
+{
+    if (!m_pluginInputsForm) {
+        return;
+    }
+    const auto currentValue = [this](const QString& key) -> QVariant {
+        const auto item = std::find_if(
+            m_pluginInputEditors.cbegin(), m_pluginInputEditors.cend(),
+            [&key](const PluginInputEditor& candidate) {
+                return candidate.definition.key == key;
+            });
+        if (item == m_pluginInputEditors.cend()) {
+            return {};
+        }
+        if (const auto* combo = qobject_cast<const QComboBox*>(item->widget)) {
+            return combo->currentData();
+        }
+        if (const auto* button =
+                qobject_cast<const QAbstractButton*>(item->widget)) {
+            return button->isChecked();
+        }
+        if (const auto* edit = qobject_cast<const QLineEdit*>(item->widget)) {
+            return edit->text().trimmed();
+        }
+        return {};
+    };
+
+    for (const auto& item : std::as_const(m_pluginInputEditors)) {
+        bool visible = item.definition.visibleWhenKey.isEmpty();
+        if (!visible) {
+            const auto controller = currentValue(item.definition.visibleWhenKey);
+            visible = std::any_of(
+                item.definition.visibleWhenValues.cbegin(),
+                item.definition.visibleWhenValues.cend(),
+                [&controller](const QVariant& allowed) {
+                    return controller == allowed ||
+                           controller.toString() == allowed.toString();
+                });
+        }
+        item.fieldWidget->setProperty("pluginInputInactive", !visible);
+    }
+    refreshPluginInputRowVisibility();
+}
+
+void StepPropertyEditor::refreshPluginInputRowVisibility()
+{
+    if (!m_pluginInputsForm) {
+        return;
+    }
+    for (const auto& item : std::as_const(m_pluginInputEditors)) {
+        const bool visible =
+            !item.fieldWidget->property("pluginInputInactive").toBool() &&
+            !item.fieldWidget->property("valueToolInactive").toBool() &&
+            !item.fieldWidget->property("parserInputInactive").toBool();
         setFormRowVisible(m_pluginInputsForm, item.fieldWidget, visible);
     }
 }
@@ -2882,7 +2966,9 @@ bool StepPropertyEditor::mergePluginInputValues(QJsonObject& inputs,
             continue;
         }
         if (item.fieldWidget &&
-            item.fieldWidget->property("valueToolInactive").toBool()) {
+            (item.fieldWidget->property("valueToolInactive").toBool() ||
+             item.fieldWidget->property("pluginInputInactive").toBool() ||
+             item.fieldWidget->property("parserInputInactive").toBool())) {
             inputs.remove(definition.key);
             continue;
         }

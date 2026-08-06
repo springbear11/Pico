@@ -363,6 +363,9 @@ void PluginFunctionModel::rebuild()
     auto* parserCategoryPointer = parserCategory.get();
     basicSectionPointer->children.push_back(std::move(parserCategory));
     for (const auto& definition : parserManifest.functions) {
+        if (!definition.paletteVisible) {
+            continue;
+        }
         auto function = std::make_unique<Item>();
         function->kind = ItemKind::Function;
         function->text = definition.name;
@@ -469,6 +472,9 @@ void PluginFunctionModel::rebuild()
         for (int functionIndex = 0;
              functionIndex < plugin.functions.size(); ++functionIndex) {
             const auto& function = plugin.functions[functionIndex];
+            if (!function.paletteVisible) {
+                continue;
+            }
             const auto functionKey = function.id.trimmed().toLower();
             auto* existing = functionsByCategory[categoryKey].value(functionKey);
             if (existing) {

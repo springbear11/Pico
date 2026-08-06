@@ -948,12 +948,33 @@ QByteArray registerBytes(const QVector<quint16>& registers, const QString& layou
     return bytes;
 }
 
+ModuleResult decodeRegisterText(const ModuleExecutionContext& context);
+
 ModuleResult decodeRegisters(const ModuleExecutionContext& context)
 {
     const auto& inputs = context.inputs;
     if (!inputs.contains(QStringLiteral("source"))) {
         return parserError(context, QStringLiteral("ParserSourceMissing"),
                            QStringLiteral("decodeRegisters requires source"));
+    }
+    const auto dataType = inputs.value(QStringLiteral("dataType"),
+                                       QStringLiteral("uint16")).toString();
+    const auto normalizedDataType = normalized(dataType);
+    if (normalizedDataType == QStringLiteral("asciitext") ||
+        normalizedDataType == QStringLiteral("utf8text")) {
+        auto textContext = context;
+        textContext.inputs.insert(
+            QStringLiteral("encoding"),
+            normalizedDataType == QStringLiteral("asciitext")
+                ? QStringLiteral("ascii") : QStringLiteral("utf8"));
+        auto result = decodeRegisterText(textContext);
+        if (result.outcome == ModuleOutcome::Passed) {
+            result.outputs.insert(
+                QStringLiteral("dataType"),
+                normalizedDataType == QStringLiteral("asciitext")
+                    ? QStringLiteral("asciiText") : QStringLiteral("utf8Text"));
+        }
+        return result;
     }
     QString error;
     QVector<quint16> registers;
@@ -966,8 +987,6 @@ ModuleResult decodeRegisters(const ModuleExecutionContext& context)
                      std::numeric_limits<int>::max(), registerOffset, error)) {
         return parserError(context, QStringLiteral("ParserConfigurationError"), error);
     }
-    const auto dataType = inputs.value(QStringLiteral("dataType"),
-                                       QStringLiteral("uint16")).toString();
     const int count = registerCountForType(dataType);
     if (count == 0) {
         return parserError(context, QStringLiteral("ParserConfigurationError"),
@@ -1167,11 +1186,18 @@ ModuleResult decodeRegisterText(const ModuleExecutionContext& context)
     for (const auto byte : rawBytes) {
         rawByteValues.push_back(static_cast<uchar>(byte));
     }
+    QVariantList rawRegisters;
+    rawRegisters.reserve(static_cast<int>(registerCount));
+    for (qint64 index = 0; index < registerCount; ++index) {
+        rawRegisters.push_back(
+            registers[static_cast<int>(registerOffset + index)]);
+    }
 
     ModuleResult result;
     result.outputs.insert(QStringLiteral("value"), text);
     result.outputs.insert(QStringLiteral("text"), text);
     result.outputs.insert(QStringLiteral("rawBytes"), rawByteValues);
+    result.outputs.insert(QStringLiteral("rawRegisters"), rawRegisters);
     result.outputs.insert(QStringLiteral("rawHex"), bytesToHex(rawBytes));
     result.outputs.insert(QStringLiteral("parsedLength"), parsedBytes.size());
     result.outputs.insert(QStringLiteral("characterCount"), text.toUcs4().size());
