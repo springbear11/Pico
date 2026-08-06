@@ -36,9 +36,15 @@ ScanDialog::ScanDialog(QWidget* parent)
     m_barcodeEdit = new QLineEdit(this);
     m_barcodeEdit->setObjectName(QStringLiteral("barcodeEdit"));
     m_barcodeEdit->setAlignment(Qt::AlignCenter);
-    m_barcodeEdit->setMinimumHeight(54);
+    auto barcodeFont = m_barcodeEdit->font();
+    barcodeFont.setPointSize(18);
+    barcodeFont.setBold(true);
+    m_barcodeEdit->setFont(barcodeFont);
+    m_barcodeEdit->setMinimumHeight(66);
+    m_barcodeEdit->setTextMargins(18, 0, 18, 0);
     m_barcodeEdit->setPlaceholderText(tr("Scan barcode and press Enter"));
     layout->addWidget(m_barcodeEdit);
+    setFocusProxy(m_barcodeEdit);
 
     m_errorLabel = new QLabel(this);
     m_errorLabel->setObjectName(QStringLiteral("scanErrorLabel"));
@@ -67,6 +73,7 @@ void ScanDialog::showForNextScan()
     raise();
     activateWindow();
     QTimer::singleShot(0, m_barcodeEdit, [edit = m_barcodeEdit] {
+        edit->setCursorPosition(0);
         edit->setFocus(Qt::OtherFocusReason);
     });
 }

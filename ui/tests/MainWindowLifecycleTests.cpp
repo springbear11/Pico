@@ -3783,6 +3783,11 @@ void MainWindowLifecycleTests::scanDialogAcceptsRepeatedBarcodeAndHasNoWindowBut
     QCOMPARE(dialog.windowModality(), Qt::NonModal);
     QVERIFY(!dialog.isModal());
     QVERIFY(!dialog.findChild<QPushButton*>(QStringLiteral("scanAdminUnlockButton")));
+    QCOMPARE(barcode->alignment(), Qt::AlignCenter);
+    QVERIFY(barcode->font().bold());
+    QVERIFY(barcode->font().pointSize() >= 18);
+    QVERIFY(barcode->minimumHeight() >= 66);
+    QCOMPARE(dialog.focusProxy(), barcode);
 
     QCloseEvent closeEvent;
     QCoreApplication::sendEvent(&dialog, &closeEvent);
