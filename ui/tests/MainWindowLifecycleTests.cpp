@@ -3918,16 +3918,25 @@ void MainWindowLifecycleTests::adminStartsOnProductionDashboardAndOpensScannerOn
     scanAction->trigger();
     QTRY_VERIFY_WITH_TIMEOUT(scanDialog->isVisible(), 1000);
 
+    auto* barcode = scanDialog->findChild<QLineEdit*>(QStringLiteral("barcodeEdit"));
+    auto* serialLabel = window.findChild<QLabel*>(QStringLiteral("adminSerialLabel"));
+    QVERIFY(barcode);
+    QVERIFY(serialLabel);
+    barcode->setText(QStringLiteral("CANCELLED-SN"));
+    scanAction->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(scanDialog->isHidden(), 1000);
+    QCOMPARE(viewModel->state(), UiRunState::Ready);
+
+    scanAction->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(scanDialog->isVisible(), 1000);
+    QVERIFY(barcode->text().isEmpty());
+
     const auto screenshotPath = qEnvironmentVariable("PICOATE_ADMIN_SCREENSHOT");
     if (!screenshotPath.isEmpty()) {
         scanDialog->hide();
         QVERIFY2(window.grab().save(screenshotPath), qPrintable(screenshotPath));
     }
 
-    auto* barcode = scanDialog->findChild<QLineEdit*>(QStringLiteral("barcodeEdit"));
-    auto* serialLabel = window.findChild<QLabel*>(QStringLiteral("adminSerialLabel"));
-    QVERIFY(barcode);
-    QVERIFY(serialLabel);
     barcode->setText(QStringLiteral("ADMIN-SN-001"));
     QVERIFY(QMetaObject::invokeMethod(scanDialog, "submitBarcode"));
     QTRY_VERIFY_WITH_TIMEOUT(viewModel->state() == UiRunState::Completed ||

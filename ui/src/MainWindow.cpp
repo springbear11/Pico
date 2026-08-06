@@ -2197,8 +2197,13 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
         tr("Loop run %1 of %2").arg(iteration).arg(totalIterations));
 }
 
-void MainWindow::showScanDialog()
+void MainWindow::toggleScanDialog()
 {
+    if (m_scanDialog && m_scanDialog->isVisible()) {
+        m_scanDialog->cancelCurrentScan();
+        statusBar()->showMessage(tr("Barcode scan cancelled"), 2500);
+        return;
+    }
     if (!resolvePendingStepChanges()) {
         return;
     }
@@ -3611,8 +3616,8 @@ void MainWindow::buildActions()
         tr("Scan SN"),
         this);
     m_scanAction->setObjectName(QStringLiteral("adminScanAction"));
-    m_scanAction->setToolTip(tr("Open the barcode dialog for one test run"));
-    connect(m_scanAction, &QAction::triggered, this, &MainWindow::showScanDialog);
+    m_scanAction->setToolTip(tr("Open or cancel the barcode dialog"));
+    connect(m_scanAction, &QAction::triggered, this, &MainWindow::toggleScanDialog);
 
     m_scanPluginsAction = new QAction(
         style()->standardIcon(QStyle::SP_BrowserReload),

@@ -19,6 +19,7 @@ public:
 
     void setValidationRules(SnValidationRules rules);
     void showForNextScan();
+    void cancelCurrentScan();
 
 signals:
     void barcodeAccepted(const QString& barcode);

@@ -78,6 +78,13 @@ void ScanDialog::showForNextScan()
     });
 }
 
+void ScanDialog::cancelCurrentScan()
+{
+    m_errorLabel->hide();
+    m_barcodeEdit->clear();
+    hide();
+}
+
 void ScanDialog::closeEvent(QCloseEvent* event)
 {
     event->ignore();

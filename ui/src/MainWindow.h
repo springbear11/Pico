@@ -107,7 +107,7 @@ private:
     void runSequence();
     void runScannedUut(const QString& serialNumber);
     void beginAdminRunIteration(int iteration, int totalIterations);
-    void showScanDialog();
+    void toggleScanDialog();
     void scanPlugins(bool interactive = true);
     void loadPluginRegistry();
     void buildStartupOverlay();
