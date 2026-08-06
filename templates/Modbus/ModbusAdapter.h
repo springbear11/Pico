@@ -35,16 +35,33 @@ public:
                            const Plugin::Json& options) = 0;
     virtual void disconnect() noexcept = 0;
     virtual bool isConnected() const noexcept = 0;
-    virtual Result readCoils(std::uint16_t address, std::uint16_t count) = 0;
-    virtual Result readDiscreteInputs(std::uint16_t address, std::uint16_t count) = 0;
-    virtual Result readHoldingRegisters(std::uint16_t address, std::uint16_t count) = 0;
-    virtual Result readInputRegisters(std::uint16_t address, std::uint16_t count) = 0;
-    virtual Result writeSingleCoil(std::uint16_t address, bool value) = 0;
-    virtual Result writeSingleRegister(std::uint16_t address, std::uint16_t value) = 0;
-    virtual Result writeMultipleRegisters(std::uint16_t address,
+    virtual Result readCoils(std::uint8_t unitId,
+                             std::uint16_t address,
+                             std::uint16_t count) = 0;
+    virtual Result readDiscreteInputs(std::uint8_t unitId,
+                                      std::uint16_t address,
+                                      std::uint16_t count) = 0;
+    virtual Result readHoldingRegisters(std::uint8_t unitId,
+                                        std::uint16_t address,
+                                        std::uint16_t count) = 0;
+    virtual Result readInputRegisters(std::uint8_t unitId,
+                                      std::uint16_t address,
+                                      std::uint16_t count) = 0;
+    virtual Result writeSingleCoil(std::uint8_t unitId,
+                                   std::uint16_t address,
+                                   bool value) = 0;
+    virtual Result writeSingleRegister(std::uint8_t unitId,
+                                       std::uint16_t address,
+                                       std::uint16_t value) = 0;
+    virtual Result writeMultipleCoils(std::uint8_t unitId,
+                                      std::uint16_t address,
+                                      const std::vector<bool>& values) = 0;
+    virtual Result writeMultipleRegisters(std::uint8_t unitId,
+                                          std::uint16_t address,
                                           const std::vector<std::uint16_t>& values) = 0;
 };
 
 std::unique_ptr<IModbusAdapter> createModbusAdapter();
+Plugin::Json pluginDescription();
 
 } // namespace PicoATE::Plugins::Modbus

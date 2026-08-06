@@ -32,7 +32,11 @@ templates/
 │   └── VisaPluginBridge.cpp     # 通用 ABI 桥，存在厂商实现时才参与编译
 └── Modbus/
     ├── ModbusAdapter.h          # Modbus 统一抽象
-    └── ModbusPluginBridge.cpp   # 通用 ABI 桥，存在厂商实现时才参与编译
+    ├── ModbusPluginBridge.cpp   # 通用 ABI、参数校验、自描述和实时日志桥
+    └── Tcp/
+        ├── ModbusTcpAdapter.cpp # Winsock Modbus TCP 实现
+        ├── StationSystem.json   # MODBUS1 工站示例
+        └── sinexcel_charger_protocol_sequence.json
 ```
 
 插件工程使用纯 C++20，不依赖 Qt。JSON 使用根目录固定版本的 nlohmann/json，换电脑
@@ -65,6 +69,7 @@ bin/Debug/PicoATE.CAN.CX.dll
 bin/Debug/PicoATE.DMM.HDM3000.dll
 bin/Debug/PicoATE.DMM.KEYSIGHT34410A.dll
 bin/Debug/PicoATE.PSU.KORAD.dll
+bin/Debug/PicoATE.Modbus.Tcp.dll
 bin/Release/...
 ```
 
@@ -90,6 +95,10 @@ bin/Release/...
 VISA 厂商实现提供 `createVisaAdapter()`，Modbus 厂商实现提供
 `createModbusAdapter()`。分类根目录中的通用入口会自动加入每个厂商 DLL，因此厂商
 实现不需要重复编写 `PicoATE_Execute`、JSON 分发和实时日志 callback。
+
+当前 `Modbus/Tcp` 是不依赖 Qt 和第三方 Modbus 运行库的 Winsock 实现，支持 FC01、FC02、
+FC03、FC04、FC05、FC06、FC0F 和 FC10。`unitId`、寄存器地址和值既可使用十进制，
+也可使用 `0x` 十六进制字符串；FC10 还支持寄存器数组及 ASCII/UTF-8 文本打包。
 
 `IxxxAdapter` 才是 C++ 抽象接口；`XxxPluginBridge.cpp` 不是抽象类，而是把稳定的
 PicoATE C ABI/JSON 请求桥接到抽象接口。这里不使用 `VirtualXxxPlugin` 命名，避免

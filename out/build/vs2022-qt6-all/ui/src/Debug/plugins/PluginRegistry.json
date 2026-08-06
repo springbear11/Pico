@@ -1400,6 +1400,457 @@
         {
             "abiVersion": 1,
             "description": {
+                "category": "MODBUS",
+                "connectionKinds": [
+                    "tcpIp"
+                ],
+                "functions": [
+                    {
+                        "description": "Open one persistent Modbus TCP connection",
+                        "id": "open",
+                        "inputs": [
+                            {
+                                "default": 0,
+                                "key": "unitId",
+                                "maximum": 255,
+                                "minimum": 0,
+                                "name": "Default Unit ID",
+                                "type": "string"
+                            },
+                            {
+                                "default": 3000,
+                                "key": "connectTimeoutMs",
+                                "maximum": 600000,
+                                "minimum": 1,
+                                "name": "Connect Timeout",
+                                "type": "integer",
+                                "unit": "ms"
+                            },
+                            {
+                                "default": 2000,
+                                "key": "ioTimeoutMs",
+                                "maximum": 600000,
+                                "minimum": 1,
+                                "name": "I/O Timeout",
+                                "type": "integer",
+                                "unit": "ms"
+                            }
+                        ],
+                        "name": "Open Modbus TCP",
+                        "outputs": [
+                            {
+                                "key": "connected",
+                                "name": "Connected",
+                                "type": "boolean"
+                            }
+                        ],
+                        "timeoutMs": 5000
+                    },
+                    {
+                        "description": "FC01",
+                        "id": "readCoils",
+                        "inputs": [
+                            {
+                                "key": "unitId",
+                                "maximum": 255,
+                                "minimum": 0,
+                                "name": "Unit ID",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "address",
+                                "maximum": 65535,
+                                "minimum": 0,
+                                "name": "Start Address",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "count",
+                                "maximum": 2000,
+                                "minimum": 1,
+                                "name": "Coil Count",
+                                "required": true,
+                                "type": "integer"
+                            }
+                        ],
+                        "name": "Read Coils",
+                        "outputs": [
+                            {
+                                "key": "values",
+                                "name": "Coil Values (JSON Array)",
+                                "type": "string"
+                            }
+                        ],
+                        "timeoutMs": 3000
+                    },
+                    {
+                        "description": "FC02",
+                        "id": "readDiscreteInputs",
+                        "inputs": [
+                            {
+                                "key": "unitId",
+                                "maximum": 255,
+                                "minimum": 0,
+                                "name": "Unit ID",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "address",
+                                "maximum": 65535,
+                                "minimum": 0,
+                                "name": "Start Address",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "count",
+                                "maximum": 2000,
+                                "minimum": 1,
+                                "name": "Input Count",
+                                "required": true,
+                                "type": "integer"
+                            }
+                        ],
+                        "name": "Read Discrete Inputs",
+                        "outputs": [
+                            {
+                                "key": "values",
+                                "name": "Input Values (JSON Array)",
+                                "type": "string"
+                            }
+                        ],
+                        "timeoutMs": 3000
+                    },
+                    {
+                        "id": "readHoldingRegisters",
+                        "inputs": [
+                            {
+                                "key": "unitId",
+                                "maximum": 255,
+                                "minimum": 0,
+                                "name": "Unit ID",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "address",
+                                "maximum": 65535,
+                                "minimum": 0,
+                                "name": "Start Address",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "count",
+                                "maximum": 125,
+                                "minimum": 1,
+                                "name": "Register Count",
+                                "required": true,
+                                "type": "integer"
+                            }
+                        ],
+                        "name": "Read Holding Registers",
+                        "outputs": [
+                            {
+                                "key": "registers",
+                                "name": "Registers (JSON Array)",
+                                "type": "string"
+                            }
+                        ],
+                        "timeoutMs": 3000
+                    },
+                    {
+                        "description": "FC04",
+                        "id": "readInputRegisters",
+                        "inputs": [
+                            {
+                                "key": "unitId",
+                                "maximum": 255,
+                                "minimum": 0,
+                                "name": "Unit ID",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "address",
+                                "maximum": 65535,
+                                "minimum": 0,
+                                "name": "Start Address",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "count",
+                                "maximum": 125,
+                                "minimum": 1,
+                                "name": "Register Count",
+                                "required": true,
+                                "type": "integer"
+                            }
+                        ],
+                        "name": "Read Input Registers",
+                        "outputs": [
+                            {
+                                "key": "registers",
+                                "name": "Registers (JSON Array)",
+                                "type": "string"
+                            }
+                        ],
+                        "timeoutMs": 3000
+                    },
+                    {
+                        "description": "FC05",
+                        "id": "writeSingleCoil",
+                        "inputs": [
+                            {
+                                "key": "unitId",
+                                "maximum": 255,
+                                "minimum": 0,
+                                "name": "Unit ID",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "address",
+                                "maximum": 65535,
+                                "minimum": 0,
+                                "name": "Address",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "value",
+                                "name": "Coil Value",
+                                "required": true,
+                                "type": "boolean"
+                            }
+                        ],
+                        "name": "Write Single Coil",
+                        "outputs": [
+                            {
+                                "key": "value",
+                                "name": "Coil Value",
+                                "type": "boolean"
+                            }
+                        ],
+                        "timeoutMs": 3000
+                    },
+                    {
+                        "description": "FC06",
+                        "id": "writeSingleRegister",
+                        "inputs": [
+                            {
+                                "key": "unitId",
+                                "maximum": 255,
+                                "minimum": 0,
+                                "name": "Unit ID",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "address",
+                                "maximum": 65535,
+                                "minimum": 0,
+                                "name": "Address",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "value",
+                                "maximum": 65535,
+                                "minimum": 0,
+                                "name": "Register Value",
+                                "required": true,
+                                "type": "string"
+                            }
+                        ],
+                        "name": "Write Single Register",
+                        "outputs": [
+                            {
+                                "key": "value",
+                                "name": "Register Value",
+                                "type": "integer"
+                            }
+                        ],
+                        "timeoutMs": 3000
+                    },
+                    {
+                        "description": "FC0F",
+                        "id": "writeMultipleCoils",
+                        "inputs": [
+                            {
+                                "key": "unitId",
+                                "maximum": 255,
+                                "minimum": 0,
+                                "name": "Unit ID",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "address",
+                                "maximum": 65535,
+                                "minimum": 0,
+                                "name": "Start Address",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "description": "Example: [true, false, true]",
+                                "key": "values",
+                                "name": "Coil Values (JSON Array)",
+                                "required": true,
+                                "type": "string"
+                            }
+                        ],
+                        "name": "Write Multiple Coils",
+                        "outputs": [
+                            {
+                                "key": "count",
+                                "name": "Written Coil Count",
+                                "type": "integer"
+                            }
+                        ],
+                        "timeoutMs": 3000
+                    },
+                    {
+                        "description": "FC10; default dataFormat=registers, optionally encode text",
+                        "id": "writeMultipleRegisters",
+                        "inputs": [
+                            {
+                                "key": "unitId",
+                                "maximum": 255,
+                                "minimum": 0,
+                                "name": "Unit ID",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "key": "address",
+                                "maximum": 65535,
+                                "minimum": 0,
+                                "name": "Start Address",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "default": "registers",
+                                "key": "dataFormat",
+                                "name": "Data Format",
+                                "options": [
+                                    {
+                                        "label": "Registers",
+                                        "value": "registers"
+                                    },
+                                    {
+                                        "label": "ASCII Text",
+                                        "value": "asciiText"
+                                    },
+                                    {
+                                        "label": "UTF-8 Text",
+                                        "value": "utf8Text"
+                                    }
+                                ],
+                                "type": "enum"
+                            },
+                            {
+                                "description": "Required when dataFormat=registers. Example: [1, 100, 0xFFFF]",
+                                "key": "values",
+                                "name": "Register Values (JSON Array)",
+                                "required": true,
+                                "type": "string"
+                            },
+                            {
+                                "description": "Required when dataFormat=asciiText or utf8Text. Variables such as ${var.serialNumber} are supported.",
+                                "key": "text",
+                                "name": "Text",
+                                "type": "string"
+                            },
+                            {
+                                "description": "Required for text formats; number of FC10 registers to write.",
+                                "key": "registerCount",
+                                "maximum": 123,
+                                "minimum": 1,
+                                "name": "Register Count",
+                                "type": "integer"
+                            },
+                            {
+                                "default": "highByteFirst",
+                                "key": "byteOrder",
+                                "name": "Byte Order",
+                                "type": "string"
+                            },
+                            {
+                                "default": 0,
+                                "key": "padByte",
+                                "maximum": 255,
+                                "minimum": 0,
+                                "name": "Padding Byte",
+                                "type": "integer"
+                            }
+                        ],
+                        "name": "Write Multiple Registers",
+                        "outputs": [
+                            {
+                                "key": "count",
+                                "name": "Written Register Count",
+                                "type": "integer"
+                            },
+                            {
+                                "key": "dataFormat",
+                                "name": "Data Format",
+                                "type": "string"
+                            },
+                            {
+                                "key": "text",
+                                "name": "Written Text",
+                                "type": "string"
+                            },
+                            {
+                                "key": "byteCount",
+                                "name": "Text Byte Count",
+                                "type": "integer"
+                            },
+                            {
+                                "key": "registers",
+                                "name": "Encoded Registers",
+                                "type": "string"
+                            }
+                        ],
+                        "timeoutMs": 3000
+                    },
+                    {
+                        "id": "close",
+                        "inputs": [
+                        ],
+                        "name": "Close Modbus TCP",
+                        "outputs": [
+                            {
+                                "key": "connected",
+                                "name": "Connected",
+                                "type": "boolean"
+                            }
+                        ],
+                        "stepKind": "cleanup",
+                        "timeoutMs": 3000
+                    }
+                ],
+                "moduleId": "plugin.modbus.tcp",
+                "name": "Modbus TCP",
+                "pluginId": "picoate.modbus.tcp",
+                "schema": "picoate.plugin",
+                "schemaVersion": 1,
+                "vendor": "Generic",
+                "version": "1.0.0"
+            },
+            "dll": "PicoATE.Modbus.Tcp.dll",
+            "moduleId": "plugin.modbus.tcp"
+        },
+        {
+            "abiVersion": 1,
+            "description": {
                 "category": "PSU",
                 "connectionKinds": [
                     "visa"

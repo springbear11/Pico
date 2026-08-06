@@ -1,0 +1,126 @@
+{
+  "id": "sinexcel-charger-modbus-protocol",
+  "name": "Sinexcel Charger Modbus Protocol Example",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "open-charger",
+          "key": "open-charger",
+          "name": "Open Charger Modbus TCP",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "open",
+          "inputs": {
+            "deviceId": "MODBUS1"
+          },
+          "timeoutMs": 10000
+        },
+        {
+          "id": "enter-test-mode",
+          "key": "enter-test-mode",
+          "name": "Enter Test Mode (FC10 0x0000 = 0xA5A5)",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "writeMultipleRegisters",
+          "inputs": {
+            "deviceId": "MODBUS1",
+            "unitId": 0,
+            "address": 0,
+            "values": "[42405]"
+          },
+          "timeoutMs": 5000
+        },
+        {
+          "id": "set-heartbeat-timeout",
+          "key": "set-heartbeat-timeout",
+          "name": "Set Heartbeat Timeout (FC10 0x0010 = 30 s)",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "writeMultipleRegisters",
+          "inputs": {
+            "deviceId": "MODBUS1",
+            "unitId": 0,
+            "address": 16,
+            "values": "[30]"
+          },
+          "timeoutMs": 5000
+        },
+        {
+          "id": "send-initial-heartbeat",
+          "key": "send-initial-heartbeat",
+          "name": "Send Initial Heartbeat (FC10 0x0012 = 1)",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "writeMultipleRegisters",
+          "inputs": {
+            "deviceId": "MODBUS1",
+            "unitId": 0,
+            "address": 18,
+            "values": "[1]"
+          },
+          "timeoutMs": 5000
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "read-login-status",
+          "key": "read-login-status",
+          "name": "Read Charger Login Status (FC03 0x0011)",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "readHoldingRegisters",
+          "inputs": {
+            "deviceId": "MODBUS1",
+            "unitId": 0,
+            "address": 17,
+            "count": 1
+          },
+          "timeoutMs": 5000
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "exit-test-mode",
+          "key": "exit-test-mode",
+          "name": "Exit Test Mode (FC10 0x0000 = 0)",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "writeMultipleRegisters",
+          "inputs": {
+            "deviceId": "MODBUS1",
+            "unitId": 0,
+            "address": 0,
+            "values": "[0]"
+          },
+          "timeoutMs": 5000,
+          "alwaysRun": true
+        },
+        {
+          "id": "close-charger",
+          "key": "close-charger",
+          "name": "Close Charger Modbus TCP",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "close",
+          "inputs": {
+            "deviceId": "MODBUS1"
+          },
+          "timeoutMs": 5000,
+          "alwaysRun": true
+        }
+      ]
+    }
+  ]
+}

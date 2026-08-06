@@ -1,0 +1,21 @@
+{
+  "stationId": "modbus-tcp-station",
+  "name": "Modbus TCP Station",
+  "pluginRegistry": "${PROJECT_DIR}/out/build/vs2022-qt6-all/ui/src/Debug/plugins/PluginRegistry.json",
+  "devices": [
+    {
+      "deviceId": "MODBUS1",
+      "deviceType": "MODBUS",
+      "driverId": "plugin.modbus.tcp",
+      "connectionKind": "tcpIp",
+      "resource": "192.168.1.100:502",
+      "timeoutMs": 10000,
+      "lifetime": "Run",
+      "enabled": true,
+      "options": {
+        "connectTimeoutMs": 3000,
+        "ioTimeoutMs": 2000
+      }
+    }
+  ]
+}
