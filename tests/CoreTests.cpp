@@ -1507,6 +1507,15 @@ void CoreTests::dataParserDecodesRegisterText()
     QCOMPARE(result.outputs.value(QStringLiteral("dataType")).toString(),
              QStringLiteral("asciiText"));
 
+    const auto jsonRegisterSource = QString::fromUtf8(
+        QJsonDocument(QJsonArray::fromVariantList(toRegisters(padded)))
+            .toJson(QJsonDocument::Compact));
+    context.inputs.insert(QStringLiteral("source"), jsonRegisterSource);
+    result = parser.execute(QStringLiteral("decodeRegisters"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("text")).toString(), serialNumber);
+    QCOMPARE(result.outputs.value(QStringLiteral("rawRegisters")).toList().size(), 24);
+
     auto legacyContext = context;
     legacyContext.inputs.remove(QStringLiteral("dataType"));
     legacyContext.inputs.insert(QStringLiteral("encoding"),

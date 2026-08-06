@@ -1,6 +1,9 @@
 #include "PicoATE/Core/DataParserModule.h"
 
 #include <QDateTime>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonParseError>
 #include <QMetaType>
 #include <QRegularExpression>
 #include <QSet>
@@ -858,20 +861,39 @@ bool variantToRegisters(const QVariant& source,
                         QVector<quint16>& registers,
                         QString& error)
 {
+    const auto appendRegister = [&](const QVariant& item, int index) {
+        bool ok = false;
+        quint64 value = 0;
+        if (item.metaType().id() == QMetaType::QString) {
+            auto token = item.toString().trimmed();
+            const bool hexadecimal = token.startsWith(QStringLiteral("0x"),
+                                                       Qt::CaseInsensitive) ||
+                token.contains(QRegularExpression(QStringLiteral("[A-Fa-f]")));
+            if (token.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive)) {
+                token.remove(0, 2);
+            }
+            value = token.toULongLong(&ok, hexadecimal ? 16 : 10);
+        } else {
+            value = item.toULongLong(&ok);
+        }
+        if (!ok || value > 0xFFFF) {
+            error = QStringLiteral("source[%1] must be a register in range 0..65535")
+                        .arg(index);
+            return false;
+        }
+        registers.push_back(static_cast<quint16>(value));
+        return true;
+    };
+
     const auto typeId = source.metaType().id();
     if (typeId == QMetaType::QVariantList || typeId == QMetaType::QStringList) {
         const auto values = source.toList();
         registers.clear();
         registers.reserve(values.size());
         for (int index = 0; index < values.size(); ++index) {
-            bool ok = false;
-            const auto value = values[index].toULongLong(&ok);
-            if (!ok || value > 0xFFFF) {
-                error = QStringLiteral("source[%1] must be a register in range 0..65535")
-                            .arg(index);
+            if (!appendRegister(values[index], index)) {
                 return false;
             }
-            registers.push_back(static_cast<quint16>(value));
         }
         return true;
     }
@@ -880,7 +902,28 @@ bool variantToRegisters(const QVariant& source,
         return false;
     }
 
-    const auto tokens = source.toString().split(
+    auto sourceText = source.toString().trimmed();
+    if (sourceText.startsWith(QLatin1Char('[')) &&
+        sourceText.endsWith(QLatin1Char(']'))) {
+        QJsonParseError parseError;
+        const auto document = QJsonDocument::fromJson(sourceText.toUtf8(), &parseError);
+        if (parseError.error == QJsonParseError::NoError && document.isArray()) {
+            const auto values = document.array().toVariantList();
+            registers.clear();
+            registers.reserve(values.size());
+            for (int index = 0; index < values.size(); ++index) {
+                if (!appendRegister(values[index], index)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // Keep accepting legacy lists such as [0x1234, 0x5678], which are not JSON.
+        sourceText = sourceText.mid(1, sourceText.size() - 2);
+    }
+
+    const auto tokens = sourceText.split(
         QRegularExpression(QStringLiteral("[\\s,;:]+")), Qt::SkipEmptyParts);
     registers.clear();
     registers.reserve(tokens.size());
