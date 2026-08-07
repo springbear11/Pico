@@ -566,6 +566,27 @@ bool adminIsTerminalActivation(PicoATE::Core::ActivationState state)
            state == ActivationState::Cancelled;
 }
 
+bool runtimeEventCarriesActivationState(
+    PicoATE::Core::RuntimeEventKind kind)
+{
+    using PicoATE::Core::RuntimeEventKind;
+    switch (kind) {
+    case RuntimeEventKind::NodeStateChanged:
+    case RuntimeEventKind::AttemptStarted:
+    case RuntimeEventKind::AttemptCompleted:
+    case RuntimeEventKind::LoopIterationStarted:
+    case RuntimeEventKind::LoopCompleted:
+    case RuntimeEventKind::TestItemStarted:
+    case RuntimeEventKind::TestItemCompleted:
+    case RuntimeEventKind::BarrierWaiting:
+    case RuntimeEventKind::BarrierReleased:
+    case RuntimeEventKind::CleanupActivated:
+        return true;
+    default:
+        return false;
+    }
+}
+
 QString adminRunStateText(UiRunState state)
 {
     switch (state) {
@@ -717,6 +738,9 @@ MainWindow::MainWindow(QWidget* parent)
                 if (state == UiRunState::Starting) {
                     m_runtimeTimelineModel->clear();
                     m_sequenceTreeModel->setCurrentDebugNodePath({});
+                    m_adminLastAutoFollowLine = 0;
+                    m_adminLastAutoFollowUutId.clear();
+                    m_adminLastAutoFollowNodeId.clear();
                 }
                 if (state == UiRunState::Completed || state == UiRunState::Failed) {
                     m_sequenceTreeModel->setCurrentDebugNodePath({});
@@ -2222,6 +2246,13 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
         preview.uuts.first().hasError = false;
     }
     displayReport(preview);
+    m_resultView->clearSelection();
+    m_resultView->setCurrentIndex({});
+    m_attemptModel->setStep(std::nullopt);
+    m_measurementModel->setMeasurements({});
+    m_adminLastAutoFollowLine = 0;
+    m_adminLastAutoFollowUutId.clear();
+    m_adminLastAutoFollowNodeId.clear();
     updateAdminProgress();
     m_adminElapsed.restart();
     m_adminElapsedTimer->start();
@@ -4779,7 +4810,7 @@ void MainWindow::updateReport()
         m_currentAdminRunCounted = true;
         updateAdminYield();
     }
-    displayReport(report);
+    displayReport(report, true);
 }
 
 void MainWindow::updateDebugSnapshot()
@@ -4800,7 +4831,8 @@ void MainWindow::setRunTestInstructionPointer(const QString& nodePath)
     }
 }
 
-void MainWindow::displayReport(const PicoATE::Core::ExecutionReport& report)
+void MainWindow::displayReport(const PicoATE::Core::ExecutionReport& report,
+                               bool preserveRuntimePosition)
 {
     PicoATE::Core::UutId selectedUutId;
     PicoATE::Core::NodeId selectedStepId;
@@ -4828,6 +4860,16 @@ void MainWindow::displayReport(const PicoATE::Core::ExecutionReport& report)
         m_resultView->scrollTo(restored,
                                QAbstractItemView::PositionAtCenter);
         updateStepDetails(restored);
+    } else if (preserveRuntimePosition &&
+               !m_adminLastAutoFollowNodeId.isEmpty()) {
+        const auto followed = m_uutStepModel->indexForStep(
+            m_adminLastAutoFollowUutId, m_adminLastAutoFollowNodeId);
+        m_resultView->clearSelection();
+        m_resultView->setCurrentIndex({});
+        if (followed.isValid()) {
+            m_resultView->scrollTo(followed,
+                                   QAbstractItemView::PositionAtBottom);
+        }
     } else {
         selectInitialResult();
     }
@@ -4863,31 +4905,39 @@ void MainWindow::applyRuntimeEvents(
     if (m_runtimeTimelineView->model()->rowCount() > 0) {
         m_runtimeTimelineView->scrollToBottom();
     }
-    m_resultView->expandAll();
-
     const auto restored = m_uutStepModel->indexForStep(selectedUutId, selectedStepId);
     if (restored.isValid()) {
         m_resultView->setCurrentIndex(restored);
         updateStepDetails(restored);
-    } else if (!m_resultView->currentIndex().isValid()) {
-        selectInitialResult();
-    } else {
+    } else if (m_resultView->currentIndex().isValid()) {
         updateStepDetails(m_resultView->currentIndex());
+    } else {
+        m_attemptModel->setStep(std::nullopt);
+        m_measurementModel->setMeasurements({});
     }
 
     for (const auto& event : events) {
-        if (!event.nodeId.isEmpty() && adminIsTerminalActivation(event.activationState)) {
-            m_adminTerminalNodes.insert(event.nodeId);
+        if (!event.nodeId.isEmpty() &&
+            runtimeEventCarriesActivationState(event.kind)) {
+            if (adminIsTerminalActivation(event.activationState)) {
+                m_adminTerminalNodes.insert(event.nodeId);
+            } else {
+                m_adminTerminalNodes.remove(event.nodeId);
+            }
         }
         if (!event.nodeId.isEmpty() &&
             event.activationState == PicoATE::Core::ActivationState::Running) {
             const auto index = m_uutStepModel->indexForStep(event.uutId,
                                                              event.nodeId);
             if (index.isValid()) {
-                m_resultView->setCurrentIndex(index);
-                m_resultView->scrollTo(
-                    index, QAbstractItemView::PositionAtBottom);
-                updateStepDetails(index);
+                const int line = m_uutStepModel->visualLineNumber(index);
+                if (line > m_adminLastAutoFollowLine) {
+                    m_adminLastAutoFollowLine = line;
+                    m_adminLastAutoFollowUutId = event.uutId;
+                    m_adminLastAutoFollowNodeId = event.nodeId;
+                    m_resultView->scrollTo(
+                        index, QAbstractItemView::PositionAtBottom);
+                }
             }
         }
         if (event.kind == PicoATE::Core::RuntimeEventKind::BreakpointHit ||

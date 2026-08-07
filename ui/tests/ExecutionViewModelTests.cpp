@@ -398,6 +398,7 @@ private slots:
     void followingStepReferencesUseExecutionOrderAndScopedPaths();
     void runnerModelsExposeReportHierarchyAndDetails();
     void uutStepModelUsesProductionStateColors();
+    void uutStepModelResetsLoopAndRetryPresentation();
     void uutStepModelBuildsSingleUutPhaseLayout();
     void coreServiceRunsBasicAndForLoopExamples();
     void viewModelFlushesWorkerEventsInBatches();
@@ -1778,6 +1779,154 @@ void ExecutionViewModelTests::uutStepModelUsesProductionStateColors()
     const auto pendingUut = model.index(0, 0);
     const auto pendingStep = model.index(0, UutStepModel::StateColumn, pendingUut);
     QCOMPARE(model.data(pendingStep).toString(), QStringLiteral("Pending"));
+}
+
+void ExecutionViewModelTests::uutStepModelResetsLoopAndRetryPresentation()
+{
+    using namespace PicoATE::Core;
+
+    MeasurementResult measurement;
+    measurement.name = QStringLiteral("VOUT");
+    measurement.value = 12.4;
+    measurement.rawValue = QStringLiteral("12.4");
+    measurement.hasLowerLimit = true;
+    measurement.lowerLimit = 10.0;
+    measurement.hasUpperLimit = true;
+    measurement.upperLimit = 13.0;
+    measurement.status = MeasurementStatus::Passed;
+    measurement.errorCode = QStringLiteral("OldLimitError");
+
+    AttemptReport oldAttempt;
+    oldAttempt.index = 1;
+    oldAttempt.outcome = NodeOutcome::Passed;
+    oldAttempt.durationMs = 34;
+    oldAttempt.errorCode = QStringLiteral("OldAttemptError");
+    oldAttempt.measurements = {measurement};
+
+    StepReport child;
+    child.stepId = QStringLiteral("sample");
+    child.nodePath = QStringLiteral("loop.sample");
+    child.displayName = QStringLiteral("Sample Voltage");
+    child.kind = ExecNodeKind::Action;
+    child.state = ActivationState::Passed;
+    child.outcome = NodeOutcome::Passed;
+    child.durationMs = 34;
+    child.measurements = {measurement};
+    child.attempts = {oldAttempt};
+
+    StepReport loop;
+    loop.stepId = QStringLiteral("loop");
+    loop.nodePath = QStringLiteral("loop");
+    loop.displayName = QStringLiteral("Voltage Loop");
+    loop.kind = ExecNodeKind::Loop;
+    loop.state = ActivationState::Passed;
+    loop.outcome = NodeOutcome::Passed;
+    loop.durationMs = 500;
+    loop.children = {child};
+
+    UutReport uut;
+    uut.uutId = QStringLiteral("UUT-1");
+    uut.steps = {loop};
+
+    ExecutionReport report;
+    report.state = ExecutionState::Running;
+    report.uuts = {uut};
+
+    UutStepModel model;
+    QAbstractItemModelTester tester(
+        &model,
+        QAbstractItemModelTester::FailureReportingMode::QtTest);
+    model.setReport(report);
+
+    const auto loopIndex = model.indexForStep(QStringLiteral("UUT-1"),
+                                               QStringLiteral("loop"));
+    const auto childIndex = model.indexForStep(QStringLiteral("UUT-1"),
+                                                QStringLiteral("loop.sample"));
+    QVERIFY(loopIndex.isValid());
+    QVERIFY(childIndex.isValid());
+    QPersistentModelIndex persistentChild(childIndex);
+    QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+
+    RuntimeEvent nextIteration;
+    nextIteration.kind = RuntimeEventKind::LoopIterationStarted;
+    nextIteration.uutId = QStringLiteral("UUT-1");
+    nextIteration.nodeId = QStringLiteral("loop");
+    nextIteration.nodeKind = ExecNodeKind::Loop;
+    nextIteration.activationState = ActivationState::Running;
+    model.applyRuntimeEvents({nextIteration});
+
+    QCOMPARE(resetSpy.count(), 0);
+    QVERIFY(persistentChild.isValid());
+    const auto resetLoop = model.stepAt(loopIndex);
+    const auto resetChild = model.stepAt(childIndex);
+    QVERIFY(resetLoop.has_value());
+    QVERIFY(resetChild.has_value());
+    QCOMPARE(resetLoop->state, ActivationState::Running);
+    QCOMPARE(resetLoop->outcome, NodeOutcome::Unknown);
+    QCOMPARE(resetLoop->durationMs, qint64(-1));
+    QCOMPARE(resetChild->state, ActivationState::Created);
+    QCOMPARE(resetChild->outcome, NodeOutcome::Unknown);
+    QCOMPARE(resetChild->durationMs, qint64(-1));
+    QCOMPARE(resetChild->measurements.size(), 1);
+    QVERIFY(resetChild->measurements.first().hasLowerLimit);
+    QVERIFY(resetChild->measurements.first().hasUpperLimit);
+    QVERIFY(!resetChild->measurements.first().value.isValid());
+    QCOMPARE(model.data(childIndex.siblingAtColumn(UutStepModel::StateColumn)).toString(),
+             QStringLiteral("Pending"));
+    QCOMPARE(model.data(childIndex.siblingAtColumn(UutStepModel::ErrorCodeColumn)).toString(),
+             QStringLiteral("-"));
+    QCOMPARE(model.data(childIndex.siblingAtColumn(UutStepModel::ActualColumn)).toString(),
+             QStringLiteral("-"));
+    QVERIFY(!model.data(childIndex, Qt::BackgroundRole).isValid());
+
+    RuntimeEvent childStarted;
+    childStarted.kind = RuntimeEventKind::AttemptStarted;
+    childStarted.uutId = QStringLiteral("UUT-1");
+    childStarted.nodeId = QStringLiteral("loop.sample");
+    childStarted.parentNodeId = QStringLiteral("loop");
+    childStarted.nodeKind = ExecNodeKind::Action;
+    childStarted.activationState = ActivationState::Running;
+    childStarted.attemptIndex = 2;
+    model.applyRuntimeEvents({childStarted});
+    QCOMPARE(resetSpy.count(), 0);
+    const auto runningChildIndex = model.indexForStep(
+        QStringLiteral("UUT-1"), QStringLiteral("loop.sample"));
+    const auto runningUut = model.uutAt(model.index(0, 0));
+    QVERIFY(runningUut.has_value());
+    QCOMPARE(runningUut->steps.first().children.first().state,
+             ActivationState::Running);
+    const auto runningChild = model.stepAt(runningChildIndex);
+    QVERIFY(runningChild.has_value());
+    QCOMPARE(runningChild->state, ActivationState::Running);
+    QCOMPARE(model.data(runningChildIndex, Qt::BackgroundRole).value<QBrush>().color(),
+             QColor(QStringLiteral("#fff0a6")));
+
+    RuntimeEvent childCompleted = childStarted;
+    childCompleted.kind = RuntimeEventKind::AttemptCompleted;
+    childCompleted.activationState = ActivationState::Passed;
+    childCompleted.outcome = NodeOutcome::Passed;
+    childCompleted.details.insert(QStringLiteral("durationMs"), 42);
+    model.applyRuntimeEvents({childCompleted});
+    const auto completedChild = model.stepAt(model.indexForStep(
+        QStringLiteral("UUT-1"), QStringLiteral("loop.sample")));
+    QVERIFY(completedChild.has_value());
+    QCOMPARE(completedChild->durationMs, qint64(42));
+
+    RuntimeEvent loopCompleted = nextIteration;
+    loopCompleted.kind = RuntimeEventKind::LoopCompleted;
+    loopCompleted.activationState = ActivationState::Passed;
+    loopCompleted.outcome = NodeOutcome::Passed;
+    loopCompleted.details.insert(QStringLiteral("durationMs"), 1200);
+    model.applyRuntimeEvents({loopCompleted});
+
+    RuntimeEvent syntheticAttempt = loopCompleted;
+    syntheticAttempt.kind = RuntimeEventKind::AttemptCompleted;
+    syntheticAttempt.attemptIndex = 2;
+    syntheticAttempt.details.insert(QStringLiteral("durationMs"), 1);
+    model.applyRuntimeEvents({syntheticAttempt});
+    const auto completedLoop = model.stepAt(loopIndex);
+    QVERIFY(completedLoop.has_value());
+    QCOMPARE(completedLoop->durationMs, qint64(1200));
 }
 
 void ExecutionViewModelTests::uutStepModelBuildsSingleUutPhaseLayout()

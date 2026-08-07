@@ -50,6 +50,27 @@ bool isTerminal(PicoATE::Core::ActivationState state)
     return PicoATE::Core::isTerminalActivation(state);
 }
 
+bool runtimeEventCarriesActivationState(
+    PicoATE::Core::RuntimeEventKind kind)
+{
+    using PicoATE::Core::RuntimeEventKind;
+    switch (kind) {
+    case RuntimeEventKind::NodeStateChanged:
+    case RuntimeEventKind::AttemptStarted:
+    case RuntimeEventKind::AttemptCompleted:
+    case RuntimeEventKind::LoopIterationStarted:
+    case RuntimeEventKind::LoopCompleted:
+    case RuntimeEventKind::TestItemStarted:
+    case RuntimeEventKind::TestItemCompleted:
+    case RuntimeEventKind::BarrierWaiting:
+    case RuntimeEventKind::BarrierReleased:
+    case RuntimeEventKind::CleanupActivated:
+        return true;
+    default:
+        return false;
+    }
+}
+
 QString productionStateText(UiRunState state)
 {
     switch (state) {
@@ -610,6 +631,16 @@ void ProductionWindow::updateReport()
     }
     m_resultModel->setReport(report);
     m_resultView->expandAll();
+    m_resultView->clearSelection();
+    m_resultView->setCurrentIndex({});
+    if (!m_lastAutoFollowNodeId.isEmpty()) {
+        const auto followed = m_resultModel->indexForStep(
+            m_lastAutoFollowUutId, m_lastAutoFollowNodeId);
+        if (followed.isValid()) {
+            m_resultView->scrollTo(followed,
+                                   QAbstractItemView::PositionAtBottom);
+        }
+    }
     m_nodeStates.clear();
     m_terminalNodes.clear();
     for (const auto& uut : report.uuts) {
@@ -653,25 +684,30 @@ void ProductionWindow::applyRuntimeEvents(
             tr("TXT log write failed: %1").arg(written.errorMessage),
             10000);
     }
-    m_resultView->expandAll();
     if (m_logModel->rowCount() > 0) {
         m_logView->scrollToBottom();
     }
 
     for (const auto& event : events) {
-        if (!event.nodeId.isEmpty() && isTerminal(event.activationState)) {
-            m_terminalNodes.insert(event.nodeId);
+        if (!event.nodeId.isEmpty() &&
+            runtimeEventCarriesActivationState(event.kind)) {
             m_nodeStates.insert(event.nodeId, event.activationState);
-        } else if (!event.nodeId.isEmpty() &&
-                   event.activationState == PicoATE::Core::ActivationState::Running &&
-                   !isTerminal(m_nodeStates.value(event.nodeId))) {
-            m_nodeStates.insert(event.nodeId, event.activationState);
+            if (isTerminal(event.activationState)) {
+                m_terminalNodes.insert(event.nodeId);
+            } else {
+                m_terminalNodes.remove(event.nodeId);
+            }
         }
         if (!event.nodeId.isEmpty()) {
             const auto index = m_resultModel->indexForStep(event.uutId, event.nodeId);
             if (index.isValid() && event.activationState == PicoATE::Core::ActivationState::Running) {
-                m_resultView->setCurrentIndex(index);
-                m_resultView->scrollTo(index, QAbstractItemView::PositionAtBottom);
+                const int line = m_resultModel->visualLineNumber(index);
+                if (line > m_lastAutoFollowLine) {
+                    m_lastAutoFollowLine = line;
+                    m_lastAutoFollowUutId = event.uutId;
+                    m_lastAutoFollowNodeId = event.nodeId;
+                    m_resultView->scrollTo(index, QAbstractItemView::PositionAtBottom);
+                }
             }
         }
     }
@@ -745,6 +781,9 @@ void ProductionWindow::openFieldDeviceConfiguration()
 void ProductionWindow::beginRunIteration(int iteration, int totalIterations)
 {
     m_currentRunCounted = false;
+    m_lastAutoFollowLine = 0;
+    m_lastAutoFollowUutId.clear();
+    m_lastAutoFollowNodeId.clear();
     resetPreviewForUut(m_activeUutId);
     m_logModel->clear();
     QFile stationFile(m_selection.stationPath);
@@ -789,6 +828,8 @@ void ProductionWindow::resetPreviewForUut(const QString& uutId)
     }
     m_resultModel->setReport(std::move(preview));
     m_resultView->expandAll();
+    m_resultView->clearSelection();
+    m_resultView->setCurrentIndex({});
     m_terminalNodes.clear();
     m_nodeStates.clear();
     updateProgress();

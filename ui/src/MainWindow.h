@@ -149,7 +149,8 @@ private:
     void updateAdminElapsed();
     void updateDebugSnapshot();
     void setRunTestInstructionPointer(const QString& nodePath);
-    void displayReport(const PicoATE::Core::ExecutionReport& report);
+    void displayReport(const PicoATE::Core::ExecutionReport& report,
+                       bool preserveRuntimePosition = false);
     void applyRuntimeEvents(const QVector<PicoATE::Core::RuntimeEvent>& events);
     void selectRuntimeEvent(const PicoATE::Core::RuntimeEvent& event);
     void selectTimelineSequence(quint64 sequenceNumber);
@@ -303,6 +304,9 @@ private:
     int m_adminTotalNodes = 0;
     int m_adminPassedUnits = 0;
     int m_adminFailedUnits = 0;
+    int m_adminLastAutoFollowLine = 0;
+    PicoATE::Core::UutId m_adminLastAutoFollowUutId;
+    PicoATE::Core::NodeId m_adminLastAutoFollowNodeId;
     qint64 m_adminTotalCompletedDurationMs = 0;
     QSet<PicoATE::Core::NodeId> m_adminTerminalNodes;
     QElapsedTimer m_adminElapsed;

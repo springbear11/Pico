@@ -117,6 +117,9 @@ private:
                                PicoATE::Core::StepReport* step);
     ModelItem* findModelItem(const PicoATE::Core::UutId& uutId,
                              const PicoATE::Core::NodeId& stepId) const;
+    bool runtimeEventsRequireTreeRebuild(
+        const QVector<PicoATE::Core::RuntimeEvent>& events) const;
+    void emitAllDataChanged();
     PicoATE::Core::UutReport& ensureUut(const PicoATE::Core::UutId& uutId);
     PicoATE::Core::StepReport& ensureStep(QVector<PicoATE::Core::StepReport>& steps,
                                           const PicoATE::Core::RuntimeEvent& event);

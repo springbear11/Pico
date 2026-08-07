@@ -186,9 +186,18 @@ StepReport makeStepReport(const ExecutionPlan& plan, const UutExecution& uut, co
 
     const auto& activation = activationIt.value();
     report.state = activation.state;
-    if (activation.createdAt.isValid() && activation.completedAt.isValid()) {
+    const bool compositeDuration = node &&
+        (node->kind == ExecNodeKind::TestItem || node->kind == ExecNodeKind::Loop);
+    if (compositeDuration && activation.createdAt.isValid() &&
+        activation.completedAt.isValid()) {
         report.durationMs = qMax<qint64>(
             0, activation.createdAt.msecsTo(activation.completedAt));
+    } else if (!activation.attempts.isEmpty()) {
+        const auto& lastResult = activation.attempts.last().result;
+        if (lastResult.startedAt.isValid() && lastResult.finishedAt.isValid()) {
+            report.durationMs = qMax<qint64>(
+                0, lastResult.startedAt.msecsTo(lastResult.finishedAt));
+        }
     }
     if (!activation.attempts.isEmpty()) {
         report.outcome = activation.attempts.last().result.outcome;

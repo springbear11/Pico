@@ -3945,11 +3945,15 @@ void MainWindowLifecycleTests::adminStartsOnProductionDashboardAndOpensScannerOn
     QCOMPARE(viewModel->state(), UiRunState::Completed);
     QCOMPARE(serialLabel->text(), QStringLiteral("ADMIN-SN-001"));
     QVERIFY(scanDialog->isHidden());
-    QCOMPARE(resultView->model()
-                 ->data(resultView->currentIndex().siblingAtColumn(
-                     UutStepModel::NameColumn))
-                 .toString(),
+    QVERIFY(!resultView->currentIndex().isValid());
+    auto* resultModel = qobject_cast<UutStepModel*>(resultView->model());
+    QVERIFY(resultModel);
+    const auto powerOff = resultModel->indexForStep({}, QStringLiteral("power-off"));
+    QVERIFY(powerOff.isValid());
+    QCOMPARE(resultModel->data(powerOff.siblingAtColumn(UutStepModel::NameColumn)).toString(),
              QStringLiteral("Power Off"));
+    QCOMPARE(resultModel->data(powerOff.siblingAtColumn(UutStepModel::StateColumn)).toString(),
+             QStringLiteral("Passed"));
 }
 
 void MainWindowLifecycleTests::productionWindowPreloadsFlowAndRunsWithoutScanner()

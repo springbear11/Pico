@@ -6763,6 +6763,7 @@ void CoreTests::executionSessionReportCapturesRetryAttempts()
     QCOMPARE(measure->attempts[1].index, 2);
     QCOMPARE(measure->attempts[1].outcome, NodeOutcome::Passed);
     QVERIFY(measure->attempts[1].durationMs >= 0);
+    QCOMPARE(measure->durationMs, measure->attempts.last().durationMs);
 
     const auto* powerOff = findStep(report.sessionSteps, "power-off");
     QVERIFY(powerOff != nullptr);

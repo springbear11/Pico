@@ -95,6 +95,9 @@ private:
     int m_totalNodes = 0;
     int m_passedUnits = 0;
     int m_failedUnits = 0;
+    int m_lastAutoFollowLine = 0;
+    PicoATE::Core::UutId m_lastAutoFollowUutId;
+    PicoATE::Core::NodeId m_lastAutoFollowNodeId;
     qint64 m_totalCompletedDurationMs = 0;
     QString m_activeUutId;
     QString m_pendingSerialNumber;
