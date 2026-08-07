@@ -385,6 +385,11 @@ LoginDialog::LoginDialog(QString sequenceRootDirectory, QWidget* parent)
     updateStationPath();
 }
 
+std::unique_ptr<LoginDialog> createLoginDialog(QString sequenceRootDirectory)
+{
+    return std::make_unique<LoginDialog>(std::move(sequenceRootDirectory));
+}
+
 StartupSelection LoginDialog::selection() const
 {
     return m_selection;

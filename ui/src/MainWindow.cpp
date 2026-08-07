@@ -1138,6 +1138,11 @@ MainWindow::~MainWindow()
     beginShutdown();
 }
 
+std::unique_ptr<MainWindow> createMainWindow()
+{
+    return std::make_unique<MainWindow>();
+}
+
 bool MainWindow::openSequenceFile(const QString& filePath)
 {
     m_loadingSequenceFile = true;

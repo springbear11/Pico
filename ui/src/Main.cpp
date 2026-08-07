@@ -32,28 +32,30 @@ int main(int argc, char* argv[])
     }
 #endif
 
-    PicoATE::Ui::LoginDialog login(sequenceRoot);
+    auto login = PicoATE::Ui::createLoginDialog(sequenceRoot);
     if (arguments.size() > 1) {
-        login.setInitialSequencePath(arguments.at(1));
+        login->setInitialSequencePath(arguments.at(1));
     }
-    if (login.exec() != QDialog::Accepted) {
+    if (login->exec() != QDialog::Accepted) {
         return 0;
     }
 
-    const auto selection = login.selection();
+    const auto selection = login->selection();
+    login.reset();
     if (selection.mode == PicoATE::Ui::UiMode::Test) {
-        PicoATE::Ui::ProductionWindow window(selection);
-        window.showMaximized();
+        auto window = PicoATE::Ui::createProductionWindow(selection);
+        window->showMaximized();
         return application.exec();
     }
 
-    PicoATE::Ui::MainWindow window;
-    window.openSequenceFile(selection.sequencePath);
-    window.openStationFile(selection.stationPath);
-    window.showRunPage();
-    window.showMaximized();
-    QTimer::singleShot(0, &window, [&window] {
-        window.initializeAdminWorkspace();
+    auto window = PicoATE::Ui::createMainWindow();
+    window->openSequenceFile(selection.sequencePath);
+    window->openStationFile(selection.stationPath);
+    window->showRunPage();
+    window->showMaximized();
+    auto* const windowPointer = window.get();
+    QTimer::singleShot(0, windowPointer, [windowPointer] {
+        windowPointer->initializeAdminWorkspace();
     });
     return application.exec();
 }

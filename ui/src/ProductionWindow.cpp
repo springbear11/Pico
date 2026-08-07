@@ -199,6 +199,12 @@ ProductionWindow::~ProductionWindow()
     m_viewModel->shutdown();
 }
 
+std::unique_ptr<ProductionWindow> createProductionWindow(
+    StartupSelection selection)
+{
+    return std::make_unique<ProductionWindow>(std::move(selection));
+}
+
 void ProductionWindow::closeEvent(QCloseEvent* event)
 {
     m_runArtifactWriter->abandon();

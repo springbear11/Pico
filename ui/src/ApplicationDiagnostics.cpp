@@ -157,6 +157,7 @@ void ApplicationDiagnostics::recordAction(const QString& action,
         return;
     }
     state.actionsFile.write(actionLine(action, detail));
+    state.actionsFile.flush();
 }
 
 void ApplicationDiagnostics::recordSlowOperation(const QString& operation,

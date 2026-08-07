@@ -4,6 +4,8 @@
 
 #include <QDialog>
 
+#include <memory>
+
 class QComboBox;
 class QFrame;
 class QLabel;
@@ -66,5 +68,7 @@ private:
     bool m_busy = false;
     bool m_passwordError = false;
 };
+
+std::unique_ptr<LoginDialog> createLoginDialog(QString sequenceRootDirectory);
 
 } // namespace PicoATE::Ui

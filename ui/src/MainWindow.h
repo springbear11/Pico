@@ -313,4 +313,6 @@ private:
     PicoATE::Core::ExecutionReport m_adminPreviewReport;
 };
 
+std::unique_ptr<MainWindow> createMainWindow();
+
 } // namespace PicoATE::Ui

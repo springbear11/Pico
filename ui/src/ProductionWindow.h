@@ -104,4 +104,7 @@ private:
     bool m_currentRunCounted = false;
 };
 
+std::unique_ptr<ProductionWindow> createProductionWindow(
+    StartupSelection selection);
+
 } // namespace PicoATE::Ui
