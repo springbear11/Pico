@@ -150,10 +150,13 @@ QVariantMap LoopPolicyDef::toPayload() const
     }
 
     payload.insert("type", "while");
-    payload.insert("iterationErrorPolicy",
-                   iterationErrorPolicy == WhileIterationErrorPolicy::ContinueLoop
-                       ? "continueLoop"
-                       : "abortLoop");
+    QString iterationPolicy = QStringLiteral("continueOnFail");
+    if (iterationErrorPolicy == WhileIterationErrorPolicy::AbortLoop) {
+        iterationPolicy = QStringLiteral("abortLoop");
+    } else if (iterationErrorPolicy == WhileIterationErrorPolicy::ContinueLoop) {
+        iterationPolicy = QStringLiteral("continueLoop");
+    }
+    payload.insert("iterationErrorPolicy", iterationPolicy);
     payload.insert("intervalMs", intervalMs);
     payload.insert("maxIterations", maxIterations);
     payload.insert("timeoutMs", timeoutMs);
@@ -327,6 +330,8 @@ ExecutionPhase toExecutionPhase(StepGroupKind kind)
 ErrorAction toErrorAction(OnFailureAction action)
 {
     switch (action) {
+    case OnFailureAction::Inherit:
+        return ErrorAction::Inherit;
     case OnFailureAction::Continue:
         return ErrorAction::Continue;
     case OnFailureAction::StopUut:

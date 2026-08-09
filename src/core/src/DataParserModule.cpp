@@ -78,6 +78,22 @@ QString visibleText(const QString& value, int maximumCharacters = 160)
     return visible;
 }
 
+QString visibleVariant(const QVariant& value, int maximumCharacters = 160)
+{
+    if (!value.isValid() || value.isNull()) {
+        return QStringLiteral("<null>");
+    }
+    if (value.metaType().id() == QMetaType::QVariantMap ||
+        value.metaType().id() == QMetaType::QVariantList ||
+        value.metaType().id() == QMetaType::QStringList) {
+        return visibleText(
+            QString::fromUtf8(
+                QJsonDocument::fromVariant(value).toJson(QJsonDocument::Compact)),
+            maximumCharacters);
+    }
+    return visibleText(value.toString(), maximumCharacters);
+}
+
 QString bytesToHex(const QByteArray& bytes)
 {
     return QString::fromLatin1(bytes.toHex(' ').toUpper());
@@ -847,13 +863,11 @@ ModuleResult decodeBinary(const ModuleExecutionContext& context)
         result.outputs.insert(QStringLiteral("bitLength"), reportedBitLength);
     }
     publishLog(context,
-               QStringLiteral("PARSE_BINARY offset=%1 length=%2 unit=%3 type=%4 raw=%5 value=%6")
+               QStringLiteral("PARSE_BINARY INPUT_RAW=%1 OUTPUT=%2 | offset=%3 length=%4 unit=%5 type=%6")
+                   .arg(bytesToHex(selectedBytes), visibleVariant(value))
                    .arg(offset)
                    .arg(length)
-                   .arg(unit)
-                   .arg(dataType)
-                   .arg(bytesToHex(selectedBytes))
-                   .arg(value.toString()));
+                   .arg(unit, dataType));
     return result;
 }
 
@@ -1087,13 +1101,12 @@ ModuleResult decodeRegisters(const ModuleExecutionContext& context)
     result.outputs.insert(QStringLiteral("registerCount"), count);
     result.outputs.insert(QStringLiteral("layout"), layout);
     publishLog(context,
-               QStringLiteral("PARSE_REGISTERS offset=%1 count=%2 type=%3 layout=%4 raw=%5 value=%6")
+               QStringLiteral("PARSE_REGISTERS INPUT_REGISTERS=%1 INPUT_RAW=%2 OUTPUT=%3 | offset=%4 count=%5 type=%6 layout=%7")
+                   .arg(visibleVariant(rawRegisters), bytesToHex(bytes),
+                        visibleVariant(value))
                    .arg(registerOffset)
                    .arg(count)
-                   .arg(dataType)
-                   .arg(layout)
-                   .arg(bytesToHex(bytes))
-                   .arg(value.toString()));
+                   .arg(dataType, layout));
     return result;
 }
 
@@ -1253,15 +1266,13 @@ ModuleResult decodeRegisterText(const ModuleExecutionContext& context)
     result.outputs.insert(QStringLiteral("padding"), canonicalPadding);
     publishLog(
         context,
-        QStringLiteral("PARSE_REGISTER_TEXT offset=%1 count=%2 byteOrder=%3 encoding=%4 padding=%5 raw=%6 parsedBytes=%7 text=%8")
+        QStringLiteral("PARSE_REGISTER_TEXT INPUT_REGISTERS=%1 INPUT_RAW=%2 OUTPUT='%3' | offset=%4 count=%5 byteOrder=%6 encoding=%7 padding=%8 parsedBytes=%9")
+            .arg(visibleVariant(rawRegisters), bytesToHex(rawBytes), visibleText(text))
             .arg(registerOffset)
             .arg(registerCount)
-            .arg(result.outputs.value(QStringLiteral("byteOrder")).toString())
-            .arg(canonicalEncoding)
-            .arg(canonicalPadding)
-            .arg(bytesToHex(rawBytes))
-            .arg(parsedBytes.size())
-            .arg(visibleText(text)));
+            .arg(result.outputs.value(QStringLiteral("byteOrder")).toString(),
+                 canonicalEncoding, canonicalPadding)
+            .arg(parsedBytes.size()));
     return result;
 }
 
@@ -1283,6 +1294,7 @@ bool prepareText(const ModuleExecutionContext& context,
 
 bool finishTextResult(const ModuleExecutionContext& context,
                       const QString& operation,
+                      const QString& source,
                       const QString& extracted,
                       QVariantMap metadata,
                       ModuleResult& result)
@@ -1304,12 +1316,13 @@ bool finishTextResult(const ModuleExecutionContext& context,
     result.outputs.insert(QStringLiteral("text"), extracted);
     result.outputs.insert(QStringLiteral("value"), value);
     publishLog(context,
-               QStringLiteral("%1 text='%2' value='%3' type=%4")
+               QStringLiteral("%1 INPUT='%2' OUTPUT='%3' | extracted='%4' type=%5")
                    .arg(operation)
+                   .arg(visibleText(source))
+                   .arg(visibleVariant(value))
                    .arg(visibleText(extracted))
-                   .arg(visibleText(value.toString()))
                    .arg(context.inputs.value(QStringLiteral("outputType"),
-                                             QStringLiteral("string")).toString()));
+                                              QStringLiteral("string")).toString()));
     return true;
 }
 
@@ -1369,7 +1382,7 @@ ModuleResult extractBetween(const ModuleExecutionContext& context)
     metadata.insert(QStringLiteral("endIndex"), valueEnd);
     metadata.insert(QStringLiteral("occurrence"), occurrence);
     finishTextResult(context, QStringLiteral("PARSE_TEXT_BETWEEN"),
-                     extracted, std::move(metadata), result);
+                     source, extracted, std::move(metadata), result);
     return result;
 }
 
@@ -1430,7 +1443,7 @@ ModuleResult splitText(const ModuleExecutionContext& context)
             values.push_back(converted);
             publishLog(
                 context,
-                QStringLiteral("PARSE_TEXT_SPLIT field=%1 index=%2 value='%3' type=%4")
+                QStringLiteral("PARSE_TEXT_SPLIT OUTPUT_FIELD=%1 index=%2 value='%3' type=%4")
                     .arg(mapping.name)
                     .arg(index)
                     .arg(visibleText(converted.toString()))
@@ -1443,7 +1456,8 @@ ModuleResult splitText(const ModuleExecutionContext& context)
         result.outputs.insert(QStringLiteral("fieldCount"), fields.size());
         result.outputs.insert(QStringLiteral("namedFieldCount"), mappings.size());
         publishLog(context,
-                   QStringLiteral("PARSE_TEXT_SPLIT completed namedFields=%1 sourceFields=%2")
+                   QStringLiteral("PARSE_TEXT_SPLIT INPUT='%1' OUTPUT=%2 | namedFields=%3 sourceFields=%4")
+                       .arg(visibleText(source), visibleVariant(namedFields))
                        .arg(mappings.size()).arg(fields.size()));
         return result;
     }
@@ -1473,7 +1487,7 @@ ModuleResult splitText(const ModuleExecutionContext& context)
     metadata.insert(QStringLiteral("fieldIndex"), index);
     metadata.insert(QStringLiteral("fieldCount"), fields.size());
     finishTextResult(context, QStringLiteral("PARSE_TEXT_SPLIT"),
-                     extracted, std::move(metadata), result);
+                     source, extracted, std::move(metadata), result);
     return result;
 }
 
@@ -1552,7 +1566,7 @@ ModuleResult regexCapture(const ModuleExecutionContext& context)
             values.push_back(converted);
             publishLog(
                 context,
-                QStringLiteral("PARSE_TEXT_REGEX field=%1 group=%2 value='%3' type=%4")
+                QStringLiteral("PARSE_TEXT_REGEX OUTPUT_FIELD=%1 group=%2 value='%3' type=%4")
                     .arg(mapping.name)
                     .arg(mapping.sourceIndex)
                     .arg(visibleText(converted.toString()))
@@ -1566,7 +1580,8 @@ ModuleResult regexCapture(const ModuleExecutionContext& context)
         result.outputs.insert(QStringLiteral("occurrence"), occurrence);
         result.outputs.insert(QStringLiteral("namedFieldCount"), mappings.size());
         publishLog(context,
-                   QStringLiteral("PARSE_TEXT_REGEX completed namedFields=%1 occurrence=%2")
+                   QStringLiteral("PARSE_TEXT_REGEX INPUT='%1' OUTPUT=%2 | namedFields=%3 occurrence=%4")
+                       .arg(visibleText(source), visibleVariant(namedFields))
                        .arg(mappings.size()).arg(occurrence));
         return result;
     }
@@ -1597,8 +1612,78 @@ ModuleResult regexCapture(const ModuleExecutionContext& context)
     metadata.insert(QStringLiteral("endIndex"),
                     selected.capturedEnd(static_cast<int>(captureGroup)));
     finishTextResult(context, QStringLiteral("PARSE_TEXT_REGEX"),
-                     extracted, std::move(metadata), result);
+                     source, extracted, std::move(metadata), result);
     return result;
+}
+
+void addParserDisplayMeasurements(const ModuleExecutionContext& context,
+                                  ModuleResult& result)
+{
+    if (result.outcome != ModuleOutcome::Passed || !result.measurements.isEmpty()) {
+        return;
+    }
+
+    const auto originalDisplay = visibleVariant(
+        context.inputs.value(QStringLiteral("source")), 512);
+    const auto appendMeasurement = [&result, &originalDisplay](
+                                       const QString& name,
+                                       const QVariant& value,
+                                       const QVariant& rawValue) {
+        MeasurementResult measurement;
+        measurement.name = name;
+        measurement.value = value;
+        measurement.rawValue = rawValue.isValid() ? rawValue : value;
+        measurement.status = MeasurementStatus::Passed;
+        measurement.attributes.insert(QStringLiteral("displayOnly"), true);
+        measurement.attributes.insert(QStringLiteral("outputKey"), name);
+        measurement.attributes.insert(QStringLiteral("parserDisplay"), true);
+        measurement.attributes.insert(QStringLiteral("parserOriginalDisplay"),
+                                      originalDisplay);
+        result.measurements.push_back(std::move(measurement));
+    };
+
+    const auto namedFields = result.outputs.value(QStringLiteral("fields")).toMap();
+    if (!namedFields.isEmpty()) {
+        QSet<QString> addedFields;
+        for (const auto& fieldValue : context.inputs.value(
+                 QStringLiteral("fields")).toList()) {
+            const auto fieldName = fieldValue.toMap()
+                                       .value(QStringLiteral("name"))
+                                       .toString().trimmed();
+            if (fieldName.isEmpty() || !namedFields.contains(fieldName) ||
+                addedFields.contains(fieldName)) {
+                continue;
+            }
+            appendMeasurement(fieldName, namedFields.value(fieldName), QVariant{});
+            addedFields.insert(fieldName);
+        }
+        for (auto field = namedFields.cbegin(); field != namedFields.cend(); ++field) {
+            if (!addedFields.contains(field.key())) {
+                appendMeasurement(field.key(), field.value(), QVariant{});
+            }
+        }
+        return;
+    }
+
+    auto outputKey = QStringLiteral("value");
+    auto value = result.outputs.value(outputKey);
+    if (!value.isValid()) {
+        outputKey = QStringLiteral("text");
+        value = result.outputs.value(outputKey);
+    }
+    if (!value.isValid()) {
+        return;
+    }
+    auto measurementName = context.parameters
+                               .value(QStringLiteral("measurementName"))
+                               .toString().trimmed();
+    if (measurementName.isEmpty()) {
+        measurementName = outputKey;
+    }
+    appendMeasurement(
+        measurementName,
+        value,
+        result.outputs.value(QStringLiteral("rawValue")));
 }
 
 } // namespace
@@ -1612,28 +1697,27 @@ ModuleResult DataParserModule::execute(const ModuleFunction& functionName,
                                        const ModuleExecutionContext& context)
 {
     const auto function = normalized(functionName);
+    ModuleResult result;
     if (function == QStringLiteral("decodebinary")) {
-        return decodeBinary(context);
+        result = decodeBinary(context);
+    } else if (function == QStringLiteral("decoderegisters")) {
+        result = decodeRegisters(context);
+    } else if (function == QStringLiteral("decoderegistertext")) {
+        result = decodeRegisterText(context);
+    } else if (function == QStringLiteral("extractbetween")) {
+        result = extractBetween(context);
+    } else if (function == QStringLiteral("splittext")) {
+        result = splitText(context);
+    } else if (function == QStringLiteral("regexcapture")) {
+        result = regexCapture(context);
+    } else {
+        return parserError(context,
+                           QStringLiteral("ParserFunctionNotSupported"),
+                           QStringLiteral("unsupported parser function: %1")
+                               .arg(functionName));
     }
-    if (function == QStringLiteral("decoderegisters")) {
-        return decodeRegisters(context);
-    }
-    if (function == QStringLiteral("decoderegistertext")) {
-        return decodeRegisterText(context);
-    }
-    if (function == QStringLiteral("extractbetween")) {
-        return extractBetween(context);
-    }
-    if (function == QStringLiteral("splittext")) {
-        return splitText(context);
-    }
-    if (function == QStringLiteral("regexcapture")) {
-        return regexCapture(context);
-    }
-    return parserError(context,
-                       QStringLiteral("ParserFunctionNotSupported"),
-                       QStringLiteral("unsupported parser function: %1")
-                           .arg(functionName));
+    addParserDisplayMeasurements(context, result);
+    return result;
 }
 
 } // namespace PicoATE::Core

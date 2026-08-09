@@ -35,6 +35,8 @@ set_target_properties(PicoATEUiTests
 add_test(NAME PicoATEUiTests COMMAND PicoATEUiTests)
 
 qt_add_executable(PicoATEUiWindowTests
+    ../src/AdminStartupSplash.cpp
+    ../src/AdminStartupSplash.h
     ../src/FieldDeviceDialog.cpp
     ../src/FieldDeviceDialog.h
     ../src/FlowTargetSelector.cpp
@@ -48,6 +50,8 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/PicoATEStyle.h
     ../src/ProductionWindow.cpp
     ../src/ProductionWindow.h
+    ../src/ProductRoutingDialog.cpp
+    ../src/ProductRoutingDialog.h
     ../src/ProportionalHeaderView.cpp
     ../src/ProportionalHeaderView.h
     ../src/OnOffControl.cpp

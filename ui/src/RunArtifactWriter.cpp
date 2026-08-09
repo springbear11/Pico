@@ -7,6 +7,8 @@
 #include <QDir>
 #include <QFileInfo>
 
+#include <initializer_list>
+
 namespace PicoATE::Ui {
 
 namespace {
@@ -56,6 +58,51 @@ QString resolvedOutputDirectory(QString configured, const QString& stationFilePa
     return QDir(base).absoluteFilePath(configured);
 }
 
+QString metadataValue(const QVariantMap& metadata,
+                      std::initializer_list<QString> keys)
+{
+    for (const auto& key : keys) {
+        const auto value = metadata.value(key).toString().trimmed();
+        if (!value.isEmpty()) {
+            return value;
+        }
+    }
+    return {};
+}
+
+QString displayedValue(const QString& value)
+{
+    return value.trimmed().isEmpty() ? QStringLiteral("--") : value.trimmed();
+}
+
+QByteArray executionLogHeader(const RunArtifactContext& context,
+                              const QDateTime& localStart)
+{
+    QString header;
+    header += QStringLiteral("================================================================================\r\n");
+    header += QStringLiteral("PICOATE EXECUTION LOG\r\n");
+    header += QStringLiteral("================================================================================\r\n");
+    const auto appendField = [&header](const QString& label, const QString& value) {
+        header += label.leftJustified(16, QLatin1Char(' '));
+        header += QStringLiteral(": ");
+        header += displayedValue(value);
+        header += QStringLiteral("\r\n");
+    };
+    appendField(QStringLiteral("Sequence Name"), context.sequenceName);
+    appendField(QStringLiteral("Sequence Path"), context.sequenceFilePath);
+    appendField(QStringLiteral("Serial Number"), context.serialNumber);
+    appendField(QStringLiteral("Station"), context.stationName);
+    appendField(QStringLiteral("Station ID"), context.stationId);
+    appendField(QStringLiteral("Station Path"), context.stationFilePath);
+    appendField(QStringLiteral("Order"), context.order);
+    appendField(QStringLiteral("Tester"), context.tester);
+    appendField(QStringLiteral("Jig No"), context.jigNo);
+    appendField(QStringLiteral("Start Time"),
+                localStart.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz")));
+    header += QStringLiteral("================================================================================\r\n\r\n");
+    return header.toUtf8();
+}
+
 } // namespace
 
 RunArtifactSettings runArtifactSettingsFromStation(
@@ -64,9 +111,7 @@ RunArtifactSettings runArtifactSettingsFromStation(
 {
     PicoATE::Core::VariableResolverOptions resolverOptions;
     resolverOptions.sequenceFilePath = stationFilePath;
-#if defined(PICOATE_PROJECT_DIR)
-    resolverOptions.projectDir = QStringLiteral(PICOATE_PROJECT_DIR);
-#endif
+    resolverOptions.projectDir = QCoreApplication::applicationDirPath();
     const auto parsed = PicoATE::Core::parseStationConfigJson(
         station, resolverOptions);
     RunArtifactSettings settings;
@@ -79,6 +124,51 @@ RunArtifactSettings runArtifactSettingsFromStation(
     return settings;
 }
 
+RunArtifactContext runArtifactContextFromDocuments(
+    const QJsonObject& sequence,
+    const QString& sequenceFilePath,
+    const QJsonObject& station,
+    const QString& stationFilePath,
+    const QString& serialNumber)
+{
+    RunArtifactContext context;
+    if (!sequenceFilePath.trimmed().isEmpty()) {
+        context.sequenceName = QFileInfo(sequenceFilePath).fileName();
+    }
+    if (context.sequenceName.isEmpty()) {
+        context.sequenceName =
+            sequence.value(QStringLiteral("name")).toString().trimmed();
+    }
+    context.sequenceFilePath = sequenceFilePath.trimmed().isEmpty()
+        ? QString{}
+        : QFileInfo(sequenceFilePath).absoluteFilePath();
+    context.serialNumber = serialNumber.trimmed();
+
+    PicoATE::Core::VariableResolverOptions resolverOptions;
+    resolverOptions.sequenceFilePath = stationFilePath;
+    resolverOptions.projectDir = QCoreApplication::applicationDirPath();
+    const auto parsed = PicoATE::Core::parseStationConfigJson(station, resolverOptions);
+    context.stationName = parsed.config.name.trimmed();
+    if (context.stationName.isEmpty() && !stationFilePath.trimmed().isEmpty()) {
+        context.stationName = QFileInfo(stationFilePath).completeBaseName();
+    }
+    context.stationId = parsed.config.stationId.trimmed();
+    context.stationFilePath = stationFilePath.trimmed().isEmpty()
+        ? QString{}
+        : QFileInfo(stationFilePath).absoluteFilePath();
+    context.order = metadataValue(
+        parsed.config.metadata,
+        {QStringLiteral("order"), QStringLiteral("workOrder")});
+    context.tester = metadataValue(
+        parsed.config.metadata,
+        {QStringLiteral("tester"), QStringLiteral("operator")});
+    context.jigNo = metadataValue(
+        parsed.config.metadata,
+        {QStringLiteral("jigNo"), QStringLiteral("fixtureId"),
+         QStringLiteral("fixture")});
+    return context;
+}
+
 RunArtifactWriter::~RunArtifactWriter()
 {
     abandon();
@@ -86,6 +176,15 @@ RunArtifactWriter::~RunArtifactWriter()
 
 RunArtifactResult RunArtifactWriter::begin(const RunArtifactSettings& settings,
                                            const QString& serialNumber,
+                                           const QDateTime& startedAt)
+{
+    RunArtifactContext context;
+    context.serialNumber = serialNumber;
+    return begin(settings, context, startedAt);
+}
+
+RunArtifactResult RunArtifactWriter::begin(const RunArtifactSettings& settings,
+                                           const RunArtifactContext& context,
                                            const QDateTime& startedAt)
 {
     abandon();
@@ -110,7 +209,7 @@ RunArtifactResult RunArtifactWriter::begin(const RunArtifactSettings& settings,
                            .arg(m_dateDirectory));
     }
 
-    const auto serialPrefix = safeFileName(serialNumber);
+    const auto serialPrefix = safeFileName(context.serialNumber);
     auto fileTimestamp = localStart;
     do {
         m_baseName = serialPrefix.isEmpty()
@@ -131,6 +230,11 @@ RunArtifactResult RunArtifactWriter::begin(const RunArtifactSettings& settings,
             return failure(m_txtFile.errorString());
         }
         m_txtFile.write("\xEF\xBB\xBF");
+        const auto header = executionLogHeader(context, localStart);
+        if (m_txtFile.write(header) != header.size()) {
+            closeFiles();
+            return failure(m_txtFile.errorString());
+        }
         m_txtFile.flush();
         result.filePaths.push_back(path);
     }

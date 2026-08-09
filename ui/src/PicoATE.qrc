@@ -9,4 +9,36 @@
         <file alias="Mode-Engineer.png">assets/Mode-Engineer.png</file>
         <file alias="Mode-Engineer-Selected.png">assets/Mode-Engineer-Selected.png</file>
     </qresource>
+    <qresource prefix="/icons">
+        <file alias="save.svg">assets/lucide/save.svg</file>
+        <file alias="undo-2.svg">assets/lucide/undo-2.svg</file>
+        <file alias="redo-2.svg">assets/lucide/redo-2.svg</file>
+        <file alias="list-plus.svg">assets/lucide/list-plus.svg</file>
+        <file alias="variable.svg">assets/lucide/variable.svg</file>
+        <file alias="copy.svg">assets/lucide/copy.svg</file>
+        <file alias="clipboard-paste.svg">assets/lucide/clipboard-paste.svg</file>
+        <file alias="combine.svg">assets/lucide/combine.svg</file>
+        <file alias="trash-2.svg">assets/lucide/trash-2.svg</file>
+        <file alias="circle-check-big.svg">assets/lucide/circle-check-big.svg</file>
+        <file alias="circle.svg">assets/lucide/circle.svg</file>
+        <file alias="circle-check.svg">assets/lucide/circle-check.svg</file>
+        <file alias="circle-x.svg">assets/lucide/circle-x.svg</file>
+        <file alias="arrow-up.svg">assets/lucide/arrow-up.svg</file>
+        <file alias="arrow-down.svg">assets/lucide/arrow-down.svg</file>
+        <file alias="package-search.svg">assets/lucide/package-search.svg</file>
+        <file alias="copy-plus.svg">assets/lucide/copy-plus.svg</file>
+        <file alias="list-restart.svg">assets/lucide/list-restart.svg</file>
+        <file alias="plug-zap.svg">assets/lucide/plug-zap.svg</file>
+        <file alias="folder-open.svg">assets/lucide/folder-open.svg</file>
+        <file alias="folder-cog.svg">assets/lucide/folder-cog.svg</file>
+        <file alias="refresh-cw.svg">assets/lucide/refresh-cw.svg</file>
+        <file alias="play.svg">assets/lucide/play.svg</file>
+        <file alias="pause.svg">assets/lucide/pause.svg</file>
+        <file alias="corner-right-down.svg">assets/lucide/corner-right-down.svg</file>
+        <file alias="step-forward.svg">assets/lucide/step-forward.svg</file>
+        <file alias="square.svg">assets/lucide/square.svg</file>
+        <file alias="scan-barcode.svg">assets/lucide/scan-barcode.svg</file>
+        <file alias="cable.svg">assets/lucide/cable.svg</file>
+        <file alias="eye.svg">assets/lucide/eye.svg</file>
+    </qresource>
 </RCC>

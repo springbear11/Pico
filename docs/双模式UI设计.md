@@ -2,7 +2,9 @@
 
 ## 1. 目标
 
-PicoATE 使用同一个 `PicoATE.UI.exe`，启动后先进入登录界面，由用户选择运行模式和测试脚本。
+PicoATE 使用同一个 `PicoATE.UI.exe`，启动后先进入登录界面，由用户选择运行模式和
+产品加载方式。Manual 模式在登录时选择产品项目；Auto By SN 模式在扫码后由
+`ProductRouting.json` 选择产品项目。一个产品项目同时确定 Sequence 和 Station。
 
 - `TEST`：面向产线操作员，只保留扫码、运行控制、测试结果和实时日志。
 - `Admin`：面向工程师，开放流程编辑、Station 编辑、编译、断点、单步、报告和调试信息。
@@ -10,15 +12,17 @@ PicoATE 使用同一个 `PicoATE.UI.exe`，启动后先进入登录界面，由�
 
 ## 2. 启动规则
 
-1. 登录页模式下拉框默认选择 `TEST`。
-2. 程序扫描可执行程序根目录下的 `*.json`。
-3. 文件名必须包含 `seq`（自然包含 `sequence`），并且 JSON 根对象必须包含 `groups` 数组，才进入脚本下拉框。
-4. 不提供浏览按钮，避免产线选择根目录之外的临时脚本。
-5. 登录页不显示也不选择 Station，后台固定读取测试脚本同目录下的 `StationSystem.json`。
-6. TEST 登录前必须完成 Sequence 编译和 Station 校验；失败时不允许进入运行页。
-7. Admin 允许打开编译失败的 Sequence，以便工程师进入编辑器修复，但 Station 文件必须存在且可解析。
+1. 登录页使用分段按钮选择 `Test / Admin`，首次打开默认 `Test`。
+2. 第二组分段按钮选择 `Auto By SN / Manual`；Test 首次默认 Auto，Admin 首次默认 Manual。
+3. `QSettings` 按程序根目录记住两种身份各自上次的加载方式和上次手动产品项目。
+4. `ProductRouting.json` 的 `allowManualInTest=false` 拥有最高优先级，缓存不能让 Test 绕过该政策。
+5. Manual 枚举 `projects` 的一级产品目录；每个目录必须有唯一 Sequence 和一个 `StationSystem.json`。
+6. Auto 只读取小型 `ProductRouting.json` 索引；扫码后才加载和编译唯一命中项目的脚本和 Station。
+7. 不提供浏览按钮，避免产线选择根目录之外的临时脚本。
+8. 登录页不单独显示 Station。Manual 和 Auto 都从选中的产品项目中成对取得 Sequence 与 Station。
+9. Admin 允许进入工作区修复缺失或无效的 Station；Test 保持运行前 Station 校验。
 
-开发构建如果输出目录没有 Sequence，会回退扫描源码工程的 `examples` 目录；发布版本仍以可执行程序目录为根目录。
+旧工具包没有 `projects` 时仍可读取根目录平铺的 Sequence + Station，供迁移使用。开发构建仅在输出目录既没有项目、路由，也没有旧 Sequence 时回退到源码 `examples`。
 
 ## 3. Admin 日期密码
 
@@ -50,6 +54,7 @@ Admin 登录使用当天动态口令：
 - Admin 的 Station 属性页提供 `Enable Scan Dialog` 复选框。
 - `true`：TEST 模式编译就绪后弹出扫码窗口，扫码成功自动运行。
 - `false`：不显示扫码窗口，操作员使用 TEST 工具栏的 Start 按钮运行。
+- Auto By SN 模式始终开启扫码窗口，该模式不受此开关关闭影响。
 - CLI 和调度引擎忽略这个 UI 配置，不改变执行语义。
 
 ## 5. 扫码窗口

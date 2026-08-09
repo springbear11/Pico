@@ -27,6 +27,7 @@ add_library(PicoATECore SHARED
     src/PeriodicTaskController.cpp
     src/PlanBuilder.cpp
     src/PlanCache.cpp
+    src/ProductRouting.cpp
     src/PersistentQProcessTransport.cpp
     src/QProcessTransport.cpp
     src/ResourceManager.cpp

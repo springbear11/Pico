@@ -2,6 +2,8 @@
 
 #include "PicoATE/Core/RuntimeTypes.h"
 
+#include <optional>
+
 namespace PicoATE::Core {
 
 QString errorActionName(ErrorAction action);
@@ -26,7 +28,8 @@ public:
 
     ErrorDecision decide(const ExecNode& node,
                           const NodeResult& result,
-                          int completedAttempts) const;
+                          int completedAttempts,
+                          std::optional<ErrorAction> inheritedAction = std::nullopt) const;
 
     FailureHandlingMode failureHandling() const;
 

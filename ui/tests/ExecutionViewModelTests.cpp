@@ -29,6 +29,7 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QFont>
+#include <QIcon>
 #include <QJsonDocument>
 #include <QMimeData>
 #include <QSortFilterProxyModel>
@@ -334,6 +335,8 @@ PicoATE::Core::ExecutionReport sampleReport()
     StepReport step;
     step.stepId = QStringLiteral("measure-voltage");
     step.displayName = QStringLiteral("测量,\"输出\"");
+    step.moduleId = QStringLiteral("plugin.dmm.test");
+    step.functionName = QStringLiteral("readVoltage");
     step.kind = ExecNodeKind::Action;
     step.phase = ExecutionPhase::Cleanup;
     step.state = ActivationState::Passed;
@@ -361,6 +364,17 @@ PicoATE::Core::ExecutionReport sampleReport()
     report.sequenceVersion = QStringLiteral("1.2.3");
     report.state = ExecutionState::Completed;
     report.completed = true;
+    report.metadata.name = QStringLiteral("End-of-Line Station");
+    report.metadata.sequenceName = QStringLiteral("sample_sequence.json");
+    report.metadata.serialNumber = QStringLiteral("SN-001");
+    report.metadata.stationId = QStringLiteral("STATION-01");
+    report.metadata.jigNo = QStringLiteral("JIG-07");
+    report.metadata.order = QStringLiteral("ORDER-42");
+    report.metadata.tester = QStringLiteral("Tester-01");
+    report.metadata.startedAt = QDateTime(
+        QDate(2026, 8, 9), QTime(14, 15, 16));
+    report.metadata.finishedAt = report.metadata.startedAt.addMSecs(9876);
+    report.metadata.durationMs = 9876;
     report.uuts = {uut};
     return report;
 }
@@ -388,6 +402,7 @@ private slots:
     void coreServiceCompilesAndRunsSimpleSequence();
     void coreServiceRunsExplicitScannedUut();
     void startupSupportDiscoversSequencesAndValidatesDailyPassword();
+    void newProjectTemplatesUseProductionDefaults();
     void pluginCatalogParsesGcanManifestAndCreatesSteps();
     void pluginCatalogRejectsDuplicateAndInvalidDefinitions();
     void pluginCatalogParsesCompactDescriptionAndRoundTripsRegistry();
@@ -415,6 +430,8 @@ private slots:
     void runArtifactWriterStreamsAndClassifiesFiles();
     void testItemReportAndRuntimeEventsPreserveHierarchy();
     void sequenceDocumentPreservesUnknownFieldsAndSnapshots();
+    void sequenceDocumentCanonicalizesUiAuthoredFields();
+    void sequenceDocumentNormalizesLegacyAliasesWhenSaving();
     void sequenceDocumentDebouncesBackgroundValidation();
     void sequenceDocumentAddsMissingStandardGroups();
     void crossLoopSequenceUsesStandardLifecycleGroups();
@@ -783,6 +800,14 @@ void ExecutionViewModelTests::coreServiceCompilesAndRunsSimpleSequence()
     QVERIFY(!runResult.report.hasError);
     QCOMPARE(runResult.report.uuts.size(), 2);
     QCOMPARE(runResult.report.uuts.first().uutId, QStringLiteral("DUT-1"));
+    QCOMPARE(runResult.report.metadata.name, QStringLiteral("Simple Sequence"));
+    QCOMPARE(runResult.report.metadata.sequenceName,
+             QStringLiteral("simple_sequence.json"));
+    QVERIFY(runResult.report.metadata.startedAt.isValid());
+    QVERIFY(runResult.report.metadata.finishedAt.isValid());
+    QVERIFY(runResult.report.metadata.finishedAt >=
+            runResult.report.metadata.startedAt);
+    QVERIFY(runResult.report.metadata.durationMs >= 0);
 }
 
 void ExecutionViewModelTests::coreServiceRunsExplicitScannedUut()
@@ -836,6 +861,8 @@ void ExecutionViewModelTests::coreServiceRunsExplicitScannedUut()
     QCOMPARE(runResult.report.uuts.size(), 1);
     QCOMPARE(runResult.report.uuts.first().uutId,
              QStringLiteral("SN-20260710-001"));
+    QCOMPARE(runResult.report.metadata.serialNumber,
+             QStringLiteral("SN-20260710-001"));
 
     request.requestId = 83;
     request.uuts.push_back(input);
@@ -863,7 +890,9 @@ void ExecutionViewModelTests::startupSupportDiscoversSequencesAndValidatesDailyP
                            + QStringLiteral("/examples/simple_sequence.json"),
                        sequencePath));
 
-    QFile invalidSequence(directory.filePath(QStringLiteral("not_a_seq.json")));
+    const auto invalidSequencePath = directory.filePath(
+        QStringLiteral("not_a_seq.json"));
+    QFile invalidSequence(invalidSequencePath);
     QVERIFY(invalidSequence.open(QIODevice::WriteOnly));
     invalidSequence.write(R"({"name":"not a sequence"})");
     invalidSequence.close();
@@ -883,7 +912,14 @@ void ExecutionViewModelTests::startupSupportDiscoversSequencesAndValidatesDailyP
     station.close();
 
     const auto discovered = StartupSupport::discoverSequenceFiles(directory.path());
-    QCOMPARE(discovered, QStringList({QFileInfo(sequencePath).absoluteFilePath()}));
+    QStringList expectedDiscovered = {
+        QFileInfo(sequencePath).absoluteFilePath(),
+        QFileInfo(invalidSequencePath).absoluteFilePath(),
+    };
+    expectedDiscovered.sort(Qt::CaseInsensitive);
+    QCOMPARE(discovered, expectedDiscovered);
+    QVERIFY(!StartupSupport::validateSelection(
+        UiMode::Test, invalidSequencePath, stationPath).ok());
     QCOMPARE(StartupSupport::stationPathForSequence(sequencePath), stationPath);
     QVERIFY(!StartupSupport::stationScanDialogEnabled(stationPath));
     QCOMPARE(StartupSupport::stationSnLength(stationPath), 10);
@@ -960,6 +996,63 @@ void ExecutionViewModelTests::startupSupportDiscoversSequencesAndValidatesDailyP
         QDate(2026, 7, 10));
     QVERIFY2(adminRepairAccess.ok(),
              qPrintable(adminRepairAccess.errors.join(QStringLiteral("\n"))));
+}
+
+void ExecutionViewModelTests::newProjectTemplatesUseProductionDefaults()
+{
+    const auto sequenceRoot = StartupSupport::newProjectSequenceTemplate();
+    QCOMPARE(sequenceRoot.value(QStringLiteral("id")).toString(),
+             QStringLiteral("NA"));
+    QCOMPARE(sequenceRoot.value(QStringLiteral("name")).toString(),
+             QStringLiteral("NA"));
+    QCOMPARE(sequenceRoot.value(QStringLiteral("version")).toString(),
+             QStringLiteral("1.0.0"));
+    const auto groups = sequenceRoot.value(QStringLiteral("groups")).toArray();
+    QCOMPARE(groups.size(), 3);
+    QCOMPARE(groups.at(0).toObject().value(QStringLiteral("kind")).toString(),
+             QStringLiteral("setup"));
+    QCOMPARE(groups.at(1).toObject().value(QStringLiteral("kind")).toString(),
+             QStringLiteral("main"));
+    QCOMPARE(groups.at(2).toObject().value(QStringLiteral("kind")).toString(),
+             QStringLiteral("cleanup"));
+    for (const auto& group : groups) {
+        QVERIFY(group.toObject().value(QStringLiteral("steps"))
+                    .toArray().isEmpty());
+    }
+
+    const auto stationRoot = StartupSupport::newProjectStationTemplate();
+    QCOMPARE(stationRoot.value(QStringLiteral("stationId")).toString(),
+             QStringLiteral("NA"));
+    QCOMPARE(stationRoot.value(QStringLiteral("name")).toString(),
+             QStringLiteral("NA"));
+    QVERIFY(stationRoot.value(QStringLiteral("stopOnFailure")).toBool());
+    QVERIFY(stationRoot.value(QStringLiteral("scanDialogEnabled")).toBool());
+    QVERIFY(stationRoot.value(QStringLiteral("txtLogEnabled")).toBool());
+    QVERIFY(stationRoot.value(QStringLiteral("csvReportEnabled")).toBool());
+    QVERIFY(stationRoot.value(QStringLiteral("xlsxReportEnabled")).toBool());
+    QVERIFY(!stationRoot.value(QStringLiteral("loopTestEnabled")).toBool());
+    QCOMPARE(stationRoot.value(QStringLiteral("loopTestCount")).toInt(), 1);
+    QVERIFY(stationRoot.value(QStringLiteral("reportOutputDirectory"))
+                .toString().isEmpty());
+    QCOMPARE(stationRoot.value(QStringLiteral("snAllowedRegex")).toString(),
+             QStringLiteral("^[A-Z0-9]+$"));
+    QVERIFY(stationRoot.value(QStringLiteral("devices")).toArray().isEmpty());
+    const auto metadata = stationRoot.value(QStringLiteral("metadata")).toObject();
+    QCOMPARE(metadata.value(QStringLiteral("jigNo")).toString(),
+             QStringLiteral("NA"));
+    QCOMPARE(metadata.value(QStringLiteral("order")).toString(),
+             QStringLiteral("NA"));
+    QCOMPARE(metadata.value(QStringLiteral("tester")).toString(),
+             QStringLiteral("NA"));
+
+    SequenceDocument sequence;
+    StationDocument station;
+    QVERIFY(sequence.initializeNew(sequenceRoot));
+    QVERIFY(station.initializeNew(stationRoot));
+    QVERIFY(sequence.filePath().isEmpty());
+    QVERIFY(station.filePath().isEmpty());
+    QVERIFY(!sequence.isModified());
+    QVERIFY(!station.isModified());
 }
 
 void ExecutionViewModelTests::pluginCatalogParsesGcanManifestAndCreatesSteps()
@@ -1234,7 +1327,21 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     QCOMPARE(functionModel.rowCount(), 2);
     const auto basicSection = functionModel.index(0, 0);
     QCOMPARE(basicSection.data().toString(), QStringLiteral("Basic Functions"));
+    const auto basicSectionIcon = basicSection.data(Qt::DecorationRole).value<QIcon>();
+    QVERIFY(!basicSectionIcon.isNull());
     QCOMPARE(functionModel.rowCount(basicSection), 13);
+    for (int row = 0; row < functionModel.rowCount(basicSection); ++row) {
+        const auto basicItem = functionModel.index(row, 0, basicSection);
+        QVERIFY2(!basicItem.data(Qt::DecorationRole).value<QIcon>().isNull(),
+                 qPrintable(basicItem.data().toString()));
+        for (int childRow = 0;
+             childRow < functionModel.rowCount(basicItem);
+             ++childRow) {
+            const auto child = functionModel.index(childRow, 0, basicItem);
+            QVERIFY2(!child.data(Qt::DecorationRole).value<QIcon>().isNull(),
+                     qPrintable(child.data().toString()));
+        }
+    }
     const auto messageBoxFunction = functionModel.index(1, 0, basicSection);
     QCOMPARE(messageBoxFunction.data().toString(), QStringLiteral("MessageBox"));
     QCOMPARE(messageBoxFunction.data(PluginFunctionModel::FunctionIdRole).toString(),
@@ -1246,6 +1353,10 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
                  .value(QStringLiteral("mode")).toString(),
              QStringLiteral("confirm"));
     const auto limitFunction = functionModel.index(2, 0, basicSection);
+    const auto waitIcon = functionModel.index(0, 0, basicSection)
+                              .data(Qt::DecorationRole).value<QIcon>();
+    const auto limitIcon = limitFunction.data(Qt::DecorationRole).value<QIcon>();
+    QVERIFY(waitIcon.cacheKey() != limitIcon.cacheKey());
     QCOMPARE(limitFunction.data(PluginFunctionModel::FunctionIdRole).toString(),
              QStringLiteral("limit"));
     std::unique_ptr<QMimeData> limitMime(functionModel.mimeData({limitFunction}));
@@ -1273,6 +1384,9 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     QCOMPARE(whileLoopTemplate.value(QStringLiteral("loop")).toObject()
                  .value(QStringLiteral("type")).toString(),
              QStringLiteral("while"));
+    QCOMPARE(whileLoopTemplate.value(QStringLiteral("loop")).toObject()
+                 .value(QStringLiteral("iterationErrorPolicy")).toString(),
+             QStringLiteral("continueOnFail"));
     QCOMPARE(functionModel.index(6, 0, basicSection).data().toString(),
              QStringLiteral("Break If"));
     const auto counterFunction = functionModel.index(7, 0, basicSection);
@@ -1330,11 +1444,18 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
 
     const auto pluginSection = functionModel.index(1, 0);
     QCOMPARE(pluginSection.data().toString(), QStringLiteral("Plugin Functions"));
+    const auto pluginIcon = pluginSection.data(Qt::DecorationRole).value<QIcon>();
+    QVERIFY(!pluginIcon.isNull());
+    QVERIFY(pluginIcon.cacheKey() != basicSectionIcon.cacheKey());
     QCOMPARE(functionModel.rowCount(pluginSection), 1);
     const auto category = functionModel.index(0, 0, pluginSection);
     QCOMPARE(category.data().toString(), QStringLiteral("CAN"));
+    QCOMPARE(category.data(Qt::DecorationRole).value<QIcon>().cacheKey(),
+             pluginIcon.cacheKey());
     QCOMPARE(functionModel.rowCount(category), 4);
     const auto openFunction = functionModel.index(0, 0, category);
+    QCOMPARE(openFunction.data(Qt::DecorationRole).value<QIcon>().cacheKey(),
+             pluginIcon.cacheKey());
     QVERIFY(!functionModel.requiresDeviceSelection(openFunction));
     const auto openStep = functionModel.stepTemplate(openFunction);
     QCOMPARE(openStep.value(QStringLiteral("moduleId")).toString(),
@@ -1379,6 +1500,9 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     QCOMPARE(step.value(QStringLiteral("inputs")).toObject()
                  .value(QStringLiteral("deviceId")).toString(),
              QStringLiteral("CAN1"));
+    const auto insertedPluginIndex = sequenceModel.indexForPath(insertedPath);
+    QCOMPARE(insertedPluginIndex.data(Qt::DecorationRole).value<QIcon>().cacheKey(),
+             pluginIcon.cacheKey());
 
     const auto refreshedMainGroup = sequenceModel.index(
         0, SequenceTreeModel::NameColumn);
@@ -1391,6 +1515,9 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     QCOMPARE(insertedLimit.value(QStringLiteral("kind")).toString(),
              QStringLiteral("limit"));
     QVERIFY(!insertedLimit.value(QStringLiteral("id")).toString().isEmpty());
+    const auto insertedLimitIndex = sequenceModel.indexForPath(limitPath);
+    QCOMPARE(insertedLimitIndex.data(Qt::DecorationRole).value<QIcon>().cacheKey(),
+             limitIcon.cacheKey());
 
     functionModel.setDeviceBindings({
         {QStringLiteral("plugin.can.gcan"),
@@ -1474,6 +1601,8 @@ void ExecutionViewModelTests::stepOutputExpressionsUsePreviousScopedPluginOutput
     QVERIFY(expressions.contains(QStringLiteral("${step:001.tx.outputs.sent}")));
     QVERIFY(expressions.contains(QStringLiteral("${step:001.rx.outputs.dlc}")));
     QVERIFY(expressions.contains(QStringLiteral("${step:001.rx.outputs.data}")));
+    QVERIFY(expressions.contains(QStringLiteral("${step:open.outcome}")));
+    QVERIFY(expressions.contains(QStringLiteral("${step:001.rx.passed}")));
     QVERIFY(!std::any_of(expressions.cbegin(), expressions.cend(), [](const QString& value) {
         return value.contains(QStringLiteral("disabled")) ||
                value.contains(QStringLiteral("later"));
@@ -1486,14 +1615,16 @@ void ExecutionViewModelTests::stepOutputExpressionsUsePreviousScopedPluginOutput
            "steps":[
              {"id":"01","key":"stats","kind":"aggregate","inputs":{"value":1}},
              {"id":"02","key":"stable","kind":"counter","inputs":{"condition":true}},
-             {"id":"03","key":"done","kind":"break","inputs":{"actual":1},
+             {"id":"03","key":"ready","kind":"limit","inputs":{"actual":1},
+              "parameters":{"comparison":"greaterOrEqual","expected":1}},
+             {"id":"04","key":"done","kind":"break","inputs":{"actual":1},
               "limit":{"comparison":"greaterOrEqual","expected":1}}
            ]}
         ]}
       ]
     })json").object();
     const auto builtInCandidates = buildStepOutputExpressionCandidates(
-        whileSequence, SequenceItemPath{0, {0, 2}}, {});
+        whileSequence, SequenceItemPath{0, {0, 3}}, {});
     QStringList builtInExpressions;
     for (const auto& candidate : builtInCandidates) {
         builtInExpressions.push_back(candidate.expression);
@@ -1502,6 +1633,8 @@ void ExecutionViewModelTests::stepOutputExpressionsUsePreviousScopedPluginOutput
         QStringLiteral("${step:poll.stats.outputs.average}")));
     QVERIFY(builtInExpressions.contains(
         QStringLiteral("${step:poll.stable.outputs.value}")));
+    QVERIFY(builtInExpressions.contains(
+        QStringLiteral("${step:poll.ready.passed}")));
 
     const auto parserSequence = QJsonDocument::fromJson(R"json({
       "id":"parser-expressions","name":"Parser Expressions","groups":[
@@ -1615,6 +1748,9 @@ void ExecutionViewModelTests::runnerModelsExposeReportHierarchyAndDetails()
     PicoATE::Core::StepReport step;
     step.stepId = QStringLiteral("measure-voltage");
     step.displayName = QStringLiteral("Measure Voltage");
+    step.moduleId = QStringLiteral("plugin.dmm.test");
+    step.functionName = QStringLiteral("readVoltage");
+    step.kind = PicoATE::Core::ExecNodeKind::Action;
     step.state = PicoATE::Core::ActivationState::Passed;
     step.outcome = PicoATE::Core::NodeOutcome::Passed;
     step.durationMs = 1021;
@@ -1646,6 +1782,9 @@ void ExecutionViewModelTests::runnerModelsExposeReportHierarchyAndDetails()
     QCOMPARE(resultModel.rowCount(uutIndex), 1);
     const auto stepIndex = resultModel.index(0, UutStepModel::NameColumn, uutIndex);
     QCOMPARE(resultModel.data(stepIndex).toString(), QStringLiteral("Measure Voltage"));
+    const auto pluginResultIcon = resultModel.data(
+        stepIndex, Qt::DecorationRole).value<QIcon>();
+    QVERIFY(!pluginResultIcon.isNull());
     QCOMPARE(resultModel.itemType(stepIndex), UutStepModel::StepItem);
     QVERIFY(resultModel.stepAt(stepIndex).has_value());
     QCOMPARE(resultModel.data(stepIndex.siblingAtColumn(UutStepModel::ErrorCodeColumn)).toString(),
@@ -1660,6 +1799,42 @@ void ExecutionViewModelTests::runnerModelsExposeReportHierarchyAndDetails()
              QStringLiteral("Passed"));
     QCOMPARE(resultModel.data(stepIndex.siblingAtColumn(UutStepModel::TimeColumn)).toString(),
              QStringLiteral("1.021 s"));
+
+    auto parserReport = report;
+    PicoATE::Core::MeasurementResult serialNumber;
+    serialNumber.name = QStringLiteral("serialNumber");
+    serialNumber.value = QStringLiteral("BTSN001");
+    serialNumber.attributes.insert(QStringLiteral("parserDisplay"), true);
+    serialNumber.attributes.insert(QStringLiteral("parserOriginalDisplay"),
+                                   QStringLiteral("SN:BTSN001\\r\\n"));
+    PicoATE::Core::MeasurementResult voltage;
+    voltage.name = QStringLiteral("voltage");
+    voltage.value = 812.5;
+    voltage.attributes = serialNumber.attributes;
+    parserReport.uuts[0].steps[0].measurements = {serialNumber, voltage};
+    resultModel.setReport(parserReport);
+    const auto parserUut = resultModel.index(0, UutStepModel::NameColumn);
+    const auto parserStep = resultModel.index(
+        0, UutStepModel::NameColumn, parserUut);
+    QCOMPARE(resultModel.data(
+                 parserStep.siblingAtColumn(UutStepModel::ActualColumn)).toString(),
+             QStringLiteral(
+                 "Raw: SN:BTSN001\\r\\n | Parsed: serialNumber=BTSN001; voltage=812.5"));
+    resultModel.setReport(report);
+
+    auto waitReport = report;
+    waitReport.uuts[0].steps[0].moduleId.clear();
+    waitReport.uuts[0].steps[0].functionName.clear();
+    waitReport.uuts[0].steps[0].kind = PicoATE::Core::ExecNodeKind::Wait;
+    resultModel.setReport(waitReport);
+    const auto waitUut = resultModel.index(0, UutStepModel::NameColumn);
+    const auto waitStep = resultModel.index(
+        0, UutStepModel::NameColumn, waitUut);
+    const auto waitResultIcon = resultModel.data(
+        waitStep, Qt::DecorationRole).value<QIcon>();
+    QVERIFY(!waitResultIcon.isNull());
+    QVERIFY(waitResultIcon.cacheKey() != pluginResultIcon.cacheKey());
+    resultModel.setReport(report);
 
     PicoATE::Core::MeasurementResult stringLimit;
     stringLimit.name = QStringLiteral("CAN_ID");
@@ -2423,6 +2598,8 @@ void ExecutionViewModelTests::runtimeTimelineModelMergesControlEventsAndLogs()
     started.nodeDisplayName = QStringLiteral("Measure");
     started.attemptIndex = 2;
     started.attemptState = AttemptState::Running;
+    started.details.insert(QStringLiteral("maxAttempts"), 3);
+    started.details.insert(QStringLiteral("retryAttemptIndex"), 2);
     events.push_back(started);
 
     RuntimeEvent log;
@@ -2476,7 +2653,7 @@ void ExecutionViewModelTests::runtimeTimelineModelMergesControlEventsAndLogs()
     QCOMPARE(model.data(model.index(0, RuntimeTimelineModel::MessageColumn)).toString(),
              QString("SESSION:RUNNING"));
     QCOMPARE(model.data(model.index(1, RuntimeTimelineModel::MessageColumn)).toString(),
-             QString("------------------------ MEASURE_STEP_START ------------------------"));
+             QString("------------------------ MEASURE_STEP_START | ATTEMPT 2/3 ------------------------"));
     QCOMPARE(model.data(model.index(2, RuntimeTimelineModel::MessageColumn)).toString(),
              QString("LOG:vendor log should not flood timeline"));
     QVERIFY(model.data(model.index(2, RuntimeTimelineModel::MessageColumn), Qt::FontRole)
@@ -2492,7 +2669,8 @@ void ExecutionViewModelTests::runtimeTimelineModelMergesControlEventsAndLogs()
                 .contains(QStringLiteral("LOOP:")));
     QVERIFY(model.data(model.index(6, RuntimeTimelineModel::MessageColumn))
                 .toString()
-                .contains(QStringLiteral("BREAK:CONDITION NOT MET")));
+                .contains(QStringLiteral(
+                    "BREAK_RESULT:CONTINUE | CONDITION NOT MET")));
     QVERIFY(model.eventAt(0).has_value());
     QCOMPARE(model.eventAt(0)->kind, RuntimeEventKind::SessionStateChanged);
     QCOMPARE(model.rowForSequenceNumber(1), 0);
@@ -2500,6 +2678,18 @@ void ExecutionViewModelTests::runtimeTimelineModelMergesControlEventsAndLogs()
     QCOMPARE(model.rowForSequenceNumber(3), 1);
     QCOMPARE(model.rowForSequenceNumber(4), 2);
     QCOMPARE(model.rowForSequenceNumber(5), 3);
+
+    RuntimeEvent retry = attempt;
+    retry.sequenceNumber = 8;
+    retry.kind = RuntimeEventKind::RetryScheduled;
+    retry.message = QStringLiteral("retry after failure; delay 100 ms");
+    retry.details.insert(QStringLiteral("maxAttempts"), 3);
+    retry.details.insert(QStringLiteral("retryAttemptIndex"), 2);
+    model.applyRuntimeEvents({retry});
+    QVERIFY(model.data(model.index(8, RuntimeTimelineModel::MessageColumn))
+                .toString()
+                .contains(QStringLiteral(
+                    "RETRY:SCHEDULED | ATTEMPT 2/3 FAILED | NEXT 3/3")));
 
     model.clear();
     QCOMPARE(model.rowCount(), 0);
@@ -2717,6 +2907,16 @@ void ExecutionViewModelTests::executionReportJsonRoundTripsAndRejectsUnsupported
     QCOMPARE(parsed.report.planId, report.planId);
     QCOMPARE(parsed.report.sequenceId, report.sequenceId);
     QCOMPARE(parsed.report.state, PicoATE::Core::ExecutionState::Completed);
+    QCOMPARE(parsed.report.metadata.name, report.metadata.name);
+    QCOMPARE(parsed.report.metadata.sequenceName, report.metadata.sequenceName);
+    QCOMPARE(parsed.report.metadata.serialNumber, report.metadata.serialNumber);
+    QCOMPARE(parsed.report.metadata.stationId, report.metadata.stationId);
+    QCOMPARE(parsed.report.metadata.jigNo, report.metadata.jigNo);
+    QCOMPARE(parsed.report.metadata.order, report.metadata.order);
+    QCOMPARE(parsed.report.metadata.tester, report.metadata.tester);
+    QCOMPARE(parsed.report.metadata.startedAt, report.metadata.startedAt);
+    QCOMPARE(parsed.report.metadata.finishedAt, report.metadata.finishedAt);
+    QCOMPARE(parsed.report.metadata.durationMs, report.metadata.durationMs);
     QCOMPARE(parsed.report.sessionSteps.size(), 1);
     QCOMPARE(parsed.report.sessionSteps.first().stepId,
              QStringLiteral("session-cleanup"));
@@ -2726,6 +2926,8 @@ void ExecutionViewModelTests::executionReportJsonRoundTripsAndRejectsUnsupported
              PicoATE::Core::NodeOutcome::Passed);
     const auto& step = parsed.report.uuts.first().steps.first();
     QCOMPARE(step.displayName, QStringLiteral("测量,\"输出\""));
+    QCOMPARE(step.moduleId, QStringLiteral("plugin.dmm.test"));
+    QCOMPARE(step.functionName, QStringLiteral("readVoltage"));
     QCOMPARE(step.kind, PicoATE::Core::ExecNodeKind::Action);
     QCOMPARE(step.phase, PicoATE::Core::ExecutionPhase::Cleanup);
     QCOMPARE(step.durationMs, 1021);
@@ -2838,6 +3040,20 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(text.contains(QStringLiteral("\"Actual Value\"")));
     QVERIFY(text.contains(QStringLiteral("\"Duration Ms\"")));
     QVERIFY(text.contains(QStringLiteral("\"1021\"")));
+    QVERIFY(text.contains(QStringLiteral(
+        "\"Sequence Name\",\"sample_sequence.json\",\"\",\"\","
+        "\"SN\",\"SN-001\",\"\"\r\n")));
+    QVERIFY(text.contains(QStringLiteral(
+        "\"Name\",\"End-of-Line Station\","
+        "\"Station ID\",\"STATION-01\","
+        "\"Jig No\",\"JIG-07\",\"\"\r\n")));
+    QVERIFY(text.contains(QStringLiteral(
+        "\"Order\",\"ORDER-42\","
+        "\"Tester\",\"Tester-01\","
+        "\"Test Time\",\"2026-08-09 14:15:16\",\"\"\r\n")));
+    QVERIFY(text.contains(QStringLiteral(
+        "\"TOTAL TEST ITEMS: 1\",\"\",\"\",\"PASS\",\"\",\"\","
+        "\"TOTAL DURATION: 00:00:09.876\"\r\n")));
 
     auto resolutionErrorReport = sampleReport();
     auto& errorStep = resolutionErrorReport.uuts.first().steps.first();
@@ -2853,6 +3069,9 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     errorMeasurement.attributes.insert(QStringLiteral("comparison"), QStringLiteral("equal"));
     errorMeasurement.attributes.insert(
         QStringLiteral("expected"), QStringLiteral("43 58 31 2D 47 43 41 4E"));
+    resolutionErrorReport.hasError = true;
+    resolutionErrorReport.state = PicoATE::Core::ExecutionState::CompletedWithError;
+    resolutionErrorReport.uuts.first().hasError = true;
     const auto errorCsvPath = directory.filePath(QStringLiteral("resolution-error.csv"));
     const auto errorCsvResult = ReportExporter::saveCsv(errorCsvPath, resolutionErrorReport);
     QVERIFY2(errorCsvResult.success, qPrintable(errorCsvResult.errorMessage));
@@ -2873,6 +3092,35 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(xlsx.contains("xl/styles.xml"));
     QVERIFY(xlsx.contains("Actual Value"));
     QVERIFY(xlsx.contains(QStringLiteral("测量,&quot;输出&quot;").toUtf8()));
+    QVERIFY(xlsx.contains("End-of-Line Station"));
+    QVERIFY(xlsx.contains("sample_sequence.json"));
+    QVERIFY(xlsx.contains("SN-001"));
+    QVERIFY(xlsx.contains("STATION-01"));
+    QVERIFY(xlsx.contains("00:00:09.876"));
+    QVERIFY(!xlsx.contains("state=\"frozen\""));
+    QVERIFY(!xlsx.contains("ySplit="));
+    QVERIFY(xlsx.contains("ref=\"A4:G5\""));
+    QVERIFY(xlsx.contains("ref=\"B1:D1\""));
+    QVERIFY(xlsx.contains("ref=\"F1:G1\""));
+    QVERIFY(xlsx.contains("ref=\"F2:G2\""));
+    QVERIFY(xlsx.contains("ref=\"F3:G3\""));
+    QVERIFY(xlsx.contains("ref=\"B6:F6\""));
+    QVERIFY(xlsx.contains("<c r=\"A6\" s=\"6\""));
+    QVERIFY(xlsx.contains("<c r=\"B6\" s=\"7\""));
+    QVERIFY(xlsx.contains("<c r=\"G6\" s=\"6\""));
+    QVERIFY(xlsx.contains("TOTAL TEST ITEMS"));
+    QVERIFY(xlsx.contains("FF16794A"));
+    QVERIFY(xlsx.contains("FFB42318"));
+
+    const auto errorXlsxPath = directory.filePath(
+        QStringLiteral("resolution-error.xlsx"));
+    QVERIFY(ReportExporter::saveXlsx(
+        errorXlsxPath, resolutionErrorReport).success);
+    QFile errorXlsxFile(errorXlsxPath);
+    QVERIFY(errorXlsxFile.open(QIODevice::ReadOnly));
+    const auto errorXlsx = errorXlsxFile.readAll();
+    QVERIFY(errorXlsx.contains("<c r=\"B6\" s=\"8\""));
+    QVERIFY(errorXlsx.contains(">FAIL<"));
 
     auto filteredReport = sampleReport();
     filteredReport.uuts.first().steps.first().resultRecording = false;
@@ -2965,7 +3213,19 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
         QDate(2026, 7, 19), QTime(8, 9, 10, 111));
 
     RunArtifactWriter writer;
-    const auto begun = writer.begin(settings, QStringLiteral("SN:001"), startedAt);
+    RunArtifactContext artifactContext;
+    artifactContext.sequenceName = QStringLiteral("product_sequence.json");
+    artifactContext.sequenceFilePath = directory.filePath(
+        QStringLiteral("product_sequence.json"));
+    artifactContext.serialNumber = QStringLiteral("SN:001");
+    artifactContext.stationName = QStringLiteral("End Of Line");
+    artifactContext.stationId = QStringLiteral("STATION-01");
+    artifactContext.stationFilePath = directory.filePath(
+        QStringLiteral("StationSystem.json"));
+    artifactContext.order = QStringLiteral("WO-20260719");
+    artifactContext.tester = QStringLiteral("Tester-01");
+    artifactContext.jigNo = QStringLiteral("JIG-02");
+    const auto begun = writer.begin(settings, artifactContext, startedAt);
     QVERIFY2(begun.success, qPrintable(begun.errorMessage));
     QCOMPARE(writer.baseName(), QStringLiteral("SN_001_080910111"));
     const auto dateDirectory = directory.filePath(QStringLiteral("20260719"));
@@ -3005,6 +3265,16 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
     QFile savedText(passText);
     QVERIFY(savedText.open(QIODevice::ReadOnly));
     const auto savedLog = QString::fromUtf8(savedText.readAll());
+    QVERIFY(savedLog.contains(QStringLiteral("Sequence Name   : product_sequence.json")));
+    QVERIFY(savedLog.contains(QStringLiteral("Sequence Path   : ")));
+    QVERIFY(savedLog.contains(QStringLiteral("Serial Number   : SN:001")));
+    QVERIFY(savedLog.contains(QStringLiteral("Station         : End Of Line")));
+    QVERIFY(savedLog.contains(QStringLiteral("Station ID      : STATION-01")));
+    QVERIFY(savedLog.contains(QStringLiteral("Order           : WO-20260719")));
+    QVERIFY(savedLog.contains(QStringLiteral("Tester          : Tester-01")));
+    QVERIFY(savedLog.contains(QStringLiteral("Jig No          : JIG-02")));
+    QVERIFY(savedLog.contains(QStringLiteral(
+        "Start Time      : 2026-07-19 08:09:10.111")));
     QVERIFY(savedLog.contains(QStringLiteral(
         "[08:09:10.111] ======================== CAN_CHECK_TESTITEM_START ========================")));
     QVERIFY(savedLog.contains(QStringLiteral("LOG:RX 01 02 03")));
@@ -3124,9 +3394,14 @@ void ExecutionViewModelTests::testItemReportAndRuntimeEventsPreserveHierarchy()
 
     const auto serialized = PicoATE::Core::serializeExecutionReport(runResult.report);
     const auto document = QJsonDocument::fromJson(serialized);
-    QCOMPARE(document.object().value(QStringLiteral("schemaVersion")).toInt(), 4);
+    QCOMPARE(document.object().value(QStringLiteral("schemaVersion")).toInt(), 5);
     const auto parsed = PicoATE::Core::parseExecutionReport(serialized);
     QVERIFY(parsed.ok());
+    QCOMPARE(parsed.report.metadata.name, runResult.report.metadata.name);
+    QCOMPARE(parsed.report.metadata.stationId, runResult.report.metadata.stationId);
+    QCOMPARE(parsed.report.metadata.startedAt, runResult.report.metadata.startedAt);
+    QCOMPARE(parsed.report.metadata.finishedAt, runResult.report.metadata.finishedAt);
+    QCOMPARE(parsed.report.metadata.durationMs, runResult.report.metadata.durationMs);
     QCOMPARE(parsed.report.uuts.first().steps.first().children.size(), 2);
     QCOMPARE(parsed.report.uuts.first().steps.first().phase,
              PicoATE::Core::ExecutionPhase::Main);
@@ -3218,6 +3493,204 @@ void ExecutionViewModelTests::sequenceDocumentPreservesUnknownFieldsAndSnapshots
     QVERIFY(!document.load(badPath));
     QCOMPARE(document.rootObject().value("id").toString(), QString("document-sequence"));
     QVERIFY(!document.diagnostics().isEmpty());
+}
+
+void ExecutionViewModelTests::sequenceDocumentCanonicalizesUiAuthoredFields()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sourcePath = directory.filePath(QStringLiteral("canonical-ui.json"));
+    QFile source(sourcePath);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write(R"json({
+      "id":"canonical-ui","name":"Canonical UI","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"001","kind":"action","moduleId":"mock.action",
+          "function":"run"
+        }]
+      }]
+    })json");
+    source.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(sourcePath));
+    const SequenceItemPath stepPath{0, {0}};
+
+    QJsonObject replacement{
+        {QStringLiteral("id"), QStringLiteral("001")},
+        {QStringLiteral("name"), QStringLiteral("Composite")},
+        {QStringLiteral("type"), QStringLiteral("composite")},
+        {QStringLiteral("enabled"), true},
+        {QStringLiteral("alwaysRun"), false},
+        {QStringLiteral("resultRecording"), true},
+        {QStringLiteral("checkpointBefore"), false},
+        {QStringLiteral("checkpointAfter"), false},
+        {QStringLiteral("moduleId"), QStringLiteral("stale.module")},
+        {QStringLiteral("function"), QStringLiteral("staleFunction")},
+        {QStringLiteral("inputs"), QJsonObject{{QStringLiteral("stale"), 1}}},
+        {QStringLiteral("parameters"), QJsonObject{{QStringLiteral("stale"), 2}}},
+        {QStringLiteral("ms"), 50},
+        {QStringLiteral("loop"), QJsonObject{{QStringLiteral("type"),
+                                               QStringLiteral("for")}}},
+        {QStringLiteral("prompt"), QJsonObject{{QStringLiteral("message"),
+                                                 QStringLiteral("stale")}}},
+        {QStringLiteral("barrier"), QJsonObject{{QStringLiteral("barrierName"),
+                                                  QStringLiteral("stale")}}},
+        {QStringLiteral("periodic"), QJsonObject{{QStringLiteral("intervalMs"),
+                                                   1000}}},
+        {QStringLiteral("timeoutMs"), 0},
+        {QStringLiteral("retry"), QJsonObject{
+             {QStringLiteral("maxAttempts"), 3},
+             {QStringLiteral("delayMs"), 0},
+             {QStringLiteral("retryWhen"), QString{}}}},
+        {QStringLiteral("errorPolicy"), QJsonObject{
+             {QStringLiteral("onFail"), QStringLiteral("Inherit")},
+             {QStringLiteral("onError"), QStringLiteral("StationDefault")}}},
+        {QStringLiteral("x-vendor-step"), QStringLiteral("preserve")},
+        {QStringLiteral("steps"), QJsonArray{QJsonObject{
+             {QStringLiteral("id"), QStringLiteral("01")},
+             {QStringLiteral("type"), QStringLiteral("wait")},
+             {QStringLiteral("enabled"), true},
+             {QStringLiteral("function"), QStringLiteral("staleWaitFunction")},
+             {QStringLiteral("parameters"), QJsonObject{
+                  {QStringLiteral("ms"), 25},
+                  {QStringLiteral("stale"), true}}}}}}};
+
+    QVERIFY(document.replaceItemObject(stepPath, replacement));
+    const auto normalized = document.objectAt(stepPath);
+    QCOMPARE(normalized.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("testItem"));
+    QVERIFY(!normalized.contains(QStringLiteral("type")));
+    for (const auto& field : {QStringLiteral("enabled"),
+                              QStringLiteral("alwaysRun"),
+                              QStringLiteral("resultRecording"),
+                              QStringLiteral("checkpointBefore"),
+                              QStringLiteral("checkpointAfter"),
+                              QStringLiteral("moduleId"),
+                              QStringLiteral("function"),
+                              QStringLiteral("inputs"),
+                              QStringLiteral("parameters"),
+                              QStringLiteral("ms"),
+                              QStringLiteral("loop"),
+                              QStringLiteral("prompt"),
+                              QStringLiteral("barrier"),
+                              QStringLiteral("periodic"),
+                              QStringLiteral("timeout"),
+                              QStringLiteral("timeoutMs"),
+                              QStringLiteral("errorPolicy")}) {
+        QVERIFY2(!normalized.contains(field), qPrintable(field));
+    }
+    QCOMPARE(normalized.value(QStringLiteral("x-vendor-step")).toString(),
+             QStringLiteral("preserve"));
+    const auto retry = normalized.value(QStringLiteral("retry")).toObject();
+    QCOMPARE(retry.size(), 1);
+    QCOMPARE(retry.value(QStringLiteral("maxAttempts")).toInt(), 3);
+
+    const auto child = normalized.value(QStringLiteral("steps")).toArray()
+                           .first().toObject();
+    QCOMPARE(child.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("wait"));
+    QCOMPARE(child.value(QStringLiteral("ms")).toInt(), 25);
+    QVERIFY(!child.contains(QStringLiteral("type")));
+    QVERIFY(!child.contains(QStringLiteral("enabled")));
+    QVERIFY(!child.contains(QStringLiteral("function")));
+    QVERIFY(!child.contains(QStringLiteral("parameters")));
+}
+
+void ExecutionViewModelTests::sequenceDocumentNormalizesLegacyAliasesWhenSaving()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sourcePath = directory.filePath(QStringLiteral("legacy.json"));
+    QFile source(sourcePath);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write(R"json({
+      "id":"legacy","name":"Legacy","x-vendor-root":{"keep":true},
+      "groups":[{
+        "id":"main","type":"main","enabled":true,"x-vendor-group":42,
+        "steps":[{
+          "id":"001","type":"mockAction","moduleId":"mock.action",
+          "function":"run","enabled":true,"timeoutMs":5000,
+          "resources":[{"name":"Instrument.DMM1","mode":"exclusive"}],
+          "parameters":{"pluginParameter":"keep","moduleId":"stale"},
+          "x-vendor-step":"keep"
+        },{
+          "id":"002","type":"barrier","barrierName":"sync",
+          "expectedUutCount":2,"arrivalPolicy":"WaitAll"
+        },{
+          "id":"003","type":"numericLimit",
+          "inputs":{"actual":"${step:001.outputs.value}",
+                    "comparison":"between","lowerLimit":1,"upperLimit":2},
+          "parameters":{"unit":"V"}
+        }]
+      }]
+    })json");
+    source.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(sourcePath));
+    const auto savedPath = directory.filePath(QStringLiteral("normalized.json"));
+    QString errorMessage;
+    QVERIFY2(document.saveAs(savedPath, &errorMessage), qPrintable(errorMessage));
+    QVERIFY(!document.isModified());
+
+    QFile saved(savedPath);
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    const auto root = QJsonDocument::fromJson(saved.readAll()).object();
+    QVERIFY(root.value(QStringLiteral("x-vendor-root")).toObject()
+                .value(QStringLiteral("keep")).toBool());
+    const auto group = root.value(QStringLiteral("groups")).toArray()
+                           .first().toObject();
+    QCOMPARE(group.value(QStringLiteral("kind")).toString(), QStringLiteral("main"));
+    QVERIFY(!group.contains(QStringLiteral("type")));
+    QVERIFY(!group.contains(QStringLiteral("enabled")));
+    QCOMPARE(group.value(QStringLiteral("x-vendor-group")).toInt(), 42);
+
+    const auto steps = group.value(QStringLiteral("steps")).toArray();
+    const auto action = steps.at(0).toObject();
+    QCOMPARE(action.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("action"));
+    QVERIFY(!action.contains(QStringLiteral("type")));
+    QVERIFY(!action.contains(QStringLiteral("enabled")));
+    QVERIFY(!action.contains(QStringLiteral("timeoutMs")));
+    QCOMPARE(action.value(QStringLiteral("timeout")).toObject()
+                 .value(QStringLiteral("timeoutMs")).toInt(), 5000);
+    const auto resource = action.value(QStringLiteral("resources")).toArray()
+                              .first().toObject();
+    QCOMPARE(resource.value(QStringLiteral("resourceId")).toString(),
+             QStringLiteral("Instrument.DMM1"));
+    QVERIFY(!resource.contains(QStringLiteral("name")));
+    const auto actionParameters = action.value(QStringLiteral("parameters")).toObject();
+    QCOMPARE(actionParameters.value(QStringLiteral("pluginParameter")).toString(),
+             QStringLiteral("keep"));
+    QVERIFY(!actionParameters.contains(QStringLiteral("moduleId")));
+    QCOMPARE(action.value(QStringLiteral("x-vendor-step")).toString(),
+             QStringLiteral("keep"));
+
+    const auto barrier = steps.at(1).toObject();
+    QCOMPARE(barrier.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("barrier"));
+    QVERIFY(!barrier.contains(QStringLiteral("barrierName")));
+    QCOMPARE(barrier.value(QStringLiteral("barrier")).toObject()
+                 .value(QStringLiteral("barrierName")).toString(),
+             QStringLiteral("sync"));
+
+    const auto limit = steps.at(2).toObject();
+    QCOMPARE(limit.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("limit"));
+    const auto limitInputs = limit.value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(limitInputs.size(), 1);
+    QCOMPARE(limitInputs.value(QStringLiteral("actual")).toString(),
+             QStringLiteral("${step:001.outputs.value}"));
+    const auto limitParameters = limit.value(QStringLiteral("parameters")).toObject();
+    QCOMPARE(limitParameters.value(QStringLiteral("comparison")).toString(),
+             QStringLiteral("between"));
+    QCOMPARE(limitParameters.value(QStringLiteral("lower")).toInt(), 1);
+    QCOMPARE(limitParameters.value(QStringLiteral("upper")).toInt(), 2);
+    QCOMPARE(limitParameters.value(QStringLiteral("unit")).toString(),
+             QStringLiteral("V"));
+
+    QCOMPARE(document.rootObject(), root);
 }
 
 void ExecutionViewModelTests::sequenceDocumentDebouncesBackgroundValidation()
@@ -4945,6 +5418,8 @@ void ExecutionViewModelTests::stationDocumentGeneratesTypedIdsAndMovesConfigurat
              QStringLiteral("PLUGIN1"));
     QCOMPARE(document.deviceAt(3).value(QStringLiteral("deviceType")).toString(),
              QStringLiteral("PLUGIN"));
+    QCOMPARE(document.deviceAt(3).value(QStringLiteral("lifetime")).toString(),
+             QStringLiteral("Run"));
     QVERIFY(!document.deviceAt(3).value(QStringLiteral("enabled")).toBool());
 }
 
@@ -5034,7 +5509,13 @@ void ExecutionViewModelTests::stationFailurePolicyContinuesAllTestItemChildren()
     })";
     const QByteArray station = R"({
         "stationId": "policy-station",
+        "name": "Policy Line",
         "stopOnFailure": false,
+        "metadata": {
+            "jigNo": "JIG-POLICY",
+            "order": "ORDER-POLICY",
+            "tester": "Tester-Policy"
+        },
         "devices": []
     })";
 
@@ -5071,6 +5552,11 @@ void ExecutionViewModelTests::stationFailurePolicyContinuesAllTestItemChildren()
     QCOMPARE(parent->children.at(0).state, PicoATE::Core::ActivationState::Failed);
     QCOMPARE(parent->children.at(1).state, PicoATE::Core::ActivationState::Passed);
     QCOMPARE(next->state, PicoATE::Core::ActivationState::Passed);
+    QCOMPARE(run.report.metadata.name, QStringLiteral("Policy Line"));
+    QCOMPARE(run.report.metadata.stationId, QStringLiteral("policy-station"));
+    QCOMPARE(run.report.metadata.jigNo, QStringLiteral("JIG-POLICY"));
+    QCOMPARE(run.report.metadata.order, QStringLiteral("ORDER-POLICY"));
+    QCOMPARE(run.report.metadata.tester, QStringLiteral("Tester-Policy"));
 }
 
 void ExecutionViewModelTests::coreServiceTestsDeviceConnectionAndFailurePaths()
@@ -5198,11 +5684,13 @@ void ExecutionViewModelTests::sequenceTreeModelInspectsJsonFieldsWithoutChanging
         return model.index(0, SequenceTreeModel::InspectionColumn, group);
     };
 
-    QCOMPARE(model.setInspectionField(QStringLiteral("deviceId")), 3);
+    QCOMPARE(model.setInspectionField(QStringLiteral("inputs.deviceId"),
+                                      QStringLiteral("Target device")), 3);
     QCOMPARE(stepValue().data().toString(), QStringLiteral("CAN2.CH2"));
     QCOMPARE(model.headerData(SequenceTreeModel::InspectionColumn,
                               Qt::Horizontal).toString(),
-             QStringLiteral("Key: deviceId"));
+             QStringLiteral("Inspect: Target device"));
+    QCOMPARE(model.inspectionDisplayName(), QStringLiteral("Target device"));
     QVERIFY(stepValue().data(Qt::BackgroundRole).isValid());
     const auto sameValue = model.index(
         1, SequenceTreeModel::InspectionColumn, group);
@@ -5213,7 +5701,13 @@ void ExecutionViewModelTests::sequenceTreeModelInspectsJsonFieldsWithoutChanging
     QVERIFY(stepValue().data(Qt::BackgroundRole) !=
             differentValue.data(Qt::BackgroundRole));
 
-    QCOMPARE(model.setInspectionField(QStringLiteral("parameters.comparison")), 1);
+    QCOMPARE(model.indexesMatchingText(QStringLiteral("Read")).size(), 3);
+    QCOMPARE(model.indexesMatchingText(QStringLiteral("CAN1.CH1")).size(), 1);
+    QCOMPARE(model.indexesMatchingText(QStringLiteral("002")).size(), 1);
+    QVERIFY(model.indexesMatchingText(QStringLiteral("missing search")).isEmpty());
+
+    QCOMPARE(model.setInspectionField(QStringLiteral("parameters.comparison"),
+                                      QStringLiteral("Comparison")), 1);
     QCOMPARE(stepValue().data().toString(), QStringLiteral("equal"));
     QCOMPARE(model.setInspectionField(QStringLiteral("missingField")), 0);
     QVERIFY(!document.isModified());

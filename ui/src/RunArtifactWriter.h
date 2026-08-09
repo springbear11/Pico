@@ -23,6 +23,18 @@ struct RunArtifactSettings {
     QString outputDirectory;
 };
 
+struct RunArtifactContext {
+    QString sequenceName;
+    QString sequenceFilePath;
+    QString serialNumber;
+    QString stationName;
+    QString stationId;
+    QString stationFilePath;
+    QString order;
+    QString tester;
+    QString jigNo;
+};
+
 struct RunArtifactResult {
     bool success = true;
     QString errorMessage;
@@ -32,6 +44,12 @@ struct RunArtifactResult {
 RunArtifactSettings runArtifactSettingsFromStation(
     const QJsonObject& station,
     const QString& stationFilePath = {});
+RunArtifactContext runArtifactContextFromDocuments(
+    const QJsonObject& sequence,
+    const QString& sequenceFilePath,
+    const QJsonObject& station,
+    const QString& stationFilePath,
+    const QString& serialNumber);
 
 class RunArtifactWriter
 {
@@ -41,6 +59,9 @@ public:
 
     RunArtifactResult begin(const RunArtifactSettings& settings,
                             const QString& serialNumber,
+                            const QDateTime& startedAt = QDateTime::currentDateTime());
+    RunArtifactResult begin(const RunArtifactSettings& settings,
+                            const RunArtifactContext& context,
                             const QDateTime& startedAt = QDateTime::currentDateTime());
     RunArtifactResult appendLogLines(const QVector<RuntimeLogLine>& lines);
     RunArtifactResult finalize(const PicoATE::Core::ExecutionReport& report);

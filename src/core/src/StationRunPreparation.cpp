@@ -175,8 +175,8 @@ QHash<QString, RegistryPlugin> loadPluginDlls(
     }
     if (!resolutionErrors.isEmpty()) return {};
 
-    const QDir stationDirectory(QFileInfo(options.stationFilePath).absoluteDir());
-    const auto registryPath = absolutePath(registryValue, stationDirectory);
+    const auto registryPath = resolveStationPluginRegistryPath(
+        registryValue, options.stationFilePath, options.projectDir);
     QFile file(registryPath);
     if (!file.open(QIODevice::ReadOnly)) {
         addError(result,

@@ -8,6 +8,8 @@
 #include <QColor>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileInfo>
@@ -15,18 +17,24 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListView>
 #include <QMenu>
+#include <QPersistentModelIndex>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
+#include <QStandardItemModel>
+#include <QStyle>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextCursor>
@@ -267,11 +275,43 @@ QString jsonValueText(const QJsonValue& value)
         .mid(1).chopped(1);
 }
 
+bool integerLiteralRequiresText(const QString& text)
+{
+    if (text.isEmpty()) {
+        return false;
+    }
+    int index = 0;
+    if (text.front() == QLatin1Char('-')) {
+        index = 1;
+    }
+    if (index >= text.size()) {
+        return false;
+    }
+    for (; index < text.size(); ++index) {
+        if (text.at(index) < QLatin1Char('0') ||
+            text.at(index) > QLatin1Char('9')) {
+            return false;
+        }
+    }
+
+    constexpr qint64 maximumExactInteger = 9007199254740992LL;
+    bool ok = false;
+    if (text.startsWith(QLatin1Char('-'))) {
+        const auto value = text.toLongLong(&ok, 10);
+        return !ok || value < -maximumExactInteger;
+    }
+    const auto value = text.toULongLong(&ok, 10);
+    return !ok || value > static_cast<quint64>(maximumExactInteger);
+}
+
 QJsonValue jsonScalarFromText(const QString& source)
 {
     const auto text = source.trimmed();
     if (text.isEmpty()) {
         return QJsonValue(QJsonValue::Undefined);
+    }
+    if (integerLiteralRequiresText(text)) {
+        return text;
     }
     const auto parsed = QJsonDocument::fromJson(
         (QStringLiteral("[") + text + QStringLiteral("]")).toUtf8());
@@ -292,6 +332,569 @@ void insertOrRemoveScalar(QJsonObject& object,
     } else {
         object.insert(key, value);
     }
+}
+
+QString stepOutputTooltip(const StepOutputExpressionCandidate& candidate)
+{
+    auto details = pluginParameterTypeName(candidate.type);
+    if (!candidate.unit.isEmpty()) {
+        details += QStringLiteral(" / %1").arg(candidate.unit);
+    }
+    return details;
+}
+
+template <typename AddExpression>
+void appendStepOutputExpressionMenus(
+    QMenu* root,
+    const QVector<StepOutputExpressionCandidate>& candidates,
+    AddExpression addExpression)
+{
+    QHash<QString, QMenu*> phaseMenus;
+    QHash<QString, QMenu*> stepMenus;
+    for (const auto& candidate : candidates) {
+        const auto phase = candidate.phase.trimmed().isEmpty()
+            ? QStringLiteral("MAIN")
+            : candidate.phase.trimmed().toUpper();
+        auto* phaseMenu = phaseMenus.value(phase, nullptr);
+        if (!phaseMenu) {
+            phaseMenu = root->addMenu(phase);
+            phaseMenu->setObjectName(QStringLiteral("expressionPhaseMenu.%1").arg(phase));
+            phaseMenus.insert(phase, phaseMenu);
+        }
+
+        auto hierarchy = candidate.stepHierarchy;
+        auto pathSegments = candidate.stepPath.split(
+            QLatin1Char('.'), Qt::SkipEmptyParts);
+        if (hierarchy.isEmpty()) {
+            hierarchy.push_back(
+                QStringLiteral("%1 - %2").arg(candidate.stepPath, candidate.stepName));
+            pathSegments = {candidate.stepPath};
+        }
+
+        auto* parentMenu = phaseMenu;
+        auto hierarchyKey = phase;
+        for (int index = 0; index < hierarchy.size(); ++index) {
+            const auto pathSegment = index < pathSegments.size()
+                ? pathSegments[index]
+                : hierarchy[index];
+            hierarchyKey += QStringLiteral("/%1").arg(pathSegment);
+            auto* stepMenu = stepMenus.value(hierarchyKey, nullptr);
+            if (!stepMenu) {
+                stepMenu = parentMenu->addMenu(hierarchy[index]);
+                stepMenu->setProperty("stepPath", pathSegments.mid(0, index + 1).join('.'));
+                stepMenus.insert(hierarchyKey, stepMenu);
+            }
+            parentMenu = stepMenu;
+        }
+
+        addExpression(parentMenu, candidate, stepOutputTooltip(candidate));
+    }
+}
+
+struct ExpressionPickerLocation {
+    QString phase;
+    QString parentStepPath;
+};
+
+ExpressionPickerLocation expressionPickerLocation(
+    const QJsonObject& sequence,
+    const SequenceItemPath& currentPath)
+{
+    ExpressionPickerLocation location;
+    const auto groups = sequence.value(QStringLiteral("groups")).toArray();
+    if (!currentPath.isValid() || currentPath.groupIndex < 0 ||
+        currentPath.groupIndex >= groups.size() ||
+        !groups[currentPath.groupIndex].isObject()) {
+        return location;
+    }
+
+    const auto group = groups[currentPath.groupIndex].toObject();
+    auto kind = group.value(QStringLiteral("kind")).toString().trimmed().toLower();
+    kind.remove(QLatin1Char('-'));
+    kind.remove(QLatin1Char('_'));
+    location.phase = kind == QStringLiteral("setup")
+        ? QStringLiteral("SETUP")
+        : kind == QStringLiteral("cleanup")
+            ? QStringLiteral("CLEANUP")
+            : QStringLiteral("MAIN");
+
+    QStringList parentSegments;
+    auto steps = group.value(QStringLiteral("steps")).toArray();
+    for (int depth = 0; depth + 1 < currentPath.stepIndices.size(); ++depth) {
+        const int row = currentPath.stepIndices[depth];
+        if (row < 0 || row >= steps.size() || !steps[row].isObject()) {
+            break;
+        }
+        const auto step = steps[row].toObject();
+        const auto id = step.value(QStringLiteral("id")).toString().trimmed();
+        const auto key = step.value(QStringLiteral("key")).toString().trimmed();
+        const auto segment = depth == 0 || key.isEmpty() ? id : key;
+        if (!segment.isEmpty()) {
+            parentSegments.push_back(segment);
+        }
+        steps = step.value(QStringLiteral("steps")).toArray();
+    }
+    location.parentStepPath = parentSegments.join(QLatin1Char('.'));
+    return location;
+}
+
+constexpr int ExpressionPhaseRole = Qt::UserRole + 1;
+constexpr int ExpressionStepPathRole = Qt::UserRole + 2;
+
+void styleExpressionPickerButton(QToolButton* button)
+{
+    if (!button) {
+        return;
+    }
+    button->setCursor(Qt::PointingHandCursor);
+    button->setStyleSheet(QStringLiteral(
+        "QToolButton { background: #f9fafb; color: #2d3943; "
+        "border: 1px solid #98a5b1; border-radius: 4px; font-weight: 600; }"
+        "QToolButton:hover { background: #e8f3f9; border-color: #568aa7; }"
+        "QToolButton:pressed { background: #d8eaf4; border-color: #3f7898; }"
+        "QToolButton:disabled { background: #f1f2f3; color: #a7adb3; "
+        "border-color: #d4d8dc; }"));
+}
+
+class ExpressionPickerDialog final : public QDialog
+{
+public:
+    explicit ExpressionPickerDialog(const QMenu* sourceMenu,
+                                    const ExpressionPickerLocation& preferredLocation,
+                                    QWidget* parent = nullptr)
+        : QDialog(parent)
+    {
+        setObjectName(QStringLiteral("expressionPickerDialog"));
+        setWindowTitle(tr("Select Value"));
+        setWindowFlag(Qt::WindowContextHelpButtonHint, false);
+        setModal(true);
+        setMinimumSize(640, 380);
+        resize(780, 470);
+        setSizeGripEnabled(true);
+
+        auto* root = new QVBoxLayout(this);
+        root->setContentsMargins(16, 16, 16, 14);
+        root->setSpacing(10);
+
+        auto* navigation = new QHBoxLayout;
+        navigation->setContentsMargins(0, 0, 0, 0);
+        navigation->setSpacing(8);
+        m_backButton = new QToolButton(this);
+        m_backButton->setObjectName(QStringLiteral("expressionPickerBackButton"));
+        m_backButton->setIcon(style()->standardIcon(QStyle::SP_ArrowBack));
+        m_backButton->setToolTip(tr("Back one level"));
+        m_backButton->setFixedSize(30, 28);
+        m_backButton->setEnabled(false);
+        navigation->addWidget(m_backButton);
+        m_pathLabel = new QLabel(this);
+        m_pathLabel->setObjectName(QStringLiteral("expressionPickerPath"));
+        navigation->addWidget(m_pathLabel, 1);
+        root->addLayout(navigation);
+
+        m_model = new QStandardItemModel(this);
+        appendMenuItems(m_model->invisibleRootItem(), sourceMenu);
+        m_emptyRootItem = new QStandardItem;
+        m_emptyRootItem->setFlags(Qt::NoItemFlags);
+        m_model->appendRow(m_emptyRootItem);
+
+        auto* columnsFrame = new QWidget(this);
+        columnsFrame->setObjectName(QStringLiteral("expressionPickerColumnsFrame"));
+        auto* columnsLayout = new QHBoxLayout(columnsFrame);
+        columnsLayout->setContentsMargins(0, 0, 0, 0);
+        columnsLayout->setSpacing(1);
+        for (int column = 0; column < VisibleExpressionColumns; ++column) {
+            auto* view = new QListView(columnsFrame);
+            view->setObjectName(
+                QStringLiteral("expressionPickerColumn%1").arg(column));
+            view->setModel(m_model);
+            view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            view->setSelectionMode(QAbstractItemView::SingleSelection);
+            view->setSelectionBehavior(QAbstractItemView::SelectRows);
+            view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+            view->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+            view->setTextElideMode(Qt::ElideRight);
+            view->setUniformItemSizes(true);
+            view->setEnabled(false);
+            columnsLayout->addWidget(view, 1);
+            m_columnViews[static_cast<std::size_t>(column)] = view;
+        }
+        root->addWidget(columnsFrame, 1);
+
+        auto* footer = new QHBoxLayout;
+        footer->setContentsMargins(0, 0, 0, 0);
+        footer->setSpacing(10);
+        m_preview = new QLineEdit(this);
+        m_preview->setObjectName(QStringLiteral("expressionPickerPreview"));
+        m_preview->setReadOnly(true);
+        m_preview->setMinimumHeight(34);
+        footer->addWidget(m_preview, 1);
+
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, this);
+        m_insertButton = buttons->addButton(tr("Insert"), QDialogButtonBox::AcceptRole);
+        m_insertButton->setObjectName(QStringLiteral("expressionPickerInsertButton"));
+        m_insertButton->setEnabled(false);
+        footer->addWidget(buttons);
+        root->addLayout(footer);
+
+        for (int column = 0; column < VisibleExpressionColumns; ++column) {
+            auto* view = m_columnViews[static_cast<std::size_t>(column)];
+            connect(view->selectionModel(), &QItemSelectionModel::currentChanged,
+                    this, [this, column](const QModelIndex& current) {
+                handleColumnSelection(column, current);
+            });
+            connect(view, &QListView::doubleClicked,
+                    this, [this](const QModelIndex& index) {
+                const auto expression = index.data(Qt::UserRole).toString();
+                if (expression.isEmpty()) {
+                    return;
+                }
+                m_selectedExpression = expression;
+                accept();
+            });
+        }
+        connect(m_insertButton, &QPushButton::clicked, this, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+        connect(m_backButton, &QToolButton::clicked,
+                this, [this] { navigateBack(); });
+
+        const auto previousSource = lastStepSourceIndex();
+        if (previousSource.isValid()) {
+            initializeBrowser(previousSource);
+        } else {
+            const auto preferred = preferredIndex(preferredLocation);
+            if (preferred.isValid()) {
+                initializeBrowser(preferred);
+            } else {
+                setBrowserRoot({}, {});
+            }
+        }
+
+        setStyleSheet(QStringLiteral(
+            "QDialog#expressionPickerDialog { background: #f5f6f8; }"
+            "QWidget#expressionPickerColumnsFrame { background: #d6dbe2; "
+            "border: 1px solid #d6dbe2; border-radius: 5px; }"
+            "QListView#expressionPickerColumn0, QListView#expressionPickerColumn1, "
+            "QListView#expressionPickerColumn2 { background: #ffffff; "
+            "border: none; outline: none; }"
+            "QListView#expressionPickerColumn0::item, "
+            "QListView#expressionPickerColumn1::item, "
+            "QListView#expressionPickerColumn2::item { min-height: 30px; "
+            "padding: 5px 9px; color: #252a31; }"
+            "QListView#expressionPickerColumn0::item:hover, "
+            "QListView#expressionPickerColumn1::item:hover, "
+            "QListView#expressionPickerColumn2::item:hover { background: #edf5fa; }"
+            "QListView#expressionPickerColumn0::item:selected, "
+            "QListView#expressionPickerColumn1::item:selected, "
+            "QListView#expressionPickerColumn2::item:selected { "
+            "background: #d8ebf7; color: #1f252b; }"
+            "QToolButton#expressionPickerBackButton { background: #ffffff; "
+            "border: 1px solid #c4cbd3; border-radius: 4px; }"
+            "QToolButton#expressionPickerBackButton:hover { background: #edf5fa; "
+            "border-color: #8baec3; }"
+            "QLabel#expressionPickerPath { color: #5d6670; font-weight: 600; }"
+            "QLineEdit#expressionPickerPreview { background: #ffffff; "
+            "border: 1px solid #d6dbe2; border-radius: 4px; padding: 6px 9px; }"
+            "QPushButton#expressionPickerInsertButton { min-width: 88px; "
+            "min-height: 32px; padding: 0 14px; }"));
+    }
+
+    QString selectedExpression() const
+    {
+        return m_selectedExpression;
+    }
+
+private:
+    static void appendMenuItems(QStandardItem* parent, const QMenu* menu)
+    {
+        if (!parent || !menu) {
+            return;
+        }
+        for (auto* action : menu->actions()) {
+            if (!action || action->isSeparator()) {
+                continue;
+            }
+            auto* item = new QStandardItem(action->icon(), action->text());
+            item->setEditable(false);
+            item->setEnabled(action->isEnabled());
+            item->setToolTip(action->toolTip());
+            if (const auto* childMenu = action->menu()) {
+                const auto phasePrefix = QStringLiteral("expressionPhaseMenu.");
+                if (childMenu->objectName().startsWith(phasePrefix)) {
+                    item->setData(childMenu->objectName().mid(phasePrefix.size()),
+                                  ExpressionPhaseRole);
+                }
+                const auto stepPath = childMenu->property("stepPath").toString();
+                if (!stepPath.isEmpty()) {
+                    item->setData(stepPath, ExpressionStepPathRole);
+                }
+                appendMenuItems(item, childMenu);
+            } else {
+                item->setData(action->data().toString(), Qt::UserRole);
+            }
+            parent->appendRow(item);
+        }
+    }
+
+    static QString phaseForIndex(QModelIndex index)
+    {
+        while (index.isValid()) {
+            const auto phase = index.data(ExpressionPhaseRole).toString();
+            if (!phase.isEmpty()) {
+                return phase;
+            }
+            index = index.parent();
+        }
+        return {};
+    }
+
+    static QModelIndex findLocationIndex(
+        const QAbstractItemModel* model,
+        int role,
+        const QString& value,
+        const QString& phase,
+        const QModelIndex& parent = {})
+    {
+        if (!model) {
+            return {};
+        }
+        for (int row = 0; row < model->rowCount(parent); ++row) {
+            const auto index = model->index(row, 0, parent);
+            if (index.data(role).toString() == value &&
+                (phase.isEmpty() || phaseForIndex(index) == phase)) {
+                return index;
+            }
+            const auto nested = findLocationIndex(
+                model, role, value, phase, index);
+            if (nested.isValid()) {
+                return nested;
+            }
+        }
+        return {};
+    }
+
+    QModelIndex preferredIndex(const ExpressionPickerLocation& location) const
+    {
+        auto stepPath = location.parentStepPath;
+        while (!stepPath.isEmpty()) {
+            const auto index = findLocationIndex(
+                m_model, ExpressionStepPathRole, stepPath, location.phase);
+            if (index.isValid()) {
+                return index;
+            }
+            const int separator = stepPath.lastIndexOf(QLatin1Char('.'));
+            stepPath = separator < 0 ? QString{} : stepPath.left(separator);
+        }
+        return findLocationIndex(
+            m_model, ExpressionPhaseRole, location.phase, location.phase);
+    }
+
+    static void findLastStepSource(
+        const QAbstractItemModel* model,
+        const QModelIndex& parent,
+        QModelIndex& lastSource)
+    {
+        if (!model) {
+            return;
+        }
+        for (int row = 0; row < model->rowCount(parent); ++row) {
+            const auto index = model->index(row, 0, parent);
+            if (!index.data(Qt::UserRole).toString().isEmpty() &&
+                !phaseForIndex(index).isEmpty()) {
+                lastSource = index.parent();
+            }
+            findLastStepSource(model, index, lastSource);
+        }
+    }
+
+    QModelIndex lastStepSourceIndex() const
+    {
+        QModelIndex source;
+        findLastStepSource(m_model, {}, source);
+        return source;
+    }
+
+    static QStringList indexPath(QModelIndex index)
+    {
+        QStringList path;
+        while (index.isValid()) {
+            path.prepend(index.data().toString());
+            index = index.parent();
+        }
+        return path;
+    }
+
+    void updateExpressionSelection(const QModelIndex& current)
+    {
+        m_selectedExpression = current.data(Qt::UserRole).toString();
+        m_preview->setText(m_selectedExpression);
+        m_insertButton->setEnabled(!m_selectedExpression.isEmpty());
+    }
+
+    void updateNavigation()
+    {
+        const QModelIndex root = m_browserRoot;
+        m_backButton->setEnabled(!m_rootHistory.isEmpty());
+        if (!root.isValid()) {
+            m_pathLabel->clear();
+            m_pathLabel->setToolTip({});
+            return;
+        }
+        const auto path = indexPath(root);
+        m_pathLabel->setText(QStringLiteral("... / %1").arg(root.data().toString()));
+        m_pathLabel->setToolTip(path.join(QStringLiteral(" / ")));
+    }
+
+    static QVector<QModelIndex> pathBelowRoot(const QModelIndex& root,
+                                              QModelIndex focus)
+    {
+        QVector<QModelIndex> path;
+        while (focus.isValid() && focus != root) {
+            path.prepend(focus);
+            focus = focus.parent();
+        }
+        if (focus != root) {
+            path.clear();
+        }
+        return path;
+    }
+
+    void configureColumn(int column,
+                         const QModelIndex& root,
+                         bool active)
+    {
+        auto* view = m_columnViews[static_cast<std::size_t>(column)];
+        view->selectionModel()->clear();
+        if (!active) {
+            view->setRootIndex(m_emptyRootItem->index());
+            view->setEnabled(false);
+            return;
+        }
+
+        view->setRootIndex(root);
+        if (!root.isValid()) {
+            view->setRowHidden(m_emptyRootItem->row(), true);
+        }
+        view->setEnabled(m_model->rowCount(root) > 0);
+    }
+
+    void clearColumnsAfter(int column)
+    {
+        for (int next = column + 1; next < VisibleExpressionColumns; ++next) {
+            configureColumn(next, {}, false);
+        }
+    }
+
+    void handleColumnSelection(int column, const QModelIndex& current)
+    {
+        if (m_adjustingColumns) {
+            return;
+        }
+
+        if (current.isValid() && m_model->hasChildren(current) &&
+            column == VisibleExpressionColumns - 1) {
+            drillInto(current);
+            return;
+        }
+
+        m_adjustingColumns = true;
+        clearColumnsAfter(column);
+        if (current.isValid() && m_model->hasChildren(current) &&
+            column + 1 < VisibleExpressionColumns) {
+            configureColumn(column + 1, current, true);
+        }
+        m_adjustingColumns = false;
+        updateExpressionSelection(current);
+    }
+
+    void setBrowserRoot(const QModelIndex& root, const QModelIndex& focus)
+    {
+        m_adjustingColumns = true;
+        m_browserRoot = root;
+        for (int column = 0; column < VisibleExpressionColumns; ++column) {
+            configureColumn(column, {}, false);
+        }
+        configureColumn(0, root, true);
+
+        const auto path = pathBelowRoot(root, focus);
+        const int visiblePathSize = std::min(
+            static_cast<int>(path.size()), VisibleExpressionColumns);
+        for (int column = 0; column < visiblePathSize; ++column) {
+            auto* view = m_columnViews[static_cast<std::size_t>(column)];
+            const auto index = path[column];
+            view->setCurrentIndex(index);
+            view->scrollTo(index, QAbstractItemView::PositionAtCenter);
+            if (m_model->hasChildren(index) &&
+                column + 1 < VisibleExpressionColumns) {
+                configureColumn(column + 1, index, true);
+            }
+        }
+        m_adjustingColumns = false;
+        updateExpressionSelection(focus);
+        updateNavigation();
+    }
+
+    void initializeBrowser(const QModelIndex& focus)
+    {
+        const auto root = focus.parent().parent();
+        m_rootHistory.clear();
+        if (root.isValid()) {
+            QVector<QPersistentModelIndex> ancestry;
+            for (auto index = root; index.isValid(); index = index.parent()) {
+                ancestry.prepend(QPersistentModelIndex(index));
+            }
+            m_rootHistory.push_back({});
+            for (int index = 0; index + 1 < ancestry.size(); ++index) {
+                m_rootHistory.push_back(ancestry[index]);
+            }
+        }
+        setBrowserRoot(root, focus);
+    }
+
+    void drillInto(const QModelIndex& current)
+    {
+        const auto newRoot = current.parent().parent();
+        const QModelIndex currentRoot = m_browserRoot;
+        if (newRoot == currentRoot) {
+            return;
+        }
+        m_rootHistory.push_back(m_browserRoot);
+        setBrowserRoot(newRoot, current);
+    }
+
+    void navigateBack()
+    {
+        if (m_rootHistory.isEmpty()) {
+            return;
+        }
+        const QModelIndex oldRoot = m_browserRoot;
+        const QModelIndex previousRoot = m_rootHistory.takeLast();
+        setBrowserRoot(previousRoot, oldRoot);
+    }
+
+    static constexpr int VisibleExpressionColumns = 3;
+
+    std::array<QListView*, VisibleExpressionColumns> m_columnViews{};
+    QStandardItemModel* m_model = nullptr;
+    QStandardItem* m_emptyRootItem = nullptr;
+    QToolButton* m_backButton = nullptr;
+    QLabel* m_pathLabel = nullptr;
+    QLineEdit* m_preview = nullptr;
+    QPushButton* m_insertButton = nullptr;
+    QPersistentModelIndex m_browserRoot;
+    QVector<QPersistentModelIndex> m_rootHistory;
+    bool m_adjustingColumns = false;
+    QString m_selectedExpression;
+};
+
+QString selectExpressionFromMenu(
+    const QMenu* menu,
+    const ExpressionPickerLocation& preferredLocation,
+    QWidget* parent)
+{
+    ExpressionPickerDialog dialog(menu, preferredLocation, parent);
+    return dialog.exec() == QDialog::Accepted
+        ? dialog.selectedExpression()
+        : QString{};
 }
 
 } // namespace
@@ -426,6 +1029,53 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
     setCurrentItem({});
 }
 
+void StepPropertyEditor::addInspectableRow(QFormLayout* form,
+                                           const QString& label,
+                                           QWidget* field,
+                                           const QString& fieldPath,
+                                           const QString& displayName)
+{
+    auto* labelWidget = new QWidget(form->parentWidget());
+    auto* layout = new QHBoxLayout(labelWidget);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+    layout->addStretch(1);
+
+    auto* text = new QLabel(label, labelWidget);
+    layout->addWidget(text);
+
+    auto* inspect = new QToolButton(labelWidget);
+    auto objectSuffix = fieldPath;
+    objectSuffix.replace(QLatin1Char('.'), QLatin1Char('_'));
+    inspect->setObjectName(
+        QStringLiteral("inspectField_%1").arg(objectSuffix));
+    inspect->setProperty("picoateInspectionButton", true);
+    inspect->setProperty("picoateDraftObserved", true);
+    inspect->setProperty("inspectionFieldPath", fieldPath);
+    inspect->setCheckable(true);
+    inspect->setChecked(m_inspectionField == fieldPath);
+    inspect->setAutoRaise(true);
+    inspect->setFocusPolicy(Qt::NoFocus);
+    inspect->setFixedSize(22, 22);
+    inspect->setIcon(QIcon(QStringLiteral(":/icons/eye.svg")));
+    inspect->setIconSize(QSize(15, 15));
+    const auto friendlyName = displayName.isEmpty() ? label : displayName;
+    inspect->setToolTip(tr("Show '%1' for every Flow item")
+                            .arg(friendlyName));
+    inspect->setStyleSheet(QStringLiteral(
+        "QToolButton { border: 0; border-radius: 4px; padding: 2px; }"
+        "QToolButton:hover { background: #e8f2f8; }"
+        "QToolButton:checked { background: #d5eaf6; }"));
+    connect(inspect, &QToolButton::clicked, this,
+            [this, fieldPath, friendlyName] {
+                const bool clear = m_inspectionField == fieldPath;
+                emit inspectionFieldRequested(clear ? QString{} : fieldPath,
+                                              clear ? QString{} : friendlyName);
+            });
+    layout->addWidget(inspect);
+    form->addRow(labelWidget, field);
+}
+
 SequenceItemPath StepPropertyEditor::currentPath() const
 {
     return m_path;
@@ -440,6 +1090,20 @@ void StepPropertyEditor::discardPendingChanges()
 {
     if (hasPendingChanges()) {
         loadCurrentObject();
+    }
+}
+
+void StepPropertyEditor::setInspectionField(const QString& fieldPath)
+{
+    m_inspectionField = fieldPath.trimmed();
+    for (auto* button : findChildren<QToolButton*>()) {
+        if (!button->property("picoateInspectionButton").toBool()) {
+            continue;
+        }
+        const QSignalBlocker blocker(button);
+        button->setChecked(
+            button->property("inspectionFieldPath").toString() ==
+            m_inspectionField);
     }
 }
 
@@ -566,6 +1230,10 @@ void StepPropertyEditor::applyEditableState()
         spin->setEnabled(canEdit && !spin->property("stationInherited").toBool());
     }
     for (auto* button : m_tabs->findChildren<QToolButton*>()) {
+        if (button->property("picoateInspectionButton").toBool()) {
+            button->setEnabled(hasObject);
+            continue;
+        }
         button->setEnabled(canEdit && !button->property("stationInherited").toBool());
     }
     if (m_advancedJsonToggle) {
@@ -797,34 +1465,47 @@ void StepPropertyEditor::buildGeneralPage()
 
     m_idEdit = new QLineEdit(page);
     m_idEdit->setObjectName(QStringLiteral("propertyIdEdit"));
-    m_generalForm->addRow(tr("ID"), m_idEdit);
+    addInspectableRow(m_generalForm, tr("ID"), m_idEdit,
+                      QStringLiteral("id"));
     m_keyEdit = new QLineEdit(page);
     m_keyEdit->setObjectName(QStringLiteral("propertyKeyEdit"));
-    m_generalForm->addRow(tr("Key"), m_keyEdit);
+    addInspectableRow(m_generalForm, tr("Key"), m_keyEdit,
+                      QStringLiteral("key"));
     m_nameEdit = new QLineEdit(page);
     m_nameEdit->setObjectName(QStringLiteral("propertyNameEdit"));
-    m_generalForm->addRow(tr("Name"), m_nameEdit);
+    addInspectableRow(m_generalForm, tr("Name"), m_nameEdit,
+                      QStringLiteral("name"));
     m_kindCombo = new QComboBox(page);
     m_kindCombo->setObjectName(QStringLiteral("propertyKindCombo"));
-    m_generalForm->addRow(tr("Kind"), m_kindCombo);
+    addInspectableRow(m_generalForm, tr("Kind"), m_kindCombo,
+                      QStringLiteral("kind"));
     m_enabledCheck = new QCheckBox(page);
     m_enabledCheck->setObjectName(QStringLiteral("propertyEnabledCheck"));
-    m_generalForm->addRow(tr("Enabled"), m_enabledCheck);
+    addInspectableRow(m_generalForm, tr("Enabled"), m_enabledCheck,
+                      QStringLiteral("enabled"));
     m_alwaysRunCheck = new QCheckBox(page);
-    m_generalForm->addRow(tr("Always run"), m_alwaysRunCheck);
+    addInspectableRow(m_generalForm, tr("Always run"), m_alwaysRunCheck,
+                      QStringLiteral("alwaysRun"));
     m_resultRecordingCheck = new QCheckBox(page);
     m_resultRecordingCheck->setObjectName(
         QStringLiteral("propertyResultRecordingCheck"));
     m_resultRecordingCheck->setToolTip(tr(
         "Include this item in CSV and XLSX reports. TXT logs and the overall pass/fail result are unaffected."));
-    m_generalForm->addRow(tr("Record in CSV / XLSX"), m_resultRecordingCheck);
+    addInspectableRow(m_generalForm, tr("Record in CSV / XLSX"),
+                      m_resultRecordingCheck,
+                      QStringLiteral("resultRecording"));
     m_checkpointBeforeCheck = new QCheckBox(page);
-    m_generalForm->addRow(tr("Checkpoint before"), m_checkpointBeforeCheck);
+    addInspectableRow(m_generalForm, tr("Checkpoint before"),
+                      m_checkpointBeforeCheck,
+                      QStringLiteral("checkpointBefore"));
     m_checkpointAfterCheck = new QCheckBox(page);
-    m_generalForm->addRow(tr("Checkpoint after"), m_checkpointAfterCheck);
+    addInspectableRow(m_generalForm, tr("Checkpoint after"),
+                      m_checkpointAfterCheck,
+                      QStringLiteral("checkpointAfter"));
     m_tagsEdit = new QLineEdit(page);
     m_tagsEdit->setObjectName(QStringLiteral("propertyTagsEdit"));
-    m_generalForm->addRow(tr("Tags"), m_tagsEdit);
+    addInspectableRow(m_generalForm, tr("Tags"), m_tagsEdit,
+                      QStringLiteral("tags"));
 
     m_tabs->addTab(page, tr("General"));
 }
@@ -839,16 +1520,19 @@ void StepPropertyEditor::buildDataPage()
 
     m_moduleIdEdit = new QLineEdit(content);
     m_moduleIdEdit->setObjectName(QStringLiteral("propertyModuleIdEdit"));
-    m_dataForm->addRow(tr("Module ID"), m_moduleIdEdit);
+    addInspectableRow(m_dataForm, tr("Module ID"), m_moduleIdEdit,
+                      QStringLiteral("moduleId"));
     m_functionEdit = new QComboBox(content);
     m_functionEdit->setObjectName(QStringLiteral("propertyFunctionEdit"));
     m_functionEdit->setEditable(false);
-    m_dataForm->addRow(tr("Function"), m_functionEdit);
+    addInspectableRow(m_dataForm, tr("Function"), m_functionEdit,
+                      QStringLiteral("function"));
     m_deviceIdCombo = new QComboBox(content);
     m_deviceIdCombo->setObjectName(QStringLiteral("propertyDeviceIdCombo"));
     m_deviceIdCombo->setToolTip(
         tr("Station devices that support the selected plugin function"));
-    m_dataForm->addRow(tr("Target device"), m_deviceIdCombo);
+    addInspectableRow(m_dataForm, tr("Target device"), m_deviceIdCombo,
+                      QStringLiteral("inputs.deviceId"));
     m_pluginInputsGroup = new QGroupBox(tr("Function Arguments"), content);
     m_pluginInputsGroup->setObjectName(QStringLiteral("pluginInputsGroup"));
     m_pluginInputsForm = new QFormLayout(m_pluginInputsGroup);
@@ -862,9 +1546,10 @@ void StepPropertyEditor::buildDataPage()
     m_limitActualField = wrapExpressionEditor(m_limitActualEdit);
     if (auto* picker = m_limitActualField->findChild<QToolButton*>(
             QStringLiteral("expressionPickerButton"))) {
-        m_limitExpressionMenu = picker->menu();
+        picker->setToolTip(tr("Select a sequence variable or previous Step output"));
     }
-    m_dataForm->addRow(tr("Actual value"), m_limitActualField);
+    addInspectableRow(m_dataForm, tr("Actual value"), m_limitActualField,
+                      QStringLiteral("inputs.actual"));
     m_limitComparisonCombo = new QComboBox(content);
     m_limitComparisonCombo->setObjectName(QStringLiteral("propertyLimitComparisonCombo"));
     m_limitComparisonCombo->addItem(tr("Between (expected +/- tolerance)"), QStringLiteral("betweenTolerance"));
@@ -880,34 +1565,46 @@ void StepPropertyEditor::buildDataPage()
     m_limitComparisonCombo->addItem(tr("Ends with"), QStringLiteral("endsWith"));
     m_limitComparisonCombo->addItem(tr("Is true"), QStringLiteral("isTrue"));
     m_limitComparisonCombo->addItem(tr("Is false"), QStringLiteral("isFalse"));
-    m_dataForm->addRow(tr("Comparison"), m_limitComparisonCombo);
+    addInspectableRow(m_dataForm, tr("Comparison"), m_limitComparisonCombo,
+                      QStringLiteral("parameters.comparison"));
     m_limitExpectedEdit = new QLineEdit(content);
     m_limitExpectedEdit->setObjectName(QStringLiteral("propertyLimitExpectedEdit"));
     m_limitExpectedEdit->setPlaceholderText(tr("Expected value or threshold"));
     m_limitExpectedField = wrapExpressionEditor(m_limitExpectedEdit);
     m_limitExpectedField->setObjectName(QStringLiteral("propertyLimitExpectedField"));
-    m_dataForm->addRow(tr("Expected / threshold"), m_limitExpectedField);
+    addInspectableRow(m_dataForm, tr("Expected / threshold"),
+                      m_limitExpectedField,
+                      QStringLiteral("parameters.expected"));
     m_limitLowerEdit = new QLineEdit(content);
     m_limitLowerEdit->setObjectName(QStringLiteral("propertyLimitLowerEdit"));
-    m_dataForm->addRow(tr("Lower limit"), m_limitLowerEdit);
+    addInspectableRow(m_dataForm, tr("Lower limit"), m_limitLowerEdit,
+                      QStringLiteral("parameters.lower"));
     m_limitUpperEdit = new QLineEdit(content);
     m_limitUpperEdit->setObjectName(QStringLiteral("propertyLimitUpperEdit"));
-    m_dataForm->addRow(tr("Upper limit"), m_limitUpperEdit);
+    addInspectableRow(m_dataForm, tr("Upper limit"), m_limitUpperEdit,
+                      QStringLiteral("parameters.upper"));
     m_limitToleranceSpin = new QDoubleSpinBox(content);
     m_limitToleranceSpin->setObjectName(QStringLiteral("propertyLimitToleranceSpin"));
     m_limitToleranceSpin->setRange(0.0, std::numeric_limits<double>::max());
     m_limitToleranceSpin->setDecimals(9);
     m_limitToleranceSpin->setSingleStep(0.1);
-    m_dataForm->addRow(tr("Tolerance (+/-)"), m_limitToleranceSpin);
+    addInspectableRow(m_dataForm, tr("Tolerance (+/-)"),
+                      m_limitToleranceSpin,
+                      QStringLiteral("parameters.tolerance"));
     m_limitInclusiveCheck = new QCheckBox(content);
     m_limitInclusiveCheck->setObjectName(QStringLiteral("propertyLimitInclusiveCheck"));
-    m_dataForm->addRow(tr("Include boundaries"), m_limitInclusiveCheck);
+    addInspectableRow(m_dataForm, tr("Include boundaries"),
+                      m_limitInclusiveCheck,
+                      QStringLiteral("parameters.inclusive"));
     m_limitMeasurementNameEdit = new QLineEdit(content);
     m_limitMeasurementNameEdit->setObjectName(QStringLiteral("propertyLimitMeasurementNameEdit"));
-    m_dataForm->addRow(tr("Measurement name"), m_limitMeasurementNameEdit);
+    addInspectableRow(m_dataForm, tr("Measurement name"),
+                      m_limitMeasurementNameEdit,
+                      QStringLiteral("parameters.measurementName"));
     m_limitUnitEdit = new QLineEdit(content);
     m_limitUnitEdit->setObjectName(QStringLiteral("propertyLimitUnitEdit"));
-    m_dataForm->addRow(tr("Unit"), m_limitUnitEdit);
+    addInspectableRow(m_dataForm, tr("Unit"), m_limitUnitEdit,
+                      QStringLiteral("parameters.unit"));
 
     m_counterConditionEdit = new QLineEdit(content);
     m_counterConditionEdit->setObjectName(QStringLiteral("propertyCounterConditionEdit"));
@@ -917,25 +1614,30 @@ void StepPropertyEditor::buildDataPage()
     m_counterConditionField = wrapExpressionEditor(m_counterConditionEdit);
     if (auto* picker = m_counterConditionField->findChild<QToolButton*>(
             QStringLiteral("expressionPickerButton"))) {
-        m_counterConditionMenu = picker->menu();
+        picker->setToolTip(tr("Select a sequence variable or previous Step output"));
     }
-    m_dataForm->addRow(tr("Count trigger"), m_counterConditionField);
+    addInspectableRow(m_dataForm, tr("Count trigger"),
+                      m_counterConditionField,
+                      QStringLiteral("inputs.condition"));
     m_counterModeCombo = new QComboBox(content);
     m_counterModeCombo->setObjectName(QStringLiteral("propertyCounterModeCombo"));
     m_counterModeCombo->addItem(tr("Consecutive (reset when false)"),
                                 QStringLiteral("consecutive"));
     m_counterModeCombo->addItem(tr("Total (keep value when false)"),
                                 QStringLiteral("total"));
-    m_dataForm->addRow(tr("Counter mode"), m_counterModeCombo);
+    addInspectableRow(m_dataForm, tr("Counter mode"), m_counterModeCombo,
+                      QStringLiteral("parameters.mode"));
     m_counterStartSpin = new QDoubleSpinBox(content);
     m_counterStartSpin->setRange(-1.0e12, 1.0e12);
     m_counterStartSpin->setDecimals(6);
-    m_dataForm->addRow(tr("Start value"), m_counterStartSpin);
+    addInspectableRow(m_dataForm, tr("Start value"), m_counterStartSpin,
+                      QStringLiteral("parameters.start"));
     m_counterIncrementSpin = new QDoubleSpinBox(content);
     m_counterIncrementSpin->setRange(-1.0e12, 1.0e12);
     m_counterIncrementSpin->setDecimals(6);
     m_counterIncrementSpin->setValue(1.0);
-    m_dataForm->addRow(tr("Increment"), m_counterIncrementSpin);
+    addInspectableRow(m_dataForm, tr("Increment"), m_counterIncrementSpin,
+                      QStringLiteral("parameters.increment"));
 
     m_aggregateValueEdit = new QLineEdit(content);
     m_aggregateValueEdit->setObjectName(QStringLiteral("propertyAggregateValueEdit"));
@@ -943,13 +1645,16 @@ void StepPropertyEditor::buildDataPage()
     m_aggregateValueField = wrapExpressionEditor(m_aggregateValueEdit);
     if (auto* picker = m_aggregateValueField->findChild<QToolButton*>(
             QStringLiteral("expressionPickerButton"))) {
-        m_aggregateValueMenu = picker->menu();
+        picker->setToolTip(tr("Select a sequence variable or previous Step output"));
     }
-    m_dataForm->addRow(tr("Value to aggregate"), m_aggregateValueField);
+    addInspectableRow(m_dataForm, tr("Value to aggregate"),
+                      m_aggregateValueField,
+                      QStringLiteral("inputs.value"));
     m_waitMsSpin = new QSpinBox(content);
     m_waitMsSpin->setRange(0, std::numeric_limits<int>::max());
     m_waitMsSpin->setSuffix(tr(" ms"));
-    m_dataForm->addRow(tr("Duration"), m_waitMsSpin);
+    addInspectableRow(m_dataForm, tr("Duration"), m_waitMsSpin,
+                      QStringLiteral("ms"));
 
     m_promptModeCombo = new QComboBox(content);
     m_promptModeCombo->setObjectName(QStringLiteral("propertyPromptModeCombo"));
@@ -959,139 +1664,194 @@ void StepPropertyEditor::buildDataPage()
                                QStringLiteral("notice"));
     m_promptModeCombo->addItem(tr("Operator PASS / FAIL judgment"),
                                QStringLiteral("judgment"));
-    m_dataForm->addRow(tr("Mode"), m_promptModeCombo);
+    addInspectableRow(m_dataForm, tr("Mode"), m_promptModeCombo,
+                      QStringLiteral("prompt.mode"));
     m_promptTitleEdit = new QLineEdit(content);
     m_promptTitleEdit->setObjectName(QStringLiteral("propertyPromptTitleEdit"));
-    m_dataForm->addRow(tr("Window title"), m_promptTitleEdit);
+    addInspectableRow(m_dataForm, tr("Window title"), m_promptTitleEdit,
+                      QStringLiteral("prompt.title"));
     m_promptMessageEdit = new QPlainTextEdit(content);
     m_promptMessageEdit->setObjectName(QStringLiteral("propertyPromptMessageEdit"));
     m_promptMessageEdit->setMinimumHeight(90);
     m_promptMessageEdit->setPlaceholderText(
         tr("Tell the operator what to do. Runtime values can be inserted with fx."));
     m_promptMessageField = wrapPromptMessageEditor(m_promptMessageEdit);
-    m_dataForm->addRow(tr("Message"), m_promptMessageField);
+    addInspectableRow(m_dataForm, tr("Message"), m_promptMessageField,
+                      QStringLiteral("prompt.message"));
     m_promptImageCombo = new QComboBox(content);
     m_promptImageCombo->setObjectName(QStringLiteral("propertyPromptImageCombo"));
     m_promptImageCombo->setInsertPolicy(QComboBox::NoInsert);
     m_promptImageCombo->setToolTip(
         tr("Optional PNG/JPG image from the image folder beside PicoATE.UI.exe"));
-    m_dataForm->addRow(tr("Image (optional)"), m_promptImageCombo);
+    addInspectableRow(m_dataForm, tr("Image (optional)"),
+                      m_promptImageCombo,
+                      QStringLiteral("prompt.image"));
     m_promptConfirmTextEdit = new QLineEdit(content);
     m_promptConfirmTextEdit->setObjectName(QStringLiteral("propertyPromptConfirmTextEdit"));
-    m_dataForm->addRow(tr("Button text"), m_promptConfirmTextEdit);
+    addInspectableRow(m_dataForm, tr("Button text"),
+                      m_promptConfirmTextEdit,
+                      QStringLiteral("prompt.confirmText"));
     m_promptCloseOnStepCombo = new QComboBox(content);
     m_promptCloseOnStepCombo->setObjectName(QStringLiteral("propertyPromptCloseOnStepCombo"));
     m_promptCloseOnStepCombo->setEditable(true);
     m_promptCloseOnStepCombo->setInsertPolicy(QComboBox::NoInsert);
     m_promptCloseOnStepCombo->setToolTip(
         tr("Select a later enabled step. The prompt closes after that step finishes."));
-    m_dataForm->addRow(tr("Close after step"), m_promptCloseOnStepCombo);
+    addInspectableRow(m_dataForm, tr("Close after step"),
+                      m_promptCloseOnStepCombo,
+                      QStringLiteral("prompt.closeOnStep"));
     m_promptDialogKeyEdit = new QLineEdit(content);
     m_promptDialogKeyEdit->setObjectName(QStringLiteral("propertyPromptDialogKeyEdit"));
     m_promptDialogKeyEdit->setPlaceholderText(tr("Example: rgb-lamp-check"));
     m_promptDialogKeyEdit->setToolTip(
         tr("Use the same key on an observation prompt and a later judgment to reuse one window."));
-    m_dataForm->addRow(tr("Dialog key (optional)"), m_promptDialogKeyEdit);
+    addInspectableRow(m_dataForm, tr("Dialog key (optional)"),
+                      m_promptDialogKeyEdit,
+                      QStringLiteral("prompt.dialogKey"));
     m_promptPassTextEdit = new QLineEdit(content);
     m_promptPassTextEdit->setObjectName(QStringLiteral("propertyPromptPassTextEdit"));
-    m_dataForm->addRow(tr("PASS button text"), m_promptPassTextEdit);
+    addInspectableRow(m_dataForm, tr("PASS button text"),
+                      m_promptPassTextEdit,
+                      QStringLiteral("prompt.passText"));
     m_promptFailTextEdit = new QLineEdit(content);
     m_promptFailTextEdit->setObjectName(QStringLiteral("propertyPromptFailTextEdit"));
-    m_dataForm->addRow(tr("FAIL button text"), m_promptFailTextEdit);
+    addInspectableRow(m_dataForm, tr("FAIL button text"),
+                      m_promptFailTextEdit,
+                      QStringLiteral("prompt.failText"));
     m_promptFailureCodeEdit = new QLineEdit(content);
     m_promptFailureCodeEdit->setObjectName(QStringLiteral("propertyPromptFailureCodeEdit"));
     m_promptFailureCodeEdit->setPlaceholderText(QStringLiteral("OperatorCheckFailed"));
-    m_dataForm->addRow(tr("FAIL error code"), m_promptFailureCodeEdit);
+    addInspectableRow(m_dataForm, tr("FAIL error code"),
+                      m_promptFailureCodeEdit,
+                      QStringLiteral("prompt.failureCode"));
     m_promptTimeoutSpin = new QSpinBox(content);
     m_promptTimeoutSpin->setObjectName(QStringLiteral("propertyPromptTimeoutSpin"));
     m_promptTimeoutSpin->setRange(0, std::numeric_limits<int>::max());
     m_promptTimeoutSpin->setSuffix(tr(" ms"));
     m_promptTimeoutSpin->setToolTip(tr("0 means no timeout for confirmation prompts"));
-    m_dataForm->addRow(tr("Response timeout"), m_promptTimeoutSpin);
+    addInspectableRow(m_dataForm, tr("Response timeout"),
+                      m_promptTimeoutSpin,
+                      QStringLiteral("prompt.timeoutMs"));
 
     m_loopTypeCombo = new QComboBox(content);
     m_loopTypeCombo->setObjectName(QStringLiteral("propertyLoopTypeCombo"));
     m_loopTypeCombo->addItem(tr("For Loop"), QStringLiteral("for"));
     m_loopTypeCombo->addItem(tr("While Loop"), QStringLiteral("while"));
-    m_dataForm->addRow(tr("Loop type"), m_loopTypeCombo);
+    addInspectableRow(m_dataForm, tr("Loop type"), m_loopTypeCombo,
+                      QStringLiteral("loop.type"));
     m_loopVariableEdit = new QLineEdit(content);
-    m_dataForm->addRow(tr("Loop variable"), m_loopVariableEdit);
+    addInspectableRow(m_dataForm, tr("Loop variable"), m_loopVariableEdit,
+                      QStringLiteral("loop.variable"));
     m_loopFromSpin = new QSpinBox(content);
     m_loopFromSpin->setRange(std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
-    m_dataForm->addRow(tr("From"), m_loopFromSpin);
+    addInspectableRow(m_dataForm, tr("From"), m_loopFromSpin,
+                      QStringLiteral("loop.from"));
     m_loopToSpin = new QSpinBox(content);
     m_loopToSpin->setRange(std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
-    m_dataForm->addRow(tr("To"), m_loopToSpin);
+    addInspectableRow(m_dataForm, tr("To"), m_loopToSpin,
+                      QStringLiteral("loop.to"));
     m_loopStepSpin = new QSpinBox(content);
     m_loopStepSpin->setRange(std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
-    m_dataForm->addRow(tr("Step"), m_loopStepSpin);
+    addInspectableRow(m_dataForm, tr("Step"), m_loopStepSpin,
+                      QStringLiteral("loop.step"));
 
     m_conditionIntervalSpin = new QSpinBox(content);
     m_conditionIntervalSpin->setObjectName(
         QStringLiteral("propertyConditionIntervalSpin"));
     m_conditionIntervalSpin->setRange(0, std::numeric_limits<int>::max());
     m_conditionIntervalSpin->setSuffix(tr(" ms"));
-    m_dataForm->addRow(tr("Delay between iterations"), m_conditionIntervalSpin);
+    addInspectableRow(m_dataForm, tr("Delay between iterations"),
+                      m_conditionIntervalSpin,
+                      QStringLiteral("loop.intervalMs"));
     m_conditionMaxIterationsSpin = new QSpinBox(content);
     m_conditionMaxIterationsSpin->setObjectName(
         QStringLiteral("propertyConditionMaxIterationsSpin"));
     m_conditionMaxIterationsSpin->setRange(0, std::numeric_limits<int>::max());
     m_conditionMaxIterationsSpin->setSpecialValueText(tr("Disabled"));
-    m_dataForm->addRow(tr("Maximum iterations"), m_conditionMaxIterationsSpin);
+    addInspectableRow(m_dataForm, tr("Maximum iterations"),
+                      m_conditionMaxIterationsSpin,
+                      QStringLiteral("loop.maxIterations"));
     m_conditionTimeoutSpin = new QSpinBox(content);
     m_conditionTimeoutSpin->setObjectName(
         QStringLiteral("propertyConditionTimeoutSpin"));
     m_conditionTimeoutSpin->setRange(0, std::numeric_limits<int>::max());
     m_conditionTimeoutSpin->setSuffix(tr(" ms"));
     m_conditionTimeoutSpin->setSpecialValueText(tr("Disabled"));
-    m_dataForm->addRow(tr("Overall timeout"), m_conditionTimeoutSpin);
+    addInspectableRow(m_dataForm, tr("Overall timeout"),
+                      m_conditionTimeoutSpin,
+                      QStringLiteral("loop.timeoutMs"));
     m_conditionIterationErrorCombo = new QComboBox(content);
     m_conditionIterationErrorCombo->setObjectName(
         QStringLiteral("propertyConditionIterationErrorCombo"));
-    m_conditionIterationErrorCombo->addItem(tr("Abort loop"),
-                                            QStringLiteral("abortLoop"));
-    m_conditionIterationErrorCombo->addItem(tr("Continue next iteration"),
-                                            QStringLiteral("continueLoop"));
-    m_dataForm->addRow(tr("Iteration Error / Timeout"),
-                       m_conditionIterationErrorCombo);
+    m_conditionIterationErrorCombo->addItem(
+        tr("Continue on Fail; stop on Error / Timeout"),
+        QStringLiteral("continueOnFail"));
+    m_conditionIterationErrorCombo->addItem(
+        tr("Stop on Fail / Error / Timeout"),
+        QStringLiteral("abortLoop"));
+    m_conditionIterationErrorCombo->addItem(
+        tr("Continue on Fail / Error / Timeout"),
+        QStringLiteral("continueLoop"));
+    addInspectableRow(m_dataForm, tr("Iteration failure handling"),
+                      m_conditionIterationErrorCombo,
+                      QStringLiteral("loop.iterationErrorPolicy"));
 
     m_barrierNameEdit = new QLineEdit(content);
-    m_dataForm->addRow(tr("Barrier name"), m_barrierNameEdit);
+    addInspectableRow(m_dataForm, tr("Barrier name"), m_barrierNameEdit,
+                      QStringLiteral("barrier.barrierName"));
     m_cohortIdEdit = new QLineEdit(content);
-    m_dataForm->addRow(tr("Cohort ID"), m_cohortIdEdit);
+    addInspectableRow(m_dataForm, tr("Cohort ID"), m_cohortIdEdit,
+                      QStringLiteral("barrier.cohortId"));
     m_expectedUutSpin = new QSpinBox(content);
     m_expectedUutSpin->setRange(-1, 100000);
-    m_dataForm->addRow(tr("Expected UUTs"), m_expectedUutSpin);
+    addInspectableRow(m_dataForm, tr("Expected UUTs"), m_expectedUutSpin,
+                      QStringLiteral("barrier.expectedUutCount"));
     m_quorumCountSpin = new QSpinBox(content);
     m_quorumCountSpin->setRange(-1, 100000);
-    m_dataForm->addRow(tr("Quorum count"), m_quorumCountSpin);
+    addInspectableRow(m_dataForm, tr("Quorum count"), m_quorumCountSpin,
+                      QStringLiteral("barrier.quorumCount"));
     m_quorumRatioSpin = new QDoubleSpinBox(content);
     m_quorumRatioSpin->setRange(0.0, 1.0);
     m_quorumRatioSpin->setDecimals(3);
     m_quorumRatioSpin->setSingleStep(0.05);
-    m_dataForm->addRow(tr("Quorum ratio"), m_quorumRatioSpin);
+    addInspectableRow(m_dataForm, tr("Quorum ratio"), m_quorumRatioSpin,
+                      QStringLiteral("barrier.quorumRatio"));
     m_arrivalTimeoutSpin = new QSpinBox(content);
     m_arrivalTimeoutSpin->setRange(0, std::numeric_limits<int>::max());
     m_arrivalTimeoutSpin->setSuffix(tr(" ms"));
-    m_dataForm->addRow(tr("Arrival timeout"), m_arrivalTimeoutSpin);
+    addInspectableRow(m_dataForm, tr("Arrival timeout"),
+                      m_arrivalTimeoutSpin,
+                      QStringLiteral("barrier.arrivalTimeoutMs"));
     m_releaseTimeoutSpin = new QSpinBox(content);
     m_releaseTimeoutSpin->setRange(0, std::numeric_limits<int>::max());
     m_releaseTimeoutSpin->setSuffix(tr(" ms"));
-    m_dataForm->addRow(tr("Release timeout"), m_releaseTimeoutSpin);
+    addInspectableRow(m_dataForm, tr("Release timeout"),
+                      m_releaseTimeoutSpin,
+                      QStringLiteral("barrier.releaseTimeoutMs"));
     m_arrivalPolicyCombo = new QComboBox(content);
     addItems(m_arrivalPolicyCombo, {"WaitAll", "DropFailed", "CountFailed", "Quorum", "BestEffort", "ManualDecision"});
-    m_dataForm->addRow(tr("Arrival policy"), m_arrivalPolicyCombo);
+    addInspectableRow(m_dataForm, tr("Arrival policy"),
+                      m_arrivalPolicyCombo,
+                      QStringLiteral("barrier.arrivalPolicy"));
     m_releasePolicyCombo = new QComboBox(content);
     addItems(m_releasePolicyCombo, {"Lockstep", "Latch", "Cohort", "RollingWindow"});
-    m_dataForm->addRow(tr("Release policy"), m_releasePolicyCombo);
+    addInspectableRow(m_dataForm, tr("Release policy"),
+                      m_releasePolicyCombo,
+                      QStringLiteral("barrier.releasePolicy"));
     m_failurePolicyCombo = new QComboBox(content);
     addItems(m_failurePolicyCombo, {"FailBarrier", "RemoveFailedMember", "HoldFailedMember", "ContinueWithWarning", "AbortCohort"});
-    m_dataForm->addRow(tr("Failure policy"), m_failurePolicyCombo);
+    addInspectableRow(m_dataForm, tr("Failure policy"),
+                      m_failurePolicyCombo,
+                      QStringLiteral("barrier.failurePolicy"));
     m_barrierTimeoutPolicyCombo = new QComboBox(content);
     addItems(m_barrierTimeoutPolicyCombo, {"FailArrivedAndWaiting", "ReleaseArrived", "ReleaseIfQuorumReached", "AbortCohort", "RequestOperatorDecision"});
-    m_dataForm->addRow(tr("Timeout policy"), m_barrierTimeoutPolicyCombo);
+    addInspectableRow(m_dataForm, tr("Timeout policy"),
+                      m_barrierTimeoutPolicyCombo,
+                      QStringLiteral("barrier.timeoutPolicy"));
     m_releaseResourcesCheck = new QCheckBox(content);
-    m_dataForm->addRow(tr("Release resources"), m_releaseResourcesCheck);
+    addInspectableRow(m_dataForm, tr("Release resources"),
+                      m_releaseResourcesCheck,
+                      QStringLiteral("barrier.releaseHeldResourcesOnWait"));
 
     m_advancedJsonToggle = new QToolButton(content);
     m_advancedJsonToggle->setObjectName(
@@ -1129,8 +1889,8 @@ void StepPropertyEditor::buildDataPage()
     m_errorPolicyEdit->setObjectName(QStringLiteral("propertyLegacyErrorPolicyEdit"));
     m_errorPolicyEdit->setMinimumHeight(80);
     m_errorPolicyEdit->setToolTip(
-        tr("Legacy per-Step policy. Station Failure Handling overrides it at runtime."));
-    m_advancedJsonForm->addRow(tr("Legacy error policy"), m_errorPolicyEdit);
+        tr("Advanced fields such as cleanupRegionId. Outcome policies are configured on the Policies tab."));
+    m_advancedJsonForm->addRow(tr("Advanced error policy"), m_errorPolicyEdit);
     m_advancedJsonContent->hide();
     m_dataForm->addRow(m_advancedJsonContent);
 
@@ -1161,17 +1921,23 @@ void StepPropertyEditor::buildPolicyPage()
     m_maxAttemptsSpin = new QSpinBox(content);
     m_maxAttemptsSpin->setObjectName(QStringLiteral("propertyMaxAttemptsSpin"));
     m_maxAttemptsSpin->setRange(1, 100000);
-    m_policyForm->addRow(tr("Max attempts"), m_maxAttemptsSpin);
+    addInspectableRow(m_policyForm, tr("Max attempts"), m_maxAttemptsSpin,
+                      QStringLiteral("retry.maxAttempts"));
     m_retryDelaySpin = new QSpinBox(content);
     m_retryDelaySpin->setRange(0, std::numeric_limits<int>::max());
     m_retryDelaySpin->setSuffix(tr(" ms"));
-    m_policyForm->addRow(tr("Retry delay"), m_retryDelaySpin);
+    addInspectableRow(m_policyForm, tr("Retry delay"), m_retryDelaySpin,
+                      QStringLiteral("retry.delayMs"));
     m_retryWhenEdit = new QLineEdit(content);
-    m_policyForm->addRow(tr("Retry when"), m_retryWhenEdit);
+    m_retryWhenEdit->setObjectName(QStringLiteral("propertyRetryWhenEdit"));
+    addInspectableRow(m_policyForm, tr("Retry when"), m_retryWhenEdit,
+                      QStringLiteral("retry.retryWhen"));
+    setFormRowVisible(m_policyForm, m_retryWhenEdit, false);
     m_timeoutSpin = new QSpinBox(content);
     m_timeoutSpin->setRange(0, std::numeric_limits<int>::max());
     m_timeoutSpin->setSuffix(tr(" ms"));
-    m_policyForm->addRow(tr("Timeout"), m_timeoutSpin);
+    addInspectableRow(m_policyForm, tr("Timeout"), m_timeoutSpin,
+                      QStringLiteral("timeout.timeoutMs"));
 
     m_periodicEnabledCheck = new QCheckBox(tr("Run this Action in the background"), content);
     m_periodicEnabledCheck->setObjectName(QStringLiteral("propertyPeriodicEnabledCheck"));
@@ -1182,34 +1948,74 @@ void StepPropertyEditor::buildPolicyPage()
     m_periodicIntervalSpin->setObjectName(QStringLiteral("propertyPeriodicIntervalSpin"));
     m_periodicIntervalSpin->setRange(1, std::numeric_limits<int>::max());
     m_periodicIntervalSpin->setSuffix(tr(" ms"));
-    m_policyForm->addRow(tr("Interval"), m_periodicIntervalSpin);
+    addInspectableRow(m_policyForm, tr("Interval"), m_periodicIntervalSpin,
+                      QStringLiteral("periodic.intervalMs"));
     m_periodicRunImmediatelyCheck = new QCheckBox(tr("Run once immediately after registration"), content);
     m_periodicRunImmediatelyCheck->setObjectName(
         QStringLiteral("propertyPeriodicRunImmediatelyCheck"));
-    m_policyForm->addRow(tr("First run"), m_periodicRunImmediatelyCheck);
+    addInspectableRow(m_policyForm, tr("First run"),
+                      m_periodicRunImmediatelyCheck,
+                      QStringLiteral("periodic.runImmediately"));
     m_periodicCounterStartSpin = new QSpinBox(content);
     m_periodicCounterStartSpin->setObjectName(
         QStringLiteral("propertyPeriodicCounterStartSpin"));
     m_periodicCounterStartSpin->setRange(0, std::numeric_limits<int>::max());
     m_periodicCounterStartSpin->setValue(1);
-    m_policyForm->addRow(tr("Counter start"), m_periodicCounterStartSpin);
+    addInspectableRow(m_policyForm, tr("Counter start"),
+                      m_periodicCounterStartSpin,
+                      QStringLiteral("periodic.counter.start"));
     m_periodicCounterIncrementSpin = new QSpinBox(content);
     m_periodicCounterIncrementSpin->setObjectName(
         QStringLiteral("propertyPeriodicCounterIncrementSpin"));
     m_periodicCounterIncrementSpin->setRange(1, std::numeric_limits<int>::max());
     m_periodicCounterIncrementSpin->setValue(1);
-    m_policyForm->addRow(tr("Counter increment"), m_periodicCounterIncrementSpin);
+    addInspectableRow(m_policyForm, tr("Counter increment"),
+                      m_periodicCounterIncrementSpin,
+                      QStringLiteral("periodic.counter.increment"));
     m_periodicCounterWrapAtSpin = new QSpinBox(content);
     m_periodicCounterWrapAtSpin->setObjectName(
         QStringLiteral("propertyPeriodicCounterWrapAtSpin"));
     m_periodicCounterWrapAtSpin->setRange(0, std::numeric_limits<int>::max());
     m_periodicCounterWrapAtSpin->setSpecialValueText(tr("No wrap"));
-    m_policyForm->addRow(tr("Counter wrap at"), m_periodicCounterWrapAtSpin);
+    addInspectableRow(m_policyForm, tr("Counter wrap at"),
+                      m_periodicCounterWrapAtSpin,
+                      QStringLiteral("periodic.counter.wrapAt"));
 
     m_resourcesEdit = new QPlainTextEdit(content);
     m_resourcesEdit->setObjectName(QStringLiteral("propertyResourcesEdit"));
     m_resourcesEdit->setMinimumHeight(140);
-    m_policyForm->addRow(tr("Resources (JSON)"), m_resourcesEdit);
+    addInspectableRow(m_policyForm, tr("Resources (JSON)"),
+                      m_resourcesEdit,
+                      QStringLiteral("resources"));
+
+    const auto createOutcomePolicyCombo = [content](const QString& objectName) {
+        auto* combo = new QComboBox(content);
+        combo->setObjectName(objectName);
+        combo->addItem(QObject::tr("Default (parent / Station)"),
+                       QStringLiteral("Inherit"));
+        combo->addItem(QObject::tr("Continue"), QStringLiteral("Continue"));
+        combo->addItem(QObject::tr("Stop current UUT"), QStringLiteral("StopUut"));
+        combo->addItem(QObject::tr("Run Cleanup"), QStringLiteral("RunCleanup"));
+        combo->addItem(QObject::tr("Abort Session"), QStringLiteral("Abort"));
+        combo->setToolTip(QObject::tr(
+            "Default inherits the parent TestItem policy, then the Station failure policy."));
+        return combo;
+    };
+    m_onFailPolicyCombo = createOutcomePolicyCombo(
+        QStringLiteral("propertyOnFailPolicyCombo"));
+    m_onErrorPolicyCombo = createOutcomePolicyCombo(
+        QStringLiteral("propertyOnErrorPolicyCombo"));
+    m_onTimeoutPolicyCombo = createOutcomePolicyCombo(
+        QStringLiteral("propertyOnTimeoutPolicyCombo"));
+    addInspectableRow(m_policyForm, QStringLiteral("onFail"),
+                      m_onFailPolicyCombo,
+                      QStringLiteral("errorPolicy.onFail"));
+    addInspectableRow(m_policyForm, QStringLiteral("onError"),
+                      m_onErrorPolicyCombo,
+                      QStringLiteral("errorPolicy.onError"));
+    addInspectableRow(m_policyForm, QStringLiteral("onTimeout"),
+                      m_onTimeoutPolicyCombo,
+                      QStringLiteral("errorPolicy.onTimeout"));
 
     auto* scroll = new QScrollArea(m_tabs);
     scroll->setWidgetResizable(true);
@@ -1251,9 +2057,14 @@ void StepPropertyEditor::loadCurrentObject()
     } else {
         addItems(m_kindCombo, {"noop", "wait", "action", "limit", "break", "counter", "aggregate", "operatorPrompt", "barrier", "cleanup", "loop", "testItem", "statement", "sequenceCall"});
     }
-    setComboValue(m_kindCombo,
-                  m_sourceObject.value("kind").toString(
-                      m_sourceObject.value("type").toString(m_isGroup ? "custom" : "noop")));
+    const auto rawKind = m_sourceObject.value(QStringLiteral("kind")).toString(
+        m_sourceObject.value(QStringLiteral("type")).toString(
+            m_isGroup ? QStringLiteral("custom") : QStringLiteral("noop")));
+    const auto displayedKind = canonicalizeSequenceItemForUi(
+        QJsonObject{{QStringLiteral("kind"), rawKind}}, m_isGroup)
+                                   .value(QStringLiteral("kind"))
+                                   .toString(rawKind);
+    setComboValue(m_kindCombo, displayedKind);
     m_enabledCheck->setChecked(m_sourceObject.value("enabled").toBool(true));
     m_alwaysRunCheck->setChecked(m_sourceObject.value("alwaysRun").toBool(false));
     m_resultRecordingCheck->setChecked(m_sourceObject.value("resultRecording").toBool(true));
@@ -1264,8 +2075,27 @@ void StepPropertyEditor::loadCurrentObject()
     m_moduleIdEdit->setText(m_sourceObject.value("moduleId").toString());
     m_inputsEdit->setPlainText(objectText(m_sourceObject.value("inputs").toObject()));
     rebuildFunctionChoices(m_sourceObject.value("function").toString());
-    m_errorPolicyEdit->setPlainText(
-        objectText(m_sourceObject.value("errorPolicy").toObject()));
+    auto errorPolicy = m_sourceObject.value("errorPolicy").toObject();
+    const auto loadOutcomePolicy = [&errorPolicy](const QString& key) {
+        auto value = errorPolicy.value(key).toString(QStringLiteral("Inherit"));
+        if (value.compare(QStringLiteral("InheritStation"),
+                          Qt::CaseInsensitive) == 0 ||
+            value.compare(QStringLiteral("StationDefault"),
+                          Qt::CaseInsensitive) == 0) {
+            value = QStringLiteral("Inherit");
+        }
+        return value;
+    };
+    setComboValue(m_onFailPolicyCombo,
+                  loadOutcomePolicy(QStringLiteral("onFail")));
+    setComboValue(m_onErrorPolicyCombo,
+                  loadOutcomePolicy(QStringLiteral("onError")));
+    setComboValue(m_onTimeoutPolicyCombo,
+                  loadOutcomePolicy(QStringLiteral("onTimeout")));
+    errorPolicy.remove(QStringLiteral("onFail"));
+    errorPolicy.remove(QStringLiteral("onError"));
+    errorPolicy.remove(QStringLiteral("onTimeout"));
+    m_errorPolicyEdit->setPlainText(objectText(errorPolicy));
     m_advancedJsonToggle->setChecked(false);
     m_limitActualEdit->setText(
         m_sourceObject.value("inputs").toObject().value("actual").toVariant().toString());
@@ -1338,7 +2168,7 @@ void StepPropertyEditor::loadCurrentObject()
     m_conditionMaxIterationsSpin->setValue(loop.value("maxIterations").toInt(100));
     m_conditionTimeoutSpin->setValue(loop.value("timeoutMs").toInt(60000));
     setComboValue(m_conditionIterationErrorCombo,
-                  loop.value("iterationErrorPolicy").toString("abortLoop"));
+                  loop.value("iterationErrorPolicy").toString("continueOnFail"));
 
     auto barrier = m_sourceObject.value("barrier").toObject();
     if (barrier.isEmpty()) {
@@ -1498,7 +2328,8 @@ void StepPropertyEditor::updateLimitRows()
 {
     const auto kind = m_kindCombo->currentData().toString();
     const bool predicate = !m_isGroup &&
-        (kind == QStringLiteral("limit") || kind == QStringLiteral("break"));
+        (kind == QStringLiteral("limit") ||
+         kind == QStringLiteral("break"));
     const auto mode = m_limitComparisonCombo->currentData().toString();
     const bool betweenTolerance = mode == QStringLiteral("betweenTolerance");
     const bool betweenLimits = mode == QStringLiteral("betweenLimits");
@@ -1564,7 +2395,8 @@ void StepPropertyEditor::updateAdvancedJsonVisibility()
                              kind == QStringLiteral("sequenceCall");
 
     QSet<QString> knownInputs;
-    if (kind == QStringLiteral("limit") || kind == QStringLiteral("break")) {
+    if (kind == QStringLiteral("limit") ||
+        kind == QStringLiteral("break")) {
         knownInputs.insert(QStringLiteral("actual"));
     } else if (kind == QStringLiteral("counter")) {
         knownInputs.insert(QStringLiteral("condition"));
@@ -1581,7 +2413,8 @@ void StepPropertyEditor::updateAdvancedJsonVisibility()
     }
 
     QSet<QString> knownParameters;
-    if (kind == QStringLiteral("limit") || kind == QStringLiteral("break")) {
+    if (kind == QStringLiteral("limit") ||
+        kind == QStringLiteral("break")) {
         knownParameters = {
             QStringLiteral("comparison"), QStringLiteral("expected"),
             QStringLiteral("lower"), QStringLiteral("lowerLimit"),
@@ -2049,7 +2882,15 @@ void StepPropertyEditor::rebuildPluginInputEditors()
                 }
             }
         }
-        m_pluginInputsForm->addRow(label, fieldWidget);
+        if (inheritedFromStation) {
+            m_pluginInputsForm->addRow(label, fieldWidget);
+        } else {
+            addInspectableRow(m_pluginInputsForm,
+                              label,
+                              fieldWidget,
+                              QStringLiteral("inputs.%1").arg(definition.key),
+                              displayName);
+        }
         m_pluginInputEditors.push_back(
             {definition, editor, fieldWidget, inheritedFromStation});
         observeDraftWidget(editor);
@@ -2451,13 +3292,24 @@ QWidget* StepPropertyEditor::wrapExpressionEditor(QLineEdit* editor)
     button->setObjectName(QStringLiteral("expressionPickerButton"));
     button->setText(QStringLiteral("fx"));
     button->setToolTip(tr("Insert a sequence variable or previous Step output"));
-    button->setPopupMode(QToolButton::InstantPopup);
     button->setFixedSize(28, 28);
-    auto* menu = new QMenu(button);
-    rebuildExpressionMenu(menu, editor);
-    connect(menu, &QMenu::aboutToShow, this,
-            [this, menu, editor] { rebuildExpressionMenu(menu, editor); });
-    button->setMenu(menu);
+    styleExpressionPickerButton(button);
+    connect(button, &QToolButton::clicked, this,
+            [this, button, editor] {
+        QMenu sourceMenu(button);
+        rebuildExpressionMenu(&sourceMenu, editor);
+        const auto location = m_document
+            ? expressionPickerLocation(m_document->rootObject(), m_path)
+            : ExpressionPickerLocation{};
+        const auto expression = selectExpressionFromMenu(
+            &sourceMenu, location, button->window());
+        if (expression.isEmpty()) {
+            return;
+        }
+        editor->setText(expression);
+        editor->setFocus();
+        editor->selectAll();
+    });
     layout->addWidget(button);
     return container;
 }
@@ -2678,30 +3530,24 @@ void StepPropertyEditor::rebuildExpressionMenu(QMenu* menu, QLineEdit* editor)
         ? buildStepOutputExpressionCandidates(
               m_document->rootObject(), m_path, m_plugins, m_pluginByDeviceId)
         : QVector<StepOutputExpressionCandidate>{};
-    QHash<QString, QMenu*> sourceMenus;
-    for (const auto& candidate : candidates) {
-        auto* sourceMenu = sourceMenus.value(candidate.stepPath, nullptr);
-        if (!sourceMenu) {
-            sourceMenu = menu->addMenu(
-                QStringLiteral("%1 - %2").arg(candidate.stepPath, candidate.stepName));
-            sourceMenus.insert(candidate.stepPath, sourceMenu);
-        }
-        auto* action = sourceMenu->addAction(
-            QStringLiteral("%1 [%2]")
-                .arg(candidate.outputName, candidate.outputKey));
-        action->setData(candidate.expression);
-        auto details = pluginParameterTypeName(candidate.type);
-        if (!candidate.unit.isEmpty()) {
-            details += QStringLiteral(" / %1").arg(candidate.unit);
-        }
-        action->setToolTip(details);
-        connect(action, &QAction::triggered, editor,
-                [editor, expression = candidate.expression] {
-                    editor->setText(expression);
-                    editor->setFocus();
-                    editor->selectAll();
-                });
-    }
+    appendStepOutputExpressionMenus(
+        menu,
+        candidates,
+        [editor](QMenu* sourceMenu,
+                 const StepOutputExpressionCandidate& candidate,
+                 const QString& tooltip) {
+            auto* action = sourceMenu->addAction(
+                QStringLiteral("%1 [%2]")
+                    .arg(candidate.outputName, candidate.outputKey));
+            action->setData(candidate.expression);
+            action->setToolTip(tooltip);
+            connect(action, &QAction::triggered, editor,
+                    [editor, expression = candidate.expression] {
+                        editor->setText(expression);
+                        editor->setFocus();
+                        editor->selectAll();
+                    });
+        });
     if (variableCount == 0 && candidates.isEmpty()) {
         auto* unavailable = menu->addAction(tr("No runtime values available"));
         unavailable->setEnabled(false);
@@ -2723,15 +3569,25 @@ QWidget* StepPropertyEditor::wrapPromptMessageEditor(QPlainTextEdit* editor)
     button->setObjectName(QStringLiteral("promptValuePickerButton"));
     button->setText(QStringLiteral("fx"));
     button->setToolTip(tr("Insert a runtime value at the message cursor"));
-    button->setPopupMode(QToolButton::InstantPopup);
     button->setFixedSize(28, 28);
-    auto* menu = new QMenu(button);
-    rebuildPromptExpressionMenu(menu, editor);
-    connect(menu, &QMenu::aboutToShow, this,
-            [this, menu, editor] {
-                rebuildPromptExpressionMenu(menu, editor);
-            });
-    button->setMenu(menu);
+    styleExpressionPickerButton(button);
+    connect(button, &QToolButton::clicked, this,
+            [this, button, editor] {
+        QMenu sourceMenu(button);
+        rebuildPromptExpressionMenu(&sourceMenu, editor);
+        const auto location = m_document
+            ? expressionPickerLocation(m_document->rootObject(), m_path)
+            : ExpressionPickerLocation{};
+        const auto expression = selectExpressionFromMenu(
+            &sourceMenu, location, button->window());
+        if (expression.isEmpty()) {
+            return;
+        }
+        auto cursor = editor->textCursor();
+        cursor.insertText(expression);
+        editor->setTextCursor(cursor);
+        editor->setFocus();
+    });
     layout->addWidget(button, 0, Qt::AlignTop);
     return container;
 }
@@ -2809,28 +3665,18 @@ void StepPropertyEditor::rebuildPromptExpressionMenu(
         ? buildStepOutputExpressionCandidates(
               m_document->rootObject(), m_path, m_plugins, m_pluginByDeviceId)
         : QVector<StepOutputExpressionCandidate>{};
-    if (!candidates.isEmpty()) {
-        auto* outputsMenu = menu->addMenu(tr("Previous Step Outputs"));
-        QHash<QString, QMenu*> sourceMenus;
-        for (const auto& candidate : candidates) {
-            auto* sourceMenu = sourceMenus.value(candidate.stepPath, nullptr);
-            if (!sourceMenu) {
-                sourceMenu = outputsMenu->addMenu(
-                    QStringLiteral("%1 - %2")
-                        .arg(candidate.stepPath, candidate.stepName));
-                sourceMenus.insert(candidate.stepPath, sourceMenu);
-            }
-            auto tooltip = pluginParameterTypeName(candidate.type);
-            if (!candidate.unit.isEmpty()) {
-                tooltip += QStringLiteral(" / %1").arg(candidate.unit);
-            }
+    appendStepOutputExpressionMenus(
+        menu,
+        candidates,
+        [&addExpression](QMenu* sourceMenu,
+                         const StepOutputExpressionCandidate& candidate,
+                         const QString& tooltip) {
             addExpression(sourceMenu,
                           QStringLiteral("%1 [%2]")
                               .arg(candidate.outputName, candidate.outputKey),
                           candidate.expression,
                           tooltip);
-        }
-    }
+        });
 
     if (auto* button = qobject_cast<QToolButton*>(menu->parentWidget())) {
         button->setEnabled(m_editable && !m_previewing);
@@ -3254,6 +4100,38 @@ bool StepPropertyEditor::commitPendingChanges()
         return false;
     }
 
+    const auto kind = m_isGroup
+        ? QString{}
+        : m_kindCombo->currentData().toString();
+    const auto rawSourceKind = m_sourceObject.value(QStringLiteral("kind")).toString(
+        m_sourceObject.value(QStringLiteral("type")).toString());
+    const auto sourceKind = canonicalizeSequenceItemForUi(
+        QJsonObject{{QStringLiteral("kind"), rawSourceKind}}, false)
+                                .value(QStringLiteral("kind"))
+                                .toString(rawSourceKind);
+    const auto dataFamily = [](const QString& value) {
+        if (value == QStringLiteral("action") || value == QStringLiteral("cleanup")) {
+            return QStringLiteral("module");
+        }
+        if (value == QStringLiteral("limit") ||
+            value == QStringLiteral("break")) {
+            return QStringLiteral("predicate");
+        }
+        if (value == QStringLiteral("counter")) return QStringLiteral("counter");
+        if (value == QStringLiteral("aggregate")) return QStringLiteral("aggregate");
+        if (value == QStringLiteral("statement") ||
+            value == QStringLiteral("sequenceCall")) {
+            return QStringLiteral("raw");
+        }
+        return QString{};
+    };
+    const bool resetDataForKindChange = !m_isGroup && sourceKind != kind &&
+        dataFamily(sourceKind) != dataFamily(kind);
+    const bool moduleKind = kind == QStringLiteral("action") ||
+                            kind == QStringLiteral("cleanup");
+    const bool moduleCall = moduleKind &&
+        !m_moduleIdEdit->text().trimmed().isEmpty();
+
     QJsonObject inputs;
     QJsonObject parameters;
     QJsonObject errorPolicy;
@@ -3263,7 +4141,10 @@ bool StepPropertyEditor::commitPendingChanges()
         showError(tr("Inputs: %1").arg(error));
         return false;
     }
-    if (!m_isGroup &&
+    if (resetDataForKindChange) {
+        inputs = {};
+    }
+    if (!m_isGroup && moduleCall &&
         m_moduleIdEdit->text().trimmed() == QStringLiteral("device")) {
         const auto deviceId = m_deviceIdCombo->currentData().toString();
         if (deviceId.isEmpty()) {
@@ -3273,7 +4154,7 @@ bool StepPropertyEditor::commitPendingChanges()
         inputs.insert(QStringLiteral("deviceId"), deviceId);
     }
     QWidget* invalidPluginInput = nullptr;
-    if (!m_isGroup &&
+    if (!m_isGroup && moduleCall &&
         !mergePluginInputValues(inputs, error, &invalidPluginInput)) {
         flashValidationError(invalidPluginInput);
         showError(error);
@@ -3283,9 +4164,12 @@ bool StepPropertyEditor::commitPendingChanges()
         showError(tr("Parameters: %1").arg(error));
         return false;
     }
+    if (resetDataForKindChange) {
+        parameters = {};
+    }
     if (!m_isGroup &&
         !parseObjectText(m_errorPolicyEdit->toPlainText(), errorPolicy, error)) {
-        showError(tr("Legacy error policy: %1").arg(error));
+        showError(tr("Advanced error policy: %1").arg(error));
         return false;
     }
     if (!m_isGroup && !parseArrayText(m_resourcesEdit->toPlainText(), resources, error)) {
@@ -3314,10 +4198,18 @@ bool StepPropertyEditor::commitPendingChanges()
         updated.insert("checkpointAfter", m_checkpointAfterCheck->isChecked());
         const auto tags = tagsFromText(m_tagsEdit->text());
         if (tags.isEmpty()) updated.remove("tags"); else updated.insert("tags", tags);
-        insertOrRemove(updated, "moduleId", m_moduleIdEdit->text());
-        insertOrRemove(updated, "function",
-                       m_functionEdit->currentData().toString());
-        const auto kind = m_kindCombo->currentData().toString();
+        if (moduleKind) {
+            insertOrRemove(updated, "moduleId", m_moduleIdEdit->text());
+            if (m_moduleIdEdit->text().trimmed().isEmpty()) {
+                updated.remove(QStringLiteral("function"));
+            } else {
+                insertOrRemove(updated, "function",
+                               m_functionEdit->currentData().toString());
+            }
+        } else {
+            updated.remove(QStringLiteral("moduleId"));
+            updated.remove(QStringLiteral("function"));
+        }
         if (kind == "wait") {
             parameters.remove("ms");
             updated.insert("ms", m_waitMsSpin->value());
@@ -3460,6 +4352,19 @@ bool StepPropertyEditor::commitPendingChanges()
         if (inputs.isEmpty()) updated.remove("inputs"); else updated.insert("inputs", inputs);
         if (parameters.isEmpty()) updated.remove("parameters"); else updated.insert("parameters", parameters);
         if (resources.isEmpty()) updated.remove("resources"); else updated.insert("resources", resources);
+        const auto storeOutcomePolicy = [&errorPolicy](
+                                            const QString& key,
+                                            const QComboBox* combo) {
+            const auto value = combo->currentData().toString();
+            if (value == QStringLiteral("Inherit")) {
+                errorPolicy.remove(key);
+            } else {
+                errorPolicy.insert(key, value);
+            }
+        };
+        storeOutcomePolicy(QStringLiteral("onFail"), m_onFailPolicyCombo);
+        storeOutcomePolicy(QStringLiteral("onError"), m_onErrorPolicyCombo);
+        storeOutcomePolicy(QStringLiteral("onTimeout"), m_onTimeoutPolicyCombo);
         if (errorPolicy.isEmpty()) updated.remove("errorPolicy");
         else updated.insert("errorPolicy", errorPolicy);
 
@@ -3534,8 +4439,12 @@ bool StepPropertyEditor::commitPendingChanges()
             barrier.insert("timeoutPolicy", m_barrierTimeoutPolicyCombo->currentData().toString());
             barrier.insert("releaseHeldResourcesOnWait", m_releaseResourcesCheck->isChecked());
             updated.insert("barrier", barrier);
+        } else {
+            updated.remove(QStringLiteral("barrier"));
         }
     }
+
+    updated = canonicalizeSequenceItemForUi(std::move(updated), m_isGroup);
 
     const auto clearSuccessfulDraft = [this] {
         for (const auto& item : std::as_const(m_pluginInputEditors)) {

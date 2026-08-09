@@ -1,6 +1,7 @@
 #include "StartupSupport.h"
 
 #include "PicoATE/Core/SequenceCompiler.h"
+#include "PicoATE/Core/ProductRouting.h"
 #include "PicoATE/Core/StationConfig.h"
 
 #include <QDir>
@@ -11,6 +12,8 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QRegularExpression>
+
+#include <algorithm>
 
 namespace PicoATE::Ui {
 
@@ -34,12 +37,24 @@ bool readJsonObject(const QString& filePath, QJsonObject& object)
 bool isSequenceCandidate(const QFileInfo& fileInfo)
 {
     const auto baseName = fileInfo.completeBaseName();
-    if (!baseName.contains(QStringLiteral("seq"), Qt::CaseInsensitive)) {
-        return false;
+    return baseName.contains(QStringLiteral("seq"), Qt::CaseInsensitive);
+}
+
+void appendStationErrors(StartupValidationResult& result,
+                         const QString& stationPath)
+{
+    if (!QFileInfo::exists(stationPath)) {
+        result.errors.push_back(QStringLiteral("缺少 StationSystem.json：%1")
+                                    .arg(stationPath));
+        return;
     }
-    QJsonObject root;
-    return readJsonObject(fileInfo.absoluteFilePath(), root) &&
-           root.value(QStringLiteral("groups")).isArray();
+    const auto station = PicoATE::Core::loadStationConfigFile(stationPath);
+    for (const auto& error : station.errors) {
+        result.errors.push_back(
+            error.path.isEmpty()
+                ? error.message
+                : QStringLiteral("%1：%2").arg(error.path, error.message));
+    }
 }
 
 } // namespace
@@ -88,6 +103,66 @@ QString StartupSupport::stationPathForSequence(const QString& sequencePath)
 {
     const QFileInfo sequence(sequencePath);
     return sequence.absoluteDir().filePath(QStringLiteral("StationSystem.json"));
+}
+
+QString StartupSupport::stationPathForRoot(const QString& rootDirectory)
+{
+    return QDir(rootDirectory).absoluteFilePath(QStringLiteral("StationSystem.json"));
+}
+
+QString StartupSupport::productRoutingPathForRoot(const QString& rootDirectory)
+{
+    return QDir(rootDirectory).absoluteFilePath(QStringLiteral("ProductRouting.json"));
+}
+
+QString StartupSupport::productProjectRootPathForRoot(
+    const QString& rootDirectory)
+{
+    return QDir(rootDirectory).absoluteFilePath(QStringLiteral("projects"));
+}
+
+QJsonObject StartupSupport::newProjectSequenceTemplate()
+{
+    const auto group = [](const QString& id, const QString& name) {
+        return QJsonObject{
+            {QStringLiteral("id"), id},
+            {QStringLiteral("name"), name},
+            {QStringLiteral("kind"), id},
+            {QStringLiteral("steps"), QJsonArray{}}};
+    };
+    return QJsonObject{
+        {QStringLiteral("id"), QStringLiteral("NA")},
+        {QStringLiteral("name"), QStringLiteral("NA")},
+        {QStringLiteral("version"), QStringLiteral("1.0.0")},
+        {QStringLiteral("groups"),
+         QJsonArray{group(QStringLiteral("setup"), QStringLiteral("Setup")),
+                    group(QStringLiteral("main"), QStringLiteral("Main")),
+                    group(QStringLiteral("cleanup"), QStringLiteral("Cleanup"))}}};
+}
+
+QJsonObject StartupSupport::newProjectStationTemplate()
+{
+    return QJsonObject{
+        {QStringLiteral("stationId"), QStringLiteral("NA")},
+        {QStringLiteral("name"), QStringLiteral("NA")},
+        {QStringLiteral("pluginRegistry"),
+         QStringLiteral("plugins/PluginRegistry.json")},
+        {QStringLiteral("stopOnFailure"), true},
+        {QStringLiteral("scanDialogEnabled"), true},
+        {QStringLiteral("txtLogEnabled"), true},
+        {QStringLiteral("csvReportEnabled"), true},
+        {QStringLiteral("xlsxReportEnabled"), true},
+        {QStringLiteral("loopTestEnabled"), false},
+        {QStringLiteral("loopTestCount"), 1},
+        {QStringLiteral("reportOutputDirectory"), QString{}},
+        {QStringLiteral("snLength"), 0},
+        {QStringLiteral("snPattern"), QString{}},
+        {QStringLiteral("snAllowedRegex"), QStringLiteral("^[A-Z0-9]+$")},
+        {QStringLiteral("metadata"),
+         QJsonObject{{QStringLiteral("jigNo"), QStringLiteral("NA")},
+                     {QStringLiteral("order"), QStringLiteral("NA")},
+                     {QStringLiteral("tester"), QStringLiteral("NA")}}},
+        {QStringLiteral("devices"), QJsonArray{}}};
 }
 
 bool StartupSupport::stationScanDialogEnabled(const QString& stationPath,
@@ -199,22 +274,45 @@ StartupValidationResult StartupSupport::validateSelection(
     // Station validity is a production-run gate, not an Admin access gate.
     // Admin must remain available so an invalid or missing Station can be repaired.
     if (mode == UiMode::Test) {
-        if (!QFileInfo::exists(stationPath)) {
-            result.errors.push_back(QStringLiteral("缺少 StationSystem.json：%1")
-                                        .arg(stationPath));
-        } else {
-            const auto station = PicoATE::Core::loadStationConfigFile(stationPath);
-            if (!station.ok()) {
-                for (const auto& error : station.errors) {
-                    result.errors.push_back(
-                        error.path.isEmpty()
-                            ? error.message
-                            : QStringLiteral("%1：%2").arg(error.path, error.message));
-                }
-            }
+        appendStationErrors(result, stationPath);
+    }
+
+    if (mode == UiMode::Admin &&
+        !matchesDailyAdminPassword(adminPassword, date)) {
+        result.errors.push_back(QStringLiteral("Admin 密码错误"));
+    }
+    return result;
+}
+
+StartupValidationResult StartupSupport::validateAutoSelection(
+    UiMode mode,
+    const QString& productRoutingPath,
+    const QString& stationPath,
+    const QString& adminPassword,
+    const QDate& date)
+{
+    StartupValidationResult result;
+    const auto routing = PicoATE::Core::loadProductRoutingFile(productRoutingPath);
+    for (const auto& error : routing.errors) {
+        result.errors.push_back(
+            error.path.isEmpty()
+                ? error.message
+                : QStringLiteral("%1：%2").arg(error.path, error.message));
+    }
+    if (routing.ok()) {
+        const bool hasEnabledRoute = std::any_of(
+            routing.config.routes.cbegin(),
+            routing.config.routes.cend(),
+            [](const auto& route) { return route.enabled; });
+        if (!hasEnabledRoute) {
+            result.errors.push_back(QStringLiteral(
+                "ProductRouting.json 中没有已启用的产品路由"));
         }
     }
 
+    if (mode == UiMode::Test && !stationPath.trimmed().isEmpty()) {
+        appendStationErrors(result, stationPath);
+    }
     if (mode == UiMode::Admin &&
         !matchesDailyAdminPassword(adminPassword, date)) {
         result.errors.push_back(QStringLiteral("Admin 密码错误"));

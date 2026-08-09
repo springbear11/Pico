@@ -159,6 +159,8 @@ StepReport makeStepReport(const ExecutionPlan& plan, const UutExecution& uut, co
     if (node) {
         report.stepId = node->localId.isEmpty() ? nodeId : node->localId;
         report.displayName = node->displayName;
+        report.moduleId = node->payload.value(QStringLiteral("moduleId")).toString();
+        report.functionName = node->payload.value(QStringLiteral("function")).toString();
         report.kind = node->kind;
         report.phase = executionPhaseOf(*node);
         report.resultRecording = node->resultRecording;
@@ -429,6 +431,23 @@ ExecutionSessionResult ExecutionSession::run()
             it->hasError = it->hasError || step.hasError;
         }
     };
+    auto applyRequestedCleanup = [this] {
+        if (!m_scheduler->sessionCleanupRequested()) {
+            return false;
+        }
+        const auto reason = m_scheduler->sessionCleanupReason().isEmpty()
+            ? QStringLiteral("skipped because session cleanup was requested")
+            : m_scheduler->sessionCleanupReason();
+        for (auto& uut : m_uuts) {
+            m_scheduler->skipPendingNonAlwaysRun(
+                uut,
+                QStringLiteral("root"),
+                ExecutionPhase::Main,
+                reason,
+                true);
+        }
+        return true;
+    };
 
     if (!m_stopToken->isStopRequested()) {
         m_state = ExecutionState::Running;
@@ -511,6 +530,10 @@ ExecutionSessionResult ExecutionSession::run()
                     uut, QStringLiteral("root"), ExecutionPhase::Main);
                 appendUutStep(uut.uutId, step);
                 completedPendingRequest = completedPendingRequest || step.progressed;
+                if (applyRequestedCleanup()) {
+                    completedPendingRequest = true;
+                    break;
+                }
             }
             m_scheduler->applyBarrierReleases(uutPointers());
             publishCompletedUuts();
@@ -550,6 +573,10 @@ ExecutionSessionResult ExecutionSession::run()
             m_scheduler->applyBarrierReleases(uutPointers());
             publishCompletedUuts();
             pauseAfterDebugStepIfNeeded(uut, step, "root");
+            if (applyRequestedCleanup()) {
+                progressed = true;
+                break;
+            }
         }
 
         if (allUutsComplete()) {
@@ -628,8 +655,13 @@ ExecutionSessionResult ExecutionSession::run()
     }
 
     result.completed = setupComplete && allUutsComplete() && cleanupComplete;
-    if (m_stopToken->isStopRequested() &&
-        m_stopToken->requestedMode() == StopMode::Abort) {
+    const bool stopRequested = m_stopToken->isStopRequested();
+    if (stopRequested) {
+        // A stopped production run is terminal, but it is never a passing run.
+        result.hasError = true;
+    }
+
+    if (stopRequested && m_stopToken->requestedMode() == StopMode::Abort) {
         m_state = ExecutionState::Aborted;
     } else if (result.completed && result.hasError) {
         m_state = ExecutionState::CompletedWithError;
@@ -701,7 +733,8 @@ ExecutionReport ExecutionSession::report() const
         report.uuts.push_back(uutReport);
     }
 
-    if (m_state == ExecutionState::CompletedWithError) {
+    if (m_state == ExecutionState::CompletedWithError ||
+        m_state == ExecutionState::Aborted) {
         report.sessionHasError = true;
         report.hasError = true;
     }

@@ -142,10 +142,13 @@ LoopControllerResult LoopController::advanceWhile(const LoopRegion& region,
         }
 
         const auto summary = summarizeBody(region, uut);
-        const bool failedIteration = summary.outcome != NodeOutcome::Passed;
+        const bool failed = summary.outcome == NodeOutcome::Failed;
+        const bool executionFault = summary.outcome == NodeOutcome::Error ||
+                                    summary.outcome == NodeOutcome::Timeout;
         const bool mustAbort = summary.outcome == NodeOutcome::Cancelled ||
-            (failedIteration &&
-             spec.iterationErrorPolicy == WhileIterationErrorPolicy::AbortLoop);
+            (failed && spec.iterationErrorPolicy == WhileIterationErrorPolicy::AbortLoop) ||
+            (executionFault &&
+             spec.iterationErrorPolicy != WhileIterationErrorPolicy::ContinueLoop);
         if (mustAbort) {
             state.completed = true;
             auto outputs = whileOutputs(state, elapsedMs);

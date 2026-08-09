@@ -39,7 +39,8 @@ public:
         DisabledByAncestorRole,
         ResourceRegionIdRole,
         ResourceMarkerRole,
-        ResourceBoundaryEligibleRole
+        ResourceBoundaryEligibleRole,
+        SearchTextRole
     };
 
     enum class ItemType {
@@ -88,8 +89,10 @@ public:
     void setBreakpointNodePaths(QSet<QString> nodePaths);
     void clearBreakpoints();
     void setCurrentDebugNodePath(const QString& nodePath);
-    int setInspectionField(QString fieldPath);
+    QVector<QModelIndex> indexesMatchingText(const QString& query) const;
+    int setInspectionField(QString fieldPath, QString displayName = {});
     QString inspectionField() const;
+    QString inspectionDisplayName() const;
     int inspectionMatchCount() const;
 
 signals:
@@ -168,6 +171,7 @@ private:
     QSet<QString> m_breakpointNodePaths;
     QString m_currentDebugNodePath;
     QString m_inspectionField;
+    QString m_inspectionDisplayName;
     QHash<QString, QColor> m_inspectionColors;
     int m_inspectionMatchCount = 0;
     bool m_deferDocumentRefresh = false;

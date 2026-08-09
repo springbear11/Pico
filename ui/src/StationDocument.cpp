@@ -153,6 +153,15 @@ bool StationDocument::load(const QString& filePath)
     return true;
 }
 
+bool StationDocument::initializeNew(QJsonObject root)
+{
+    if (root.isEmpty()) {
+        return false;
+    }
+    acceptRoot(std::move(root), {});
+    return true;
+}
+
 bool StationDocument::save(QString* errorMessage)
 {
     if (m_filePath.isEmpty()) {
@@ -258,7 +267,7 @@ bool StationDocument::insertDevice(int row, QJsonObject device)
         device.insert("driverId", "");
         device.insert("connectionKind", "manual");
         device.insert("resource", "");
-        device.insert("lifetime", "Station");
+        device.insert("lifetime", "Run");
         device.insert("enabled", false);
         device.insert("options", QJsonObject{});
     }

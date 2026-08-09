@@ -25,9 +25,9 @@ void paintSwitch(QPainter& painter,
                          SwitchWidth,
                          SwitchHeight);
     const QColor trackColor = !enabled
-        ? QColor(QStringLiteral("#d0d5dd"))
-        : checked ? QColor(QStringLiteral("#2e90fa"))
-                  : QColor(QStringLiteral("#98a2b3"));
+        ? QColor(QStringLiteral("#d5dade"))
+        : checked ? QColor(QStringLiteral("#3d4a53"))
+                  : QColor(QStringLiteral("#a8b1b8"));
 
     painter.save();
     painter.setRenderHint(QPainter::Antialiasing);

@@ -33,6 +33,7 @@ enum class StepGroupKind {
 };
 
 enum class OnFailureAction {
+    Inherit,
     Continue,
     StopUut,
     Retry,
@@ -81,9 +82,9 @@ struct PeriodicTaskPolicyDef {
 };
 
 struct ErrorPolicyDef {
-    OnFailureAction onFail = OnFailureAction::StopUut;
-    OnFailureAction onError = OnFailureAction::StopUut;
-    OnFailureAction onTimeout = OnFailureAction::StopUut;
+    OnFailureAction onFail = OnFailureAction::Inherit;
+    OnFailureAction onError = OnFailureAction::Inherit;
+    OnFailureAction onTimeout = OnFailureAction::Inherit;
     CleanupRegionId cleanupRegionId;
     bool stopUutOnFailure = true;
 
@@ -114,7 +115,7 @@ struct LoopPolicyDef {
     int to = 0;
     int step = 1;
     WhileIterationErrorPolicy iterationErrorPolicy =
-        WhileIterationErrorPolicy::AbortLoop;
+        WhileIterationErrorPolicy::ContinueOnFail;
     int intervalMs = 0;
     int maxIterations = 100;
     int timeoutMs = 60000;

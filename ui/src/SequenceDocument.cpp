@@ -99,6 +99,400 @@ QJsonObject standardGroup(const QString& kind, const QString& name)
                        {QStringLiteral("steps"), QJsonArray{}}};
 }
 
+QString normalizedSchemaToken(QString value)
+{
+    value = value.trimmed().toLower();
+    value.remove(QLatin1Char('-'));
+    value.remove(QLatin1Char('_'));
+    value.remove(QLatin1Char(' '));
+    return value;
+}
+
+QString canonicalStepKind(QString value)
+{
+    const auto normalized = normalizedSchemaToken(value);
+    if (normalized == QStringLiteral("noop")) return QStringLiteral("noop");
+    if (normalized == QStringLiteral("wait")) return QStringLiteral("wait");
+    if (normalized == QStringLiteral("action") ||
+        normalized == QStringLiteral("mockaction")) {
+        return QStringLiteral("action");
+    }
+    if (normalized == QStringLiteral("barrier")) return QStringLiteral("barrier");
+    if (normalized == QStringLiteral("cleanup")) return QStringLiteral("cleanup");
+    if (normalized == QStringLiteral("loop") ||
+        normalized == QStringLiteral("forloop")) {
+        return QStringLiteral("loop");
+    }
+    if (normalized == QStringLiteral("testitem") ||
+        normalized == QStringLiteral("composite")) {
+        return QStringLiteral("testItem");
+    }
+    if (normalized == QStringLiteral("limit") ||
+        normalized == QStringLiteral("numericlimit")) {
+        return QStringLiteral("limit");
+    }
+    if (normalized == QStringLiteral("break") ||
+        normalized == QStringLiteral("breakif")) {
+        return QStringLiteral("break");
+    }
+    if (normalized == QStringLiteral("counter")) return QStringLiteral("counter");
+    if (normalized == QStringLiteral("aggregate") ||
+        normalized == QStringLiteral("statistics")) {
+        return QStringLiteral("aggregate");
+    }
+    if (normalized == QStringLiteral("operatorprompt") ||
+        normalized == QStringLiteral("prompt")) {
+        return QStringLiteral("operatorPrompt");
+    }
+    if (normalized == QStringLiteral("statement")) return QStringLiteral("statement");
+    if (normalized == QStringLiteral("sequencecall")) {
+        return QStringLiteral("sequenceCall");
+    }
+    return {};
+}
+
+void moveAlias(QJsonObject& object,
+               const QString& canonical,
+               const QString& alias)
+{
+    if (!object.contains(canonical) && object.contains(alias)) {
+        object.insert(canonical, object.value(alias));
+    }
+    object.remove(alias);
+}
+
+void removeDefaultBoolean(QJsonObject& object,
+                          const QString& key,
+                          bool defaultValue)
+{
+    const auto value = object.value(key);
+    if (value.isBool() && value.toBool() == defaultValue) {
+        object.remove(key);
+    }
+}
+
+void removeDefaultNumber(QJsonObject& object,
+                         const QString& key,
+                         double defaultValue)
+{
+    const auto value = object.value(key);
+    if (value.isDouble() && value.toDouble() == defaultValue) {
+        object.remove(key);
+    }
+}
+
+void removeEmptyString(QJsonObject& object, const QString& key)
+{
+    const auto value = object.value(key);
+    if (value.isString() && value.toString().trimmed().isEmpty()) {
+        object.remove(key);
+    }
+}
+
+QJsonArray canonicalizeResourceRequirements(QJsonArray resources)
+{
+    for (int index = 0; index < resources.size(); ++index) {
+        if (!resources[index].isObject()) {
+            continue;
+        }
+        auto resource = resources[index].toObject();
+        moveAlias(resource, QStringLiteral("resourceId"), QStringLiteral("name"));
+        resources[index] = resource;
+    }
+    return resources;
+}
+
+void canonicalizeLimitData(QJsonObject& step)
+{
+    if (!step.value(QStringLiteral("inputs")).isObject() ||
+        !step.value(QStringLiteral("parameters")).isObject()) {
+        return;
+    }
+
+    auto inputs = step.value(QStringLiteral("inputs")).toObject();
+    auto parameters = step.value(QStringLiteral("parameters")).toObject();
+    moveAlias(inputs, QStringLiteral("lower"), QStringLiteral("lowerLimit"));
+    moveAlias(inputs, QStringLiteral("upper"), QStringLiteral("upperLimit"));
+    moveAlias(parameters, QStringLiteral("lower"), QStringLiteral("lowerLimit"));
+    moveAlias(parameters, QStringLiteral("upper"), QStringLiteral("upperLimit"));
+
+    const QStringList policyFields = {
+        QStringLiteral("comparison"),
+        QStringLiteral("expected"),
+        QStringLiteral("tolerance"),
+        QStringLiteral("lower"),
+        QStringLiteral("upper"),
+        QStringLiteral("inclusive"),
+        QStringLiteral("measurementName"),
+        QStringLiteral("unit"),
+    };
+    for (const auto& field : policyFields) {
+        if (!inputs.contains(field)) {
+            continue;
+        }
+        // Runtime lookup gives inputs precedence, so preserve that precedence
+        // while moving policy fields to their canonical parameters object.
+        parameters.insert(field, inputs.take(field));
+    }
+    if (!inputs.contains(QStringLiteral("actual")) &&
+        parameters.contains(QStringLiteral("actual"))) {
+        inputs.insert(QStringLiteral("actual"),
+                      parameters.value(QStringLiteral("actual")));
+    }
+    parameters.remove(QStringLiteral("actual"));
+
+    if (inputs.isEmpty()) step.remove(QStringLiteral("inputs"));
+    else step.insert(QStringLiteral("inputs"), inputs);
+    if (parameters.isEmpty()) step.remove(QStringLiteral("parameters"));
+    else step.insert(QStringLiteral("parameters"), parameters);
+}
+
+QJsonObject canonicalizeStepForUi(QJsonObject step);
+
+QJsonArray canonicalizeStepsForUi(QJsonArray steps)
+{
+    for (int index = 0; index < steps.size(); ++index) {
+        if (steps[index].isObject()) {
+            steps[index] = canonicalizeStepForUi(steps[index].toObject());
+        }
+    }
+    return steps;
+}
+
+QJsonObject canonicalizeStepForUi(QJsonObject step)
+{
+    if (!step.contains(QStringLiteral("kind")) &&
+        step.contains(QStringLiteral("type"))) {
+        step.insert(QStringLiteral("kind"), step.value(QStringLiteral("type")));
+    }
+    step.remove(QStringLiteral("type"));
+
+    QString kind;
+    if (step.value(QStringLiteral("kind")).isString()) {
+        kind = canonicalStepKind(step.value(QStringLiteral("kind")).toString());
+        if (!kind.isEmpty()) {
+            step.insert(QStringLiteral("kind"), kind);
+        }
+    }
+
+    removeDefaultBoolean(step, QStringLiteral("enabled"), true);
+    removeDefaultBoolean(step, QStringLiteral("alwaysRun"), false);
+    removeDefaultBoolean(step, QStringLiteral("resultRecording"), true);
+    removeDefaultBoolean(step, QStringLiteral("checkpointBefore"), false);
+    removeDefaultBoolean(step, QStringLiteral("checkpointAfter"), false);
+    removeEmptyString(step, QStringLiteral("key"));
+    removeEmptyString(step, QStringLiteral("moduleId"));
+    removeEmptyString(step, QStringLiteral("function"));
+
+    if (!step.value(QStringLiteral("timeout")).isObject() &&
+        !step.contains(QStringLiteral("timeout")) &&
+        step.contains(QStringLiteral("timeoutMs"))) {
+        step.insert(QStringLiteral("timeout"),
+                    QJsonObject{{QStringLiteral("timeoutMs"),
+                                 step.value(QStringLiteral("timeoutMs"))}});
+    }
+    if (step.value(QStringLiteral("timeout")).isObject()) {
+        step.remove(QStringLiteral("timeoutMs"));
+        auto timeout = step.value(QStringLiteral("timeout")).toObject();
+        removeDefaultNumber(timeout, QStringLiteral("timeoutMs"), 0.0);
+        if (timeout.isEmpty()) step.remove(QStringLiteral("timeout"));
+        else step.insert(QStringLiteral("timeout"), timeout);
+    }
+
+    if (step.value(QStringLiteral("retry")).isObject()) {
+        auto retry = step.value(QStringLiteral("retry")).toObject();
+        removeDefaultNumber(retry, QStringLiteral("maxAttempts"), 1.0);
+        removeDefaultNumber(retry, QStringLiteral("delayMs"), 0.0);
+        removeEmptyString(retry, QStringLiteral("retryWhen"));
+        if (retry.isEmpty()) step.remove(QStringLiteral("retry"));
+        else step.insert(QStringLiteral("retry"), retry);
+    }
+
+    if (step.value(QStringLiteral("errorPolicy")).isObject()) {
+        auto policy = step.value(QStringLiteral("errorPolicy")).toObject();
+        for (const auto& field : {QStringLiteral("onFail"),
+                                  QStringLiteral("onError"),
+                                  QStringLiteral("onTimeout")}) {
+            const auto normalized = normalizedSchemaToken(
+                policy.value(field).toString());
+            if (normalized == QStringLiteral("inherit") ||
+                normalized == QStringLiteral("inheritstation") ||
+                normalized == QStringLiteral("stationdefault")) {
+                policy.remove(field);
+            }
+        }
+        removeEmptyString(policy, QStringLiteral("cleanupRegionId"));
+        if (policy.isEmpty()) step.remove(QStringLiteral("errorPolicy"));
+        else step.insert(QStringLiteral("errorPolicy"), policy);
+    }
+
+    if (step.value(QStringLiteral("resources")).isArray()) {
+        const auto resources = canonicalizeResourceRequirements(
+            step.value(QStringLiteral("resources")).toArray());
+        if (resources.isEmpty()) step.remove(QStringLiteral("resources"));
+        else step.insert(QStringLiteral("resources"), resources);
+    }
+    if (step.value(QStringLiteral("resourceRegionStart")).isObject()) {
+        auto region = step.value(QStringLiteral("resourceRegionStart")).toObject();
+        if (region.value(QStringLiteral("resources")).isArray()) {
+            region.insert(QStringLiteral("resources"),
+                          canonicalizeResourceRequirements(
+                              region.value(QStringLiteral("resources")).toArray()));
+        }
+        step.insert(QStringLiteral("resourceRegionStart"), region);
+    }
+
+    if (kind == QStringLiteral("wait")) {
+        if (!step.contains(QStringLiteral("ms")) &&
+            step.value(QStringLiteral("parameters")).isObject()) {
+            const auto parameters = step.value(QStringLiteral("parameters")).toObject();
+            if (parameters.contains(QStringLiteral("ms"))) {
+                step.insert(QStringLiteral("ms"), parameters.value(QStringLiteral("ms")));
+            }
+        }
+    }
+
+    const QStringList barrierFields = {
+        QStringLiteral("barrierName"),
+        QStringLiteral("cohortId"),
+        QStringLiteral("expectedUutCount"),
+        QStringLiteral("quorumCount"),
+        QStringLiteral("quorumRatio"),
+        QStringLiteral("arrivalTimeoutMs"),
+        QStringLiteral("releaseTimeoutMs"),
+        QStringLiteral("arrivalPolicy"),
+        QStringLiteral("releasePolicy"),
+        QStringLiteral("failurePolicy"),
+        QStringLiteral("timeoutPolicy"),
+        QStringLiteral("releaseHeldResourcesOnWait"),
+    };
+    if (kind == QStringLiteral("barrier") &&
+        !step.contains(QStringLiteral("barrier"))) {
+        QJsonObject barrier;
+        for (const auto& field : barrierFields) {
+            if (step.contains(field)) {
+                barrier.insert(field, step.value(field));
+            }
+        }
+        if (!barrier.isEmpty()) {
+            step.insert(QStringLiteral("barrier"), barrier);
+        }
+    }
+    for (const auto& field : barrierFields) {
+        step.remove(field);
+    }
+
+    if (kind == QStringLiteral("limit") ||
+        kind == QStringLiteral("break")) {
+        if (!step.contains(QStringLiteral("inputs"))) {
+            step.insert(QStringLiteral("inputs"), QJsonObject{});
+        }
+        if (!step.contains(QStringLiteral("parameters"))) {
+            step.insert(QStringLiteral("parameters"), QJsonObject{});
+        }
+        canonicalizeLimitData(step);
+    }
+
+    const bool recognizedKind = !kind.isEmpty();
+    const bool moduleKind = kind == QStringLiteral("action") ||
+                            kind == QStringLiteral("cleanup");
+    const bool dataKind = moduleKind || kind == QStringLiteral("limit") ||
+                          kind == QStringLiteral("break") ||
+                          kind == QStringLiteral("counter") ||
+                          kind == QStringLiteral("aggregate") ||
+                          kind == QStringLiteral("statement") ||
+                          kind == QStringLiteral("sequenceCall");
+    const bool compositeKind = kind == QStringLiteral("loop") ||
+                               kind == QStringLiteral("testItem");
+
+    if (recognizedKind && !moduleKind) {
+        step.remove(QStringLiteral("moduleId"));
+        step.remove(QStringLiteral("function"));
+    }
+    if (recognizedKind && !dataKind) {
+        step.remove(QStringLiteral("inputs"));
+        step.remove(QStringLiteral("parameters"));
+    }
+    if (recognizedKind && kind != QStringLiteral("wait")) {
+        step.remove(QStringLiteral("ms"));
+    }
+    if (recognizedKind && kind != QStringLiteral("loop")) {
+        step.remove(QStringLiteral("loop"));
+    }
+    if (recognizedKind && kind != QStringLiteral("operatorPrompt")) {
+        step.remove(QStringLiteral("prompt"));
+    }
+    if (recognizedKind && kind != QStringLiteral("barrier")) {
+        step.remove(QStringLiteral("barrier"));
+    }
+    if (recognizedKind && kind != QStringLiteral("action")) {
+        step.remove(QStringLiteral("periodic"));
+    }
+    if (recognizedKind && !compositeKind) {
+        step.remove(QStringLiteral("steps"));
+    } else if (step.value(QStringLiteral("steps")).isArray()) {
+        step.insert(QStringLiteral("steps"),
+                    canonicalizeStepsForUi(
+                        step.value(QStringLiteral("steps")).toArray()));
+    }
+
+    if (step.value(QStringLiteral("inputs")).isObject() &&
+        step.value(QStringLiteral("inputs")).toObject().isEmpty()) {
+        step.remove(QStringLiteral("inputs"));
+    }
+    if (step.value(QStringLiteral("parameters")).isObject()) {
+        auto parameters = step.value(QStringLiteral("parameters")).toObject();
+        parameters.remove(QStringLiteral("moduleId"));
+        parameters.remove(QStringLiteral("function"));
+        parameters.remove(QStringLiteral("inputs"));
+        if (parameters.isEmpty()) step.remove(QStringLiteral("parameters"));
+        else step.insert(QStringLiteral("parameters"), parameters);
+    }
+    if (step.value(QStringLiteral("tags")).isArray() &&
+        step.value(QStringLiteral("tags")).toArray().isEmpty()) {
+        step.remove(QStringLiteral("tags"));
+    }
+    return step;
+}
+
+QJsonObject canonicalizeGroupForUi(QJsonObject group)
+{
+    if (!group.contains(QStringLiteral("kind")) &&
+        group.contains(QStringLiteral("type"))) {
+        group.insert(QStringLiteral("kind"), group.value(QStringLiteral("type")));
+    }
+    group.remove(QStringLiteral("type"));
+    if (group.value(QStringLiteral("kind")).isString()) {
+        const auto kind = normalizedGroupKind(group);
+        if (kind == QStringLiteral("setup") || kind == QStringLiteral("main") ||
+            kind == QStringLiteral("cleanup") || kind == QStringLiteral("custom")) {
+            group.insert(QStringLiteral("kind"), kind);
+        }
+    }
+    removeDefaultBoolean(group, QStringLiteral("enabled"), true);
+    if (group.value(QStringLiteral("steps")).isArray()) {
+        group.insert(QStringLiteral("steps"),
+                     canonicalizeStepsForUi(
+                         group.value(QStringLiteral("steps")).toArray()));
+    }
+    return group;
+}
+
+QJsonObject canonicalizeSequenceRootForUi(QJsonObject root)
+{
+    if (!root.value(QStringLiteral("groups")).isArray()) {
+        return root;
+    }
+    auto groups = root.value(QStringLiteral("groups")).toArray();
+    for (int index = 0; index < groups.size(); ++index) {
+        if (groups[index].isObject()) {
+            groups[index] = canonicalizeGroupForUi(groups[index].toObject());
+        }
+    }
+    root.insert(QStringLiteral("groups"), groups);
+    return root;
+}
+
 bool pathStartsWith(const QVector<int>& path, const QVector<int>& prefix)
 {
     if (prefix.size() > path.size()) {
@@ -483,6 +877,12 @@ QVector<UiDiagnostic> diagnosticsForRoot(const QJsonObject& root)
 
 } // namespace
 
+QJsonObject canonicalizeSequenceItemForUi(QJsonObject object, bool group)
+{
+    return group ? canonicalizeGroupForUi(std::move(object))
+                 : canonicalizeStepForUi(std::move(object));
+}
+
 class SequenceRootCommand final : public QUndoCommand
 {
 public:
@@ -734,7 +1134,8 @@ bool SequenceDocument::replaceRootObject(QJsonObject root)
     if (root.isEmpty()) {
         return false;
     }
-    return commitRoot(std::move(root), tr("Update Sequence References"));
+    return commitRoot(canonicalizeSequenceRootForUi(std::move(root)),
+                      tr("Update Sequence References"));
 }
 
 bool SequenceDocument::setSequenceVariables(QJsonArray variables)
@@ -781,6 +1182,15 @@ bool SequenceDocument::load(const QString& filePath)
     return true;
 }
 
+bool SequenceDocument::initializeNew(QJsonObject root)
+{
+    if (root.isEmpty()) {
+        return false;
+    }
+    acceptRoot(canonicalizeSequenceRootForUi(std::move(root)), {});
+    return true;
+}
+
 bool SequenceDocument::save(QString* errorMessage)
 {
     if (m_filePath.isEmpty()) {
@@ -800,6 +1210,11 @@ bool SequenceDocument::saveAs(const QString& filePath, QString* errorMessage)
             *errorMessage = tr("Sequence file path is empty");
         }
         return false;
+    }
+
+    auto canonicalRoot = canonicalizeSequenceRootForUi(m_root);
+    if (canonicalRoot != m_root) {
+        commitRoot(std::move(canonicalRoot), tr("Normalize Sequence JSON"));
     }
 
     QSaveFile file(absolutePath);
@@ -1012,6 +1427,7 @@ bool SequenceDocument::insertStep(const SequenceItemPath& parentPath,
     } else if (step.value("id").toString().trimmed().isEmpty()) {
         step.insert("id", nextStepId(parentPath));
     }
+    step = canonicalizeStepForUi(std::move(step));
 
     return mutateSteps(parentPath, [&](QJsonArray& steps) {
         const int insertionRow = row < 0 ? steps.size() : qBound(0, row, steps.size());
@@ -1167,7 +1583,7 @@ bool SequenceDocument::pasteSteps(
                            destinationParentNodePath,
                            newRootId);
         copy.insert(QStringLiteral("name"), tr("%1 Copy").arg(originalName));
-        copies.push_back(std::move(copy));
+        copies.push_back(canonicalizeStepForUi(std::move(copy)));
     }
 
     const int existingCount = objectAt(parentPath)
@@ -1290,7 +1706,7 @@ bool SequenceDocument::duplicateSteps(QVector<SequenceItemPath> paths)
                            sequenceNodePath(m_root, parentPath),
                            newRootId);
         copy.insert(QStringLiteral("name"), tr("%1 Copy").arg(originalName));
-        copies.push_back({path, std::move(copy)});
+        copies.push_back({path, canonicalizeStepForUi(std::move(copy))});
     }
 
     std::sort(copies.begin(), copies.end(), [](const auto& left, const auto& right) {
@@ -1664,8 +2080,9 @@ bool SequenceDocument::replaceItemObject(const SequenceItemPath& path,
     }
 
     if (path.stepIndices.isEmpty()) {
-        groups[path.groupIndex] = std::move(object);
+        groups[path.groupIndex] = canonicalizeGroupForUi(std::move(object));
     } else {
+        object = canonicalizeStepForUi(std::move(object));
         auto group = groups[path.groupIndex].toObject();
         auto parentSteps = path.stepIndices;
         const int row = parentSteps.takeLast();

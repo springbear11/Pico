@@ -68,6 +68,42 @@ bool finiteNumber(const QVariant& value, double& number)
     return ok && std::isfinite(number);
 }
 
+bool preciseEqualityNumber(const QVariant& value, double& number)
+{
+    const auto typeId = value.metaType().id();
+    if (typeId == QMetaType::QString || typeId == QMetaType::QByteArray) {
+        return false;
+    }
+
+    constexpr qint64 maximumExactInteger = 9007199254740992LL;
+    switch (typeId) {
+    case QMetaType::Char:
+    case QMetaType::SChar:
+    case QMetaType::Short:
+    case QMetaType::Int:
+    case QMetaType::Long:
+    case QMetaType::LongLong: {
+        const auto integer = value.toLongLong();
+        if (integer < -maximumExactInteger || integer > maximumExactInteger) {
+            return false;
+        }
+        break;
+    }
+    case QMetaType::UChar:
+    case QMetaType::UShort:
+    case QMetaType::UInt:
+    case QMetaType::ULong:
+    case QMetaType::ULongLong:
+        if (value.toULongLong() > static_cast<quint64>(maximumExactInteger)) {
+            return false;
+        }
+        break;
+    default:
+        break;
+    }
+    return finiteNumber(value, number);
+}
+
 QString displayValue(const QVariant& value)
 {
     if (!value.isValid() || value.isNull()) {
@@ -339,13 +375,21 @@ void applyConfiguredMeasurementLimits(const QVariantMap& configuration,
         comparison == QStringLiteral("!=") || comparison == QStringLiteral("ne") ||
         comparison == QStringLiteral("notequal");
     if (equality && hasExpected) {
-        if (finiteNumber(expectedValue, expected) &&
+        if (preciseEqualityNumber(expectedValue, expected) &&
             (!hasTolerance || finiteNumber(toleranceValue, tolerance))) {
             measurement.hasLowerLimit = true;
             measurement.lowerLimit = expected - tolerance;
             measurement.hasUpperLimit = true;
             measurement.upperLimit = expected + tolerance;
             measurement.attributes.insert(QStringLiteral("limitsDerived"), true);
+        } else if (hasTolerance && finiteNumber(toleranceValue, tolerance) &&
+                   tolerance > 0.0) {
+            const auto expectedText = displayValue(expectedValue);
+            const auto toleranceText = displayValue(toleranceValue);
+            setDisplayRange(
+                measurement,
+                QStringLiteral("%1 - %2").arg(expectedText, toleranceText),
+                QStringLiteral("%1 + %2").arg(expectedText, toleranceText));
         } else {
             setDisplayRange(measurement, expectedValue, expectedValue);
         }

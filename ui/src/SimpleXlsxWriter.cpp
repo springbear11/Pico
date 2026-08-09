@@ -130,6 +130,10 @@ int styleId(XlsxRowStyle style)
     case XlsxRowStyle::Passed: return 2;
     case XlsxRowStyle::Failed: return 3;
     case XlsxRowStyle::Skipped: return 4;
+    case XlsxRowStyle::SummaryInfo: return 5;
+    case XlsxRowStyle::SummaryDuration: return 6;
+    case XlsxRowStyle::SummaryPassed: return 7;
+    case XlsxRowStyle::SummaryFailed: return 8;
     }
     return 0;
 }
@@ -147,6 +151,13 @@ bool numericText(const QString& text)
 QByteArray worksheetXml(const QVector<double>& columnWidths,
                         const QVector<XlsxRow>& rows)
 {
+    int tableHeaderRow = -1;
+    for (int row = 0; row < rows.size(); ++row) {
+        if (rows[row].style == XlsxRowStyle::Header) {
+            tableHeaderRow = row;
+        }
+    }
+
     QByteArray bytes;
     QXmlStreamWriter xml(&bytes);
     xml.setAutoFormatting(false);
@@ -158,11 +169,6 @@ QByteArray worksheetXml(const QVector<double>& columnWidths,
     xml.writeStartElement(QStringLiteral("sheetViews"));
     xml.writeStartElement(QStringLiteral("sheetView"));
     xml.writeAttribute(QStringLiteral("workbookViewId"), QStringLiteral("0"));
-    xml.writeEmptyElement(QStringLiteral("pane"));
-    xml.writeAttribute(QStringLiteral("ySplit"), QStringLiteral("1"));
-    xml.writeAttribute(QStringLiteral("topLeftCell"), QStringLiteral("A2"));
-    xml.writeAttribute(QStringLiteral("activePane"), QStringLiteral("bottomLeft"));
-    xml.writeAttribute(QStringLiteral("state"), QStringLiteral("frozen"));
     xml.writeEndElement();
     xml.writeEndElement();
 
@@ -181,17 +187,29 @@ QByteArray worksheetXml(const QVector<double>& columnWidths,
         const auto& row = rows[rowIndex];
         xml.writeStartElement(QStringLiteral("row"));
         xml.writeAttribute(QStringLiteral("r"), QString::number(rowIndex + 1));
-        if (row.style == XlsxRowStyle::Header) {
-            xml.writeAttribute(QStringLiteral("ht"), QStringLiteral("24"));
+        if (row.height > 0.0 || row.style == XlsxRowStyle::Header) {
+            xml.writeAttribute(
+                QStringLiteral("ht"),
+                QString::number(row.height > 0.0 ? row.height : 24.0));
             xml.writeAttribute(QStringLiteral("customHeight"), QStringLiteral("1"));
         }
         for (int column = 0; column < row.cells.size(); ++column) {
+            const bool mergedChild = std::any_of(
+                row.mergedColumnRanges.cbegin(),
+                row.mergedColumnRanges.cend(),
+                [column](const auto& range) {
+                    return column > range.first && column <= range.second;
+                });
+            if (mergedChild) {
+                continue;
+            }
             const auto value = row.cells[column];
+            const auto cellStyle = row.cellStyles.value(column, row.style);
             xml.writeStartElement(QStringLiteral("c"));
             xml.writeAttribute(QStringLiteral("r"), cellReference(rowIndex, column));
-            xml.writeAttribute(QStringLiteral("s"), QString::number(styleId(row.style)));
+            xml.writeAttribute(QStringLiteral("s"), QString::number(styleId(cellStyle)));
             if (row.numericColumns.contains(column) && numericText(value) &&
-                row.style != XlsxRowStyle::Header) {
+                cellStyle != XlsxRowStyle::Header) {
                 xml.writeAttribute(QStringLiteral("t"), QStringLiteral("n"));
                 xml.writeTextElement(QStringLiteral("v"), value);
             } else {
@@ -206,12 +224,41 @@ QByteArray worksheetXml(const QVector<double>& columnWidths,
     }
     xml.writeEndElement();
 
-    if (!rows.isEmpty() && !rows.first().cells.isEmpty()) {
+    int tableLastRow = tableHeaderRow;
+    for (int row = tableHeaderRow + 1; row < rows.size(); ++row) {
+        if (rows[row].excludeFromAutoFilter) {
+            break;
+        }
+        tableLastRow = row;
+    }
+    if (tableHeaderRow >= 0 && !rows[tableHeaderRow].cells.isEmpty()) {
         xml.writeEmptyElement(QStringLiteral("autoFilter"));
         xml.writeAttribute(
             QStringLiteral("ref"),
-            QStringLiteral("A1:%1").arg(
-                cellReference(rows.size() - 1, rows.first().cells.size() - 1)));
+            QStringLiteral("A%1:%2")
+                .arg(tableHeaderRow + 1)
+                .arg(cellReference(
+                    tableLastRow,
+                    rows[tableHeaderRow].cells.size() - 1)));
+    }
+    int mergedRangeCount = 0;
+    for (const auto& row : rows) {
+        mergedRangeCount += row.mergedColumnRanges.size();
+    }
+    if (mergedRangeCount > 0) {
+        xml.writeStartElement(QStringLiteral("mergeCells"));
+        xml.writeAttribute(QStringLiteral("count"), QString::number(mergedRangeCount));
+        for (int rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+            for (const auto& range : rows[rowIndex].mergedColumnRanges) {
+                xml.writeEmptyElement(QStringLiteral("mergeCell"));
+                xml.writeAttribute(
+                    QStringLiteral("ref"),
+                    QStringLiteral("%1:%2")
+                        .arg(cellReference(rowIndex, range.first),
+                             cellReference(rowIndex, range.second)));
+            }
+        }
+        xml.writeEndElement();
     }
     xml.writeEndElement();
     xml.writeEndDocument();
@@ -252,25 +299,36 @@ QByteArray stylesXml()
     return QByteArrayLiteral(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
         "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
-        "<fonts count=\"2\"><font><sz val=\"11\"/><name val=\"Segoe UI\"/></font>"
-        "<font><b/><sz val=\"11\"/><name val=\"Segoe UI\"/></font></fonts>"
-        "<fills count=\"5\"><fill><patternFill patternType=\"none\"/></fill>"
+        "<fonts count=\"5\"><font><sz val=\"10.5\"/><color rgb=\"FF344054\"/><name val=\"Microsoft YaHei UI\"/></font>"
+        "<font><b/><sz val=\"10.5\"/><color rgb=\"FF1D2939\"/><name val=\"Microsoft YaHei UI\"/></font>"
+        "<font><b/><sz val=\"10\"/><color rgb=\"FF475467\"/><name val=\"Microsoft YaHei UI\"/></font>"
+        "<font><b/><sz val=\"11\"/><color rgb=\"FF1D2939\"/><name val=\"Microsoft YaHei UI\"/></font>"
+        "<font><b/><sz val=\"20\"/><color rgb=\"FFFFFFFF\"/><name val=\"Microsoft YaHei UI\"/></font></fonts>"
+        "<fills count=\"9\"><fill><patternFill patternType=\"none\"/></fill>"
         "<fill><patternFill patternType=\"gray125\"/></fill>"
         "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFDDF4E4\"/><bgColor indexed=\"64\"/></patternFill></fill>"
         "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFFDE2E1\"/><bgColor indexed=\"64\"/></patternFill></fill>"
-        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFECEFF3\"/><bgColor indexed=\"64\"/></patternFill></fill></fills>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFECEFF3\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFF2F4F7\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFD0D5DD\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF16794A\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFB42318\"/><bgColor indexed=\"64\"/></patternFill></fill></fills>"
         "<borders count=\"2\"><border><left/><right/><top/><bottom/><diagonal/></border>"
         "<border><left style=\"thin\"><color rgb=\"FFD0D5DD\"/></left>"
         "<right style=\"thin\"><color rgb=\"FFD0D5DD\"/></right>"
         "<top style=\"thin\"><color rgb=\"FFD0D5DD\"/></top>"
         "<bottom style=\"thin\"><color rgb=\"FFD0D5DD\"/></bottom><diagonal/></border></borders>"
         "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
-        "<cellXfs count=\"5\">"
+        "<cellXfs count=\"9\">"
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyAlignment=\"1\"><alignment vertical=\"center\" wrapText=\"1\"/></xf>"
-        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>"
+        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"4\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>"
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyAlignment=\"1\"><alignment vertical=\"center\" wrapText=\"1\"/></xf>"
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"3\" borderId=\"1\" xfId=\"0\" applyAlignment=\"1\"><alignment vertical=\"center\" wrapText=\"1\"/></xf>"
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"4\" borderId=\"1\" xfId=\"0\" applyAlignment=\"1\"><alignment vertical=\"center\" wrapText=\"1\"/></xf>"
+        "<xf numFmtId=\"0\" fontId=\"2\" fillId=\"5\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\" wrapText=\"1\"/></xf>"
+        "<xf numFmtId=\"0\" fontId=\"3\" fillId=\"6\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\" wrapText=\"1\"/></xf>"
+        "<xf numFmtId=\"0\" fontId=\"4\" fillId=\"7\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>"
+        "<xf numFmtId=\"0\" fontId=\"4\" fillId=\"8\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>"
         "</cellXfs><cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
         "</styleSheet>");
 }

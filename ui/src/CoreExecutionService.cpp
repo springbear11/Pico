@@ -8,12 +8,14 @@
 
 #include <QDir>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QSet>
+#include <QStringList>
 
 #include <algorithm>
 #include <utility>
@@ -30,17 +32,16 @@ UiDiagnostic error(QString path, QString message, QString suggestion = {})
             std::move(suggestion)};
 }
 
-QString pluginRegistryPath(const QJsonObject& stationObject,
-                           const QString& stationPath)
+QString metadataValue(const QVariantMap& metadata,
+                      const QStringList& keys)
 {
-    auto value = stationObject.value(QStringLiteral("pluginRegistry"))
-                     .toString(QStringLiteral("plugins/PluginRegistry.json"))
-                     .trimmed();
-    if (QFileInfo(value).isAbsolute()) {
-        return QFileInfo(value).absoluteFilePath();
+    for (const auto& key : keys) {
+        const auto value = metadata.value(key).toString().trimmed();
+        if (!value.isEmpty()) {
+            return value;
+        }
     }
-    return QFileInfo(QFileInfo(stationPath).absoluteDir().absoluteFilePath(value))
-        .absoluteFilePath();
+    return {};
 }
 
 class RunEventSequencer final : public PicoATE::Core::IRuntimeEventSink
@@ -70,11 +71,7 @@ CoreExecutionService::CoreExecutionService(QString projectDir)
     : m_projectDir(std::move(projectDir))
 {
     if (m_projectDir.isEmpty()) {
-#ifdef PICOATE_PROJECT_DIR
-        m_projectDir = QString::fromUtf8(PICOATE_PROJECT_DIR);
-#else
-        m_projectDir = QDir::currentPath();
-#endif
+        m_projectDir = QCoreApplication::applicationDirPath();
     }
     m_projectDir = QFileInfo(m_projectDir).absoluteFilePath();
 }
@@ -133,8 +130,11 @@ CompileServiceResult CoreExecutionService::compile(const CompileRequest& request
         artifact.station = stationResult.config;
         artifact.stationDocument = stationObject;
         artifact.stationPath = QFileInfo(request.stationPath).absoluteFilePath();
-        const auto registryPath = pluginRegistryPath(stationObject,
-                                                     request.stationPath);
+        const auto registryPath =
+            PicoATE::Core::resolveStationPluginRegistryPath(
+                stationResult.config.pluginRegistryPath,
+                request.stationPath,
+                m_projectDir);
         const auto registry = PluginCatalog::loadRegistry(registryPath);
         const auto pluginDiagnostics = PluginCatalog::validateStationBindings(
             stationObject,
@@ -214,6 +214,7 @@ RunServiceResult CoreExecutionService::run(
         return result;
     }
 
+    const bool usesExplicitUuts = !request.uuts.isEmpty();
     QVector<RunRequest::UutInput> uutInputs = request.uuts;
     if (uutInputs.isEmpty()) {
         const QString prefix = request.uutPrefix.trimmed().isEmpty()
@@ -339,8 +340,58 @@ RunServiceResult CoreExecutionService::run(
     }
 
     result.executed = true;
+    const auto startedAt = QDateTime::currentDateTime();
+    QElapsedTimer runTimer;
+    runTimer.start();
     session.run();
     result.report = session.report();
+    result.report.metadata.startedAt = startedAt;
+    result.report.metadata.finishedAt = QDateTime::currentDateTime();
+    result.report.metadata.durationMs = runTimer.elapsed();
+    result.report.metadata.name = runStation && !runStation->name.trimmed().isEmpty()
+        ? runStation->name.trimmed()
+        : m_compiled->sequence.name.trimmed();
+    result.report.metadata.sequenceName =
+        QFileInfo(m_compiled->sequencePath).fileName().trimmed();
+    if (result.report.metadata.sequenceName.isEmpty()) {
+        result.report.metadata.sequenceName = m_compiled->sequence.name.trimmed();
+    }
+    QStringList serialNumbers;
+    for (const auto& input : uutInputs) {
+        auto serialNumber = input.variables
+                                .value(QStringLiteral("serialNumber"))
+                                .toString()
+                                .trimmed();
+        if (serialNumber.isEmpty()) {
+            serialNumber = input.variables.value(QStringLiteral("sn"))
+                               .toString().trimmed();
+        }
+        if (serialNumber.isEmpty() && usesExplicitUuts) {
+            serialNumber = input.uutId.trimmed();
+        }
+        if (!serialNumber.isEmpty() && !serialNumbers.contains(serialNumber)) {
+            serialNumbers.push_back(serialNumber);
+        }
+    }
+    result.report.metadata.serialNumber = serialNumbers.join(QStringLiteral(", "));
+    if (runStation) {
+        result.report.metadata.stationId = runStation->stationId.trimmed();
+        result.report.metadata.jigNo = metadataValue(
+            runStation->metadata,
+            {QStringLiteral("jigNo"),
+             QStringLiteral("fixtureId"),
+             QStringLiteral("fixture")});
+        result.report.metadata.order = metadataValue(
+            runStation->metadata,
+            {QStringLiteral("order"), QStringLiteral("workOrder")});
+        result.report.metadata.tester = metadataValue(
+            runStation->metadata,
+            {QStringLiteral("tester"), QStringLiteral("operator")});
+    }
+    if (result.report.metadata.order.isEmpty() && !uutInputs.isEmpty()) {
+        result.report.metadata.order = uutInputs.first()
+            .variables.value(QStringLiteral("order")).toString().trimmed();
+    }
     result.stopRequested = stopToken && stopToken->isStopRequested();
     return result;
 }

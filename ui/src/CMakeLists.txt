@@ -9,6 +9,8 @@ add_library(PicoATEUiRuntime STATIC
     ExecutionViewModel.h
     ExecutionWorker.cpp
     ExecutionWorker.h
+    FunctionIconProvider.cpp
+    FunctionIconProvider.h
     IExecutionService.h
     PluginCatalog.cpp
     PluginCatalog.h
@@ -75,6 +77,8 @@ endif()
 
 qt_add_executable(PicoATEUi WIN32
     ${PICOATE_UI_PLATFORM_RESOURCES}
+    AdminStartupSplash.cpp
+    AdminStartupSplash.h
     FieldDeviceDialog.cpp
     FieldDeviceDialog.h
     FlowTargetSelector.cpp
@@ -95,6 +99,8 @@ qt_add_executable(PicoATEUi WIN32
     OperatorPromptPresenter.h
     ProductionWindow.cpp
     ProductionWindow.h
+    ProductRoutingDialog.cpp
+    ProductRoutingDialog.h
     ProportionalHeaderView.cpp
     ProportionalHeaderView.h
     ScanDialog.cpp
@@ -131,6 +137,7 @@ target_compile_features(PicoATEUi PRIVATE cxx_std_20)
 target_compile_definitions(PicoATEUi
     PRIVATE
         PICOATE_PROJECT_DIR="${PICOATE_ROOT_DIR}"
+        PICOATE_VERSION="${PROJECT_VERSION}"
 )
 
 add_custom_command(TARGET PicoATEUi POST_BUILD
@@ -157,3 +164,83 @@ if(TARGET PicoATENativeHost)
         COMMENT "Deploying PicoATE.NativeHost beside PicoATE.UI"
     )
 endif()
+
+find_program(PICOATE_UI_WINDEPLOYQT
+    NAMES windeployqt
+    HINTS "${Qt6_DIR}/../../../bin"
+    REQUIRED
+)
+
+set(PICOATE_UI_PORTABLE_DIR
+    "${CMAKE_BINARY_DIR}/portable/$<CONFIG>/PicoATE.UI")
+set(PICOATE_UI_RUNTIME_PAYLOAD_DIR
+    "${PICOATE_ROOT_DIR}/packaging/runtime")
+
+set(PICOATE_UI_MSVC_RUNTIME_COPY_COMMAND)
+if(MSVC AND CMAKE_GENERATOR_INSTANCE)
+    file(GLOB PICOATE_UI_MSVC_RUNTIME_DIRS LIST_DIRECTORIES true
+        "${CMAKE_GENERATOR_INSTANCE}/VC/Redist/MSVC/*/x64/Microsoft.VC143.CRT"
+    )
+    list(SORT PICOATE_UI_MSVC_RUNTIME_DIRS COMPARE NATURAL ORDER DESCENDING)
+    if(PICOATE_UI_MSVC_RUNTIME_DIRS)
+        list(GET PICOATE_UI_MSVC_RUNTIME_DIRS 0 PICOATE_UI_MSVC_RUNTIME_DIR)
+        file(GLOB PICOATE_UI_MSVC_RUNTIME_DLLS
+            "${PICOATE_UI_MSVC_RUNTIME_DIR}/*.dll")
+        if(PICOATE_UI_MSVC_RUNTIME_DLLS)
+            list(APPEND PICOATE_UI_MSVC_RUNTIME_COPY_COMMAND
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                        ${PICOATE_UI_MSVC_RUNTIME_DLLS}
+                        "${PICOATE_UI_PORTABLE_DIR}/"
+            )
+        endif()
+    endif()
+endif()
+
+add_custom_target(PicoATEUiPortable
+    COMMAND "${CMAKE_COMMAND}" -E rm -rf "${PICOATE_UI_PORTABLE_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${PICOATE_UI_PORTABLE_DIR}/plugins"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${PICOATE_UI_PORTABLE_DIR}/log"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${PICOATE_UI_PORTABLE_DIR}/diagnostics"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:PicoATEUi>"
+            "${PICOATE_UI_PORTABLE_DIR}/"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:PicoATECore>"
+            "${PICOATE_UI_PORTABLE_DIR}/"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:PicoATENativeHost>"
+            "${PICOATE_UI_PORTABLE_DIR}/"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${PICOATE_ROOT_DIR}/image"
+            "${PICOATE_UI_PORTABLE_DIR}/image"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${PICOATE_ROOT_DIR}/templates/bin/$<CONFIG>"
+            "${PICOATE_UI_PORTABLE_DIR}/plugins"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${PICOATE_UI_RUNTIME_PAYLOAD_DIR}"
+            "${PICOATE_UI_PORTABLE_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E rm -rf
+            "${PICOATE_UI_PORTABLE_DIR}/projects"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${PICOATE_UI_PORTABLE_DIR}/projects"
+    ${PICOATE_UI_MSVC_RUNTIME_COPY_COMMAND}
+    COMMAND "${PICOATE_UI_WINDEPLOYQT}"
+            "--$<IF:$<CONFIG:Debug>,debug,release>"
+            --compiler-runtime
+            --no-translations
+            --dir "${PICOATE_UI_PORTABLE_DIR}"
+            "${PICOATE_UI_PORTABLE_DIR}/PicoATE.UI.exe"
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+            -File "${PICOATE_ROOT_DIR}/packaging/GeneratePluginRegistry.ps1"
+            -PortableDirectory "${PICOATE_UI_PORTABLE_DIR}"
+    DEPENDS PicoATEUi PicoATECore PicoATENativeHost
+    COMMENT "Creating a self-contained PicoATE UI folder"
+    VERBATIM
+)
+
+set_target_properties(PicoATEUiPortable PROPERTIES
+    FOLDER "Packaging"
+)

@@ -66,6 +66,7 @@ private:
         ItemKind kind = ItemKind::Root;
         QString text;
         QString tooltip;
+        QString iconKey;
         int pluginIndex = -1;
         int functionIndex = -1;
         QString deviceId;

@@ -19,6 +19,7 @@
 #include "PicoATE/Core/NativeHostManifest.h"
 #include "PicoATE/Core/PlanBuilder.h"
 #include "PicoATE/Core/PlanCache.h"
+#include "PicoATE/Core/ProductRouting.h"
 #include "PicoATE/Core/PluginLog.h"
 #include "PicoATE/Core/PersistentQProcessTransport.h"
 #include "PicoATE/Core/QProcessTransport.h"
@@ -602,6 +603,7 @@ private slots:
     void deviceSessionManagerReportsMissingFactoryAndConnectFailure();
     void stationConfigParsesDevicesAndConfiguresSessionManager();
     void stationConfigReportsDeviceErrors();
+    void stationPluginRegistryResolvesFromProductProject();
     void stationFieldBindingPersistsResourcesAndKeepsRuntimeIndexTransient();
     void stationRunPreparationResolvesStableCanBindingIntoEffectiveSnapshot();
     void stationRunPreparationMarksUnavailableBindings();
@@ -611,6 +613,8 @@ private slots:
     void resourceManagerTreatsDeviceAndChannelAsOneHierarchy();
     void barrierControllerReleasesOnlyThroughDecision();
     void planCacheKeepsRunningPlanAlive();
+    void productRoutingLoadsRelativeSequencesAndMatchesExactlyOneRoute();
+    void productRoutingRejectsMissingAndAmbiguousMatches();
     void nodeRunnerRunsRegisteredModuleAndMapsModuleResult();
     void nodeRunnerReportsMissingModule();
     void dataParserDecodesBinaryAndModbusValues();
@@ -661,6 +665,8 @@ private slots:
     void executionSessionReleasesBarrierAcrossUuts();
     void executionSessionDropsFailedUutBeforeBarrier();
     void executionSessionRunsSetupCleanupOnceAndIsolatesFailedUut();
+    void executionSessionRunCleanupStopsCohortAndRunsCleanupOnce();
+    void executionSessionAbortPolicyStopsCohortAndRunsCleanupOnce();
     void executionSessionKeepsResourceAcrossUutTransaction();
     void executionSessionReleasesResourceRegionAfterUutFailure();
     void sequenceCompilerRunsNestedResourceRegionAcrossUuts();
@@ -690,7 +696,7 @@ private slots:
     void sequenceDefPreservesBarrierAndResourcePolicies();
     void errorPolicyDefMapsFailureActions();
     void errorPolicyEngineUsesOutcomeSpecificActions();
-    void stationFailureHandlingOverridesNodePolicies();
+    void stationFailureHandlingResolvesAllInheritedOutcomes();
     void planBuilderBuildsSetupMainCleanupPlan();
     void planBuilderRejectsDuplicateStepIds();
     void planBuilderSkipsDisabledAndBridgesCustomGroups();
@@ -725,6 +731,8 @@ private slots:
     void sequenceCompilerRunsDmmCanAdapterExampleFile();
     void sequenceCompilerRunsForLoopExampleFile();
     void whileLoopBreakCounterAndAggregateWorkTogether();
+    void whileLoopBreakReadsFailedLimitResult();
+    void whileLoopContinueOnFailStopsExecutionFaults();
     void whileLoopRunsInsideTestItem();
     void whileLoopResultFeedsLaterSiblingInsideTestItem();
     void compilerRejectsForwardLoopResultInsideTestItem();
@@ -735,8 +743,9 @@ private slots:
     void sequenceCompilerRunsTestItemExampleFile();
     void testItemStopsRemainingChildrenAfterFailure();
     void testItemChildContinueRunsRemainingChildren();
+    void testItemInheritsTimeoutPolicyFromParent();
     void stationFailureHandlingControlsTestItemChildren();
-    void stationContinueEvaluatesFailedDataDependency();
+    void stationContinueAppliesToChildErrorPolicy();
     void testItemRetriesWholeSubtreeAndEventuallyPasses();
     void testItemHonorsConfiguredRetryDelay();
     void testItemRetryResetsChildRetryBudget();
@@ -979,6 +988,38 @@ void CoreTests::stationConfigReportsDeviceErrors()
     QVERIFY(hasErrorAt("devices[1].deviceId"));
 }
 
+void CoreTests::stationPluginRegistryResolvesFromProductProject()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QVERIFY(QDir(directory.path()).mkpath(QStringLiteral("plugins")));
+    QVERIFY(QDir(directory.path()).mkpath(
+        QStringLiteral("projects/ProductA/config")));
+
+    const auto sharedRegistry = directory.filePath(
+        QStringLiteral("plugins/PluginRegistry.json"));
+    QFile sharedFile(sharedRegistry);
+    QVERIFY(sharedFile.open(QIODevice::WriteOnly));
+    sharedFile.write("{\"plugins\":[]}");
+    sharedFile.close();
+
+    const auto stationPath = directory.filePath(
+        QStringLiteral("projects/ProductA/StationSystem.json"));
+    QCOMPARE(resolveStationPluginRegistryPath(
+                 QStringLiteral("plugins/PluginRegistry.json"), stationPath),
+             QFileInfo(sharedRegistry).absoluteFilePath());
+
+    const auto localRegistry = directory.filePath(
+        QStringLiteral("projects/ProductA/config/LocalRegistry.json"));
+    QFile localFile(localRegistry);
+    QVERIFY(localFile.open(QIODevice::WriteOnly));
+    localFile.write("{\"plugins\":[]}");
+    localFile.close();
+    QCOMPARE(resolveStationPluginRegistryPath(
+                 QStringLiteral("config/LocalRegistry.json"), stationPath),
+             QFileInfo(localRegistry).absoluteFilePath());
+}
+
 void CoreTests::stationFieldBindingPersistsResourcesAndKeepsRuntimeIndexTransient()
 {
     QJsonObject station = QJsonDocument::fromJson(R"json({
@@ -1039,6 +1080,7 @@ void CoreTests::stationRunPreparationResolvesStableCanBindingIntoEffectiveSnapsh
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     QVERIFY(QDir(directory.path()).mkpath(QStringLiteral("plugins")));
+    QVERIFY(QDir(directory.path()).mkpath(QStringLiteral("projects/ProductA")));
     const auto dllPath = directory.filePath(QStringLiteral("plugins/PicoATE.CAN.Test.dll"));
     QFile dll(dllPath);
     QVERIFY(dll.open(QIODevice::WriteOnly));
@@ -1071,7 +1113,8 @@ void CoreTests::stationRunPreparationResolvesStableCanBindingIntoEffectiveSnapsh
     discovery.result.resources.push_back(resource);
 
     StationRunPreparationOptions options;
-    options.stationFilePath = directory.filePath(QStringLiteral("StationSystem.json"));
+    options.stationFilePath = directory.filePath(
+        QStringLiteral("projects/ProductA/StationSystem.json"));
     options.projectDir = directory.path();
     options.nativeHostProgram = directory.filePath(QStringLiteral("PicoATE.NativeHost.exe"));
     const auto prepared = StationRunPreparationService(&discovery).prepare(station, options);
@@ -1340,6 +1383,139 @@ void CoreTests::planCacheKeepsRunningPlanAlive()
     QCOMPARE(runningPlan->id, QString("plan-child"));
 }
 
+void CoreTests::productRoutingLoadsRelativeSequencesAndMatchesExactlyOneRoute()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    const auto projectRoot = directory.filePath(QStringLiteral("projects"));
+    const auto projectPath = QDir(projectRoot).filePath(QStringLiteral("ProductA"));
+    QVERIFY(QDir().mkpath(projectPath));
+    QFile sequence(QDir(projectPath).filePath(
+        QStringLiteral("product_a_sequence.json")));
+    QVERIFY(sequence.open(QIODevice::WriteOnly));
+    sequence.write("{}");
+    sequence.close();
+    QFile station(QDir(projectPath).filePath(QStringLiteral("StationSystem.json")));
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(R"({"stationId":"product-a","devices":[]})");
+    station.close();
+
+    QFile routing(directory.filePath(QStringLiteral("ProductRouting.json")));
+    QVERIFY(routing.open(QIODevice::WriteOnly));
+    routing.write(R"json({
+        "allowManualInTest": false,
+        "projectRoot": "projects",
+        "routes": [{
+            "name": "Product A",
+            "pattern": "BTSN-A-*",
+            "project": "ProductA"
+        }]
+    })json");
+    routing.close();
+
+    const auto loaded = loadProductRoutingFile(routing.fileName());
+    QVERIFY2(loaded.ok(), loaded.errors.isEmpty()
+                              ? "routing load failed"
+                              : qPrintable(loaded.errors.first().message));
+    QVERIFY(!loaded.config.allowManualInTest);
+    QCOMPARE(loaded.config.routes.size(), 1);
+    QCOMPARE(loaded.config.routes.first().projectPath,
+             QFileInfo(projectPath).absoluteFilePath());
+
+    const auto projects = discoverProductProjects(projectRoot);
+    QCOMPARE(projects.size(), 1);
+    QVERIFY(projects.first().ok());
+
+    const auto match = resolveProductRoute(loaded.config,
+                                           QStringLiteral("BTSN-A-0001"));
+    QVERIFY2(match.ok(), match.errors.isEmpty()
+                             ? "route did not resolve"
+                             : qPrintable(match.errors.first().message));
+    QCOMPARE(match.routeName, QStringLiteral("Product A"));
+    QCOMPARE(match.projectName, QStringLiteral("ProductA"));
+    QCOMPARE(match.sequencePath, QFileInfo(sequence.fileName()).absoluteFilePath());
+    QCOMPARE(match.stationPath, QFileInfo(station.fileName()).absoluteFilePath());
+}
+
+void CoreTests::productRoutingRejectsMissingAndAmbiguousMatches()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    const auto invalidProject = directory.filePath(
+        QStringLiteral("projects/AmbiguousProject"));
+    QVERIFY(QDir().mkpath(invalidProject));
+    for (const auto& name : {QStringLiteral("first_sequence.json"),
+                             QStringLiteral("second_seq.json")}) {
+        QFile candidate(QDir(invalidProject).filePath(name));
+        QVERIFY(candidate.open(QIODevice::WriteOnly));
+        candidate.write("{}");
+    }
+    const auto inspected = inspectProductProject(invalidProject);
+    QVERIFY(!inspected.ok());
+    QVERIFY(std::any_of(inspected.errors.cbegin(), inspected.errors.cend(),
+                        [](const ProductRoutingDiagnostic& error) {
+                            return error.message.contains(
+                                QStringLiteral("multiple"),
+                                Qt::CaseInsensitive);
+                        }));
+
+    const auto sequencePath = directory.filePath(QStringLiteral("target_sequence.json"));
+    QFile sequence(sequencePath);
+    QVERIFY(sequence.open(QIODevice::WriteOnly));
+    sequence.write("{}");
+    sequence.close();
+    QFile station(directory.filePath(QStringLiteral("StationSystem.json")));
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(R"({"stationId":"legacy","devices":[]})");
+    station.close();
+
+    const QJsonObject object{
+        {QStringLiteral("allowManualInTest"), true},
+        {QStringLiteral("routes"), QJsonArray{
+            QJsonObject{{QStringLiteral("name"), QStringLiteral("Broad")},
+                        {QStringLiteral("pattern"), QStringLiteral("BTSN-*")},
+                        {QStringLiteral("sequence"), sequencePath}},
+            QJsonObject{{QStringLiteral("name"), QStringLiteral("Specific")},
+                        {QStringLiteral("pattern"), QStringLiteral("*0001")},
+                        {QStringLiteral("sequence"), sequencePath}}
+        }}
+    };
+    const auto parsed = parseProductRoutingJson(
+        object, directory.filePath(QStringLiteral("ProductRouting.json")));
+    QVERIFY(!parsed.ok());
+    QVERIFY(parsed.config.allowManualInTest);
+    QVERIFY(std::any_of(parsed.errors.cbegin(), parsed.errors.cend(),
+                        [](const ProductRoutingDiagnostic& error) {
+                            return error.message.contains(
+                                QStringLiteral("overlap"),
+                                Qt::CaseInsensitive);
+                        }));
+
+    const auto missing = resolveProductRoute(parsed.config,
+                                             QStringLiteral("OTHER-0002"));
+    QVERIFY(!missing.ok());
+    QVERIFY(missing.errors.first().message.contains(
+        QStringLiteral("No product route")));
+
+    const auto ambiguous = resolveProductRoute(parsed.config,
+                                               QStringLiteral("BTSN-0001"));
+    QVERIFY(!ambiguous.ok());
+    QVERIFY(ambiguous.errors.first().message.contains(
+        QStringLiteral("multiple"), Qt::CaseInsensitive));
+    QVERIFY(ambiguous.errors.first().message.contains(QStringLiteral("Broad")));
+    QVERIFY(ambiguous.errors.first().message.contains(QStringLiteral("Specific")));
+
+    const auto serialized = productRoutingToJson(
+        parsed.config,
+        directory.filePath(QStringLiteral("ProductRouting.json")));
+    QCOMPARE(serialized.value(QStringLiteral("allowManualInTest")).toBool(), true);
+    QCOMPARE(serialized.value(QStringLiteral("routes")).toArray().first()
+                 .toObject().value(QStringLiteral("sequence")).toString(),
+             QStringLiteral("target_sequence.json"));
+}
+
 void CoreTests::nodeRunnerRunsRegisteredModuleAndMapsModuleResult()
 {
     NodeRunner runner;
@@ -1417,6 +1593,14 @@ void CoreTests::dataParserDecodesBinaryAndModbusValues()
     auto result = parser.execute(QStringLiteral("decodeBinary"), context);
     QCOMPARE(result.outcome, ModuleOutcome::Passed);
     QVERIFY(qAbs(result.outputs.value(QStringLiteral("value")).toDouble() - 12.5) < 0.0001);
+    QCOMPARE(result.measurements.size(), 1);
+    QVERIFY(qAbs(result.measurements.first().value.toDouble() - 12.5) < 0.0001);
+    QCOMPARE(result.measurements.first().status, MeasurementStatus::Passed);
+    QVERIFY(result.measurements.first().attributes
+                .value(QStringLiteral("parserDisplay")).toBool());
+    QCOMPARE(result.measurements.first().attributes
+                 .value(QStringLiteral("parserOriginalDisplay")).toString(),
+             QStringLiteral("[65,72,0,0]"));
     QCOMPARE(result.outputs.value(QStringLiteral("rawHex")).toString(),
              QStringLiteral("41 48 00 00"));
 
@@ -1459,6 +1643,18 @@ void CoreTests::dataParserDecodesBinaryAndModbusValues()
     QCOMPARE(result.outcome, ModuleOutcome::Error);
     QCOMPARE(result.errorCode, QStringLiteral("ParserRangeError"));
     QVERIFY(logs.records().size() >= 5);
+    const auto parserLogs = logs.records();
+    QVERIFY(std::any_of(parserLogs.cbegin(), parserLogs.cend(),
+                        [](const ModuleLogRecord& record) {
+        return record.message.contains(QStringLiteral(
+                   "PARSE_BINARY INPUT_RAW=41 48 00 00 OUTPUT=12.5"));
+    }));
+    QVERIFY(std::any_of(parserLogs.cbegin(), parserLogs.cend(),
+                        [](const ModuleLogRecord& record) {
+        return record.message.contains(QStringLiteral(
+                   "PARSE_REGISTERS INPUT_REGISTERS=")) &&
+               record.message.contains(QStringLiteral("OUTPUT=12.5"));
+    }));
 }
 
 void CoreTests::dataParserDecodesRegisterText()
@@ -1585,6 +1781,14 @@ void CoreTests::dataParserDecodesRegisterText()
     QCOMPARE(result.outcome, ModuleOutcome::Error);
     QCOMPARE(result.errorCode, QStringLiteral("ParserConfigurationError"));
     QVERIFY(logs.records().size() >= 8);
+    const auto parserLogs = logs.records();
+    QVERIFY(std::any_of(parserLogs.cbegin(), parserLogs.cend(),
+                        [&serialNumber](const ModuleLogRecord& record) {
+        return record.message.contains(QStringLiteral(
+                   "PARSE_REGISTER_TEXT INPUT_REGISTERS=")) &&
+               record.message.contains(
+                   QStringLiteral("OUTPUT='%1'").arg(serialNumber));
+    }));
 }
 
 void CoreTests::dataParserExtractsStructuredTextAndReportsFailures()
@@ -1643,6 +1847,12 @@ void CoreTests::dataParserExtractsStructuredTextAndReportsFailures()
     const auto records = logs.records();
     QVERIFY(std::any_of(records.cbegin(), records.cend(),
                         [](const ModuleLogRecord& record) {
+        return record.message.contains(QStringLiteral(
+                   "PARSE_TEXT_BETWEEN INPUT='SN:1234567890\\r\\n'")) &&
+               record.message.contains(QStringLiteral("OUTPUT='1234567890'"));
+    }));
+    QVERIFY(std::any_of(records.cbegin(), records.cend(),
+                        [](const ModuleLogRecord& record) {
         return record.message.contains(QStringLiteral("PARSER_ERROR"));
     }));
 }
@@ -1678,6 +1888,16 @@ void CoreTests::dataParserExtractsMultipleNamedFields()
              QStringLiteral("0x1A"));
     QCOMPARE(result.outputs.value(QStringLiteral("fieldCount")).toInt(), 3);
     QCOMPARE(result.outputs.value(QStringLiteral("namedFieldCount")).toInt(), 3);
+    QCOMPARE(result.measurements.size(), 3);
+    QCOMPARE(result.measurements.at(0).name, QStringLiteral("SN1"));
+    QCOMPARE(result.measurements.at(0).value.toString(), QStringLiteral("BTSN001"));
+    QCOMPARE(result.measurements.at(1).name, QStringLiteral("voltage"));
+    QCOMPARE(result.measurements.at(1).value.toDouble(), 812.5);
+    QCOMPARE(result.measurements.at(2).name, QStringLiteral("status"));
+    QCOMPARE(result.measurements.at(2).value.toString(), QStringLiteral("0x1A"));
+    QCOMPARE(result.measurements.first().attributes
+                 .value(QStringLiteral("parserOriginalDisplay")).toString(),
+             QStringLiteral("BTSN001, 812.5, 0x1A"));
 
     auto outOfRangeFields = context.inputs.value(QStringLiteral("fields")).toList();
     auto outOfRange = outOfRangeFields[0].toMap();
@@ -2469,6 +2689,7 @@ void CoreTests::stationPluginBindingRunsLogicalDeviceThroughNativeHost()
     station.stationId = QStringLiteral("station-1");
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
+    QVERIFY(QDir(directory.path()).mkpath(QStringLiteral("projects/ProductA")));
     const auto registryPath = directory.filePath(
         QStringLiteral("plugins/PluginRegistry.json"));
     QVERIFY(QDir().mkpath(QFileInfo(registryPath).absolutePath()));
@@ -2492,7 +2713,8 @@ void CoreTests::stationPluginBindingRunsLogicalDeviceThroughNativeHost()
     StationPluginRegistrationOptions options;
     options.nativeHostProgram = host;
     options.projectDir = projectRootPath();
-    options.stationFilePath = directory.filePath(QStringLiteral("StationSystem.json"));
+    options.stationFilePath = directory.filePath(
+        QStringLiteral("projects/ProductA/StationSystem.json"));
     const auto registration = registerStationPluginModules(session, station, options);
     QVERIFY(registration.ok());
     QVERIFY(registration.registeredModuleIds.contains(QStringLiteral("device")));
@@ -3468,6 +3690,139 @@ void CoreTests::executionSessionRunsSetupCleanupOnceAndIsolatesFailedUut()
     QCOMPARE(logsByUut.value("UUT-4"), 2);
 }
 
+void CoreTests::executionSessionRunCleanupStopsCohortAndRunsCleanupOnce()
+{
+    ExecutionPlan plan;
+    plan.id = "plan-run-cleanup-scope";
+
+    auto action = [](const NodeId& id,
+                     const QString& function,
+                     ExecutionPhase phase) {
+        ExecNode node;
+        node.id = id;
+        node.localId = id;
+        node.displayName = id;
+        node.kind = ExecNodeKind::Action;
+        node.phase = phase;
+        node.payload.insert("moduleId", "test.multi-uut-lifecycle");
+        node.payload.insert("function", function);
+        return node;
+    };
+
+    auto setup = action("session-setup", "setup", ExecutionPhase::Setup);
+    auto critical = action("critical", "fail-uut-2", ExecutionPhase::Main);
+    critical.errorPolicy.onFail = ErrorAction::RunCleanup;
+    critical.errorPolicy.cleanupRegionId = "session-cleanup";
+    auto after = action("after-critical", "after-failure", ExecutionPhase::Main);
+    auto cleanup = action("session-cleanup", "cleanup", ExecutionPhase::Cleanup);
+    cleanup.alwaysRun = true;
+
+    QVERIFY(plan.addNode(setup));
+    QVERIFY(plan.addNode(critical));
+    QVERIFY(plan.addNode(after));
+    QVERIFY(plan.addNode(cleanup));
+    plan.addEdge({"setup-main", "session-setup", "critical", EdgeKind::Control,
+                  EdgeTrigger::OnSuccess, {}, 0});
+    plan.addEdge({"main-next", "critical", "after-critical", EdgeKind::Control,
+                  EdgeTrigger::OnSuccess, {}, 0});
+    plan.addEdge({"main-cleanup", "after-critical", "session-cleanup",
+                  EdgeKind::Finally, EdgeTrigger::Finally, {}, 0});
+    plan.cleanupRegions.push_back({"session-cleanup",
+                                   {"session-cleanup"},
+                                   {"session-cleanup"},
+                                   {},
+                                   true});
+
+    ExecutionSession session(plan);
+    auto module = std::make_shared<MultiUutLifecycleModule>();
+    QVERIFY(session.registerModule(module));
+    for (int index = 1; index <= 4; ++index) {
+        session.addUut(QString("UUT-%1").arg(index));
+    }
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(result.state, ExecutionState::CompletedWithError);
+    QCOMPARE(module->calls.count("setup:"), 1);
+    QCOMPARE(module->calls.count("cleanup:"), 1);
+    QVERIFY(!module->calls.contains("after-failure:UUT-1"));
+    QVERIFY(!module->calls.contains("after-failure:UUT-2"));
+    QVERIFY(!module->calls.contains("after-failure:UUT-3"));
+    QVERIFY(!module->calls.contains("after-failure:UUT-4"));
+    QCOMPARE(module->calls.last(), QString("cleanup:"));
+}
+
+void CoreTests::executionSessionAbortPolicyStopsCohortAndRunsCleanupOnce()
+{
+    ExecutionPlan plan;
+    plan.id = "plan-abort-policy-scope";
+
+    auto action = [](const NodeId& id,
+                     const QString& function,
+                     ExecutionPhase phase) {
+        ExecNode node;
+        node.id = id;
+        node.localId = id;
+        node.displayName = id;
+        node.kind = ExecNodeKind::Action;
+        node.phase = phase;
+        node.payload.insert("moduleId", "test.multi-uut-lifecycle");
+        node.payload.insert("function", function);
+        return node;
+    };
+
+    auto setup = action("session-setup", "setup", ExecutionPhase::Setup);
+    auto critical = action("critical", "fail-uut-2", ExecutionPhase::Main);
+    critical.errorPolicy.onFail = ErrorAction::Abort;
+    auto after = action("after-critical", "after-failure", ExecutionPhase::Main);
+    auto cleanup = action("session-cleanup", "cleanup", ExecutionPhase::Cleanup);
+    cleanup.alwaysRun = true;
+
+    QVERIFY(plan.addNode(setup));
+    QVERIFY(plan.addNode(critical));
+    QVERIFY(plan.addNode(after));
+    QVERIFY(plan.addNode(cleanup));
+    plan.addEdge({"setup-main", "session-setup", "critical", EdgeKind::Control,
+                  EdgeTrigger::OnSuccess, {}, 0});
+    plan.addEdge({"main-next", "critical", "after-critical", EdgeKind::Control,
+                  EdgeTrigger::OnSuccess, {}, 0});
+    plan.addEdge({"main-cleanup", "after-critical", "session-cleanup",
+                  EdgeKind::Finally, EdgeTrigger::Finally, {}, 0});
+    plan.cleanupRegions.push_back({"session-cleanup",
+                                   {"session-cleanup"},
+                                   {"session-cleanup"},
+                                   {},
+                                   true});
+
+    ExecutionSession session(plan);
+    auto module = std::make_shared<MultiUutLifecycleModule>();
+    QVERIFY(session.registerModule(module));
+    for (int index = 1; index <= 4; ++index) {
+        session.addUut(QString("UUT-%1").arg(index));
+    }
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(result.state, ExecutionState::Aborted);
+    QCOMPARE(session.stopToken()->requestedMode(), StopMode::Abort);
+    QCOMPARE(module->calls.count("setup:"), 1);
+    QCOMPARE(module->calls.count("cleanup:"), 1);
+    QCOMPARE(module->calls.count("fail-uut-2:UUT-1"), 1);
+    QCOMPARE(module->calls.count("fail-uut-2:UUT-2"), 1);
+    QCOMPARE(module->calls.count("fail-uut-2:UUT-3"), 0);
+    QCOMPARE(module->calls.count("fail-uut-2:UUT-4"), 0);
+    for (int index = 1; index <= 4; ++index) {
+        QVERIFY(!module->calls.contains(
+            QString("after-failure:UUT-%1").arg(index)));
+    }
+    QCOMPARE(module->calls.last(), QString("cleanup:"));
+    for (const auto& uutResult : result.uutResults) {
+        QVERIFY(uutResult.completed);
+    }
+}
+
 void CoreTests::executionSessionKeepsResourceAcrossUutTransaction()
 {
     ExecutionPlan plan;
@@ -3896,11 +4251,16 @@ void CoreTests::executionSessionStopRunsCleanupOnly()
 
     const auto result = session.run();
     QVERIFY(result.completed);
-    QCOMPARE(result.state, ExecutionState::Completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(result.state, ExecutionState::CompletedWithError);
 
     const auto& uut = session.uuts().first();
     QCOMPARE(uut.outcomeOf("normal-action"), NodeOutcome::Skipped);
-    QCOMPARE(session.report().sessionSteps.first().outcome, NodeOutcome::Passed);
+    const auto report = session.report();
+    QVERIFY(report.completed);
+    QVERIFY(report.hasError);
+    QCOMPARE(report.state, ExecutionState::CompletedWithError);
+    QCOMPARE(report.sessionSteps.first().outcome, NodeOutcome::Passed);
 }
 
 void CoreTests::stopTokenEscalatesAtomically()
@@ -3973,12 +4333,17 @@ void CoreTests::executionSessionConsumesCrossThreadStopToken()
 
     QVERIFY2(elapsed.elapsed() < 1500, "Stop should cancel a pending timer without waiting for its deadline");
     QVERIFY(result.completed);
-    QCOMPARE(result.state, ExecutionState::Completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(result.state, ExecutionState::CompletedWithError);
     const auto& uut = session.uuts().first();
     QCOMPARE(uut.outcomeOf("wait-1"), NodeOutcome::Skipped);
     QCOMPARE(uut.outcomeOf("wait-2"), NodeOutcome::Skipped);
     QCOMPARE(uut.outcomeOf("wait-3"), NodeOutcome::Skipped);
     QCOMPARE(session.snapshot().sessionExecution.outcomeOf("cleanup"), NodeOutcome::Passed);
+    const auto report = session.report();
+    QVERIFY(report.completed);
+    QVERIFY(report.hasError);
+    QCOMPARE(report.state, ExecutionState::CompletedWithError);
 }
 
 void CoreTests::executionSessionWaitDoesNotBlockOtherUuts()
@@ -4221,12 +4586,17 @@ void CoreTests::executionSessionStopWakesPausedRunAndRunsCleanup()
     runner.join();
 
     QVERIFY(result.completed);
-    QCOMPARE(result.state, ExecutionState::Completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(result.state, ExecutionState::CompletedWithError);
     QCOMPARE(control->state(), ExecutionControlState::Running);
     const auto& uut = session.uuts().first();
     QCOMPARE(uut.outcomeOf("first"), NodeOutcome::Passed);
     QCOMPARE(uut.outcomeOf("second"), NodeOutcome::Skipped);
     QCOMPARE(session.snapshot().sessionExecution.outcomeOf("cleanup"), NodeOutcome::Passed);
+    const auto report = session.report();
+    QVERIFY(report.completed);
+    QVERIFY(report.hasError);
+    QCOMPARE(report.state, ExecutionState::CompletedWithError);
 }
 
 void CoreTests::breakpointAddressResolvesNestedLocalPaths()
@@ -4661,7 +5031,7 @@ void CoreTests::sequenceDefPreservesBarrierAndResourcePolicies()
     QCOMPARE(barrier.timeout.toRuntimePolicy().timeoutMs, 5000);
     const auto runtimeError = barrier.errorPolicy.toRuntimePolicy();
     QCOMPARE(runtimeError.cleanupRegionId, QString("main-cleanup"));
-    QCOMPARE(runtimeError.onFail, ErrorAction::StopUut);
+    QCOMPARE(runtimeError.onFail, ErrorAction::Inherit);
     QCOMPARE(runtimeError.onError, ErrorAction::Abort);
     QCOMPARE(runtimeError.onTimeout, ErrorAction::RunCleanup);
     QCOMPARE(toExecNodeKind(barrier.kind), ExecNodeKind::Barrier);
@@ -4669,11 +5039,22 @@ void CoreTests::sequenceDefPreservesBarrierAndResourcePolicies()
 
 void CoreTests::errorPolicyDefMapsFailureActions()
 {
+    const ErrorPolicyDef defaults;
+    QCOMPARE(defaults.onFail, OnFailureAction::Inherit);
+    QCOMPARE(defaults.onError, OnFailureAction::Inherit);
+    QCOMPARE(defaults.onTimeout, OnFailureAction::Inherit);
+    const auto runtimeDefaults = defaults.toRuntimePolicy();
+    QCOMPARE(runtimeDefaults.onFail, ErrorAction::Inherit);
+    QCOMPARE(runtimeDefaults.onError, ErrorAction::Inherit);
+    QCOMPARE(runtimeDefaults.onTimeout, ErrorAction::Inherit);
+
+    QCOMPARE(toErrorAction(OnFailureAction::Inherit), ErrorAction::Inherit);
     QCOMPARE(toErrorAction(OnFailureAction::Continue), ErrorAction::Continue);
     QCOMPARE(toErrorAction(OnFailureAction::StopUut), ErrorAction::StopUut);
     QCOMPARE(toErrorAction(OnFailureAction::Retry), ErrorAction::Retry);
     QCOMPARE(toErrorAction(OnFailureAction::RunCleanup), ErrorAction::RunCleanup);
     QCOMPARE(toErrorAction(OnFailureAction::Abort), ErrorAction::Abort);
+    QCOMPARE(errorActionName(ErrorAction::Inherit), QString("Inherit"));
     QCOMPARE(errorActionName(ErrorAction::RunCleanup), QString("RunCleanup"));
 }
 
@@ -4698,8 +5079,7 @@ void CoreTests::errorPolicyEngineUsesOutcomeSpecificActions()
     error.nodeId = node.id;
     error.outcome = NodeOutcome::Error;
     decision = engine.decide(node, error, 1);
-    QCOMPARE(decision.action, ErrorAction::RunCleanup);
-    QCOMPARE(decision.cleanupRegionId, QString("main-cleanup"));
+    QCOMPARE(decision.action, ErrorAction::Abort);
     QCOMPARE(decision.cleanupReason, CleanupReason::ModuleError);
 
     NodeResult timeout;
@@ -4710,41 +5090,45 @@ void CoreTests::errorPolicyEngineUsesOutcomeSpecificActions()
     QCOMPARE(decision.cleanupReason, CleanupReason::Timeout);
 }
 
-void CoreTests::stationFailureHandlingOverridesNodePolicies()
+void CoreTests::stationFailureHandlingResolvesAllInheritedOutcomes()
 {
     ExecNode node;
     node.id = "measure";
     node.retry.maxAttempts = 1;
-    node.errorPolicy.onFail = ErrorAction::Continue;
-    node.errorPolicy.onError = ErrorAction::Continue;
-    node.errorPolicy.onTimeout = ErrorAction::Continue;
-    node.errorPolicy.stopUutOnFailure = false;
+    node.errorPolicy.onFail = ErrorAction::Inherit;
+    node.errorPolicy.onError = ErrorAction::Inherit;
+    node.errorPolicy.onTimeout = ErrorAction::Inherit;
+    node.errorPolicy.cleanupRegionId = "main-cleanup";
+    node.errorPolicy.stopUutOnFailure = true;
 
     ErrorPolicyEngine stopEngine(FailureHandlingMode::Stop);
-    for (const auto outcome : {NodeOutcome::Failed,
-                               NodeOutcome::Error,
-                               NodeOutcome::Timeout}) {
-        NodeResult result;
-        result.nodeId = node.id;
-        result.outcome = outcome;
-        QCOMPARE(stopEngine.decide(node, result, 1).action,
-                 ErrorAction::StopUut);
-    }
+    NodeResult result;
+    result.nodeId = node.id;
+    result.outcome = NodeOutcome::Failed;
+    QCOMPARE(stopEngine.decide(node, result, 1).action, ErrorAction::StopUut);
+    result.outcome = NodeOutcome::Error;
+    QCOMPARE(stopEngine.decide(node, result, 1).action, ErrorAction::StopUut);
+    result.outcome = NodeOutcome::Timeout;
+    QCOMPARE(stopEngine.decide(node, result, 1).action, ErrorAction::StopUut);
 
-    node.errorPolicy.onFail = ErrorAction::StopUut;
+    ErrorPolicyEngine continueEngine(FailureHandlingMode::Continue);
+    result.outcome = NodeOutcome::Failed;
+    QCOMPARE(continueEngine.decide(node, result, 1).action, ErrorAction::Continue);
+    result.outcome = NodeOutcome::Error;
+    QCOMPARE(continueEngine.decide(node, result, 1).action, ErrorAction::Continue);
+    result.outcome = NodeOutcome::Timeout;
+    QCOMPARE(continueEngine.decide(node, result, 1).action, ErrorAction::Continue);
+
+    node.errorPolicy.onFail = ErrorAction::Continue;
     node.errorPolicy.onError = ErrorAction::Abort;
     node.errorPolicy.onTimeout = ErrorAction::RunCleanup;
-    node.errorPolicy.stopUutOnFailure = true;
-    ErrorPolicyEngine continueEngine(FailureHandlingMode::Continue);
-    for (const auto outcome : {NodeOutcome::Failed,
-                               NodeOutcome::Error,
-                               NodeOutcome::Timeout}) {
-        NodeResult result;
-        result.nodeId = node.id;
-        result.outcome = outcome;
-        QCOMPARE(continueEngine.decide(node, result, 1).action,
-                 ErrorAction::Continue);
-    }
+    result.outcome = NodeOutcome::Failed;
+    QCOMPARE(stopEngine.decide(node, result, 1).action, ErrorAction::Continue);
+    QCOMPARE(continueEngine.decide(node, result, 1).action, ErrorAction::Continue);
+    result.outcome = NodeOutcome::Error;
+    QCOMPARE(continueEngine.decide(node, result, 1).action, ErrorAction::Abort);
+    result.outcome = NodeOutcome::Timeout;
+    QCOMPARE(continueEngine.decide(node, result, 1).action, ErrorAction::RunCleanup);
 
     NodeResult cancelled;
     cancelled.nodeId = node.id;
@@ -4756,6 +5140,7 @@ void CoreTests::stationFailureHandlingOverridesNodePolicies()
     NodeResult failed;
     failed.nodeId = node.id;
     failed.outcome = NodeOutcome::Failed;
+    node.errorPolicy.onFail = ErrorAction::Inherit;
     QCOMPARE(stopEngine.decide(node, failed, 1).action, ErrorAction::Retry);
     QCOMPARE(continueEngine.decide(node, failed, 1).action, ErrorAction::Retry);
     QCOMPARE(stopEngine.decide(node, failed, 2).action, ErrorAction::StopUut);
@@ -5686,6 +6071,9 @@ void CoreTests::sequenceCompilerRunsDataParserExampleFile()
     QVERIFY(canValue.has_value());
     QVERIFY(qAbs(canValue->result.outputs.value(QStringLiteral("value")).toDouble()
                  - 12.5) < 0.0001);
+    QCOMPARE(canValue->result.measurements.size(), 1);
+    QVERIFY(qAbs(canValue->result.measurements.first().value.toDouble() - 12.5)
+            < 0.0001);
 
     const auto serialNumber = session.results().latest(
         uutId, QStringLiteral("root"),
@@ -6340,6 +6728,117 @@ void CoreTests::whileLoopBreakCounterAndAggregateWorkTogether()
     QCOMPARE(events.breakRequests, QVector<bool>({false, false, true}));
 }
 
+void CoreTests::whileLoopBreakReadsFailedLimitResult()
+{
+    const auto document = QJsonDocument::fromJson(R"json({
+      "id":"while-limit-break","name":"While Limit Break","groups":[
+        {"id":"main","kind":"main","steps":[{
+          "id":"poll","kind":"loop",
+          "loop":{"type":"while","intervalMs":0,
+                  "maxIterations":10,"timeoutMs":1000},
+          "steps":[
+            {"id":"sample","kind":"action",
+             "parameters":{"outputs":{"value":"${loop.number}"}}},
+            {"id":"ready","kind":"limit",
+             "inputs":{"actual":"${step:sample.outputs.value}"},
+             "parameters":{"comparison":"greaterOrEqual","expected":3}},
+            {"id":"done","kind":"break",
+             "inputs":{"actual":"${step:ready.passed}"},
+             "parameters":{"comparison":"isTrue"}}
+          ]
+        },{"id":"after","kind":"noop"}]}
+      ]
+    })json");
+    QVERIFY(document.isObject());
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(document.object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QString() : compiled.errors.first().message));
+    const auto* limitNode = compiled.plan.node("poll.ready");
+    QVERIFY(limitNode != nullptr);
+    QCOMPARE(limitNode->kind, ExecNodeKind::Limit);
+    QCOMPARE(compiled.plan.loopRegions.first().whileLoop.iterationErrorPolicy,
+             WhileIterationErrorPolicy::ContinueOnFail);
+
+    ExecutionSession session(compiled.plan);
+    session.addUut("uut-1");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(!run.hasError);
+    QCOMPARE(run.state, ExecutionState::Completed);
+
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.outcomeOf("poll"), NodeOutcome::Passed);
+    QCOMPARE(uut.outcomeOf("after"), NodeOutcome::Passed);
+    const auto& limitAttempts = uut.activations.value("poll.ready").attempts;
+    QCOMPARE(limitAttempts.size(), 3);
+    QCOMPARE(limitAttempts[0].result.outcome, NodeOutcome::Failed);
+    QCOMPARE(limitAttempts[0].result.outputs.value("passed").toBool(), false);
+    QCOMPARE(limitAttempts[1].result.outcome, NodeOutcome::Failed);
+    QCOMPARE(limitAttempts[1].result.outputs.value("passed").toBool(), false);
+    QCOMPARE(limitAttempts[2].result.outcome, NodeOutcome::Passed);
+    QCOMPARE(limitAttempts[2].result.outputs.value("passed").toBool(), true);
+    const auto& breakAttempts = uut.activations.value("poll.done").attempts;
+    QCOMPARE(breakAttempts.size(), 3);
+    QCOMPARE(breakAttempts[0].result.outputs.value("breakRequested").toBool(), false);
+    QCOMPARE(breakAttempts[1].result.outputs.value("breakRequested").toBool(), false);
+    QCOMPARE(breakAttempts[2].result.outputs.value("breakRequested").toBool(), true);
+    QCOMPARE(uut.activations.value("poll").attempts.last().result.outputs
+                 .value("exitReason").toString(),
+             QString("break"));
+
+    const auto report = session.report();
+    const auto* limitReport = findStep(report.uuts.first(), "ready");
+    QVERIFY(limitReport != nullptr);
+    QCOMPARE(limitReport->nodePath, NodeId("poll.ready"));
+    QCOMPARE(limitReport->kind, ExecNodeKind::Limit);
+    QCOMPARE(limitReport->outcome, NodeOutcome::Passed);
+    QCOMPARE(limitReport->attempts.size(), 3);
+    QCOMPARE(limitReport->attempts.first().outcome, NodeOutcome::Failed);
+    const auto parsedReport = parseExecutionReport(serializeExecutionReport(report));
+    QVERIFY(parsedReport.ok());
+    const auto* parsedLimit = findStep(parsedReport.report.uuts.first(), "ready");
+    QVERIFY(parsedLimit != nullptr);
+    QCOMPARE(parsedLimit->nodePath, NodeId("poll.ready"));
+    QCOMPARE(parsedLimit->kind, ExecNodeKind::Limit);
+}
+
+void CoreTests::whileLoopContinueOnFailStopsExecutionFaults()
+{
+    const auto document = QJsonDocument::fromJson(R"json({
+      "id":"while-error","name":"While Error","groups":[
+        {"id":"main","kind":"main","steps":[{
+          "id":"poll","kind":"loop",
+          "loop":{"type":"while","intervalMs":0,"maxIterations":3,"timeoutMs":1000},
+          "steps":[
+            {"id":"probe","kind":"action",
+             "parameters":{"outcome":"Error","errorCode":"ProbeError"}},
+            {"id":"done","kind":"break",
+             "inputs":{"actual":"${step:probe.passed}"},
+             "parameters":{"comparison":"isTrue"}}
+          ]
+        }]}
+      ]
+    })json");
+    QVERIFY(document.isObject());
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(document.object());
+    QVERIFY(compiled.ok());
+    ExecutionSession session(compiled.plan);
+    session.addUut("uut-1");
+    const auto run = session.run();
+
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+    QCOMPARE(run.state, ExecutionState::CompletedWithError);
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.activations.value("poll.probe").attempts.size(), 1);
+    QCOMPARE(uut.activations.value("poll.done").attempts.size(), 1);
+    QCOMPARE(uut.outcomeOf("poll"), NodeOutcome::Error);
+}
+
 void CoreTests::whileLoopRunsInsideTestItem()
 {
     const auto document = QJsonDocument::fromJson(R"json({
@@ -6952,12 +7451,12 @@ void CoreTests::testItemChildContinueRunsRemainingChildren()
         "steps": [{
           "id": "parent",
           "kind": "testItem",
+          "errorPolicy": { "onFail": "Continue" },
           "steps": [
             {
               "id": "allowed-failure",
               "kind": "action",
-              "parameters": { "outcome": "Failed" },
-              "errorPolicy": { "onFail": "Continue" }
+              "parameters": { "outcome": "Failed" }
             },
             { "id": "still-runs", "kind": "action" }
           ]
@@ -6976,6 +7475,52 @@ void CoreTests::testItemChildContinueRunsRemainingChildren()
     QCOMPARE(session.uuts().first().outcomeOf("parent.allowed-failure"), NodeOutcome::Failed);
     QCOMPARE(session.uuts().first().outcomeOf("parent.still-runs"), NodeOutcome::Passed);
     QCOMPARE(session.uuts().first().outcomeOf("parent"), NodeOutcome::Failed);
+}
+
+void CoreTests::testItemInheritsTimeoutPolicyFromParent()
+{
+    const auto json = R"json({
+      "id": "test-item-timeout-inheritance",
+      "name": "Test Item Timeout Inheritance",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [
+          {
+            "id": "parent",
+            "kind": "testItem",
+            "errorPolicy": { "onTimeout": "Continue" },
+            "steps": [
+              {
+                "id": "timed-out",
+                "kind": "action",
+                "parameters": { "outcome": "Timeout" }
+              },
+              { "id": "still-runs", "kind": "noop" }
+            ]
+          },
+          { "id": "after-parent", "kind": "noop" }
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compile.ok());
+    ExecutionSession session(compile.plan,
+                             {},
+                             nullptr,
+                             {},
+                             FailureHandlingMode::Stop);
+    session.addUut("uut-1");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.outcomeOf("parent.timed-out"), NodeOutcome::Timeout);
+    QCOMPARE(uut.outcomeOf("parent.still-runs"), NodeOutcome::Passed);
+    QCOMPARE(uut.outcomeOf("parent"), NodeOutcome::Timeout);
+    QCOMPARE(uut.outcomeOf("after-parent"), NodeOutcome::Passed);
 }
 
 void CoreTests::stationFailureHandlingControlsTestItemChildren()
@@ -7031,11 +7576,11 @@ void CoreTests::stationFailureHandlingControlsTestItemChildren()
     QCOMPARE(continued.outcomeOf("parent.failed"), NodeOutcome::Failed);
     QCOMPARE(continued.outcomeOf("parent.after-fail"), NodeOutcome::Passed);
     QCOMPARE(continued.outcomeOf("parent.error"), NodeOutcome::Error);
-    QCOMPARE(continued.outcomeOf("parent.after-error"), NodeOutcome::Passed);
-    QCOMPARE(continued.outcomeOf("parent.timeout"), NodeOutcome::Timeout);
-    QCOMPARE(continued.outcomeOf("parent.after-timeout"), NodeOutcome::Passed);
+    QCOMPARE(continued.outcomeOf("parent.after-error"), NodeOutcome::Skipped);
+    QCOMPARE(continued.outcomeOf("parent.timeout"), NodeOutcome::Skipped);
+    QCOMPARE(continued.outcomeOf("parent.after-timeout"), NodeOutcome::Skipped);
     QCOMPARE(continued.outcomeOf("parent"), NodeOutcome::Error);
-    QCOMPARE(continued.outcomeOf("after-parent"), NodeOutcome::Passed);
+    QCOMPARE(continued.outcomeOf("after-parent"), NodeOutcome::Skipped);
 
     ExecutionSession stopSession(compile.plan,
                                  {},
@@ -7048,14 +7593,16 @@ void CoreTests::stationFailureHandlingControlsTestItemChildren()
     QVERIFY(stopRun.hasError);
     const auto& stopped = stopSession.uuts().first();
     QCOMPARE(stopped.outcomeOf("parent.failed"), NodeOutcome::Failed);
-    QCOMPARE(stopped.outcomeOf("parent.after-fail"), NodeOutcome::Skipped);
-    QCOMPARE(stopped.outcomeOf("parent.error"), NodeOutcome::Skipped);
+    QCOMPARE(stopped.outcomeOf("parent.after-fail"), NodeOutcome::Passed);
+    QCOMPARE(stopped.outcomeOf("parent.error"), NodeOutcome::Error);
+    QCOMPARE(stopped.outcomeOf("parent.after-error"), NodeOutcome::Skipped);
+    QCOMPARE(stopped.outcomeOf("parent.timeout"), NodeOutcome::Skipped);
     QCOMPARE(stopped.outcomeOf("parent.after-timeout"), NodeOutcome::Skipped);
-    QCOMPARE(stopped.outcomeOf("parent"), NodeOutcome::Failed);
+    QCOMPARE(stopped.outcomeOf("parent"), NodeOutcome::Error);
     QCOMPARE(stopped.outcomeOf("after-parent"), NodeOutcome::Skipped);
 }
 
-void CoreTests::stationContinueEvaluatesFailedDataDependency()
+void CoreTests::stationContinueAppliesToChildErrorPolicy()
 {
     const auto json = R"json({
       "id": "station-dependent-continue",
@@ -7340,7 +7887,12 @@ void CoreTests::testItemStopSkipsChildrenAndRunsCleanup()
     session.requestStop();
     const auto result = session.run();
     QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(result.state, ExecutionState::CompletedWithError);
     const auto report = session.report();
+    QVERIFY(report.completed);
+    QVERIFY(report.hasError);
+    QCOMPARE(report.state, ExecutionState::CompletedWithError);
     const auto& uut = report.uuts.first();
     QCOMPARE(findStep(uut, "parent")->outcome, NodeOutcome::Skipped);
     QCOMPARE(findStep(uut, "child-a")->outcome, NodeOutcome::Skipped);
@@ -7829,7 +8381,7 @@ void CoreTests::continuePolicyAdvancesAfterTestItemFailure()
     QVERIFY(run.completed);
     QVERIFY(run.hasError);
     QCOMPARE(session.uuts().first().outcomeOf("failed-item"), NodeOutcome::Failed);
-    QCOMPARE(session.uuts().first().outcomeOf("failed-item.remaining-child"), NodeOutcome::Skipped);
+    QCOMPARE(session.uuts().first().outcomeOf("failed-item.remaining-child"), NodeOutcome::Passed);
     QCOMPARE(session.uuts().first().outcomeOf("after-item"), NodeOutcome::Passed);
 }
 
@@ -8204,6 +8756,37 @@ void CoreTests::runtimeResultLookupReportsMissingAndNonPassedSources()
     const auto lookup = store.lookup("uut-1", "root", "002", *reference);
     QVERIFY(!lookup.found);
     QCOMPARE(lookup.errorCode, QString("StepResultNotPassed"));
+
+    const auto outcomeReference = parseStepResultReference("step:001.outcome");
+    QVERIFY(outcomeReference.has_value());
+    const auto outcomeLookup = store.lookup(
+        "uut-1", "root", "002", *outcomeReference);
+    QVERIFY(outcomeLookup.found);
+    QCOMPARE(outcomeLookup.value.toString(), QStringLiteral("Skipped"));
+
+    const auto passedReference = parseStepResultReference("step:001.passed");
+    QVERIFY(passedReference.has_value());
+    const auto passedLookup = store.lookup(
+        "uut-1", "root", "002", *passedReference);
+    QVERIFY(passedLookup.found);
+    QCOMPARE(passedLookup.value.toBool(), false);
+
+    ExecNode limitNode;
+    limitNode.id = QStringLiteral("limit");
+    limitNode.kind = ExecNodeKind::Limit;
+    QVERIFY(plan.addNode(limitNode));
+    NodeResult failedLimit;
+    failedLimit.nodeId = limitNode.id;
+    failedLimit.outcome = NodeOutcome::Failed;
+    failedLimit.outputs.insert(QStringLiteral("passed"), false);
+    store.commit("uut-1", "root", limitNode.id, 0, failedLimit);
+    const auto legacyLimitReference = parseStepResultReference(
+        "step:limit.outputs.passed");
+    QVERIFY(legacyLimitReference.has_value());
+    const auto legacyLimitLookup = store.lookup(
+        "uut-1", "root", "002", *legacyLimitReference);
+    QVERIFY(legacyLimitLookup.found);
+    QCOMPARE(legacyLimitLookup.value.toBool(), false);
 }
 
 void CoreTests::limitNodeSupportsNumericStringAndBooleanComparisons()
@@ -8273,6 +8856,57 @@ void CoreTests::limitNodeSupportsNumericStringAndBooleanComparisons()
     QCOMPARE(result.measurements.first().lowerLimit, 8.0);
     QCOMPARE(result.measurements.first().upperLimit, 8.0);
 
+    const auto assetCode = QStringLiteral("1000000000123456789");
+    const auto adjacentAssetCode = QStringLiteral("1000000000123456790");
+    result = runLimit({{"actual", assetCode}},
+                      {{"comparison", "equal"},
+                       {"expected", adjacentAssetCode},
+                       {"tolerance", 0.0}});
+    QCOMPARE(result.outcome, NodeOutcome::Failed);
+    QCOMPARE(result.outputs.value("comparisonMode").toString(), QStringLiteral("text"));
+    QVERIFY(!result.measurements.first().hasLowerLimit);
+    QVERIFY(!result.measurements.first().hasUpperLimit);
+    QCOMPARE(result.measurements.first().attributes.value("displayLower").toString(),
+             adjacentAssetCode);
+    QCOMPARE(result.measurements.first().attributes.value("displayUpper").toString(),
+             adjacentAssetCode);
+    const auto assetLogs = limitLogs.records();
+    QVERIFY(assetLogs.last().message.contains(
+        QStringLiteral("mode=text lower=%1 upper=%1").arg(adjacentAssetCode)));
+    QVERIFY(!assetLogs.last().message.contains(QStringLiteral("e+"),
+                                               Qt::CaseInsensitive));
+
+    result = runLimit({{"actual", assetCode}},
+                      {{"comparison", "equal"},
+                       {"expected", assetCode},
+                       {"tolerance", 0.0}});
+    QCOMPARE(result.outcome, NodeOutcome::Passed);
+
+    result = runLimit({{"actual", assetCode}},
+                      {{"comparison", "notEqual"},
+                       {"expected", adjacentAssetCode},
+                       {"tolerance", 0.0}});
+    QCOMPARE(result.outcome, NodeOutcome::Passed);
+
+    QVariantMap largeIntegerInputs;
+    largeIntegerInputs.insert("actual", QVariant::fromValue<qint64>(9007199254740993LL));
+    QVariantMap largeIntegerParameters;
+    largeIntegerParameters.insert("comparison", "equal");
+    largeIntegerParameters.insert(
+        "expected", QVariant::fromValue<qint64>(9007199254740994LL));
+    result = runLimit(largeIntegerInputs, largeIntegerParameters);
+    QCOMPARE(result.outcome, NodeOutcome::Failed);
+    QCOMPARE(result.outputs.value("comparisonMode").toString(), QStringLiteral("integer"));
+    QCOMPARE(result.measurements.first().attributes.value("displayLower").toLongLong(),
+             qint64(9007199254740994LL));
+
+    result = runLimit({{"actual", assetCode}},
+                      {{"comparison", "equal"},
+                       {"expected", assetCode.toDouble()},
+                       {"tolerance", 0.0}});
+    QCOMPARE(result.outcome, NodeOutcome::Error);
+    QCOMPARE(result.errorCode, QStringLiteral("LimitPrecisionError"));
+
     result = runLimit({{"actual", "62 F1 90"}},
                       {{"comparison", "contains"}, {"expected", "F1"}});
     QCOMPARE(result.outcome, NodeOutcome::Passed);
@@ -8329,6 +8963,18 @@ void CoreTests::limitSpecificationsAppearInReportBeforeExecution()
              QStringLiteral("READY"));
     QCOMPARE(stringPreview.attributes.value(QStringLiteral("displayUpper")).toString(),
              QStringLiteral("READY"));
+
+    const auto assetPreview = configuredMeasurementPreview(
+        {{QStringLiteral("comparison"), QStringLiteral("equal")},
+         {QStringLiteral("expected"), QStringLiteral("1000000000123456789")},
+         {QStringLiteral("tolerance"), 0.0}},
+        QStringLiteral("Asset Code"));
+    QVERIFY(!assetPreview.hasLowerLimit);
+    QVERIFY(!assetPreview.hasUpperLimit);
+    QCOMPARE(assetPreview.attributes.value(QStringLiteral("displayLower")).toString(),
+             QStringLiteral("1000000000123456789"));
+    QCOMPARE(assetPreview.attributes.value(QStringLiteral("displayUpper")).toString(),
+             QStringLiteral("1000000000123456789"));
 
     const auto expressionPreview = configuredMeasurementPreview(
         {{QStringLiteral("comparison"), QStringLiteral("between")},

@@ -13,7 +13,7 @@ ProportionalHeaderView::ProportionalHeaderView(QWidget* parent)
 {
     setSectionResizeMode(QHeaderView::Interactive);
     setMinimumSectionSize(48);
-    setStretchLastSection(false);
+    setStretchLastSection(true);
 }
 
 void ProportionalHeaderView::setSectionWeights(QVector<int> weights)

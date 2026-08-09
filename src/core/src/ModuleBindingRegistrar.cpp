@@ -111,7 +111,8 @@ QVector<RegistryPlugin> loadPluginRegistry(
         addResolutionErrors(result, QStringLiteral("plugins"), resolutionErrors);
         return {};
     }
-    registryPath = resolveProgramPath(registryPath, resolver);
+    registryPath = resolveStationPluginRegistryPath(
+        registryPath, options.stationFilePath, options.projectDir);
 
     QFile file(registryPath);
     if (!QFileInfo::exists(registryPath)) {

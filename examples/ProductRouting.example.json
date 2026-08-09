@@ -1,0 +1,12 @@
+{
+  "allowManualInTest": false,
+  "projectRoot": "projects",
+  "routes": [
+    {
+      "name": "Example Product",
+      "pattern": "EXAMPLE-*",
+      "project": "ExampleProduct",
+      "enabled": true
+    }
+  ]
+}

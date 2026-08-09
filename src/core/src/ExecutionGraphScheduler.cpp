@@ -15,6 +15,30 @@ bool resourceIdsOverlap(const ResourceId& left, const ResourceId& right)
            right.startsWith(left + '.');
 }
 
+int failureEscalationPriority(ErrorAction action)
+{
+    switch (action) {
+    case ErrorAction::Abort:
+        return 3;
+    case ErrorAction::RunCleanup:
+        return 2;
+    case ErrorAction::StopUut:
+        return 1;
+    case ErrorAction::Inherit:
+    case ErrorAction::Continue:
+    case ErrorAction::Retry:
+        return 0;
+    }
+    return 0;
+}
+
+QString controllerEscalationKey(const UutId& uutId,
+                                const FrameId& frameId,
+                                const NodeId& controllerNodeId)
+{
+    return QStringLiteral("%1\x1f%2\x1f%3").arg(uutId, frameId, controllerNodeId);
+}
+
 class AttemptModuleLogSink final : public IModuleLogSink {
 public:
     AttemptModuleLogSink(RuntimeEventEmitter* events,
@@ -161,7 +185,7 @@ ExecutionGraphScheduler::ExecutionGraphScheduler(const ExecutionPlan& plan,
                                                  ExecutionResultStore& results,
                                                  RuntimeEventEmitter* events,
                                                  ExecutionControl* executionControl,
-                                                 const StopToken* stopToken)
+                                                 StopToken* stopToken)
     : m_plan(plan)
     , m_resources(resources)
     , m_barriers(barriers)
@@ -323,6 +347,16 @@ int ExecutionGraphScheduler::activePeriodicTaskCount() const
     return m_periodicTasks.activeTaskCount();
 }
 
+bool ExecutionGraphScheduler::sessionCleanupRequested() const
+{
+    return m_sessionCleanupRequested;
+}
+
+QString ExecutionGraphScheduler::sessionCleanupReason() const
+{
+    return m_sessionCleanupReason;
+}
+
 SchedulerResult ExecutionGraphScheduler::run(UutExecution& uut, const FrameId& frameId)
 {
     SchedulerResult schedulerResult;
@@ -432,7 +466,7 @@ SchedulerStepResult ExecutionGraphScheduler::pumpOnce(
     step.progressed = previousState != currentState || result.outcome != NodeOutcome::Unknown;
     step.blocked = !step.progressed;
     step.hasError = !m_plan.isInsideTestItem(nodeId) &&
-                    !isWhileLoopBodyNode(nodeId) &&
+                    !isLoopBodyNode(nodeId) &&
                     (result.outcome == NodeOutcome::Failed ||
                      result.outcome == NodeOutcome::Error ||
                      result.outcome == NodeOutcome::Timeout);
@@ -679,7 +713,9 @@ bool ExecutionGraphScheduler::dependenciesSatisfied(
         const auto decision = m_errorPolicy.decide(
             *sourceNode,
             activation->attempts.last().result,
-            activation->attempts.size());
+            activation->attempts.size(),
+            inheritedErrorAction(*sourceNode,
+                                 activation->attempts.last().result.outcome));
         if (decision.action != ErrorAction::Continue) {
             return false;
         }
@@ -1109,8 +1145,8 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
         return executeTestItemNode(uut, node, frameId);
     }
 
-    const bool isTestItemChild = m_plan.isInsideTestItem(node.id);
-    const bool isWhileLoopChild = isWhileLoopBodyNode(node.id);
+    const bool isTestItemChild = m_plan.testItemRegionForChild(node.id).has_value();
+    const bool isLoopChild = isLoopBodyNode(node.id);
 
     auto& activation = uut.ensureActivation(node.id, frameId);
     activation.state = ActivationState::Running;
@@ -1223,7 +1259,8 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
         const auto decision = m_errorPolicy.decide(
             node,
             result,
-            activation.attempts.size() - activation.retryAttemptBase);
+            activation.attempts.size() - activation.retryAttemptBase,
+            inheritedErrorAction(node, result.outcome));
         finalDecision = decision;
         shouldRetry = decision.action == ErrorAction::Retry;
         if (shouldRetry) {
@@ -1240,10 +1277,6 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
             if (retryDelayScheduled) {
                 shouldRetry = false;
             }
-        }
-        if (decision.action == ErrorAction::RunCleanup &&
-            !isTestItemChild && !isWhileLoopChild) {
-            activateCleanup(uut, decision.cleanupRegionId);
         }
     }
 
@@ -1290,7 +1323,18 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
                                        result,
                                        finalDecision.action,
                                        frameId);
-        } else if (!isWhileLoopChild) {
+        } else if (isLoopChild) {
+            handleLoopBodyFailure(uut,
+                                  node,
+                                  result,
+                                  finalDecision.action,
+                                  frameId);
+        } else {
+            if (finalDecision.action == ErrorAction::RunCleanup) {
+                requestSessionCleanup(uut, node, finalDecision.reason);
+            } else if (finalDecision.action == ErrorAction::Abort) {
+                requestSessionAbort();
+            }
             handleNodeFailureForBarriers(uut, node, result, frameId);
             if (finalDecision.action == ErrorAction::StopUut ||
                 finalDecision.action == ErrorAction::RunCleanup ||
@@ -1671,12 +1715,63 @@ void ExecutionGraphScheduler::handleTestItemChildFailure(UutExecution& uut,
         return;
     }
 
+    const auto escalationKey = controllerEscalationKey(
+        uut.uutId, frameId, region->controllerNodeId);
+    const auto currentEscalation = m_testItemFailureEscalations.value(
+        escalationKey, ErrorAction::Continue);
+    if (failureEscalationPriority(action) >
+        failureEscalationPriority(currentEscalation)) {
+        m_testItemFailureEscalations.insert(escalationKey, action);
+    }
+
     const auto failedIndex = region->childNodeIds.indexOf(childNode.id);
     if (failedIndex < 0) {
         return;
     }
 
     const auto reason = QString("skipped after TestItem child %1 returned %2")
+                            .arg(childNode.id, nodeOutcomeName(result.outcome));
+    for (int index = failedIndex + 1; index < region->childNodeIds.size(); ++index) {
+        skipNodeSubtree(uut, region->childNodeIds[index], frameId, reason);
+    }
+}
+
+void ExecutionGraphScheduler::handleLoopBodyFailure(UutExecution& uut,
+                                                     const ExecNode& childNode,
+                                                     const NodeResult& result,
+                                                     ErrorAction action,
+                                                     const FrameId& frameId)
+{
+    if (result.outcome == NodeOutcome::Passed ||
+        result.outcome == NodeOutcome::Skipped ||
+        result.outcome == NodeOutcome::Unknown ||
+        action == ErrorAction::Continue) {
+        return;
+    }
+
+    const auto parentId = m_plan.structuralParentOf(childNode.id);
+    const auto region = parentId
+        ? m_plan.loopRegionForController(*parentId)
+        : std::optional<LoopRegion> {};
+    if (!region) {
+        return;
+    }
+
+    const auto escalationKey = controllerEscalationKey(
+        uut.uutId, frameId, region->controllerNodeId);
+    const auto currentEscalation = m_loopFailureEscalations.value(
+        escalationKey, ErrorAction::Continue);
+    if (failureEscalationPriority(action) >
+        failureEscalationPriority(currentEscalation)) {
+        m_loopFailureEscalations.insert(escalationKey, action);
+    }
+
+    const auto failedIndex = region->childNodeIds.indexOf(childNode.id);
+    if (failedIndex < 0) {
+        return;
+    }
+
+    const auto reason = QString("skipped after Loop child %1 returned %2")
                             .arg(childNode.id, nodeOutcomeName(result.outcome));
     for (int index = failedIndex + 1; index < region->childNodeIds.size(); ++index) {
         skipNodeSubtree(uut, region->childNodeIds[index], frameId, reason);
@@ -1811,6 +1906,7 @@ NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
 {
     auto& activation = uut.ensureActivation(node.id, frameId);
     const auto region = m_plan.testItemRegionForController(node.id);
+    const auto escalationKey = controllerEscalationKey(uut.uutId, frameId, node.id);
     NodeResult result;
     result.nodeId = node.id;
     result.startedAt = QDateTime::currentDateTimeUtc();
@@ -1888,8 +1984,13 @@ NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
     if (result.outcome != NodeOutcome::Passed) {
         const auto completedAttempts = activation.attempts.size() -
             activation.retryAttemptBase;
-        auto decision = m_errorPolicy.decide(node, result, completedAttempts);
+        auto decision = m_errorPolicy.decide(
+            node,
+            result,
+            completedAttempts,
+            inheritedErrorAction(node, result.outcome));
         if (decision.action == ErrorAction::Retry) {
+            m_testItemFailureEscalations.remove(escalationKey);
             m_results.commit(uut.uutId,
                              frameId,
                              node.id,
@@ -1916,15 +2017,28 @@ NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
             pending.finishedAt = QDateTime::currentDateTimeUtc();
             return pending;
         }
+        const auto childEscalation = m_testItemFailureEscalations.take(escalationKey);
         if (bestEffortCleanupApplies(uut, node.id)) {
             decision.action = ErrorAction::Continue;
             decision.reason = QStringLiteral("best-effort cleanup continues after error");
+        } else if (failureEscalationPriority(childEscalation) >
+                   failureEscalationPriority(decision.action)) {
+            decision.action = childEscalation;
+            decision.reason = QStringLiteral("TestItem child requested %1")
+                                  .arg(errorActionName(childEscalation));
         }
-        if (m_plan.isInsideTestItem(node.id)) {
+        const auto parentId = m_plan.structuralParentOf(node.id);
+        const bool isDirectLoopChild = parentId &&
+            m_plan.loopRegionForController(*parentId).has_value();
+        if (m_plan.testItemRegionForChild(node.id)) {
             handleTestItemChildFailure(uut, node, result, decision.action, frameId);
-        } else if (!isWhileLoopBodyNode(node.id)) {
+        } else if (isDirectLoopChild) {
+            handleLoopBodyFailure(uut, node, result, decision.action, frameId);
+        } else {
             if (decision.action == ErrorAction::RunCleanup) {
-                activateCleanup(uut, decision.cleanupRegionId);
+                requestSessionCleanup(uut, node, decision.reason);
+            } else if (decision.action == ErrorAction::Abort) {
+                requestSessionAbort();
             }
             handleNodeFailureForBarriers(uut, node, result, frameId);
             if (decision.action == ErrorAction::StopUut ||
@@ -1933,6 +2047,8 @@ NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
                 skipPendingNonAlwaysRun(uut, frameId, executionPhaseOf(node));
             }
         }
+    } else {
+        m_testItemFailureEscalations.remove(escalationKey);
     }
     return result;
 }
@@ -1954,6 +2070,7 @@ NodeResult ExecutionGraphScheduler::executeLoopNode(UutExecution& uut,
     result.startedAt = QDateTime::currentDateTimeUtc();
 
     const auto region = m_plan.loopRegionForController(node.id);
+    const auto escalationKey = controllerEscalationKey(uut.uutId, frameId, node.id);
     if (!region) {
         result.outcome = NodeOutcome::Error;
         result.errorCode = "LoopRegionMissing";
@@ -2014,16 +2131,42 @@ NodeResult ExecutionGraphScheduler::executeLoopNode(UutExecution& uut,
                          result.outcome,
                          decision.message);
         if (decision.outcome != NodeOutcome::Passed) {
-            const auto errorDecision = m_errorPolicy.decide(node, result, activation.attempts.size());
-            if (m_plan.isInsideTestItem(node.id)) {
+            auto errorDecision = m_errorPolicy.decide(
+                node,
+                result,
+                activation.attempts.size(),
+                inheritedErrorAction(node, result.outcome));
+            const auto childEscalation = m_loopFailureEscalations.take(escalationKey);
+            if (bestEffortCleanupApplies(uut, node.id)) {
+                errorDecision.action = ErrorAction::Continue;
+                errorDecision.reason =
+                    QStringLiteral("best-effort cleanup continues after error");
+            } else if (failureEscalationPriority(childEscalation) >
+                       failureEscalationPriority(errorDecision.action)) {
+                errorDecision.action = childEscalation;
+                errorDecision.reason = QStringLiteral("Loop child requested %1")
+                                           .arg(errorActionName(childEscalation));
+            }
+            const auto parentId = m_plan.structuralParentOf(node.id);
+            const bool isDirectLoopChild = parentId &&
+                m_plan.loopRegionForController(*parentId).has_value();
+            if (m_plan.testItemRegionForChild(node.id)) {
                 handleTestItemChildFailure(uut,
                                            node,
                                            result,
                                            errorDecision.action,
                                            frameId);
+            } else if (isDirectLoopChild) {
+                handleLoopBodyFailure(uut,
+                                      node,
+                                      result,
+                                      errorDecision.action,
+                                      frameId);
             } else {
                 if (errorDecision.action == ErrorAction::RunCleanup) {
-                    activateCleanup(uut, errorDecision.cleanupRegionId);
+                    requestSessionCleanup(uut, node, errorDecision.reason);
+                } else if (errorDecision.action == ErrorAction::Abort) {
+                    requestSessionAbort();
                 }
                 handleNodeFailureForBarriers(uut, node, result, frameId);
                 if (errorDecision.action == ErrorAction::StopUut ||
@@ -2032,6 +2175,8 @@ NodeResult ExecutionGraphScheduler::executeLoopNode(UutExecution& uut,
                     skipPendingNonAlwaysRun(uut, frameId, executionPhaseOf(node));
                 }
             }
+        } else {
+            m_loopFailureEscalations.remove(escalationKey);
         }
         return result;
     }
@@ -2060,10 +2205,73 @@ NodeResult ExecutionGraphScheduler::executeLoopNode(UutExecution& uut,
     return result;
 }
 
-bool ExecutionGraphScheduler::isWhileLoopBodyNode(const NodeId& nodeId) const
+bool ExecutionGraphScheduler::isLoopBodyNode(const NodeId& nodeId) const
 {
-    const auto region = m_plan.loopRegionForBodyNode(nodeId);
-    return region && region->type == LoopType::While;
+    return m_plan.loopRegionForBodyNode(nodeId).has_value();
+}
+
+std::optional<ErrorAction> ExecutionGraphScheduler::inheritedErrorAction(
+    const ExecNode& node,
+    NodeOutcome outcome) const
+{
+    const auto actionForOutcome = [outcome](const NodeErrorPolicy& policy) {
+        if (outcome == NodeOutcome::Timeout) {
+            return policy.onTimeout;
+        }
+        if (outcome == NodeOutcome::Error) {
+            return policy.onError;
+        }
+        return policy.onFail;
+    };
+
+    auto parentId = m_plan.structuralParentOf(node.id);
+    while (parentId) {
+        const auto* parent = m_plan.node(*parentId);
+        if (!parent) {
+            break;
+        }
+
+        // A Loop owns iteration failure handling. Its body reports the failure
+        // to the controller instead of applying the Station policy directly.
+        if (parent->kind == ExecNodeKind::Loop) {
+            return ErrorAction::Continue;
+        }
+        if (parent->kind == ExecNodeKind::TestItem) {
+            const auto action = actionForOutcome(parent->errorPolicy);
+            if (action == ErrorAction::Retry) {
+                // Retry belongs to the TestItem as a whole, not to each child.
+                return ErrorAction::Continue;
+            }
+            if (action != ErrorAction::Inherit) {
+                return action;
+            }
+        }
+        parentId = m_plan.structuralParentOf(*parentId);
+    }
+    return std::nullopt;
+}
+
+void ExecutionGraphScheduler::requestSessionCleanup(const UutExecution& uut,
+                                                     const ExecNode& node,
+                                                     const QString& reason)
+{
+    if (m_sessionCleanupRequested) {
+        return;
+    }
+    m_sessionCleanupRequested = true;
+    m_sessionCleanupReason = QStringLiteral("%1 requested cleanup after %2: %3")
+                                 .arg(uut.uutId, node.id, reason);
+}
+
+void ExecutionGraphScheduler::requestSessionAbort()
+{
+    if (m_stopToken) {
+        m_stopToken->requestStop(StopMode::Abort);
+    }
+    if (m_executionControl) {
+        m_executionControl->operatorPrompts().cancelAll();
+        m_executionControl->resume();
+    }
 }
 
 void ExecutionGraphScheduler::handleBreakRequest(UutExecution& uut,
@@ -2524,9 +2732,18 @@ void ExecutionGraphScheduler::publishNodeEvent(RuntimeEventKind kind,
     event.errorCode = errorCode;
     event.message = message;
     event.loopIteration = loopIteration;
+    event.details.insert("maxAttempts", qMax(1, node.retry.maxAttempts));
     const auto activation = uut.activations.constFind(node.id);
     if (activation != uut.activations.constEnd()) {
         event.frameId = activation->frameId;
+        if (kind == RuntimeEventKind::TestItemStarted) {
+            const int retryAttemptIndex = qMax(
+                1,
+                static_cast<int>(activation->attempts.size()) -
+                    activation->retryAttemptBase + 1);
+            event.attemptIndex = retryAttemptIndex;
+            event.details.insert("retryAttemptIndex", retryAttemptIndex);
+        }
         if (!activation->attempts.isEmpty()) {
             event.requestId = activation->attempts.last().requestId;
         }
@@ -2570,6 +2787,7 @@ void ExecutionGraphScheduler::publishAttemptEvent(RuntimeEventKind kind,
     event.measurements = attempt.result.measurements;
     event.errorCode = attempt.result.errorCode;
     event.message = message;
+    event.details.insert("maxAttempts", qMax(1, node.retry.maxAttempts));
     if (node.kind == ExecNodeKind::Break) {
         const auto breakRequested = attempt.result.outputs.value("breakRequested");
         if (breakRequested.isValid()) {
@@ -2585,6 +2803,9 @@ void ExecutionGraphScheduler::publishAttemptEvent(RuntimeEventKind kind,
     if (activation != uut.activations.constEnd()) {
         event.frameId = activation->frameId;
         event.activationState = activation->state;
+        event.details.insert(
+            "retryAttemptIndex",
+            qMax(1, attempt.attemptIndex - activation->retryAttemptBase + 1));
     }
     m_events->publish(event);
 }

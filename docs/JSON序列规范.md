@@ -6,6 +6,50 @@ This document describes the JSON shape currently accepted by
 The compiler treats missing optional fields as defaults. If a known field is
 present with the wrong JSON type, compilation fails with a path-specific error.
 
+## UI 落盘规范
+
+Core 和 UI 对 JSON 的职责不同：
+
+- Core 是兼容性读取器，继续接受历史别名，保证旧项目可以打开和运行。
+- Flow Editor 是规范化写入器，只生成下面列出的标准字段。
+- 属性提交时规范化当前 Step/TestItem 子树；保存时再规范化整个 Sequence，作为兜底。
+- 字段默认值不重复写入 JSON。例如 `enabled: true`、`alwaysRun: false`、
+  `resultRecording: true`、空 Retry 和 `timeoutMs: 0` 都直接省略。
+- `x-*`、`vendor` 和插件自己的输入字段继续保留；规范化只处理 PicoATE 已定义的框架字段。
+
+历史写法与 UI 标准写法：
+
+| Core 兼容读取 | UI 标准落盘 | 说明 |
+|---------------|-------------|------|
+| Group/Step `type` | `kind` | `type` 只用于兼容旧脚本。 |
+| `mockAction` | `action` | Step 类型统一。 |
+| `forLoop` | `loop` | Step 类型统一。 |
+| `composite` | `testItem` | Step 类型统一。 |
+| `numericLimit` | `limit` | Step 类型统一。 |
+| `prompt` | `operatorPrompt` | Step 类型统一。 |
+| Step 顶层 `timeoutMs` | `timeout.timeoutMs` | 普通 Step 的超时策略统一放在 `timeout`。 |
+| Wait `parameters.ms` | Wait 顶层 `ms` | Wait 只保留一个时长字段。 |
+| Barrier 顶层策略字段 | `barrier.{...}` | Barrier 配置只保留嵌套对象。 |
+| Resource `name` | `resourceId` | 资源锁标识只保留一个名称。 |
+| Limit `lowerLimit` / `upperLimit` | `parameters.lower` / `parameters.upper` | 比较规则统一放在 `parameters`。 |
+
+每种 Step 只保存自己拥有的字段：
+
+| Step 类型 | 专有字段 |
+|-----------|----------|
+| `action` / `cleanup` | `moduleId`、`function`、`inputs`、`parameters`；`periodic` 仅属于 `action`。 |
+| `wait` | `ms` |
+| `limit` / `break` | `inputs.actual` 和 `parameters` 中的比较规则 |
+| `counter` / `aggregate` | 自己的 `inputs`、`parameters` |
+| `loop` | `loop`、`steps` |
+| `testItem` | `steps` |
+| `operatorPrompt` | `prompt` |
+| `barrier` | `barrier` |
+
+同名字段出现在不同父对象中不代表冲突。例如 `timeout.timeoutMs`、
+`prompt.timeoutMs` 和 `loop.timeoutMs` 都表示毫秒超时，但分别属于 Step、人工弹窗和循环；
+`variables[].type` 与 `loop.type` 也由各自对象定义。UI 不会把这些嵌套字段拉平。
+
 ## Sequence Object
 
 | Field | Type | Required | Default | Notes |
@@ -165,7 +209,7 @@ GCAN/创芯交叉回环示例已经按该规范整理：四个通道的 `open` �
 |-------|------|----------|---------|-------|
 | `id` | string | no | JSON path | Stable group id. |
 | `name` | string | no | `id` | Display name. |
-| `kind` / `type` | string | no | `custom` | `setup`, `main`, `cleanup`, or `custom`. |
+| `kind` | string | no | `custom` | `setup`, `main`, `cleanup`, or `custom`；Core 兼容旧字段 `type`，UI 只写 `kind`。 |
 | `enabled` | bool | no | `true` | Core 兼容字段；UI 标准 Setup/Main/Cleanup 不提供分组级启停。 |
 | `steps` | array | yes | none | Array of step objects. |
 
@@ -186,7 +230,7 @@ gaps. Cleanup groups are connected from the last non-empty normal group by a
 |-------|------|----------|---------|-------|
 | `id` | string | yes for enabled steps | empty | Stable step id. Disabled steps are ignored by PlanBuilder. |
 | `name` | string | no | `id` | Display name. |
-| `kind` / `type` | string | no | `noop` | See step kinds below. |
+| `kind` | string | no | `noop` | See step kinds below；Core 兼容旧字段 `type`，UI 只写 `kind`。 |
 | `enabled` | bool | no | `true` | Disabled steps are not compiled into the plan. |
 | `alwaysRun` | bool | no | `false` | Cleanup groups and cleanup steps are always-run automatically. |
 | `resultRecording` | bool | no | `true` | `true` writes this Step/TestItem row to CSV/XLSX; `false` hides only its own table row. TXT logs and overall pass/fail are unaffected. Child steps keep their own setting. |
@@ -200,7 +244,7 @@ gaps. Cleanup groups are connected from the last non-empty normal group by a
 | `resources` | array | no | `[]` | Array of resource requirement objects. |
 | `retry` | object | no | default retry policy | See retry object. |
 | `timeout` | object | no | default timeout policy | See timeout object. |
-| `timeoutMs` | number | no | `0` | Shortcut for timeout. |
+| `timeoutMs` | number | no | `0` | Core 兼容的旧版 shortcut；UI 统一写入 `timeout.timeoutMs`。 |
 | `errorPolicy` | object | no | default stop policy | See error policy object. |
 | `barrier` | object | no | inferred for barrier steps | See barrier object. |
 | `loop` | object | no | default for-loop policy | Required for explicit loop configuration. |
@@ -214,13 +258,13 @@ Supported step kinds:
 |-------|-----------------|
 | `noop` | `ExecNodeKind::Noop` |
 | `wait` | `ExecNodeKind::Wait` |
-| `action` / `mockAction` | `ExecNodeKind::Action` |
+| `action` | `ExecNodeKind::Action`；Core 兼容旧值 `mockAction`。 |
 | `barrier` | `ExecNodeKind::Barrier` |
 | `cleanup` | `ExecNodeKind::Cleanup` |
-| `loop` / `forLoop` | `ExecNodeKind::Loop` scheduler control node |
-| `testItem` / `composite` | `ExecNodeKind::TestItem` aggregate control node |
-| `limit` / `numericLimit` | `ExecNodeKind::Limit` 通用比较节点 |
-| `operatorPrompt` / `prompt` | `ExecNodeKind::OperatorPrompt` 人机交互节点 |
+| `loop` | `ExecNodeKind::Loop` scheduler control node；Core 兼容旧值 `forLoop`。 |
+| `testItem` | `ExecNodeKind::TestItem` aggregate control node；Core 兼容旧值 `composite`。 |
+| `limit` | `ExecNodeKind::Limit` 通用比较节点；Core 兼容旧值 `numericLimit`。 |
+| `operatorPrompt` | `ExecNodeKind::OperatorPrompt` 人机交互节点；Core 兼容旧值 `prompt`。 |
 | `statement` | 独立 `Statement` 节点；当前执行返回 `StatementNotImplemented` |
 | `sequenceCall` | 独立 `SequenceCall` 节点；当前执行返回 `SequenceCallNotImplemented` |
 
@@ -563,6 +607,20 @@ Limit 执行时同时发布实时诊断日志：`LIMIT_CHECK` 记录取到的实
 
 完整可运行示例：`examples/scoped_result_sequence.json`。
 
+## 节点结果状态引用
+
+所有已经完成的 Step 和 TestItem 都提供两项由引擎生成的可信结果元数据：
+
+```text
+${step:<node-path>.outcome}  // Passed / Failed / Error / Timeout / Skipped
+${step:<node-path>.passed}   // 仅 Passed 为 true，其余状态均为 false
+```
+
+即使来源节点执行失败，这两项状态仍然可以被 Break、Counter 或后续节点读取。Failed、
+Error、Timeout 节点的普通 `outputs` 和 `measurements` 默认仍不可读取，因为插件可能只产生了
+部分数据。为了兼容已有脚本，Limit 的 `${step:<node-path>.outputs.passed}` 在 Failed 时仍可读；
+新脚本应优先使用统一的 `.passed`。
+
 ## CAN 参数与测量显示约定
 
 CAN 插件的 `PicoATE_Describe` 必须为发送 ID、过滤 ID 和过滤 Mask 提供明确范围提示。
@@ -653,7 +711,7 @@ modules directly. The scheduler keeps the `ExecutionPlan` immutable, stores the
 per-UUT loop cursor in `LoopController`, sets the loop variable on the UUT
 runtime variables map, and releases the child body steps for each iteration.
 
-当前支持固定次数 `for` 和条件采样 `condition` 两类 Loop。
+当前支持固定次数 `for` 和条件采样 `while` 两类 Loop。
 
 ### For Loop
 
@@ -730,7 +788,7 @@ While Loop 只负责一件事：重复执行循环体，直到 `Break If` 命中
 | `intervalMs` | number | no | `0` | 两轮之间的等待时间。 |
 | `maxIterations` | number | no | `100` | 最大循环次数；`0` 表示关闭。 |
 | `timeoutMs` | number | no | `60000` | 循环整体超时；`0` 表示关闭。 |
-| `iterationErrorPolicy` | string | no | `abortLoop` | `abortLoop` 或 `continueLoop`。 |
+| `iterationErrorPolicy` | string | no | `continueOnFail` | `continueOnFail`：Failed 继续、Error/Timeout 终止；`abortLoop`：三者都终止；`continueLoop`：三者都继续。 |
 
 至少配置一个非零的 `maxIterations` 或 `timeoutMs`，并且循环体中必须存在一个启用的
 `Break If`。这是编译期规则，用于避免无退出路径的死循环。
@@ -741,6 +799,9 @@ While Loop 只负责一件事：重复执行循环体，直到 `Break If` 命中
 `greaterThan`、`greaterOrEqual`、`lessThan`、`lessOrEqual` 和 `between`。
 未命中时节点仍然是 `Passed`，循环继续；命中后退出最近一层 Loop，并把本轮尚未执行的
 后续节点标记为 `Skipped`。For Loop 同样支持 `Break If`。
+
+Break 判断前一步是否通过时，推荐直接填写 `${step:<node-path>.passed}`。来源步骤为 Failed
+时会得到可信的 `false`，Break 本身不会因为来源失败而产生变量解析错误。
 
 #### Counter
 
@@ -770,7 +831,7 @@ Aggregate 从 `inputs.value` 接收数值，每轮累积一次，在新的 Loop 
     "intervalMs": 200,
     "maxIterations": 500,
     "timeoutMs": 60000,
-    "iterationErrorPolicy": "continueLoop"
+    "iterationErrorPolicy": "continueOnFail"
   },
   "steps": [
     { "id": "read-voltage", "kind": "action" },
@@ -783,19 +844,19 @@ Aggregate 从 `inputs.value` 接收数值，每轮累积一次，在新的 Loop 
       "id": "voltage-ok",
       "kind": "limit",
       "inputs": { "actual": "${step:read-voltage.outputs.voltage}" },
-      "limit": { "comparison": "greaterOrEqual", "expected": 800 }
+      "parameters": { "comparison": "greaterOrEqual", "expected": 800 }
     },
     {
       "id": "stable-count",
       "kind": "counter",
-      "inputs": { "condition": "${step:voltage-ok.outcome}" },
+      "inputs": { "condition": "${step:voltage-ok.passed}" },
       "parameters": { "mode": "consecutive", "start": 0, "increment": 1 }
     },
     {
       "id": "stable-enough",
       "kind": "break",
       "inputs": { "actual": "${step:stable-count.outputs.value}" },
-      "limit": { "comparison": "greaterOrEqual", "expected": 30 }
+      "parameters": { "comparison": "greaterOrEqual", "expected": 30 }
     }
   ]
 }
@@ -804,7 +865,9 @@ Aggregate 从 `inputs.value` 接收数值，每轮累积一次，在新的 Loop 
 运行语义：
 
 - 循环体自己的 Retry 先执行，Retry 耗尽后的最终结果再交给 While Loop；
-- `iterationErrorPolicy: abortLoop` 遇到失败立即结束，`continueLoop` 允许下一轮重新采样；
+- 默认 `continueOnFail` 让 Limit/TestItem 的 Failed 结果进入下一轮，但真实 Error/Timeout 仍会退出；
+- `abortLoop` 遇到 Failed/Error/Timeout 立即结束，`continueLoop` 则允许三者进入下一轮；
+- Break 可读取前序节点的 `.passed` 或 `.outcome`，不需要额外的条件节点；
 - `Cancelled` 始终退出，Stop/Abort 仍由会话安全收口；
 - 每轮执行记录为循环体节点的新 Attempt，报告保留完整采样历史；
 - While Loop 可以放入 TestItem，只有循环最终失败才交给 TestItem 汇总；
@@ -818,7 +881,7 @@ Aggregate 从 `inputs.value` 接收数值，每轮累积一次，在新的 Loop 
 
 | Field | Type | Required | Default | Notes |
 |-------|------|----------|---------|-------|
-| `resourceId` / `name` | string | yes | empty | `resourceId` takes precedence over `name`. |
+| `resourceId` | string | yes | empty | Core 兼容旧字段 `name`；UI 只写 `resourceId`。 |
 | `mode` | string | no | `exclusive` | See modes below. |
 | `count` | number | no | `1` | For counted resources. |
 | `priority` | number | no | `0` | Higher priority can be used by resource policies. |

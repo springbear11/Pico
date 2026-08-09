@@ -4,6 +4,7 @@
 #include "SequenceDocument.h"
 
 #include <QHash>
+#include <QStringList>
 
 namespace PicoATE::Ui {
 
@@ -15,6 +16,8 @@ struct StepOutputExpressionCandidate {
     QString expression;
     PluginParameterType type = PluginParameterType::String;
     QString unit;
+    QString phase;
+    QStringList stepHierarchy;
 };
 
 struct FollowingStepReferenceCandidate {

@@ -1,10 +1,12 @@
 #include "LoginDialog.h"
 
 #include "LoadingSpinner.h"
+#include "PicoATE/Core/ProductRouting.h"
 
 #include <QAbstractItemModel>
 #include <QButtonGroup>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFrame>
@@ -16,9 +18,12 @@
 #include <QLayout>
 #include <QMouseEvent>
 #include <QPaintEvent>
+#include <QPainter>
 #include <QPalette>
 #include <QPixmap>
 #include <QPushButton>
+#include <QSettings>
+#include <QStackedWidget>
 #include <QStyleOptionComboBox>
 #include <QStylePainter>
 #include <QStyle>
@@ -27,11 +32,17 @@
 #include <QVBoxLayout>
 #include <QWindow>
 
+#include <algorithm>
 #include <utility>
 
 namespace PicoATE::Ui {
 
 namespace {
+
+constexpr int ProjectPathRole = Qt::UserRole;
+constexpr int SequencePathRole = Qt::UserRole + 1;
+constexpr int StationPathRole = Qt::UserRole + 2;
+constexpr int NewProjectTemplateRole = Qt::UserRole + 3;
 
 class CenteredComboBox final : public QComboBox
 {
@@ -74,6 +85,55 @@ void centerComboItems(QComboBox* combo)
     }
 }
 
+QPixmap tintedLoginIcon(const QString& resourcePath,
+                        const QSize& size,
+                        const QColor& color,
+                        int rightPadding = 0)
+{
+    const auto source = QIcon(resourcePath).pixmap(size);
+    if (source.isNull()) {
+        return {};
+    }
+    const auto devicePixelRatio = source.devicePixelRatio();
+    QPixmap result(source.width()
+                       + qRound(rightPadding * devicePixelRatio),
+                   source.height());
+    result.setDevicePixelRatio(devicePixelRatio);
+    result.fill(Qt::transparent);
+    QPainter painter(&result);
+    painter.drawPixmap(0, 0, source);
+    painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    painter.fillRect(result.rect(), color);
+    return result;
+}
+
+QIcon autoBySnToggleIcon()
+{
+    constexpr int IconTextGap = 8;
+    QIcon icon;
+    for (const auto& size : {QSize(15, 15), QSize(18, 18)}) {
+        icon.addPixmap(
+            tintedLoginIcon(QStringLiteral(":/icons/circle.svg"), size,
+                            QColor(QStringLiteral("#7b838b")), IconTextGap),
+            QIcon::Normal, QIcon::Off);
+        icon.addPixmap(
+            tintedLoginIcon(QStringLiteral(":/icons/circle.svg"), size,
+                            QColor(QStringLiteral("#34383e")), IconTextGap),
+            QIcon::Active, QIcon::Off);
+        icon.addPixmap(
+            tintedLoginIcon(QStringLiteral(":/icons/circle.svg"), size,
+                            QColor(QStringLiteral("#b7bdc3")), IconTextGap),
+            QIcon::Disabled, QIcon::Off);
+        const auto checked = tintedLoginIcon(
+            QStringLiteral(":/icons/circle-check.svg"), size, Qt::white,
+            IconTextGap);
+        icon.addPixmap(checked, QIcon::Normal, QIcon::On);
+        icon.addPixmap(checked, QIcon::Active, QIcon::On);
+        icon.addPixmap(checked, QIcon::Disabled, QIcon::On);
+    }
+    return icon;
+}
+
 QString preferredLoginFontFamily()
 {
     const QStringList candidates = {
@@ -100,6 +160,15 @@ LoginDialog::LoginDialog(QString sequenceRootDirectory, QWidget* parent)
     setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
     setAttribute(Qt::WA_TranslucentBackground);
     setFixedWidth(560);
+
+    m_productRoutingPath = StartupSupport::productRoutingPathForRoot(
+        m_sequenceRootDirectory);
+    const auto rootKey = QCryptographicHash::hash(
+        QFileInfo(m_sequenceRootDirectory).absoluteFilePath().toUtf8(),
+        QCryptographicHash::Sha1).toHex();
+    m_settingsGroup = QStringLiteral("Login/%1")
+                          .arg(QString::fromLatin1(rootKey));
+    refreshRoutingPolicy();
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(16, 16, 16, 16);
@@ -209,12 +278,39 @@ LoginDialog::LoginDialog(QString sequenceRootDirectory, QWidget* parent)
     modeRow->addStretch();
     fields->addLayout(modeRow);
 
+    auto* loadModeRow = new QHBoxLayout;
+    loadModeRow->setContentsMargins(0, 0, 0, 0);
+    loadModeRow->addStretch();
+    m_autoLoadButton = new QToolButton(card);
+    m_autoLoadButton->setObjectName(QStringLiteral("loginAutoBySnButton"));
+    m_autoLoadButton->setText(tr("AUTO BY SN"));
+    m_autoLoadButton->setCheckable(true);
+    m_autoLoadButton->setAutoRaise(false);
+    m_autoLoadButton->setIcon(autoBySnToggleIcon());
+    m_autoLoadButton->setIconSize(QSize(23, 15));
+    m_autoLoadButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_autoLoadButton->setFixedSize(136, 34);
+    m_autoLoadButton->setAccessibleName(tr("Automatic routing by serial number"));
+    loadModeRow->addWidget(m_autoLoadButton);
+    loadModeRow->addStretch();
+    fields->addLayout(loadModeRow);
+
     m_sequenceCombo = new CenteredComboBox(card);
     m_sequenceCombo->setObjectName(QStringLiteral("loginSequenceCombo"));
     m_sequenceCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     m_sequenceCombo->setMinimumContentsLength(36);
     m_sequenceCombo->setMinimumHeight(40);
-    fields->addWidget(m_sequenceCombo);
+
+    m_sequenceStack = new QStackedWidget(card);
+    m_sequenceStack->setObjectName(QStringLiteral("loginSequenceStack"));
+    m_sequenceStack->setFixedHeight(40);
+    auto* autoRouteLabel = new QLabel(tr("Project selected after SN scan"),
+                                      m_sequenceStack);
+    autoRouteLabel->setObjectName(QStringLiteral("loginAutoRouteHint"));
+    autoRouteLabel->setAlignment(Qt::AlignCenter);
+    m_sequenceStack->addWidget(autoRouteLabel);
+    m_sequenceStack->addWidget(m_sequenceCombo);
+    fields->addWidget(m_sequenceStack);
 
     m_passwordEdit = new QLineEdit(card);
     m_passwordEdit->setObjectName(QStringLiteral("loginAdminPassword"));
@@ -284,8 +380,42 @@ LoginDialog::LoginDialog(QString sequenceRootDirectory, QWidget* parent)
         QToolButton#loginAdminModeButton:checked {
             background: #34383e;
         }
+        QToolButton#loginAutoBySnButton {
+            color: #34383e;
+            background: #ffffff;
+            border: 1px solid #c9cdd3;
+            border-radius: 17px;
+            font-weight: 700;
+        }
+        QToolButton#loginAutoBySnButton:hover:unchecked {
+            color: #24272b;
+            background: #f2f3f5;
+            border-color: #9fa6ae;
+        }
+        QToolButton#loginAutoBySnButton:checked {
+            color: #ffffff;
+            background: #34383e;
+            border-color: #34383e;
+        }
+        QToolButton#loginAutoBySnButton:disabled:unchecked {
+            color: #aeb3b9;
+            background: #f2f3f5;
+            border-color: #d7dbe0;
+        }
+        QToolButton#loginAutoBySnButton:checked:disabled {
+            color: #ffffff;
+            background: #34383e;
+            border-color: #34383e;
+        }
         QFrame#loginCard QLabel { color: #3d4248; background: transparent; }
         QLabel#loginBrand { color: #25292e; }
+        QLabel#loginAutoRouteHint {
+            color: #6f767e;
+            background: #f5f6f8;
+            border: 1px solid #c9cdd3;
+            border-radius: 5px;
+            font-weight: 600;
+        }
         QLabel#loginStatusLabel { color: #858b93; }
         QLabel#loginErrorLabel {
             color: #9e2924;
@@ -361,26 +491,25 @@ LoginDialog::LoginDialog(QString sequenceRootDirectory, QWidget* parent)
 
     connect(modeGroup, &QButtonGroup::idClicked,
             this, &LoginDialog::updateModeUi);
+    connect(m_autoLoadButton, &QToolButton::toggled,
+            this, &LoginDialog::updateLoadModeUi);
     connect(m_sequenceCombo, &QComboBox::currentIndexChanged,
             this, &LoginDialog::updateStationPath);
     connect(m_loginButton, &QPushButton::clicked,
             this, &LoginDialog::submit);
     connect(m_passwordEdit, &QLineEdit::returnPressed,
             this, &LoginDialog::submit);
-    connect(m_passwordEdit, &QLineEdit::textEdited, this, [this](QString text) {
+    connect(m_passwordEdit, &QLineEdit::textEdited, this, [this] {
         if (m_passwordError) {
-            text.remove(tr("Admin 密码错误"));
             setPasswordError(false);
-            if (m_passwordEdit->text() != text) {
-                m_passwordEdit->setText(text);
-            }
-            m_passwordEdit->setCursorPosition(text.size());
         }
     });
     connect(m_closeButton, &QToolButton::clicked,
             this, &QDialog::reject);
 
+    m_restoringPreferences = true;
     populateSequences();
+    m_restoringPreferences = false;
     updateModeUi();
     updateStationPath();
 }
@@ -398,13 +527,26 @@ StartupSelection LoginDialog::selection() const
 void LoginDialog::setInitialSequencePath(const QString& filePath)
 {
     const auto absolutePath = QFileInfo(filePath).absoluteFilePath();
-    int index = m_sequenceCombo->findData(absolutePath);
+    int index = m_sequenceCombo->findData(absolutePath, SequencePathRole);
     if (index < 0 && QFileInfo::exists(absolutePath)) {
-        m_sequenceCombo->addItem(QFileInfo(absolutePath).fileName(), absolutePath);
+        const auto stationPath = StartupSupport::stationPathForSequence(
+            absolutePath);
+        m_sequenceCombo->addItem(QFileInfo(absolutePath).fileName());
         index = m_sequenceCombo->count() - 1;
+        m_sequenceCombo->setItemData(
+            index, QFileInfo(absolutePath).absolutePath(), ProjectPathRole);
+        m_sequenceCombo->setItemData(index, absolutePath, SequencePathRole);
+        m_sequenceCombo->setItemData(index, stationPath, StationPathRole);
     }
     if (index >= 0) {
         m_sequenceCombo->setCurrentIndex(index);
+        const bool manualAllowed = selectedMode() == UiMode::Admin ||
+            !m_routingFilePresent ||
+            (m_routingValid && m_allowManualInTest);
+        if (manualAllowed) {
+            m_autoLoadButton->setChecked(false);
+            updateLoadModeUi();
+        }
     }
 }
 
@@ -422,14 +564,79 @@ void LoginDialog::updateModeUi()
     if (!admin) {
         m_passwordEdit->clear();
     }
+    restorePreferencesForMode();
+    updateLoadModeUi();
     m_loginButton->setText(admin ? tr("Open Admin") : tr("Start Test"));
     m_errorLabel->hide();
     updateDialogGeometry();
+    if (admin) {
+        QTimer::singleShot(0, this, [this] {
+            if (!m_busy && selectedMode() == UiMode::Admin &&
+                m_passwordEdit->isVisible()) {
+                m_passwordEdit->setFocus(Qt::OtherFocusReason);
+                m_passwordEdit->setCursorPosition(m_passwordEdit->text().size());
+            }
+        });
+    }
+}
+
+void LoginDialog::updateLoadModeUi()
+{
+    const bool admin = selectedMode() == UiMode::Admin;
+    const bool manualAllowed = admin || !m_routingFilePresent ||
+        !m_routingHasEnabledRoutes ||
+        (m_routingValid && m_allowManualInTest);
+    const bool autoAvailable = m_routingValid && m_routingHasEnabledRoutes;
+
+    if (!manualAllowed && !m_autoLoadButton->isChecked()) {
+        m_autoLoadButton->setChecked(true);
+    } else if (!autoAvailable && m_autoLoadButton->isChecked()) {
+        m_autoLoadButton->setChecked(false);
+    }
+
+    m_autoLoadButton->setEnabled(
+        !m_busy && autoAvailable && manualAllowed);
+    if (!m_routingFilePresent) {
+        m_autoLoadButton->setToolTip(
+            tr("ProductRouting.json is not available; manual mode is active"));
+    } else if (!autoAvailable) {
+        m_autoLoadButton->setToolTip(
+            tr("No enabled product routes are configured; manual mode is active"));
+    } else if (!manualAllowed) {
+        m_autoLoadButton->setToolTip(
+            tr("Automatic routing is required by ProductRouting.json"));
+    } else if (m_autoLoadButton->isChecked()) {
+        m_autoLoadButton->setToolTip(
+            tr("Automatic routing is active. Click to choose a project manually"));
+    } else {
+        m_autoLoadButton->setToolTip(
+            tr("Manual mode is active. Click to route by scanned SN"));
+    }
+    m_sequenceStack->setCurrentIndex(
+        selectedLoadMode() == SequenceLoadMode::AutoBySn ? 0 : 1);
+    m_errorLabel->hide();
+    if (!m_restoringPreferences) {
+        savePreferences();
+    }
+    updateStationPath();
 }
 
 void LoginDialog::updateStationPath()
 {
-    m_loginButton->setEnabled(m_sequenceCombo->currentIndex() >= 0);
+    const bool newProjectTemplate =
+        m_sequenceCombo->currentData(NewProjectTemplateRole).toBool();
+    const bool canSubmit = selectedLoadMode() == SequenceLoadMode::AutoBySn
+        ? m_routingValid && m_routingHasEnabledRoutes
+        : m_sequenceCombo->currentIndex() >= 0 &&
+              (newProjectTemplate ||
+               (!m_sequenceCombo->currentData(SequencePathRole)
+                     .toString().isEmpty() &&
+                !m_sequenceCombo->currentData(StationPathRole)
+                     .toString().isEmpty()));
+    m_loginButton->setEnabled(!m_busy && canSubmit);
+    if (!m_restoringPreferences) {
+        savePreferences();
+    }
 }
 
 void LoginDialog::submit()
@@ -438,10 +645,36 @@ void LoginDialog::submit()
         return;
     }
     const auto mode = selectedMode();
-    const auto sequencePath = m_sequenceCombo->currentData().toString();
-    const auto stationPath = StartupSupport::stationPathForSequence(sequencePath);
-    const auto validation = StartupSupport::validateSelection(
-        mode, sequencePath, stationPath, m_passwordEdit->text());
+    const auto loadMode = selectedLoadMode();
+    const bool newProjectTemplate = loadMode == SequenceLoadMode::Manual &&
+        m_sequenceCombo->currentData(NewProjectTemplateRole).toBool();
+    const auto projectPath = loadMode == SequenceLoadMode::Manual
+        ? m_sequenceCombo->currentData(ProjectPathRole).toString()
+        : QString{};
+    const auto sequencePath = loadMode == SequenceLoadMode::Manual
+        ? m_sequenceCombo->currentData(SequencePathRole).toString()
+        : QString{};
+    const auto stationPath = loadMode == SequenceLoadMode::Manual
+        ? m_sequenceCombo->currentData(StationPathRole).toString()
+        : QString{};
+    StartupValidationResult validation;
+    if (newProjectTemplate) {
+        if (mode == UiMode::Test) {
+            validation.errors.push_back(
+                tr("No saved product project is available. Use Admin mode to create and save one first."));
+        }
+        if (mode == UiMode::Admin &&
+            !StartupSupport::matchesDailyAdminPassword(
+                m_passwordEdit->text())) {
+            validation.errors.push_back(QStringLiteral("Admin 密码错误"));
+        }
+    } else {
+        validation = loadMode == SequenceLoadMode::Manual
+            ? StartupSupport::validateSelection(
+                  mode, sequencePath, stationPath, m_passwordEdit->text())
+            : StartupSupport::validateAutoSelection(
+                  mode, m_productRoutingPath, {}, m_passwordEdit->text());
+    }
     if (!validation.ok()) {
         QStringList remainingErrors = validation.errors;
         const bool invalidPassword =
@@ -465,12 +698,31 @@ void LoginDialog::submit()
     setPasswordError(false);
 
     m_selection.mode = mode;
-    m_selection.sequencePath = QFileInfo(sequencePath).absoluteFilePath();
-    m_selection.stationPath = QFileInfo(stationPath).absoluteFilePath();
-    m_selection.scanDialogEnabled = StartupSupport::stationScanDialogEnabled(
-        m_selection.stationPath);
-    m_selection.snValidationRules =
-        StartupSupport::stationSnValidationRules(m_selection.stationPath);
+    m_selection.sequenceLoadMode = loadMode;
+    m_selection.newProjectTemplate = newProjectTemplate;
+    m_selection.projectRootPath = QFileInfo(m_projectRootPath)
+                                      .absoluteFilePath();
+    m_selection.projectPath = projectPath.isEmpty()
+        ? QString{}
+        : QFileInfo(projectPath).absoluteFilePath();
+    m_selection.projectName = projectPath.isEmpty()
+        ? QString{}
+        : QFileInfo(projectPath).fileName();
+    m_selection.sequencePath = sequencePath.isEmpty()
+        ? QString{}
+        : QFileInfo(sequencePath).absoluteFilePath();
+    m_selection.stationPath = stationPath.isEmpty()
+        ? QString{}
+        : QFileInfo(stationPath).absoluteFilePath();
+    m_selection.productRoutingPath = QFileInfo(m_productRoutingPath)
+                                         .absoluteFilePath();
+    m_selection.scanDialogEnabled = newProjectTemplate ||
+        loadMode == SequenceLoadMode::AutoBySn ||
+        StartupSupport::stationScanDialogEnabled(m_selection.stationPath);
+    m_selection.snValidationRules = newProjectTemplate
+        ? SnValidationRules{0, {}, QStringLiteral("^[A-Z0-9]+$")}
+        : StartupSupport::stationSnValidationRules(m_selection.stationPath);
+    savePreferences();
     if (mode == UiMode::Admin) {
         m_errorLabel->hide();
         setBusy(true, tr("Preparing the Admin workspace..."));
@@ -500,15 +752,138 @@ void LoginDialog::mousePressEvent(QMouseEvent* event)
 void LoginDialog::populateSequences()
 {
     m_sequenceCombo->clear();
-    for (const auto& filePath :
-         StartupSupport::discoverSequenceFiles(m_sequenceRootDirectory)) {
-        m_sequenceCombo->addItem(QFileInfo(filePath).fileName(), filePath);
+    const auto projects = PicoATE::Core::discoverProductProjects(
+        m_projectRootPath);
+    for (const auto& project : projects) {
+        if (!project.ok()) {
+            continue;
+        }
+        const int index = m_sequenceCombo->count();
+        m_sequenceCombo->addItem(project.name);
+        m_sequenceCombo->setItemData(index, project.directoryPath,
+                                     ProjectPathRole);
+        m_sequenceCombo->setItemData(index, project.sequencePath,
+                                     SequencePathRole);
+        m_sequenceCombo->setItemData(index, project.stationPath,
+                                     StationPathRole);
+        m_sequenceCombo->setItemData(
+            index,
+            tr("%1\nSequence: %2\nStation: %3")
+                .arg(project.directoryPath,
+                     QFileInfo(project.sequencePath).fileName(),
+                     QFileInfo(project.stationPath).fileName()),
+            Qt::ToolTipRole);
+    }
+
+    // Keep existing flat toolkits usable while projects are migrated.
+    if (m_sequenceCombo->count() == 0) {
+        for (const auto& filePath :
+             StartupSupport::discoverSequenceFiles(m_sequenceRootDirectory)) {
+            const int index = m_sequenceCombo->count();
+            const auto stationPath = StartupSupport::stationPathForSequence(
+                filePath);
+            m_sequenceCombo->addItem(QFileInfo(filePath).fileName());
+            m_sequenceCombo->setItemData(
+                index, QFileInfo(filePath).absolutePath(), ProjectPathRole);
+            m_sequenceCombo->setItemData(index, filePath, SequencePathRole);
+            m_sequenceCombo->setItemData(index, stationPath, StationPathRole);
+        }
+    }
+    if (m_sequenceCombo->count() == 0) {
+        const int index = m_sequenceCombo->count();
+        m_sequenceCombo->addItem(tr("New Project Template"));
+        m_sequenceCombo->setItemData(index, true, NewProjectTemplateRole);
+        m_sequenceCombo->setItemData(
+            index,
+            tr("Creates an empty Sequence and Station in Admin mode. The first save creates a new project."),
+            Qt::ToolTipRole);
     }
     centerComboItems(m_sequenceCombo);
-    if (m_sequenceCombo->count() == 0) {
-        showError(tr("No Sequence JSON was found in %1")
-                      .arg(m_sequenceRootDirectory));
+}
+
+void LoginDialog::refreshRoutingPolicy()
+{
+    m_projectRootPath = StartupSupport::productProjectRootPathForRoot(
+        m_sequenceRootDirectory);
+    m_routingFilePresent = QFileInfo::exists(m_productRoutingPath);
+    m_routingValid = false;
+    m_routingHasEnabledRoutes = false;
+    m_allowManualInTest = !m_routingFilePresent;
+    if (!m_routingFilePresent) {
+        return;
     }
+
+    const auto routing = PicoATE::Core::loadProductRoutingFile(
+        m_productRoutingPath);
+    m_routingValid = routing.ok();
+    if (!routing.ok()) {
+        return;
+    }
+    m_projectRootPath = routing.config.projectRootPath;
+    m_allowManualInTest = routing.config.allowManualInTest;
+    m_routingHasEnabledRoutes = std::any_of(
+        routing.config.routes.cbegin(),
+        routing.config.routes.cend(),
+        [](const auto& route) { return route.enabled; });
+}
+
+void LoginDialog::restorePreferencesForMode()
+{
+    m_restoringPreferences = true;
+    QSettings settings;
+    settings.beginGroup(m_settingsGroup);
+    const bool admin = selectedMode() == UiMode::Admin;
+    const auto key = admin ? QStringLiteral("AdminLoadMode")
+                           : QStringLiteral("TestLoadMode");
+    const auto fallback = admin ? QStringLiteral("manual")
+                                : QStringLiteral("auto");
+    const auto storedMode = settings.value(key, fallback).toString();
+    const bool manualAllowed = admin || !m_routingFilePresent ||
+        !m_routingHasEnabledRoutes ||
+        (m_routingValid && m_allowManualInTest);
+    const bool wantsManual = storedMode.compare(
+        QStringLiteral("manual"), Qt::CaseInsensitive) == 0;
+    m_autoLoadButton->setChecked(
+        m_routingValid && m_routingHasEnabledRoutes &&
+        !(wantsManual && manualAllowed));
+
+    auto lastProject = settings.value(
+        QStringLiteral("LastManualProject")).toString();
+    int index = m_sequenceCombo->findData(lastProject, ProjectPathRole);
+    if (index < 0) {
+        const auto lastSequence = settings.value(
+            QStringLiteral("LastManualSequence")).toString();
+        index = m_sequenceCombo->findData(lastSequence, SequencePathRole);
+    }
+    if (index >= 0) {
+        m_sequenceCombo->setCurrentIndex(index);
+    }
+    settings.endGroup();
+    m_restoringPreferences = false;
+}
+
+void LoginDialog::savePreferences() const
+{
+    if (m_restoringPreferences) {
+        return;
+    }
+    QSettings settings;
+    settings.beginGroup(m_settingsGroup);
+    const auto key = selectedMode() == UiMode::Admin
+        ? QStringLiteral("AdminLoadMode")
+        : QStringLiteral("TestLoadMode");
+    settings.setValue(
+        key,
+        selectedLoadMode() == SequenceLoadMode::AutoBySn
+            ? QStringLiteral("auto")
+            : QStringLiteral("manual"));
+    if (m_sequenceCombo->currentIndex() >= 0) {
+        settings.setValue(QStringLiteral("LastManualProject"),
+                          m_sequenceCombo->currentData(ProjectPathRole));
+        settings.setValue(QStringLiteral("LastManualSequence"),
+                          m_sequenceCombo->currentData(SequencePathRole));
+    }
+    settings.endGroup();
 }
 
 void LoginDialog::showError(const QString& message)
@@ -523,7 +898,9 @@ void LoginDialog::setBusy(bool busy, const QString& message)
     m_busy = busy;
     m_testModeButton->setEnabled(!busy);
     m_adminModeButton->setEnabled(!busy);
-    m_sequenceCombo->setEnabled(!busy);
+    m_autoLoadButton->setEnabled(false);
+    m_sequenceCombo->setEnabled(!busy &&
+        selectedLoadMode() == SequenceLoadMode::Manual);
     m_passwordEdit->setEnabled(!busy);
     m_loginButton->setEnabled(!busy);
     m_closeButton->setEnabled(!busy);
@@ -534,27 +911,23 @@ void LoginDialog::setBusy(bool busy, const QString& message)
     m_statusLabel->setText(message);
     m_spinner->setRunning(busy);
     m_statusLabel->parentWidget()->setVisible(busy);
+    if (!busy) {
+        updateLoadModeUi();
+    }
     updateDialogGeometry();
 }
 
 void LoginDialog::setPasswordError(bool invalid)
 {
     const auto errorText = tr("Admin 密码错误");
-    const bool wasInvalid = m_passwordError;
-    if (!invalid && wasInvalid && m_passwordEdit->text() == errorText) {
-        m_passwordEdit->clear();
-    }
-
     m_passwordError = invalid;
     m_passwordEdit->setProperty("invalid", invalid);
+    m_passwordEdit->setEchoMode(QLineEdit::Password);
     if (invalid) {
         m_passwordEdit->clear();
-        m_passwordEdit->setEchoMode(QLineEdit::Normal);
-        m_passwordEdit->setPlaceholderText({});
-        m_passwordEdit->setText(errorText);
-        m_passwordEdit->setCursorPosition(errorText.size());
+        m_passwordEdit->setPlaceholderText(errorText);
+        m_passwordEdit->setCursorPosition(0);
     } else {
-        m_passwordEdit->setEchoMode(QLineEdit::Password);
         m_passwordEdit->setPlaceholderText(tr("Admin password"));
     }
 
@@ -574,7 +947,7 @@ void LoginDialog::updateDialogGeometry()
     const QPoint previousPosition = pos();
     const int previousHeight = height();
 
-    int targetHeight = 442;
+    int targetHeight = 494;
     if (m_passwordEdit && !m_passwordEdit->isHidden()) {
         targetHeight += 52;
     }
@@ -606,6 +979,13 @@ UiMode LoginDialog::selectedMode() const
     return m_adminModeButton && m_adminModeButton->isChecked()
         ? UiMode::Admin
         : UiMode::Test;
+}
+
+SequenceLoadMode LoginDialog::selectedLoadMode() const
+{
+    return m_autoLoadButton && m_autoLoadButton->isChecked()
+        ? SequenceLoadMode::AutoBySn
+        : SequenceLoadMode::Manual;
 }
 
 } // namespace PicoATE::Ui

@@ -2,6 +2,8 @@
 
 #include "PicoATE/Core/RuntimeTypes.h"
 
+#include <QDateTime>
+
 namespace PicoATE::Core {
 
 struct StepLoopReport {
@@ -29,6 +31,8 @@ struct StepReport {
     NodeId stepId;
     NodeId nodePath;
     QString displayName;
+    QString moduleId;
+    QString functionName;
     ExecNodeKind kind = ExecNodeKind::Noop;
     ActivationState state = ActivationState::Created;
     NodeOutcome outcome = NodeOutcome::Unknown;
@@ -50,6 +54,19 @@ struct UutReport {
     QVector<StepReport> steps;
 };
 
+struct ExecutionReportMetadata {
+    QString name;
+    QString sequenceName;
+    QString serialNumber;
+    QString stationId;
+    QString jigNo;
+    QString order;
+    QString tester;
+    QDateTime startedAt;
+    QDateTime finishedAt;
+    qint64 durationMs = -1;
+};
+
 struct ExecutionReport {
     PlanId planId;
     SequenceId sequenceId;
@@ -58,6 +75,7 @@ struct ExecutionReport {
     bool completed = false;
     bool hasError = false;
     bool sessionHasError = false;
+    ExecutionReportMetadata metadata;
     QVector<StepReport> sessionSteps;
     QVector<UutReport> uuts;
 };

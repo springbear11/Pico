@@ -1,0 +1,44 @@
+{
+  "id": "example-product-sequence",
+  "name": "Example Product Sequence",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "setup",
+      "name": "Setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "001",
+          "name": "Prepare",
+          "kind": "noop"
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "name": "Main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "002",
+          "name": "Wait 100 ms",
+          "kind": "wait",
+          "ms": 100
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "name": "Cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "003",
+          "name": "Finish",
+          "kind": "noop"
+        }
+      ]
+    }
+  ]
+}

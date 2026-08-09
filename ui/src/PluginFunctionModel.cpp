@@ -1,5 +1,7 @@
 #include "PluginFunctionModel.h"
 
+#include "FunctionIconProvider.h"
+
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMimeData>
@@ -92,6 +94,9 @@ QVariant PluginFunctionModel::data(const QModelIndex& modelIndex, int role) cons
     }
     if (role == Qt::DisplayRole) return item->text;
     if (role == Qt::ToolTipRole) return item->tooltip;
+    if (role == Qt::DecorationRole && !item->iconKey.isEmpty()) {
+        return functionIcon(item->iconKey);
+    }
     if (role == ItemKindRole) return QVariant::fromValue(item->kind);
     if (!item->stepTemplate.isEmpty()) {
         if (role == CategoryRole) return QStringLiteral("Basic");
@@ -270,6 +275,7 @@ void PluginFunctionModel::rebuild()
     basicSection->kind = ItemKind::Section;
     basicSection->text = tr("Basic Functions");
     basicSection->tooltip = tr("Built-in flow control and result evaluation steps");
+    basicSection->iconKey = QStringLiteral("basic");
     basicSection->parent = m_root.get();
     auto* basicSectionPointer = basicSection.get();
     m_root->children.push_back(std::move(basicSection));
@@ -292,8 +298,8 @@ void PluginFunctionModel::rebuild()
                QJsonObject{{QStringLiteral("comparison"), QStringLiteral("between")},
                            {QStringLiteral("expected"), 0.0},
                            {QStringLiteral("tolerance"), 0.0},
-                           {QStringLiteral("inclusive"), true},
-                           {QStringLiteral("measurementName"), tr("Measurement")}}}})},
+                            {QStringLiteral("inclusive"), true},
+                            {QStringLiteral("measurementName"), tr("Measurement")}}}})},
         {tr("Test Item"), basicStep(
              tr("Test Item"), QStringLiteral("testItem"),
              {{QStringLiteral("retry"),
@@ -316,7 +322,7 @@ void PluginFunctionModel::rebuild()
                            {QStringLiteral("intervalMs"), 200},
                            {QStringLiteral("maxIterations"), 100},
                            {QStringLiteral("timeoutMs"), 60000},
-                           {QStringLiteral("iterationErrorPolicy"), QStringLiteral("abortLoop")}}},
+                            {QStringLiteral("iterationErrorPolicy"), QStringLiteral("continueOnFail")}}},
               {QStringLiteral("steps"), QJsonArray{}}})},
         {tr("Break If"), basicStep(
              tr("Break If"), QStringLiteral("break"),
@@ -346,12 +352,27 @@ void PluginFunctionModel::rebuild()
                            {QStringLiteral("releaseHeldResourcesOnWait"), true}}}})},
         {tr("No Operation"), basicStep(tr("No Operation"), QStringLiteral("noop"))}
     };
-    for (const auto& definition : basicFunctions) {
+    const QStringList basicIconKeys = {
+        QStringLiteral("wait"),
+        QStringLiteral("message"),
+        QStringLiteral("limit"),
+        QStringLiteral("test-item"),
+        QStringLiteral("loop"),
+        QStringLiteral("loop"),
+        QStringLiteral("break"),
+        QStringLiteral("counter"),
+        QStringLiteral("aggregate"),
+        QStringLiteral("barrier"),
+        QStringLiteral("noop")
+    };
+    for (int index = 0; index < basicFunctions.size(); ++index) {
+        const auto& definition = basicFunctions[index];
         auto function = std::make_unique<Item>();
         function->kind = ItemKind::Function;
         function->text = definition.first;
         function->tooltip = tr("Drag to the sequence to add a %1 step")
                                 .arg(definition.first);
+        function->iconKey = basicIconKeys.value(index, QStringLiteral("basic"));
         function->stepTemplate = definition.second;
         function->parent = basicSectionPointer;
         basicSectionPointer->children.push_back(std::move(function));
@@ -363,6 +384,7 @@ void PluginFunctionModel::rebuild()
     parserCategory->text = tr("Data Parsing");
     parserCategory->tooltip = tr(
         "Decode binary payloads, Modbus registers, and structured text");
+    parserCategory->iconKey = QStringLiteral("parser");
     parserCategory->parent = basicSectionPointer;
     auto* parserCategoryPointer = parserCategory.get();
     basicSectionPointer->children.push_back(std::move(parserCategory));
@@ -374,6 +396,7 @@ void PluginFunctionModel::rebuild()
         function->kind = ItemKind::Function;
         function->text = definition.name;
         function->tooltip = definition.description;
+        function->iconKey = QStringLiteral("parser");
         function->stepTemplate = PluginCatalog::createStep(
             parserManifest, definition, {});
         function->parent = parserCategoryPointer;
@@ -386,6 +409,7 @@ void PluginFunctionModel::rebuild()
     valueToolsCategory->text = tr("Value Tools");
     valueToolsCategory->tooltip = tr(
         "Calculate statistics, arithmetic results, and number representations");
+    valueToolsCategory->iconKey = QStringLiteral("calculator");
     valueToolsCategory->parent = basicSectionPointer;
     auto* valueToolsCategoryPointer = valueToolsCategory.get();
     basicSectionPointer->children.push_back(std::move(valueToolsCategory));
@@ -394,6 +418,7 @@ void PluginFunctionModel::rebuild()
         function->kind = ItemKind::Function;
         function->text = definition.name;
         function->tooltip = definition.description;
+        function->iconKey = QStringLiteral("calculator");
         function->stepTemplate = PluginCatalog::createStep(
             valueToolsManifest, definition, {});
         function->parent = valueToolsCategoryPointer;
@@ -404,6 +429,7 @@ void PluginFunctionModel::rebuild()
     pluginSection->kind = ItemKind::Section;
     pluginSection->text = tr("Plugin Functions");
     pluginSection->tooltip = tr("Functions provided by scanned device plugins");
+    pluginSection->iconKey = QStringLiteral("plugin");
     pluginSection->parent = m_root.get();
     auto* pluginSectionPointer = pluginSection.get();
     m_root->children.push_back(std::move(pluginSection));
@@ -433,6 +459,7 @@ void PluginFunctionModel::rebuild()
         placeholder->kind = ItemKind::Plugin;
         placeholder->text = tr("No scanned plugins");
         placeholder->tooltip = tr("Use Scan Plugins to load plugin functions");
+        placeholder->iconKey = QStringLiteral("plugin");
         placeholder->parent = pluginSectionPointer;
         pluginSectionPointer->children.push_back(std::move(placeholder));
         return;
@@ -465,6 +492,7 @@ void PluginFunctionModel::rebuild()
             category->kind = ItemKind::Category;
             category->text = categoryName;
             category->tooltip = tr("Scanned %1 plugin functions").arg(categoryName);
+            category->iconKey = QStringLiteral("plugin");
             category->parent = pluginSectionPointer;
             categoryPointer = category.get();
             pluginSectionPointer->children.push_back(std::move(category));
@@ -491,6 +519,7 @@ void PluginFunctionModel::rebuild()
                 }
                 existing->text = function.name;
                 existing->tooltip = function.description;
+                existing->iconKey = QStringLiteral("plugin");
                 existing->pluginIndex = pluginIndex;
                 existing->functionIndex = functionIndex;
                 existing->deviceId = m_selectedDeviceId;
@@ -503,6 +532,7 @@ void PluginFunctionModel::rebuild()
             auto functionItem = std::make_unique<Item>();
             functionItem->kind = ItemKind::Function;
             functionItem->text = function.name;
+            functionItem->iconKey = QStringLiteral("plugin");
             functionItem->tooltip = function.description.isEmpty()
                 ? tr("Function: %1").arg(function.id)
                 : function.description;

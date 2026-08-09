@@ -49,6 +49,11 @@ StationConfigResult parseStationConfigJson(const QJsonObject& object,
 StationConfigResult loadStationConfigFile(const QString& filePath,
                                           VariableResolverOptions resolverOptions = {});
 
+QString resolveStationPluginRegistryPath(
+    const QString& configuredPath,
+    const QString& stationFilePath,
+    const QString& projectDir = {});
+
 QVector<StationConfigDiagnostic> configureDeviceSessions(const StationConfig& config,
                                                          DeviceSessionManager& manager);
 

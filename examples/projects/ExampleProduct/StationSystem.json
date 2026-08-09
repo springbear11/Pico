@@ -1,0 +1,8 @@
+{
+  "stationId": "example-product-station",
+  "name": "Example Product Station",
+  "pluginRegistry": "plugins/PluginRegistry.json",
+  "stopOnFailure": true,
+  "scanDialogEnabled": true,
+  "devices": []
+}

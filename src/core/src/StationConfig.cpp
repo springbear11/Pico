@@ -1,6 +1,7 @@
 #include "PicoATE/Core/StationConfig.h"
 #include "PicoATE/Core/DeviceDiscovery.h"
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -437,8 +438,61 @@ StationConfigResult loadStationConfigFile(const QString& filePath,
     return parseStationConfigJson(document.object(), resolverOptions);
 }
 
+QString resolveStationPluginRegistryPath(const QString& configuredPath,
+                                         const QString& stationFilePath,
+                                         const QString& projectDir)
+{
+    auto path = configuredPath.trimmed();
+    if (path.isEmpty()) {
+        path = QStringLiteral("plugins/PluginRegistry.json");
+    }
+
+    const QFileInfo configuredInfo(path);
+    if (configuredInfo.isAbsolute()) {
+        return configuredInfo.absoluteFilePath();
+    }
+
+    const QDir stationDirectory = stationFilePath.trimmed().isEmpty()
+        ? QDir::current()
+        : QFileInfo(stationFilePath).absoluteDir();
+    const auto stationRelative = QFileInfo(
+        stationDirectory.absoluteFilePath(path)).absoluteFilePath();
+    if (QFileInfo(stationRelative).isFile()) {
+        return stationRelative;
+    }
+
+    const auto normalized = QDir::fromNativeSeparators(QDir::cleanPath(path));
+    const bool usesSharedRegistry = normalized.compare(
+        QStringLiteral("plugins/PluginRegistry.json"),
+        Qt::CaseInsensitive) == 0;
+    if (usesSharedRegistry) {
+        auto ancestor = stationDirectory;
+        while (true) {
+            const auto candidate = QFileInfo(
+                ancestor.absoluteFilePath(path)).absoluteFilePath();
+            if (QFileInfo(candidate).isFile()) {
+                return candidate;
+            }
+            const auto previous = ancestor.absolutePath();
+            if (!ancestor.cdUp() || ancestor.absolutePath() == previous) {
+                break;
+            }
+        }
+    }
+
+    if (!projectDir.trimmed().isEmpty()) {
+        const auto projectRelative = QFileInfo(
+            QDir(projectDir).absoluteFilePath(path)).absoluteFilePath();
+        if (QFileInfo(projectRelative).isFile()) {
+            return projectRelative;
+        }
+    }
+
+    return stationRelative;
+}
+
 QVector<StationConfigDiagnostic> configureDeviceSessions(const StationConfig& config,
-                                                          DeviceSessionManager& manager)
+                                                         DeviceSessionManager& manager)
 {
     QVector<StationConfigDiagnostic> errors;
     for (int i = 0; i < config.devices.size(); ++i) {

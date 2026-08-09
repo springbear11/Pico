@@ -16,6 +16,15 @@ QString stepNodeSegment(const QJsonObject& step, bool topLevel)
     return topLevel || key.isEmpty() ? id : key;
 }
 
+QString stepHierarchyLabel(const QJsonObject& step, const QString& segment)
+{
+    const auto name = step.value(QStringLiteral("name")).toString().trimmed();
+    if (name.isEmpty() || name == segment) {
+        return segment;
+    }
+    return QStringLiteral("%1 - %2").arg(segment, name);
+}
+
 const PluginFunctionDefinition* findPluginFunction(
     const QJsonObject& step,
     const QVector<PluginManifest>& plugins,
@@ -52,7 +61,6 @@ void appendBuiltInOutputs(const QJsonObject& step,
     QVector<QPair<QString, PluginParameterType>> outputs;
     if (kind == QStringLiteral("limit")) {
         outputs = {{QStringLiteral("actual"), PluginParameterType::Number},
-                   {QStringLiteral("passed"), PluginParameterType::Boolean},
                    {QStringLiteral("comparison"), PluginParameterType::String}};
     } else if (kind == QStringLiteral("break")) {
         outputs = {{QStringLiteral("actual"), PluginParameterType::Number},
@@ -172,11 +180,17 @@ bool appendNamedParserOutputs(
     return true;
 }
 
+void appendResultMetadata(const QString& nodePath,
+                          const QString& stepName,
+                          QVector<StepOutputExpressionCandidate>& candidates);
+
 bool collectOutputCandidates(
     const QJsonArray& steps,
     int groupIndex,
     QVector<int> parentIndices,
     const QString& parentNodePath,
+    const QString& phase,
+    QStringList parentHierarchy,
     bool parentEnabled,
     const SequenceItemPath& currentPath,
     const QVector<PluginManifest>& plugins,
@@ -200,9 +214,15 @@ bool collectOutputCandidates(
         const auto nodePath = parentNodePath.isEmpty() || segment.isEmpty()
             ? segment
             : QStringLiteral("%1.%2").arg(parentNodePath, segment);
+        auto hierarchy = parentHierarchy;
+        if (!segment.isEmpty()) {
+            hierarchy.push_back(stepHierarchyLabel(step, segment));
+        }
         if (enabled && !nodePath.isEmpty()) {
             const auto stepName = step.value(QStringLiteral("name"))
                                       .toString(step.value(QStringLiteral("id")).toString());
+            const int firstCandidate = candidates.size();
+            appendResultMetadata(nodePath, stepName, candidates);
             const bool namedParser = appendNamedParserOutputs(
                 step, nodePath, stepName, candidates);
             if (!namedParser) {
@@ -225,6 +245,10 @@ bool collectOutputCandidates(
                 }
             }
             appendBuiltInOutputs(step, nodePath, stepName, candidates);
+            for (int index = firstCandidate; index < candidates.size(); ++index) {
+                candidates[index].phase = phase;
+                candidates[index].stepHierarchy = hierarchy;
+            }
         }
 
         auto childIndices = parentIndices;
@@ -234,6 +258,8 @@ bool collectOutputCandidates(
                 groupIndex,
                 std::move(childIndices),
                 nodePath,
+                phase,
+                hierarchy,
                 enabled,
                 currentPath,
                 plugins,
@@ -306,6 +332,40 @@ int groupPhase(const QJsonObject& group)
     return 1;
 }
 
+QString groupPhaseName(const QJsonObject& group)
+{
+    switch (groupPhase(group)) {
+    case 0:
+        return QStringLiteral("SETUP");
+    case 2:
+        return QStringLiteral("CLEANUP");
+    default:
+        return QStringLiteral("MAIN");
+    }
+}
+
+void appendResultMetadata(const QString& nodePath,
+                          const QString& stepName,
+                          QVector<StepOutputExpressionCandidate>& candidates)
+{
+    candidates.push_back({
+        nodePath,
+        stepName,
+        QStringLiteral("outcome"),
+        QStringLiteral("Result Outcome"),
+        QStringLiteral("${step:%1.outcome}").arg(nodePath),
+        PluginParameterType::String,
+        {}});
+    candidates.push_back({
+        nodePath,
+        stepName,
+        QStringLiteral("passed"),
+        QStringLiteral("Result Passed"),
+        QStringLiteral("${step:%1.passed}").arg(nodePath),
+        PluginParameterType::Boolean,
+        {}});
+}
+
 } // namespace
 
 QVector<StepOutputExpressionCandidate> buildStepOutputExpressionCandidates(
@@ -337,6 +397,8 @@ QVector<StepOutputExpressionCandidate> buildStepOutputExpressionCandidates(
                 group.value(QStringLiteral("steps")).toArray(),
                 groupIndex,
                 {},
+                {},
+                groupPhaseName(group),
                 {},
                 group.value(QStringLiteral("enabled")).toBool(true),
                 currentPath,

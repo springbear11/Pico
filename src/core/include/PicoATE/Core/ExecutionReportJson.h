@@ -7,7 +7,7 @@
 
 namespace PicoATE::Core {
 
-inline constexpr int ExecutionReportSchemaVersion = 4;
+inline constexpr int ExecutionReportSchemaVersion = 5;
 
 struct ExecutionReportJsonError {
     QString path;

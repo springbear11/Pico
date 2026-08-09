@@ -42,10 +42,13 @@ public:
     bool hasPendingChanges() const;
     bool commitPendingChanges();
     void discardPendingChanges();
+    void setInspectionField(const QString& fieldPath);
 
 signals:
     void itemApplied(const PicoATE::Ui::SequenceItemPath& path);
     void pendingChangesChanged(bool pending);
+    void inspectionFieldRequested(const QString& fieldPath,
+                                  const QString& displayName);
 
 private:
     void buildGeneralPage();
@@ -93,6 +96,11 @@ private:
                                 QWidget** invalidWidget = nullptr) const;
     void flashValidationError(QWidget* widget);
     void showError(const QString& message);
+    void addInspectableRow(QFormLayout* form,
+                           const QString& label,
+                           QWidget* field,
+                           const QString& fieldPath,
+                           const QString& displayName = {});
 
     QPointer<SequenceDocument> m_document;
     SequenceItemPath m_path;
@@ -103,6 +111,7 @@ private:
     bool m_loading = false;
     bool m_editable = true;
     bool m_draftDirty = false;
+    QString m_inspectionField;
     QVector<PluginManifest> m_plugins;
     QHash<QString, QString> m_pluginByDeviceId;
     QHash<QString, QJsonObject> m_deviceConfigurations;
@@ -147,7 +156,6 @@ private:
     QPlainTextEdit* m_inputsEdit = nullptr;
     QLineEdit* m_limitActualEdit = nullptr;
     QWidget* m_limitActualField = nullptr;
-    QMenu* m_limitExpressionMenu = nullptr;
     QComboBox* m_limitComparisonCombo = nullptr;
     QLineEdit* m_limitExpectedEdit = nullptr;
     QWidget* m_limitExpectedField = nullptr;
@@ -159,13 +167,11 @@ private:
     QLineEdit* m_limitUnitEdit = nullptr;
     QLineEdit* m_counterConditionEdit = nullptr;
     QWidget* m_counterConditionField = nullptr;
-    QMenu* m_counterConditionMenu = nullptr;
     QComboBox* m_counterModeCombo = nullptr;
     QDoubleSpinBox* m_counterStartSpin = nullptr;
     QDoubleSpinBox* m_counterIncrementSpin = nullptr;
     QLineEdit* m_aggregateValueEdit = nullptr;
     QWidget* m_aggregateValueField = nullptr;
-    QMenu* m_aggregateValueMenu = nullptr;
     QPlainTextEdit* m_parametersEdit = nullptr;
     QPlainTextEdit* m_errorPolicyEdit = nullptr;
     QSpinBox* m_waitMsSpin = nullptr;
@@ -204,6 +210,9 @@ private:
     QCheckBox* m_releaseResourcesCheck = nullptr;
 
     QFormLayout* m_policyForm = nullptr;
+    QComboBox* m_onFailPolicyCombo = nullptr;
+    QComboBox* m_onErrorPolicyCombo = nullptr;
+    QComboBox* m_onTimeoutPolicyCombo = nullptr;
     QSpinBox* m_maxAttemptsSpin = nullptr;
     QSpinBox* m_retryDelaySpin = nullptr;
     QLineEdit* m_retryWhenEdit = nullptr;

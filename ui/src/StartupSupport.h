@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDate>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 
@@ -9,6 +10,11 @@ namespace PicoATE::Ui {
 enum class UiMode {
     Test,
     Admin
+};
+
+enum class SequenceLoadMode {
+    AutoBySn,
+    Manual
 };
 
 struct StartupValidationResult {
@@ -39,6 +45,11 @@ public:
 
     static QStringList discoverSequenceFiles(const QString& rootDirectory);
     static QString stationPathForSequence(const QString& sequencePath);
+    static QString stationPathForRoot(const QString& rootDirectory);
+    static QString productRoutingPathForRoot(const QString& rootDirectory);
+    static QString productProjectRootPathForRoot(const QString& rootDirectory);
+    static QJsonObject newProjectSequenceTemplate();
+    static QJsonObject newProjectStationTemplate();
     static bool stationScanDialogEnabled(const QString& stationPath,
                                          bool defaultValue = true);
     static int stationSnLength(const QString& stationPath,
@@ -51,6 +62,12 @@ public:
     static StartupValidationResult validateSelection(
         UiMode mode,
         const QString& sequencePath,
+        const QString& stationPath,
+        const QString& adminPassword = {},
+        const QDate& date = QDate::currentDate());
+    static StartupValidationResult validateAutoSelection(
+        UiMode mode,
+        const QString& productRoutingPath,
         const QString& stationPath,
         const QString& adminPassword = {},
         const QDate& date = QDate::currentDate());

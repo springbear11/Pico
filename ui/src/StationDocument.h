@@ -40,6 +40,7 @@ public:
     QUndoStack* undoStack() const;
 
     bool load(const QString& filePath);
+    bool initializeNew(QJsonObject root);
     bool save(QString* errorMessage = nullptr);
     bool saveAs(const QString& filePath, QString* errorMessage = nullptr);
     void clear();

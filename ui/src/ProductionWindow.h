@@ -21,12 +21,12 @@ class QTreeView;
 namespace PicoATE::Ui {
 
 class ExecutionViewModel;
-class FieldDeviceDialog;
 class OperatorPromptPresenter;
 class RuntimeTimelineModel;
 class RunArtifactWriter;
 class ScanDialog;
 class UutStepModel;
+class YieldDonutWidget;
 
 class ProductionWindow final : public QMainWindow
 {
@@ -49,9 +49,13 @@ private:
     void applyRuntimeEvents(const QVector<PicoATE::Core::RuntimeEvent>& events);
     void focusExecutionLogForResult(const QModelIndex& index);
     void beginRun(const QString& serialNumber);
+    void beginAutoRoutedRun(const QString& serialNumber);
     void startResolvedRun();
+    void showRoutingError(const QString& message);
+    void updateStationSummary();
     void beginManualRun();
     void openFieldDeviceConfiguration();
+    void openProductRoutingConfiguration();
     void beginRunIteration(int iteration, int totalIterations);
     void resetPreviewForUut(const QString& uutId);
     void showScanDialogWhenReady();
@@ -66,12 +70,13 @@ private:
     RuntimeTimelineModel* m_logModel = nullptr;
     std::unique_ptr<RunArtifactWriter> m_runArtifactWriter;
     ScanDialog* m_scanDialog = nullptr;
-    FieldDeviceDialog* m_fieldDeviceDialog = nullptr;
     QAction* m_startAction = nullptr;
     QAction* m_pauseAction = nullptr;
     QAction* m_resumeAction = nullptr;
     QAction* m_stopAction = nullptr;
     QAction* m_fieldDeviceAction = nullptr;
+    QAction* m_productRoutingAction = nullptr;
+    QLabel* m_sequenceLabel = nullptr;
     QLabel* m_serialLabel = nullptr;
     QLabel* m_stationLabel = nullptr;
     QLabel* m_orderLabel = nullptr;
@@ -82,8 +87,8 @@ private:
     QLabel* m_passCountLabel = nullptr;
     QLabel* m_failCountLabel = nullptr;
     QLabel* m_totalCountLabel = nullptr;
-    QLabel* m_yieldLabel = nullptr;
     QLabel* m_averageTimeLabel = nullptr;
+    YieldDonutWidget* m_yieldChart = nullptr;
     QTreeView* m_resultView = nullptr;
     QTableView* m_logView = nullptr;
     QProgressBar* m_progress = nullptr;

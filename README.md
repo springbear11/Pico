@@ -90,6 +90,25 @@ out/build/vs2022-qt6-all/portable/Release/PicoATE.Cli/
 
 该目录包含 CLI、Qt6Core、VC143 x64 Runtime、NativeHost、Fake/Mock Host、测试 DLL 和 examples，可整体复制使用。
 
+## UI 发布包
+
+生成经过依赖检查和隔离启动验证的 Release 便携包与 Windows 安装包：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\packaging\build_release.ps1 -Version 0.2.0
+```
+
+输出位置：
+
+```text
+out/package/PicoATE-Portable-0.2.0-x64.zip
+out/installer/PicoATE-Setup-0.2.0-x64.exe
+```
+
+目标电脑不需要 Qt 或 Visual Studio，但仍需安装对应设备的 USB 驱动或 VISA Runtime。完整说明见 [发布与安装包](docs/发布与安装包.md)。
+
+框架发布包不会携带产品 Sequence、Station 或现场路由；安装后 `projects/` 为空，由项目团队单独部署对应项目文件。
+
 ## 文档
 
 从 [文档索引](docs/文档索引.md) 开始阅读。当前进度和每日改动统一记录在 [开发日志](docs/开发日志.md) 与 [开发进度与计划](docs/开发进度与计划.md)。

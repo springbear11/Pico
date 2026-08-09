@@ -102,6 +102,7 @@ enum class CleanupReason {
 };
 
 enum class ErrorAction {
+    Inherit,
     Continue,
     StopUut,
     Retry,
@@ -186,9 +187,9 @@ struct PeriodicTaskPolicy {
 };
 
 struct NodeErrorPolicy {
-    ErrorAction onFail = ErrorAction::StopUut;
-    ErrorAction onError = ErrorAction::StopUut;
-    ErrorAction onTimeout = ErrorAction::StopUut;
+    ErrorAction onFail = ErrorAction::Inherit;
+    ErrorAction onError = ErrorAction::Inherit;
+    ErrorAction onTimeout = ErrorAction::Inherit;
     CleanupRegionId cleanupRegionId;
     bool stopUutOnFailure = true;
 };
@@ -249,12 +250,13 @@ enum class LoopType {
 
 enum class WhileIterationErrorPolicy {
     AbortLoop,
+    ContinueOnFail,
     ContinueLoop
 };
 
 struct WhileLoopSpec {
     WhileIterationErrorPolicy iterationErrorPolicy =
-        WhileIterationErrorPolicy::AbortLoop;
+        WhileIterationErrorPolicy::ContinueOnFail;
     int intervalMs = 0;
     int maxIterations = 100;
     int timeoutMs = 60000;

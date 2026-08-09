@@ -12,7 +12,8 @@ namespace PicoATE::Core {
 enum class StepResultField {
     Outputs,
     Measurements,
-    Outcome
+    Outcome,
+    Passed
 };
 
 struct StepResultReference {

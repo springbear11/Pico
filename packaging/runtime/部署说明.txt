@@ -1,0 +1,27 @@
+PicoATE 项目试用版
+
+支持系统：Windows 10 1809 及以上、Windows 11，64 位 x64。
+
+本安装包已经包含：
+- PicoATE UI、任务引擎和 NativeHost；
+- Qt 6 与 Microsoft Visual C++ 运行库；
+- PicoATE CAN、DMM、PSU、Modbus TCP 插件；
+- GCAN/CX 插件所需的厂家运行 DLL；
+- 一份空的 ProductRouting 配置。
+
+框架包不包含产品 Sequence 或 Station。安装后 projects 目录为空，使用前请将对应产品项目单独放入该目录。
+projects 为空时，登录页会显示 New Project Template；切换到 Admin 后可直接配置，首次保存会要求输入项目名并同时生成 sequence.json 与 StationSystem.json。
+
+目标电脑仍需安装对应设备的系统驱动或运行环境：
+- GCAN/CX USB-CAN：安装厂家 USB 驱动；
+- VISA 仪器：安装 NI-VISA、Keysight IO Libraries 或对应 VISA Runtime；
+- 其他设备：安装厂家要求的系统驱动。
+
+升级安装默认保留 ProductRouting.json、projects、log 和 diagnostics。
+
+使用方式：
+- 安装版从桌面或开始菜单启动；
+- 便携版必须完整解压后运行 PicoATE.UI.exe，不能只复制单个 EXE；
+- 第一次接入设备前，请先安装对应厂家驱动并在 Station 中确认资源配置。
+
+注意：当前试用安装包尚未配置商业代码签名证书，部分电脑可能显示“未知发布者”。

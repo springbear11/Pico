@@ -1,4 +1,6 @@
 #include "SequenceTreeModel.h"
+
+#include "FunctionIconProvider.h"
 #include "ApplicationDiagnostics.h"
 #include "PluginFunctionModel.h"
 
@@ -182,6 +184,21 @@ QString displayJsonValue(const QJsonValue& value)
     return {};
 }
 
+QString searchableText(const QJsonObject& object)
+{
+    const auto inputs = object.value(QStringLiteral("inputs")).toObject();
+    return QStringList{
+        object.value(QStringLiteral("name")).toString(),
+        object.value(QStringLiteral("id")).toString(),
+        object.value(QStringLiteral("key")).toString(),
+        object.value(QStringLiteral("kind")).toString(
+            object.value(QStringLiteral("type")).toString()),
+        object.value(QStringLiteral("moduleId")).toString(),
+        object.value(QStringLiteral("function")).toString(),
+        inputs.value(QStringLiteral("deviceId")).toString(),
+    }.join(QLatin1Char('\n'));
+}
+
 } // namespace
 
 SequenceTreeModel::SequenceTreeModel(SequenceDocument* document, QObject* parent)
@@ -274,6 +291,13 @@ QVariant SequenceTreeModel::data(const QModelIndex& modelIndex, int role) const
                (item->resourceRegionId.isEmpty() ||
                 item->resourceMarker != Item::ResourceMarker::None);
     }
+    if (role == SearchTextRole) {
+        return searchableText(item->object);
+    }
+    if (role == Qt::DecorationRole && modelIndex.column() == NameColumn &&
+        item->type == ItemType::Step) {
+        return functionIconForStep(item->object);
+    }
     if (role == Qt::CheckStateRole && modelIndex.column() == EnabledColumn) {
         if (item->type == ItemType::Group) {
             return {};
@@ -321,9 +345,14 @@ QVariant SequenceTreeModel::data(const QModelIndex& modelIndex, int role) const
             !m_inspectionField.isEmpty()) {
             const auto value = displayJsonValue(
                 findValue(item->object, m_inspectionField));
+            const auto label = m_inspectionDisplayName.isEmpty()
+                ? m_inspectionField
+                : m_inspectionDisplayName;
             return value.isEmpty()
-                ? tr("Field '%1' is not set on this item").arg(m_inspectionField)
-                : tr("%1 = %2").arg(m_inspectionField, value);
+                ? tr("%1 is not set on this item\nJSON: %2")
+                      .arg(label, m_inspectionField)
+                : tr("%1 = %2\nJSON: %3")
+                      .arg(label, value, m_inspectionField);
         }
         if (modelIndex.column() == ResourceRegionColumn &&
             !item->resourceRegionId.isEmpty()) {
@@ -507,20 +536,53 @@ QVariant SequenceTreeModel::headerData(int section,
         return tr("Enabled");
     case InspectionColumn:
         return m_inspectionField.isEmpty()
-            ? tr("Key")
-            : tr("Key: %1").arg(m_inspectionField);
+            ? tr("Inspect")
+            : tr("Inspect: %1").arg(
+                  m_inspectionDisplayName.isEmpty()
+                      ? m_inspectionField
+                      : m_inspectionDisplayName);
     default:
         return {};
     }
 }
 
-int SequenceTreeModel::setInspectionField(QString fieldPath)
+QVector<QModelIndex> SequenceTreeModel::indexesMatchingText(
+    const QString& query) const
+{
+    QVector<QModelIndex> matches;
+    const auto needle = query.trimmed();
+    if (needle.isEmpty()) {
+        return matches;
+    }
+
+    std::function<void(const QModelIndex&)> collect =
+        [this, &needle, &matches, &collect](const QModelIndex& parentIndex) {
+            for (int row = 0; row < rowCount(parentIndex); ++row) {
+                const auto itemIndex = index(row, NameColumn, parentIndex);
+                if (itemIndex.data(SearchTextRole).toString().contains(
+                        needle, Qt::CaseInsensitive)) {
+                    matches.push_back(itemIndex);
+                }
+                collect(itemIndex);
+            }
+        };
+    collect({});
+    return matches;
+}
+
+int SequenceTreeModel::setInspectionField(QString fieldPath,
+                                          QString displayName)
 {
     fieldPath = fieldPath.trimmed();
-    if (m_inspectionField == fieldPath) {
+    displayName = displayName.trimmed();
+    if (m_inspectionField == fieldPath &&
+        m_inspectionDisplayName == displayName) {
         return m_inspectionMatchCount;
     }
     m_inspectionField = std::move(fieldPath);
+    m_inspectionDisplayName = m_inspectionField.isEmpty()
+        ? QString{}
+        : std::move(displayName);
     rebuildInspectionColors();
     emit headerDataChanged(Qt::Horizontal, InspectionColumn, InspectionColumn);
     std::function<void(const QModelIndex&)> refresh =
@@ -540,6 +602,11 @@ int SequenceTreeModel::setInspectionField(QString fieldPath)
 QString SequenceTreeModel::inspectionField() const
 {
     return m_inspectionField;
+}
+
+QString SequenceTreeModel::inspectionDisplayName() const
+{
+    return m_inspectionDisplayName;
 }
 
 int SequenceTreeModel::inspectionMatchCount() const

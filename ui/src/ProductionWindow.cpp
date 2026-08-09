@@ -2,18 +2,23 @@
 
 #include "ProportionalHeaderView.h"
 
+#include "CoreExecutionService.h"
 #include "ExecutionViewModel.h"
 #include "FieldDeviceDialog.h"
 #include "OperatorPromptPresenter.h"
+#include "ProductRoutingDialog.h"
+#include "PicoATE/Core/ProductRouting.h"
 #include "PicoATE/Core/StationConfig.h"
 #include "RunnerModels.h"
 #include "RunArtifactWriter.h"
 #include "ScanDialog.h"
+#include "YieldDonutWidget.h"
 
 #include <QAction>
 #include <QAbstractItemView>
 #include <QCloseEvent>
 #include <QDateTime>
+#include <QDir>
 #include <QFileInfo>
 #include <QFile>
 #include <QFont>
@@ -21,6 +26,7 @@
 #include <QFrame>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QJsonDocument>
 #include <QMessageBox>
@@ -44,6 +50,12 @@
 namespace PicoATE::Ui {
 
 namespace {
+
+QIcon productionToolbarIcon(const char* name)
+{
+    return QIcon(QStringLiteral(":/icons/%1.svg")
+                     .arg(QString::fromLatin1(name)));
+}
 
 bool isTerminal(PicoATE::Core::ActivationState state)
 {
@@ -96,14 +108,14 @@ QString productionStateStyle(UiRunState state)
     case UiRunState::Pausing:
     case UiRunState::Paused:
     case UiRunState::Stopping:
-        return QStringLiteral("background:#f7d154;color:#242424;border:1px solid #d5ad2f;border-radius:4px;padding:12px;");
+        return QStringLiteral("background:#f4d768;color:#493a00;border:1px solid #cbaa39;border-radius:6px;padding:12px;");
     case UiRunState::Completed:
-        return QStringLiteral("background:#8fd14f;color:#17320b;border:1px solid #69aa31;border-radius:4px;padding:12px;");
+        return QStringLiteral("background:#cfe8d5;color:#1f5d35;border:1px solid #86b794;border-radius:6px;padding:12px;");
     case UiRunState::CompileFailed:
     case UiRunState::Failed:
-        return QStringLiteral("background:#e85d5d;color:white;border:1px solid #c53d3d;border-radius:4px;padding:12px;");
+        return QStringLiteral("background:#efc9c9;color:#862a2a;border:1px solid #c98282;border-radius:6px;padding:12px;");
     default:
-        return QStringLiteral("background:#e6e8eb;color:#242424;border:1px solid #c7cdd2;border-radius:4px;padding:12px;");
+        return QStringLiteral("background:#e7eaec;color:#303940;border:1px solid #c8cfd4;border-radius:6px;padding:12px;");
     }
 }
 
@@ -150,15 +162,26 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
     setObjectName(QStringLiteral("productionWindow"));
     setWindowTitle(tr("PicoATE TEST"));
     setMinimumSize(960, 620);
+#if defined(PICOATE_UI_TEST_PROJECT_DIR)
+    m_viewModel = new ExecutionViewModel(
+        std::make_unique<CoreExecutionService>(
+            QString::fromUtf8(PICOATE_UI_TEST_PROJECT_DIR)),
+        this);
+#else
     m_viewModel = new ExecutionViewModel(this);
+#endif
     m_operatorPromptPresenter = new OperatorPromptPresenter(m_viewModel, this, this);
     m_resultModel = new UutStepModel(this);
     m_resultModel->setSingleUutPhaseLayout(true);
     m_logModel = new RuntimeTimelineModel(this);
     m_runArtifactWriter = std::make_unique<RunArtifactWriter>();
     m_scanDialog = new ScanDialog(this);
-    m_fieldDeviceDialog = new FieldDeviceDialog(m_selection.stationPath, this);
-    m_scanDialog->setValidationRules(m_selection.snValidationRules);
+    // Auto routing must see the raw SN before any product-specific Station
+    // rules are applied. The matched Station is validated in beginAutoRoutedRun.
+    m_scanDialog->setValidationRules(
+        m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn
+            ? SnValidationRules{}
+            : m_selection.snValidationRules);
     buildUi();
 
     connect(m_viewModel, &ExecutionViewModel::stateChanged,
@@ -175,19 +198,13 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
             this, &ProductionWindow::applyRuntimeEvents);
     connect(m_scanDialog, &ScanDialog::barcodeAccepted,
             this, &ProductionWindow::beginRun);
-    connect(m_fieldDeviceDialog, &FieldDeviceDialog::stationSaved,
-            this, [this] {
-                QFile file(m_selection.stationPath);
-                if (file.open(QIODevice::ReadOnly)) {
-                    m_viewModel->setStationDocument(
-                        m_selection.stationPath, file.readAll());
-                    m_viewModel->compile();
-                }
-            });
-
-    m_viewModel->setSequencePath(m_selection.sequencePath);
-    m_viewModel->setStationPath(m_selection.stationPath);
-    m_viewModel->compile();
+    if (m_selection.sequenceLoadMode == SequenceLoadMode::Manual) {
+        m_viewModel->setStationPath(m_selection.stationPath);
+        m_viewModel->setSequencePath(m_selection.sequencePath);
+        m_viewModel->compile();
+    } else {
+        QTimer::singleShot(0, this, &ProductionWindow::showScanDialogWhenReady);
+    }
     updateCommands();
 }
 
@@ -222,37 +239,46 @@ void ProductionWindow::buildUi()
     layout->setContentsMargins(16, 14, 16, 12);
     layout->setSpacing(10);
 
-    auto* sequence = new QLabel(QFileInfo(m_selection.sequencePath).fileName(), central);
-    sequence->setObjectName(QStringLiteral("productionSequenceLabel"));
-    sequence->setAlignment(Qt::AlignCenter);
-    sequence->setMinimumHeight(48);
-    sequence->setMaximumHeight(54);
-    layout->addWidget(sequence);
+    const auto sequenceTitle = m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn
+        ? tr("Auto By SN")
+        : QFileInfo(m_selection.sequencePath).fileName();
+    m_sequenceLabel = new QLabel(sequenceTitle, central);
+    m_sequenceLabel->setObjectName(QStringLiteral("productionSequenceLabel"));
+    m_sequenceLabel->setAlignment(Qt::AlignCenter);
+    m_sequenceLabel->setMinimumHeight(48);
+    m_sequenceLabel->setMaximumHeight(54);
+    layout->addWidget(m_sequenceLabel);
 
     auto* toolbar = new QToolBar(tr("TEST Controls"), central);
     toolbar->setObjectName(QStringLiteral("productionToolbar"));
     toolbar->setMovable(false);
     toolbar->setFloatable(false);
     toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    toolbar->setIconSize(QSize(22, 22));
-    toolbar->setFixedHeight(50);
+    toolbar->setIconSize(QSize(20, 20));
+    toolbar->setFixedHeight(48);
     toolbar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_startAction = toolbar->addAction(
-        style()->standardIcon(QStyle::SP_MediaPlay), tr("Start"));
+        productionToolbarIcon("play"), tr("Start"));
     m_startAction->setObjectName(QStringLiteral("productionStartAction"));
     m_pauseAction = toolbar->addAction(
-        style()->standardIcon(QStyle::SP_MediaPause), tr("Pause"));
+        productionToolbarIcon("pause"), tr("Pause"));
     m_pauseAction->setObjectName(QStringLiteral("productionPauseAction"));
     m_resumeAction = toolbar->addAction(
-        style()->standardIcon(QStyle::SP_MediaPlay), tr("Resume"));
+        productionToolbarIcon("play"), tr("Resume"));
     m_resumeAction->setObjectName(QStringLiteral("productionResumeAction"));
     m_stopAction = toolbar->addAction(
-        style()->standardIcon(QStyle::SP_MediaStop), tr("Stop"));
+        productionToolbarIcon("square"), tr("Stop"));
     m_stopAction->setObjectName(QStringLiteral("productionStopAction"));
     toolbar->addSeparator();
     m_fieldDeviceAction = toolbar->addAction(
-        style()->standardIcon(QStyle::SP_DriveNetIcon), tr("Devices"));
+        productionToolbarIcon("cable"), tr("Devices"));
     m_fieldDeviceAction->setObjectName(QStringLiteral("productionFieldDeviceAction"));
+    m_productRoutingAction = toolbar->addAction(
+        productionToolbarIcon("list-restart"), tr("Routes"));
+    m_productRoutingAction->setObjectName(
+        QStringLiteral("productionProductRoutingAction"));
+    m_productRoutingAction->setToolTip(
+        tr("Configure SN patterns and their test sequences"));
     connect(m_startAction, &QAction::triggered,
             this, &ProductionWindow::beginManualRun);
     connect(m_pauseAction, &QAction::triggered,
@@ -263,6 +289,8 @@ void ProductionWindow::buildUi()
             this, [this] { m_viewModel->stop(); });
     connect(m_fieldDeviceAction, &QAction::triggered,
             this, &ProductionWindow::openFieldDeviceConfiguration);
+    connect(m_productRoutingAction, &QAction::triggered,
+            this, &ProductionWindow::openProductRoutingConfiguration);
     layout->addWidget(toolbar);
 
     auto* contentSplitter = new QSplitter(Qt::Horizontal, central);
@@ -313,6 +341,10 @@ void ProductionWindow::buildUi()
     details->addRow(tr("Jig No."), m_jigLabel);
     sidebarLayout->addLayout(details);
     sidebarLayout->addStretch(1);
+
+    m_yieldChart = new YieldDonutWidget(sidebar);
+    m_yieldChart->setObjectName(QStringLiteral("productionYieldChart"));
+    sidebarLayout->addWidget(m_yieldChart, 0, Qt::AlignHCenter);
 
     auto* resultCaption = new QLabel(tr("OVERALL RESULT"), sidebar);
     resultCaption->setObjectName(QStringLiteral("productionMetricCaption"));
@@ -401,96 +433,103 @@ void ProductionWindow::buildUi()
     contentSplitter->setSizes({235, 900});
     layout->addWidget(contentSplitter, 1);
 
-    auto* footer = new QWidget(central);
-    footer->setObjectName(QStringLiteral("productionFooter"));
-    auto* footerLayout = new QHBoxLayout(footer);
-    footerLayout->setContentsMargins(12, 8, 12, 8);
-    footerLayout->setSpacing(12);
-    m_progress = new QProgressBar(footer);
+    auto* progressPanel = new QWidget(central);
+    progressPanel->setObjectName(QStringLiteral("productionProgressPanel"));
+    auto* progressLayout = new QVBoxLayout(progressPanel);
+    progressLayout->setContentsMargins(12, 8, 12, 8);
+    m_progress = new QProgressBar(progressPanel);
     m_progress->setObjectName(QStringLiteral("productionProgress"));
     m_progress->setRange(0, 100);
     m_progress->setValue(0);
     m_progress->setTextVisible(true);
-    footerLayout->addWidget(m_progress, 1);
-    auto createCount = [footer](const QString& objectName) {
-        auto* label = new QLabel(footer);
+    progressLayout->addWidget(m_progress);
+    layout->addWidget(progressPanel);
+
+    statusBar()->setObjectName(QStringLiteral("productionStatusBar"));
+    auto* statsBar = new QWidget(statusBar());
+    statsBar->setObjectName(QStringLiteral("productionStatsBar"));
+    auto* statsLayout = new QHBoxLayout(statsBar);
+    statsLayout->setContentsMargins(10, 2, 10, 2);
+    statsLayout->setSpacing(18);
+    auto createCount = [statsBar](const QString& objectName) {
+        auto* label = new QLabel(statsBar);
         label->setObjectName(objectName);
         label->setAlignment(Qt::AlignCenter);
-        label->setMinimumWidth(84);
+        label->setMinimumWidth(92);
         return label;
     };
     m_passCountLabel = createCount(QStringLiteral("productionPassCount"));
     m_failCountLabel = createCount(QStringLiteral("productionFailCount"));
     m_totalCountLabel = createCount(QStringLiteral("productionTotalCount"));
-    m_yieldLabel = createCount(QStringLiteral("productionYield"));
     m_averageTimeLabel = createCount(QStringLiteral("productionAverageTime"));
-    m_yieldLabel->setMinimumWidth(112);
-    m_averageTimeLabel->setMinimumWidth(132);
-    footerLayout->addWidget(m_passCountLabel);
-    footerLayout->addWidget(m_failCountLabel);
-    footerLayout->addWidget(m_totalCountLabel);
-    footerLayout->addWidget(m_yieldLabel);
-    footerLayout->addWidget(m_averageTimeLabel);
-    layout->addWidget(footer);
+    statsLayout->addWidget(m_passCountLabel);
+    statsLayout->addWidget(m_failCountLabel);
+    statsLayout->addWidget(m_totalCountLabel);
+    statsLayout->addStretch(1);
+    m_averageTimeLabel->setMinimumWidth(190);
+    statsLayout->addWidget(m_averageTimeLabel);
+    statusBar()->addPermanentWidget(statsBar, 1);
     setCentralWidget(central);
 
     setStyleSheet(QStringLiteral(R"css(
         QMainWindow#productionWindow, QWidget#productionCentral {
-            background: #f4f6f8;
-            color: #20272e;
+            background: #f4f6f7;
+            color: #20262b;
         }
         QLabel#productionSequenceLabel {
             background: #ffffff;
-            border: 1px solid #cbd2d9;
-            border-radius: 4px;
-            font-size: 17px;
+            border: 1px solid #d7dde1;
+            border-radius: 6px;
+            font-size: 16px;
             font-weight: 600;
             padding: 8px 12px;
         }
         QToolBar#productionToolbar {
             background: #ffffff;
-            border: 1px solid #cbd2d9;
-            border-radius: 4px;
-            spacing: 8px;
-            padding: 4px 8px;
+            border: 1px solid #d7dde1;
+            border-radius: 6px;
+            spacing: 4px;
+            padding: 5px 8px;
         }
         QToolBar#productionToolbar QToolButton {
-            min-width: 92px;
+            min-width: 84px;
             min-height: 32px;
-            padding: 2px 8px;
+            padding: 2px 7px;
+            font-weight: 600;
         }
         QFrame#productionSidebar {
             background: #ffffff;
-            border: 1px solid #cbd2d9;
-            border-radius: 4px;
+            border: 1px solid #d7dde1;
+            border-radius: 6px;
         }
         QLabel#productionSectionTitle {
-            color: #33414d;
+            color: #344048;
             font-size: 13px;
             font-weight: 700;
             padding: 3px 0;
         }
         QLabel#productionMetricCaption {
-            color: #687681;
+            color: #707b83;
             font-size: 11px;
             font-weight: 600;
         }
         QLabel#productionElapsedLabel {
-            background: #e7f0f8;
-            border: 1px solid #b9cedf;
-            border-radius: 4px;
-            color: #18384f;
+            background: #eef2f4;
+            border: 1px solid #d4dce1;
+            border-radius: 6px;
+            color: #263139;
             font-size: 22px;
             font-weight: 600;
             padding: 12px 6px;
         }
         QTreeView#productionResultView, QTableView#productionLogView {
             background: #ffffff;
-            alternate-background-color: #f7f9fa;
-            border: 1px solid #cbd2d9;
-            gridline-color: #d8dee3;
-            selection-background-color: #cfe4f3;
-            selection-color: #20272e;
+            alternate-background-color: #f7f8f9;
+            border: 1px solid #d8dde1;
+            border-radius: 4px;
+            gridline-color: #e2e6e9;
+            selection-background-color: #dcecf6;
+            selection-color: #20262b;
         }
         QTreeView#productionResultView::item {
             min-height: 29px;
@@ -501,31 +540,36 @@ void ProductionWindow::buildUi()
             padding: 2px 4px;
         }
         QHeaderView::section {
-            background: #e8edf1;
+            background: #eef1f3;
             border: 0;
-            border-right: 1px solid #c5cdd4;
-            border-bottom: 1px solid #b7c0c8;
-            color: #2c3944;
+            border-right: 1px solid #d8dde1;
+            border-bottom: 1px solid #cbd2d7;
+            color: #364149;
             font-weight: 600;
             padding: 7px 6px;
         }
-        QWidget#productionFooter {
+        QWidget#productionProgressPanel {
             background: #ffffff;
-            border: 1px solid #cbd2d9;
-            border-radius: 4px;
+            border: 1px solid #d7dde1;
+            border-radius: 6px;
         }
+        QStatusBar#productionStatusBar {
+            background: #f8f9fa;
+            border-top: 1px solid #dce1e4;
+        }
+        QWidget#productionStatsBar { background: transparent; border: 0; }
         QProgressBar#productionProgress {
-            border: 1px solid #aeb9c2;
-            background: #edf1f3;
+            border: 1px solid #c6ced3;
+            border-radius: 5px;
+            background: #e9edef;
             min-height: 24px;
             text-align: center;
         }
-        QProgressBar#productionProgress::chunk { background: #5ca65c; }
-        QLabel#productionPassCount { color: #237744; font-weight: 700; }
-        QLabel#productionFailCount { color: #b12f2f; font-weight: 700; }
-        QLabel#productionTotalCount { color: #33414d; font-weight: 700; }
-        QLabel#productionYield { color: #175b87; font-weight: 700; }
-        QLabel#productionAverageTime { color: #465561; font-weight: 700; }
+        QProgressBar#productionProgress::chunk { background: #4f7d5d; border-radius: 4px; }
+        QLabel#productionPassCount { color: #2f7548; font-weight: 700; }
+        QLabel#productionFailCount { color: #a43838; font-weight: 700; }
+        QLabel#productionTotalCount { color: #344048; font-weight: 700; }
+        QLabel#productionAverageTime { color: #56636c; font-weight: 700; }
     )css"));
 
     m_elapsedTimer = new QTimer(this);
@@ -539,14 +583,20 @@ void ProductionWindow::buildUi()
 
 void ProductionWindow::updateCommands()
 {
-    const bool manualStart = !m_selection.scanDialogEnabled;
+    const bool manualMode =
+        m_selection.sequenceLoadMode == SequenceLoadMode::Manual;
+    const bool manualStart = manualMode && !m_selection.scanDialogEnabled;
+    const bool configurationAvailable =
+        !m_viewModel->canPause() && !m_viewModel->canStop();
     m_startAction->setVisible(manualStart);
     m_startAction->setEnabled(manualStart && m_viewModel->canRun());
     m_pauseAction->setEnabled(m_viewModel->canPause());
     m_resumeAction->setEnabled(m_viewModel->canResume());
     m_stopAction->setEnabled(m_viewModel->canStop());
-    m_fieldDeviceAction->setEnabled(!m_viewModel->canPause() &&
-                                    !m_viewModel->canStop());
+    m_fieldDeviceAction->setVisible(manualMode);
+    m_fieldDeviceAction->setEnabled(manualMode && configurationAvailable);
+    m_productRoutingAction->setVisible(!manualMode);
+    m_productRoutingAction->setEnabled(!manualMode && configurationAvailable);
 }
 
 void ProductionWindow::updateState(UiRunState state)
@@ -609,7 +659,33 @@ void ProductionWindow::updateCompileSummary()
 {
     const auto summary = m_viewModel->compileSummary();
     if (!summary.success) {
+        // Changing the routed Sequence invalidates the previous artifact and
+        // emits an empty summary before the new asynchronous compile starts.
+        if (m_viewModel->state() != UiRunState::Compiling) {
+            return;
+        }
+        const bool routedCompile =
+            m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn &&
+            !m_pendingSerialNumber.isEmpty();
         m_pendingSerialNumber.clear();
+        if (routedCompile) {
+            QStringList details;
+            for (const auto& diagnostic : m_viewModel->diagnostics()) {
+                if (diagnostic.severity != UiDiagnosticSeverity::Error) {
+                    continue;
+                }
+                details.push_back(diagnostic.path.isEmpty()
+                    ? diagnostic.message
+                    : QStringLiteral("%1: %2").arg(diagnostic.path,
+                                                     diagnostic.message));
+                if (details.size() == 5) {
+                    break;
+                }
+            }
+            showRoutingError(details.isEmpty()
+                ? tr("The routed Sequence could not be compiled")
+                : details.join(QStringLiteral("\n")));
+        }
         return;
     }
     m_previewReport = summary.previewReport;
@@ -748,6 +824,10 @@ void ProductionWindow::focusExecutionLogForResult(const QModelIndex& index)
 
 void ProductionWindow::beginRun(const QString& serialNumber)
 {
+    if (m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn) {
+        beginAutoRoutedRun(serialNumber);
+        return;
+    }
     if (!m_viewModel->canRun()) {
         showScanDialogWhenReady();
         return;
@@ -755,6 +835,84 @@ void ProductionWindow::beginRun(const QString& serialNumber)
     m_pendingSerialNumber = serialNumber.trimmed();
     statusBar()->showMessage(tr("Preparing station devices..."));
     startResolvedRun();
+}
+
+void ProductionWindow::beginAutoRoutedRun(const QString& serialNumber)
+{
+    const auto sn = serialNumber.trimmed();
+    if (sn.isEmpty()) {
+        return;
+    }
+    if (!m_viewModel->canChangeSources()) {
+        showRoutingError(tr("A test is already running"));
+        return;
+    }
+
+    const auto routing = PicoATE::Core::loadProductRoutingFile(
+        m_selection.productRoutingPath);
+    if (!routing.ok()) {
+        QStringList details;
+        for (const auto& error : routing.errors) {
+            details.push_back(error.path.isEmpty()
+                ? error.message
+                : QStringLiteral("%1: %2").arg(error.path, error.message));
+        }
+        showRoutingError(details.join(QStringLiteral("\n")));
+        return;
+    }
+    const auto route = PicoATE::Core::resolveProductRoute(routing.config, sn);
+    if (!route.ok()) {
+        QStringList details;
+        for (const auto& error : route.errors) {
+            details.push_back(error.message);
+        }
+        showRoutingError(details.join(QStringLiteral("\n")));
+        return;
+    }
+
+    const auto snValidation = StartupSupport::validateSerialNumber(
+        sn, StartupSupport::stationSnValidationRules(route.stationPath));
+    if (!snValidation.ok()) {
+        showRoutingError(snValidation.errorMessage);
+        return;
+    }
+
+    m_pendingSerialNumber = sn;
+    m_selection.projectName = route.projectName;
+    m_selection.projectPath = route.projectPath;
+    m_selection.sequencePath = route.sequencePath;
+    m_selection.stationPath = route.stationPath;
+    updateStationSummary();
+    m_sequenceLabel->setText(QFileInfo(route.sequencePath).fileName());
+    m_sequenceLabel->setToolTip(
+        tr("Project: %1\nSequence: %2\nStation: %3\nMatched route: %4")
+            .arg(route.projectName, route.sequencePath,
+                 route.stationPath, route.routeName));
+    if (m_viewModel->sequencePath() == route.sequencePath &&
+        m_viewModel->stationPath() == route.stationPath &&
+        m_viewModel->canRun()) {
+        startResolvedRun();
+        return;
+    }
+    m_viewModel->setStationPath(route.stationPath);
+    m_viewModel->setSequencePath(route.sequencePath);
+    m_viewModel->compile();
+    statusBar()->showMessage(
+        tr("SN matched %1. Loading %2...")
+            .arg(route.routeName, QFileInfo(route.sequencePath).fileName()));
+}
+
+void ProductionWindow::showRoutingError(const QString& message)
+{
+    const auto text = message.trimmed().isEmpty()
+        ? tr("Product routing failed")
+        : message.trimmed();
+    statusBar()->showMessage(text.section(QLatin1Char('\n'), 0, 0), 10000);
+    QTimer::singleShot(0, this, [this, text] {
+        m_scanDialog->hide();
+        QMessageBox::warning(this, tr("Product routing"), text);
+        showScanDialogWhenReady();
+    });
 }
 
 void ProductionWindow::startResolvedRun()
@@ -776,9 +934,25 @@ void ProductionWindow::openFieldDeviceConfiguration()
     if (m_viewModel->canPause() || m_viewModel->canStop()) {
         return;
     }
+    if (m_selection.stationPath.trimmed().isEmpty() ||
+        !QFileInfo(m_selection.stationPath).isFile()) {
+        statusBar()->showMessage(
+            tr("Select a product route before configuring its devices"), 5000);
+        return;
+    }
     const bool restoreScanner = m_scanDialog->isVisible();
     m_scanDialog->hide();
-    m_fieldDeviceDialog->exec();
+    FieldDeviceDialog dialog(m_selection.stationPath, this);
+    connect(&dialog, &FieldDeviceDialog::stationSaved, this, [this] {
+        QFile file(m_selection.stationPath);
+        if (file.open(QIODevice::ReadOnly)) {
+            m_viewModel->setStationDocument(
+                m_selection.stationPath, file.readAll());
+            m_viewModel->compile();
+            updateStationSummary();
+        }
+    });
+    dialog.exec();
     if (restoreScanner) {
         showScanDialogWhenReady();
     }
@@ -797,9 +971,20 @@ void ProductionWindow::beginRunIteration(int iteration, int totalIterations)
     if (stationFile.open(QIODevice::ReadOnly)) {
         stationObject = QJsonDocument::fromJson(stationFile.readAll()).object();
     }
+    QFile sequenceFile(m_selection.sequencePath);
+    QJsonObject sequenceObject;
+    if (sequenceFile.open(QIODevice::ReadOnly)) {
+        sequenceObject = QJsonDocument::fromJson(sequenceFile.readAll()).object();
+    }
+    const auto artifactContext = runArtifactContextFromDocuments(
+        sequenceObject,
+        m_selection.sequencePath,
+        stationObject,
+        m_selection.stationPath,
+        m_activeUutId);
     const auto artifact = m_runArtifactWriter->begin(
         runArtifactSettingsFromStation(stationObject, m_selection.stationPath),
-        m_activeUutId);
+        artifactContext);
     if (!artifact.success) {
         statusBar()->showMessage(
             tr("Cannot create report files: %1").arg(artifact.errorMessage),
@@ -843,9 +1028,16 @@ void ProductionWindow::resetPreviewForUut(const QString& uutId)
 
 void ProductionWindow::showScanDialogWhenReady()
 {
-    if (!m_selection.scanDialogEnabled || !m_viewModel->canRun()) {
+    const bool autoRouting =
+        m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn;
+    const bool ready = autoRouting
+        ? m_viewModel->canChangeSources() && m_pendingSerialNumber.isEmpty()
+        : m_viewModel->canRun();
+    if (!m_selection.scanDialogEnabled || !ready) {
         return;
     }
+    m_scanDialog->setValidationRules(
+        autoRouting ? SnValidationRules{} : m_selection.snValidationRules);
     QTimer::singleShot(0, m_scanDialog, [dialog = m_scanDialog] {
         dialog->showForNextScan();
     });
@@ -873,15 +1065,54 @@ void ProductionWindow::updateProgress()
 void ProductionWindow::updateYieldStatistics()
 {
     const int total = m_passedUnits + m_failedUnits;
-    const double yield = total > 0
-        ? static_cast<double>(m_passedUnits) * 100.0 / total
-        : 0.0;
     m_passCountLabel->setText(tr("PASS %1").arg(m_passedUnits));
     m_failCountLabel->setText(tr("FAIL %1").arg(m_failedUnits));
     m_totalCountLabel->setText(tr("TOTAL %1").arg(total));
-    m_yieldLabel->setText(tr("YIELD %1%").arg(yield, 0, 'f', 2));
+    m_yieldChart->setCounts(m_passedUnits, m_failedUnits);
     const qint64 average = total > 0 ? m_totalCompletedDurationMs / total : 0;
-    m_averageTimeLabel->setText(tr("AVG %1").arg(compactDuration(average)));
+    m_averageTimeLabel->setText(
+        tr("AVERAGE TIME %1").arg(compactDuration(average)));
+}
+
+void ProductionWindow::updateStationSummary()
+{
+    if (!m_stationLabel || !m_orderLabel || !m_testerLabel || !m_jigLabel) {
+        return;
+    }
+    const auto stationResult = PicoATE::Core::loadStationConfigFile(
+        m_selection.stationPath);
+    const auto stationId = stationResult.config.stationId.isEmpty()
+        ? QFileInfo(m_selection.stationPath).completeBaseName()
+        : stationResult.config.stationId;
+    const auto& metadata = stationResult.config.metadata;
+    m_stationLabel->setText(stationId.isEmpty() ? tr("--") : stationId);
+    m_orderLabel->setText(metadataValue(metadata, {"order", "orderNumber"}));
+    m_testerLabel->setText(metadataValue(metadata, {"tester", "operator"}));
+    m_jigLabel->setText(metadataValue(
+        metadata, {"jigNo", "fixtureId", "fixture"}));
+}
+
+void ProductionWindow::openProductRoutingConfiguration()
+{
+    if (m_viewModel->canPause() || m_viewModel->canStop()) {
+        return;
+    }
+    const bool restoreScanner = m_scanDialog->isVisible();
+    m_scanDialog->hide();
+    auto routingPath = m_selection.productRoutingPath.trimmed();
+    if (routingPath.isEmpty()) {
+        routingPath = QFileInfo(m_selection.stationPath).absoluteDir().filePath(
+            QStringLiteral("ProductRouting.json"));
+    }
+    ProductRoutingDialog dialog(routingPath, this);
+    connect(&dialog, &ProductRoutingDialog::routingSaved, this, [this] {
+        statusBar()->showMessage(
+            tr("Product routing saved. Changes apply to the next scan."), 5000);
+    });
+    dialog.exec();
+    if (restoreScanner) {
+        showScanDialogWhenReady();
+    }
 }
 
 } // namespace PicoATE::Ui

@@ -310,6 +310,8 @@ QJsonObject stepToJson(const StepReport& step)
         {"stepId", step.stepId},
         {"nodePath", step.nodePath},
         {"displayName", step.displayName},
+        {"moduleId", step.moduleId},
+        {"functionName", step.functionName},
         {"kind", nodeKindName(step.kind)},
         {"phase", executionPhaseName(step.phase)},
         {"state", activationStateName(step.state)},
@@ -332,6 +334,8 @@ StepReport stepFromJson(const QJsonObject& object,
     step.stepId = object.value("stepId").toString();
     step.nodePath = object.value("nodePath").toString(step.stepId);
     step.displayName = object.value("displayName").toString();
+    step.moduleId = object.value("moduleId").toString();
+    step.functionName = object.value("functionName").toString();
     const auto kindText = object.value("kind").toString("Noop");
     const auto kind = nodeKindFromString(kindText);
     if (kind) step.kind = *kind;
@@ -400,6 +404,46 @@ StepReport stepFromJson(const QJsonObject& object,
     return step;
 }
 
+QJsonObject reportMetadataToJson(const ExecutionReportMetadata& metadata)
+{
+    return {
+        {"name", metadata.name},
+        {"sequenceName", metadata.sequenceName},
+        {"serialNumber", metadata.serialNumber},
+        {"stationId", metadata.stationId},
+        {"jigNo", metadata.jigNo},
+        {"order", metadata.order},
+        {"tester", metadata.tester},
+        {"startedAt", metadata.startedAt.isValid()
+                          ? metadata.startedAt.toString(Qt::ISODateWithMs)
+                          : QString()},
+        {"finishedAt", metadata.finishedAt.isValid()
+                           ? metadata.finishedAt.toString(Qt::ISODateWithMs)
+                           : QString()},
+        {"durationMs", metadata.durationMs},
+    };
+}
+
+ExecutionReportMetadata reportMetadataFromJson(const QJsonObject& object)
+{
+    ExecutionReportMetadata metadata;
+    metadata.name = object.value("name").toString();
+    metadata.sequenceName = object.value("sequenceName").toString();
+    metadata.serialNumber = object.value("serialNumber").toString();
+    metadata.stationId = object.value("stationId").toString();
+    metadata.jigNo = object.value("jigNo").toString();
+    metadata.order = object.value("order").toString();
+    metadata.tester = object.value("tester").toString();
+    metadata.startedAt = QDateTime::fromString(
+        object.value("startedAt").toString(), Qt::ISODateWithMs);
+    metadata.finishedAt = QDateTime::fromString(
+        object.value("finishedAt").toString(), Qt::ISODateWithMs);
+    if (object.contains("durationMs")) {
+        metadata.durationMs = object.value("durationMs").toVariant().toLongLong();
+    }
+    return metadata;
+}
+
 QJsonObject reportBodyToJson(const ExecutionReport& report)
 {
     QJsonArray sessionSteps;
@@ -426,6 +470,7 @@ QJsonObject reportBodyToJson(const ExecutionReport& report)
         {"completed", report.completed},
         {"hasError", report.hasError},
         {"sessionHasError", report.sessionHasError},
+        {"metadata", reportMetadataToJson(report.metadata)},
         {"sessionSteps", sessionSteps},
         {"uuts", uuts},
     };
@@ -475,6 +520,10 @@ ExecutionReportJsonResult executionReportFromJson(const QJsonObject& object)
     result.report.completed = report.value("completed").toBool(false);
     result.report.hasError = report.value("hasError").toBool(false);
     result.report.sessionHasError = report.value("sessionHasError").toBool(false);
+    if (report.value("metadata").isObject()) {
+        result.report.metadata = reportMetadataFromJson(
+            report.value("metadata").toObject());
+    }
 
     const auto sessionStepsValue = report.value("sessionSteps");
     if (!sessionStepsValue.isUndefined() && !sessionStepsValue.isArray()) {

@@ -41,7 +41,7 @@ public:
                             ExecutionResultStore& results,
                             RuntimeEventEmitter* events = nullptr,
                             ExecutionControl* executionControl = nullptr,
-                            const StopToken* stopToken = nullptr);
+                            StopToken* stopToken = nullptr);
 
     SchedulerResult run(UutExecution& uut, const FrameId& frameId = "root");
     SchedulerStepResult pumpOnce(UutExecution& uut,
@@ -73,6 +73,8 @@ public:
     SchedulerStepResult pumpPeriodicTaskOnce();
     bool stopAllPeriodicTasks();
     int activePeriodicTaskCount() const;
+    bool sessionCleanupRequested() const;
+    QString sessionCleanupReason() const;
 
 private:
     QVector<NodeId> findReadyNodes(
@@ -113,7 +115,14 @@ private:
                                     const FrameId& frameId);
     NodeResult executeBarrierNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
     NodeResult executeLoopNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
-    bool isWhileLoopBodyNode(const NodeId& nodeId) const;
+    bool isLoopBodyNode(const NodeId& nodeId) const;
+    std::optional<ErrorAction> inheritedErrorAction(
+        const ExecNode& node,
+        NodeOutcome outcome) const;
+    void requestSessionCleanup(const UutExecution& uut,
+                               const ExecNode& node,
+                               const QString& reason);
+    void requestSessionAbort();
     void handleBreakRequest(UutExecution& uut,
                             const ExecNode& node,
                             const NodeResult& result,
@@ -127,6 +136,11 @@ private:
                                     const NodeResult& result,
                                     ErrorAction action,
                                     const FrameId& frameId);
+    void handleLoopBodyFailure(UutExecution& uut,
+                               const ExecNode& childNode,
+                               const NodeResult& result,
+                               ErrorAction action,
+                               const FrameId& frameId);
     void skipNodeSubtree(UutExecution& uut,
                          const NodeId& rootNodeId,
                          const FrameId& frameId,
@@ -226,7 +240,7 @@ private:
     NodeRunner& m_runner;
     ExecutionResultStore& m_results;
     ExecutionControl* m_executionControl = nullptr;
-    const StopToken* m_stopToken = nullptr;
+    StopToken* m_stopToken = nullptr;
     RuntimeEventEmitter* m_events = nullptr;
     QSet<UutId> m_cohortUuts;
     QHash<BarrierInstanceId, BarrierReleaseDecision> m_releasedBarriers;
@@ -236,7 +250,11 @@ private:
     TimerService m_timers;
     QHash<RequestId, PendingWait> m_pendingWaits;
     QHash<RequestId, PendingRetry> m_pendingRetries;
+    QHash<QString, ErrorAction> m_testItemFailureEscalations;
+    QHash<QString, ErrorAction> m_loopFailureEscalations;
     PeriodicTaskController m_periodicTasks;
+    bool m_sessionCleanupRequested = false;
+    QString m_sessionCleanupReason;
     struct ActiveResourceRegion {
         ResourceRegionId regionId;
         UutId uutId;

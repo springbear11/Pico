@@ -80,28 +80,18 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_stationNameEdit->setObjectName(QStringLiteral("stationBasicNameEdit"));
     form->addRow(tr("Name"), m_stationNameEdit);
 
-    m_stopOnFailureSwitch = new OnOffSwitch(this);
-    m_stopOnFailureSwitch->setObjectName(QStringLiteral("stationStopOnFailureSwitch"));
-    m_stopOnFailureSwitch->setAccessibleName(tr("Stop on failure"));
-    form->addRow(tr("Stop on Failure"), m_stopOnFailureSwitch);
-
-    m_scanDialogSwitch = new OnOffSwitch(this);
-    m_scanDialogSwitch->setObjectName(QStringLiteral("stationScanDialogSwitch"));
-    m_scanDialogSwitch->setAccessibleName(tr("Enable scan dialog"));
-    form->addRow(tr("Scan Dialog"), m_scanDialogSwitch);
-
-    m_loopTestSwitch = new OnOffSwitch(this);
-    m_loopTestSwitch->setObjectName(QStringLiteral("stationLoopTestSwitch"));
-    m_loopTestSwitch->setAccessibleName(tr("Enable repeated sequence testing"));
-    form->addRow(tr("Loop Test"), m_loopTestSwitch);
-
-    m_loopTestCountSpin = new QSpinBox(this);
-    m_loopTestCountSpin->setObjectName(QStringLiteral("stationLoopTestCountSpin"));
-    m_loopTestCountSpin->setRange(1, 100000);
-    m_loopTestCountSpin->setSuffix(tr(" runs"));
-    m_loopTestCountSpin->setToolTip(
-        tr("Run the complete sequence this many times after one Run command"));
-    form->addRow(tr("Loop Count"), m_loopTestCountSpin);
+    m_jigNoEdit = new QLineEdit(this);
+    m_jigNoEdit->setObjectName(QStringLiteral("stationJigNoEdit"));
+    m_jigNoEdit->setPlaceholderText(tr("Fixture or jig identifier"));
+    form->addRow(tr("Jig No"), m_jigNoEdit);
+    m_orderEdit = new QLineEdit(this);
+    m_orderEdit->setObjectName(QStringLiteral("stationOrderEdit"));
+    m_orderEdit->setPlaceholderText(tr("Production or work order"));
+    form->addRow(tr("Order"), m_orderEdit);
+    m_testerEdit = new QLineEdit(this);
+    m_testerEdit->setObjectName(QStringLiteral("stationTesterEdit"));
+    m_testerEdit->setPlaceholderText(tr("Tester or operator name"));
+    form->addRow(tr("Tester"), m_testerEdit);
 
     m_snLengthSpin = new QSpinBox(this);
     m_snLengthSpin->setObjectName(QStringLiteral("stationSnLengthSpin"));
@@ -125,6 +115,31 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_snAllowedRegexEdit->setToolTip(
         tr("Optional regular expression applied to the complete SN."));
     form->addRow(tr("Allowed Characters"), m_snAllowedRegexEdit);
+
+    m_loopTestCountSpin = new QSpinBox(this);
+    m_loopTestCountSpin->setObjectName(QStringLiteral("stationLoopTestCountSpin"));
+    m_loopTestCountSpin->setRange(1, 100000);
+    m_loopTestCountSpin->setSuffix(tr(" runs"));
+    m_loopTestCountSpin->setToolTip(
+        tr("Run the complete sequence this many times after one Run command"));
+    form->addRow(tr("Loop Count"), m_loopTestCountSpin);
+
+    m_loopTestSwitch = new OnOffSwitch(this);
+    m_loopTestSwitch->setObjectName(QStringLiteral("stationLoopTestSwitch"));
+    m_loopTestSwitch->setAccessibleName(tr("Enable repeated sequence testing"));
+    form->addRow(tr("Loop Test"), m_loopTestSwitch);
+
+    m_scanDialogSwitch = new OnOffSwitch(this);
+    m_scanDialogSwitch->setObjectName(QStringLiteral("stationScanDialogSwitch"));
+    m_scanDialogSwitch->setAccessibleName(tr("Enable scan dialog"));
+    form->addRow(tr("Scan Dialog"), m_scanDialogSwitch);
+
+    m_stopOnFailureSwitch = new OnOffSwitch(this);
+    m_stopOnFailureSwitch->setObjectName(QStringLiteral("stationStopOnFailureSwitch"));
+    m_stopOnFailureSwitch->setAccessibleName(tr("Stop on failure by default"));
+    m_stopOnFailureSwitch->setToolTip(
+        tr("Default for inherited onFail, onError, and onTimeout policies. Explicit Step policies are preserved."));
+    form->addRow(tr("Default Stop on Failure"), m_stopOnFailureSwitch);
 
     m_txtLogSwitch = new OnOffSwitch(this);
     m_txtLogSwitch->setObjectName(QStringLiteral("stationTxtLogSwitch"));
@@ -154,19 +169,6 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     outputLayout->addWidget(m_reportOutputEdit, 1);
     outputLayout->addWidget(m_browseReportOutputButton);
     form->addRow(tr("Output Folder"), outputRow);
-
-    m_jigNoEdit = new QLineEdit(this);
-    m_jigNoEdit->setObjectName(QStringLiteral("stationJigNoEdit"));
-    m_jigNoEdit->setPlaceholderText(tr("Fixture or jig identifier"));
-    form->addRow(tr("Jig No"), m_jigNoEdit);
-    m_orderEdit = new QLineEdit(this);
-    m_orderEdit->setObjectName(QStringLiteral("stationOrderEdit"));
-    m_orderEdit->setPlaceholderText(tr("Production or work order"));
-    form->addRow(tr("Order"), m_orderEdit);
-    m_testerEdit = new QLineEdit(this);
-    m_testerEdit->setObjectName(QStringLiteral("stationTesterEdit"));
-    m_testerEdit->setPlaceholderText(tr("Tester or operator name"));
-    form->addRow(tr("Tester"), m_testerEdit);
     layout->addLayout(form);
 
     m_errorLabel = new QLabel(this);

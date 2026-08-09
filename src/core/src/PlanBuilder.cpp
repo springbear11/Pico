@@ -967,7 +967,7 @@ void PlanBuilder::addDataReferenceEdges(ExecutionPlan& plan, PlanBuildResult& re
             if (!reference) {
                 result.errors.push_back({QString("Invalid step result expression in %1: %2")
                                              .arg(consumer.id, expression),
-                                         "Use ${step:<node-path>.outputs.<field>}, measurements, or outcome"});
+                                         "Use ${step:<node-path>.outputs.<field>}, measurements, outcome, or passed"});
                 continue;
             }
             const auto source = resolveStepReferenceNode(plan, consumer.id, reference->nodeAddress);

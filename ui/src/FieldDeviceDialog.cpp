@@ -1,5 +1,7 @@
 #include "FieldDeviceDialog.h"
 
+#include "PicoATE/Core/StationConfig.h"
+
 #include <QApplication>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -42,11 +44,8 @@ QString registryPath(const QJsonObject& station, const QString& stationPath)
 {
     const auto configured = station.value(QStringLiteral("pluginRegistry"))
                                 .toString(QStringLiteral("plugins/PluginRegistry.json"));
-    if (QFileInfo(configured).isAbsolute()) {
-        return QFileInfo(configured).absoluteFilePath();
-    }
-    return QFileInfo(QFileInfo(stationPath).absoluteDir().absoluteFilePath(configured))
-        .absoluteFilePath();
+    return PicoATE::Core::resolveStationPluginRegistryPath(
+        configured, stationPath, QApplication::applicationDirPath());
 }
 
 } // namespace
@@ -142,16 +141,14 @@ void FieldDeviceDialog::buildUi()
     m_refreshTimer->start();
 
     setStyleSheet(QStringLiteral(R"css(
-        QDialog#fieldDeviceDialog { background: #f5f7f9; color: #26333d; }
+        QDialog#fieldDeviceDialog { background: #f4f6f7; color: #20262b; }
         QLabel#fieldDeviceTitle { font-size: 17px; font-weight: 700; padding: 4px; }
-        QListWidget#fieldDeviceList, QComboBox {
-            background: white; border: 1px solid #c8d0d7; border-radius: 4px;
-            min-height: 30px; padding: 3px 7px;
+        QListWidget#fieldDeviceList {
+            background: #ffffff; border: 1px solid #d8dde1; border-radius: 5px;
         }
         QListWidget#fieldDeviceList::item { min-height: 48px; padding: 6px 9px; }
-        QListWidget#fieldDeviceList::item:selected { background: #cfe4f3; color: #1e2b34; }
-        QLabel#fieldDeviceStatus { color: #52636f; padding: 8px 2px; }
-        QPushButton { min-height: 30px; padding: 3px 12px; }
+        QListWidget#fieldDeviceList::item:selected { background: #dcecf6; color: #20262b; }
+        QLabel#fieldDeviceStatus { color: #65717a; padding: 8px 2px; }
     )css"));
 }
 

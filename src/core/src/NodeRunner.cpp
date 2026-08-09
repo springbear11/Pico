@@ -13,6 +13,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <cmath>
+#include <limits>
 
 namespace PicoATE::Core {
 
@@ -56,6 +57,139 @@ bool finiteNumber(const QVariant& value, double& number)
     bool ok = false;
     number = value.toDouble(&ok);
     return ok && std::isfinite(number);
+}
+
+bool isTextValue(const QVariant& value)
+{
+    const auto typeId = value.metaType().id();
+    return typeId == QMetaType::QString || typeId == QMetaType::QByteArray;
+}
+
+bool isUnsafeExactFloatingInteger(const QVariant& value)
+{
+    const auto typeId = value.metaType().id();
+    if (typeId != QMetaType::Double && typeId != QMetaType::Float) {
+        return false;
+    }
+    bool ok = false;
+    const auto number = value.toDouble(&ok);
+    const auto maximumExactInteger = typeId == QMetaType::Float
+        ? 16777216.0
+        : 9007199254740992.0;
+    return ok && std::isfinite(number) && std::trunc(number) == number &&
+           std::abs(number) > maximumExactInteger;
+}
+
+struct IntegralValue {
+    bool isUnsigned = false;
+    qint64 signedValue = 0;
+    quint64 unsignedValue = 0;
+};
+
+bool integralValue(const QVariant& value, IntegralValue& result)
+{
+    const auto typeId = value.metaType().id();
+    switch (typeId) {
+    case QMetaType::UChar:
+    case QMetaType::UShort:
+    case QMetaType::UInt:
+    case QMetaType::ULong:
+    case QMetaType::ULongLong:
+        result.isUnsigned = true;
+        result.unsignedValue = value.toULongLong();
+        return true;
+    case QMetaType::Char:
+    case QMetaType::SChar:
+    case QMetaType::Short:
+    case QMetaType::Int:
+    case QMetaType::Long:
+    case QMetaType::LongLong:
+        result.signedValue = value.toLongLong();
+        return true;
+    case QMetaType::QString:
+    case QMetaType::QByteArray: {
+        const auto text = value.toString().trimmed();
+        bool ok = false;
+        const auto signedValue = text.toLongLong(&ok, 10);
+        if (ok) {
+            result.signedValue = signedValue;
+            return true;
+        }
+        const auto unsignedValue = text.toULongLong(&ok, 10);
+        if (ok) {
+            result.isUnsigned = true;
+            result.unsignedValue = unsignedValue;
+            return true;
+        }
+        return false;
+    }
+    default:
+        return false;
+    }
+}
+
+bool integralDistance(const IntegralValue& left,
+                      const IntegralValue& right,
+                      quint64& distance)
+{
+    if (left.isUnsigned && right.isUnsigned) {
+        distance = left.unsignedValue >= right.unsignedValue
+            ? left.unsignedValue - right.unsignedValue
+            : right.unsignedValue - left.unsignedValue;
+        return true;
+    }
+    if (!left.isUnsigned && !right.isUnsigned) {
+        constexpr auto signBit = quint64{1} << 63;
+        const auto orderedLeft = static_cast<quint64>(left.signedValue) ^ signBit;
+        const auto orderedRight = static_cast<quint64>(right.signedValue) ^ signBit;
+        distance = orderedLeft >= orderedRight
+            ? orderedLeft - orderedRight
+            : orderedRight - orderedLeft;
+        return true;
+    }
+
+    const auto& unsignedSide = left.isUnsigned ? left : right;
+    const auto& signedSide = left.isUnsigned ? right : left;
+    if (signedSide.signedValue >= 0) {
+        const auto signedAsUnsigned = static_cast<quint64>(signedSide.signedValue);
+        distance = unsignedSide.unsignedValue >= signedAsUnsigned
+            ? unsignedSide.unsignedValue - signedAsUnsigned
+            : signedAsUnsigned - unsignedSide.unsignedValue;
+        return true;
+    }
+
+    const auto magnitude = static_cast<quint64>(-(signedSide.signedValue + 1)) + 1;
+    if (unsignedSide.unsignedValue >
+        std::numeric_limits<quint64>::max() - magnitude) {
+        return false;
+    }
+    distance = unsignedSide.unsignedValue + magnitude;
+    return true;
+}
+
+bool integralValuesEqual(const QVariant& actual,
+                         const QVariant& expected,
+                         double tolerance,
+                         bool& equal)
+{
+    IntegralValue actualInteger;
+    IntegralValue expectedInteger;
+    if (!integralValue(actual, actualInteger) ||
+        !integralValue(expected, expectedInteger)) {
+        return false;
+    }
+
+    quint64 distance = 0;
+    if (!integralDistance(actualInteger, expectedInteger, distance)) {
+        equal = false;
+        return true;
+    }
+    if (tolerance >= static_cast<double>(std::numeric_limits<quint64>::max())) {
+        equal = true;
+    } else {
+        equal = distance <= static_cast<quint64>(std::floor(tolerance));
+    }
+    return true;
 }
 
 QString logValueText(const QVariant& value)
@@ -125,24 +259,35 @@ NodeResult limitErrorResult(const ExecNode& node,
                             const QString& code,
                             const QString& message)
 {
+    QString effectiveCode = code;
+    QString effectiveMessage = message;
+    if (node.kind == ExecNodeKind::Break) {
+        effectiveCode.replace(QStringLiteral("Limit"),
+                              QStringLiteral("Break"));
+        effectiveMessage.replace(QStringLiteral("Limit input"),
+                                 QStringLiteral("Break input"));
+    }
+
     NodeResult result;
     result.nodeId = node.id;
     result.outcome = NodeOutcome::Error;
-    result.errorCode = code;
-    result.errorMessage = message;
+    result.errorCode = effectiveCode;
+    result.errorMessage = effectiveMessage;
     result.startedAt = QDateTime::currentDateTimeUtc();
     result.finishedAt = result.startedAt;
 
-    MeasurementResult measurement;
-    measurement.name = node.payload.value("measurementName", node.displayName).toString();
-    measurement.value = actual;
-    measurement.rawValue = actual;
-    measurement.unit = node.payload.value("unit").toString();
-    measurement.status = MeasurementStatus::Error;
-    measurement.errorCode = code;
-    measurement.errorMessage = message;
-    applyConfiguredMeasurementLimits(node.payload, measurement);
-    result.measurements.push_back(measurement);
+    if (node.kind == ExecNodeKind::Limit) {
+        MeasurementResult measurement;
+        measurement.name = node.payload.value("measurementName", node.displayName).toString();
+        measurement.value = actual;
+        measurement.rawValue = actual;
+        measurement.unit = node.payload.value("unit").toString();
+        measurement.status = MeasurementStatus::Error;
+        measurement.errorCode = effectiveCode;
+        measurement.errorMessage = effectiveMessage;
+        applyConfiguredMeasurementLimits(node.payload, measurement);
+        result.measurements.push_back(measurement);
+    }
     return result;
 }
 
@@ -435,6 +580,7 @@ bool LimitNodeHandler::canHandle(const ExecNode& node) const
 NodeResult LimitNodeHandler::run(const ExecNode& node,
                                  const NodeExecutionContext& context)
 {
+    const bool controlPredicate = node.kind == ExecNodeKind::Break;
     QVariant actual;
     if (!limitValue(node, "actual", actual)) {
         return limitErrorResult(node, {}, "LimitActualMissing", "Limit input 'actual' is required");
@@ -456,8 +602,10 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
     const bool hasTolerance = limitValue(node, "tolerance", toleranceValue);
     publishLimitLog(
         context,
-        QStringLiteral("LIMIT_CHECK actual=%1 comparison=%2 expected=%3 lower=%4 upper=%5 tolerance=%6")
-            .arg(logValueText(actual),
+        QStringLiteral("%1_CHECK actual=%2 comparison=%3 expected=%4 lower=%5 upper=%6 tolerance=%7")
+            .arg(controlPredicate ? QStringLiteral("BREAK")
+                                  : QStringLiteral("LIMIT"),
+                 logValueText(actual),
                  comparison,
                  hasExpected ? logValueText(expectedValue) : QStringLiteral("<unset>"),
                  hasLower ? logValueText(lowerValue) : QStringLiteral("<unset>"),
@@ -473,6 +621,7 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
     }
 
     bool passed = false;
+    QString comparisonMode = QStringLiteral("numeric");
     double actualNumber = 0.0;
     double lower = 0.0;
     double upper = 0.0;
@@ -559,10 +708,26 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
                                     "LimitConfigurationError",
                                     "Equal comparison requires expected");
         }
+        if (tolerance == 0.0 &&
+            (isUnsafeExactFloatingInteger(actual) ||
+             isUnsafeExactFloatingInteger(expectedValue))) {
+            return limitErrorResult(
+                node,
+                actual,
+                "LimitPrecisionError",
+                "Exact equality cannot safely compare a floating-point value beyond its exact integer range; use a string identifier or an integer value");
+        }
         double expectedNumber = 0.0;
-        if (finiteNumber(actual, actualNumber) && finiteNumber(expectedValue, expectedNumber)) {
+        if (isTextValue(actual) && isTextValue(expectedValue) && tolerance == 0.0) {
+            comparisonMode = QStringLiteral("text");
+            passed = actual.toString() == expectedValue.toString();
+        } else if (integralValuesEqual(actual, expectedValue, tolerance, passed)) {
+            comparisonMode = QStringLiteral("integer");
+        } else if (finiteNumber(actual, actualNumber) &&
+                   finiteNumber(expectedValue, expectedNumber)) {
             passed = std::abs(actualNumber - expectedNumber) <= tolerance;
         } else {
+            comparisonMode = QStringLiteral("text");
             passed = actual.toString() == expectedValue.toString();
         }
         if (comparison == "!=" || comparison == "ne" || comparison == "notequal") {
@@ -570,6 +735,7 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
         }
         expected = expectedNumber;
     } else if (comparison == "contains" || comparison == "startswith" || comparison == "endswith") {
+        comparisonMode = QStringLiteral("text");
         if (!hasExpected) {
             return limitErrorResult(node,
                                     actual,
@@ -582,6 +748,7 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
         else if (comparison == "startswith") passed = actualText.startsWith(expectedText);
         else passed = actualText.endsWith(expectedText);
     } else if (comparison == "istrue" || comparison == "isfalse") {
+        comparisonMode = QStringLiteral("boolean");
         if (actual.metaType().id() != QMetaType::Bool) {
             return limitErrorResult(node,
                                     actual,
@@ -598,12 +765,16 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
 
     NodeResult result;
     result.nodeId = node.id;
-    result.outcome = passed ? NodeOutcome::Passed : NodeOutcome::Failed;
+    result.outcome = controlPredicate || passed
+        ? NodeOutcome::Passed
+        : NodeOutcome::Failed;
     result.startedAt = QDateTime::currentDateTimeUtc();
     result.finishedAt = result.startedAt;
     result.outputs.insert("actual", actual);
     result.outputs.insert("passed", passed);
+    result.outputs.insert("matched", passed);
     result.outputs.insert("comparison", comparison);
+    result.outputs.insert("comparisonMode", comparisonMode);
 
     MeasurementResult measurement;
     measurement.name = node.payload.value("measurementName", node.displayName).toString();
@@ -612,14 +783,17 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
     measurement.unit = node.payload.value("unit").toString();
     measurement.status = passed ? MeasurementStatus::Passed : MeasurementStatus::Failed;
     applyConfiguredMeasurementLimits(node.payload, measurement);
-    if (!passed) {
+    measurement.attributes.insert("comparisonMode", comparisonMode);
+    if (!passed && !controlPredicate) {
         result.errorCode = "LimitFailed";
         result.errorMessage = QString("Measurement %1 failed %2 comparison")
                                   .arg(measurement.name, comparison);
         measurement.errorCode = result.errorCode;
         measurement.errorMessage = result.errorMessage;
     }
-    result.measurements.push_back(measurement);
+    if (!controlPredicate) {
+        result.measurements.push_back(measurement);
+    }
     const auto effectiveLower = measurement.hasLowerLimit
         ? QString::number(measurement.lowerLimit, 'g', 15)
         : logValueText(measurement.attributes.value("expected"));
@@ -628,12 +802,19 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
         : logValueText(measurement.attributes.value("expected"));
     publishLimitLog(
         context,
-        QStringLiteral("LIMIT_RESULT %1 actual=%2 comparison=%3 lower=%4 upper=%5")
-            .arg(passed ? QStringLiteral("PASS") : QStringLiteral("FAIL"),
-                 logValueText(actual),
-                 comparison,
-                 effectiveLower,
-                 effectiveUpper));
+        QStringLiteral("%1_RESULT %2 actual=%3 comparison=%4 mode=%5 lower=%6 upper=%7")
+            .arg(controlPredicate ? QStringLiteral("BREAK")
+                                  : QStringLiteral("LIMIT"),
+                  controlPredicate
+                      ? (passed ? QStringLiteral("MATCHED")
+                                : QStringLiteral("NOT_MATCHED"))
+                      : (passed ? QStringLiteral("PASS")
+                                : QStringLiteral("FAIL")),
+                  logValueText(actual),
+                  comparison,
+                  comparisonMode,
+                  effectiveLower,
+                  effectiveUpper));
     return result;
 }
 
@@ -645,22 +826,15 @@ bool BreakNodeHandler::canHandle(const ExecNode& node) const
 NodeResult BreakNodeHandler::run(const ExecNode& node,
                                  const NodeExecutionContext& context)
 {
-    ExecNode predicate = node;
-    predicate.kind = ExecNodeKind::Limit;
-    auto evaluated = LimitNodeHandler().run(predicate, context);
+    auto evaluated = LimitNodeHandler().run(node, context);
     if (evaluated.outcome == NodeOutcome::Error ||
         evaluated.outcome == NodeOutcome::Timeout ||
         evaluated.outcome == NodeOutcome::Cancelled) {
         return evaluated;
     }
 
-    const bool matched = evaluated.outcome == NodeOutcome::Passed;
-    evaluated.outcome = NodeOutcome::Passed;
-    evaluated.errorCode.clear();
-    evaluated.errorMessage.clear();
-    evaluated.measurements.clear();
+    const bool matched = evaluated.outputs.value("matched").toBool();
     evaluated.outputs.insert("breakRequested", matched);
-    evaluated.outputs.insert("matched", matched);
     return evaluated;
 }
 

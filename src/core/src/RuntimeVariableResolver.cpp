@@ -64,14 +64,14 @@ bool RuntimeVariableResolver::resolvedValue(const QString& name,
         const auto reference = parseStepResultReference(normalized);
         if (!reference) {
             errorMessage = QString("Invalid step result expression: %1").arg(normalized);
-            suggestion = "Use step:<node-path>.outputs.<field>, measurements, or outcome";
+            suggestion = "Use step:<node-path>.outputs.<field>, measurements, outcome, or passed";
             return false;
         }
         const auto lookup = m_context.resultStore->lookup(
             m_context.uutId, m_context.frameId, m_context.currentNodeId, *reference);
         if (!lookup.found) {
             errorMessage = QString("%1: %2").arg(lookup.errorCode, lookup.message);
-            suggestion = "Check the source step path, execution order, outcome, and output field";
+            suggestion = "Check the source step path, execution order, outcome, passed flag, and output field";
             return false;
         }
         value = lookup.value;

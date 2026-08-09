@@ -563,6 +563,10 @@ OnFailureAction parseFailureActionString(const QString& text, bool& ok)
 {
     const auto value = normalized(text);
     ok = true;
+    if (value == "inherit" || value == "inheritstation" ||
+        value == "stationdefault") {
+        return OnFailureAction::Inherit;
+    }
     if (value == "continue") {
         return OnFailureAction::Continue;
     }
@@ -1379,9 +1383,13 @@ LoopPolicyDef SequenceCompiler::parseLoopPolicy(const QJsonObject& object,
     }
 
     const auto iterationErrorPolicy = normalized(
-        readString(object, "iterationErrorPolicy", path, errors, "abortLoop"));
+        readString(object, "iterationErrorPolicy", path, errors, "continueOnFail"));
     if (iterationErrorPolicy == "abortloop" || iterationErrorPolicy == "abort") {
         loop.iterationErrorPolicy = WhileIterationErrorPolicy::AbortLoop;
+    } else if (iterationErrorPolicy == "continueonfail" ||
+               iterationErrorPolicy == "continuefail" ||
+               iterationErrorPolicy == "failonly") {
+        loop.iterationErrorPolicy = WhileIterationErrorPolicy::ContinueOnFail;
     } else if (iterationErrorPolicy == "continueloop" ||
                iterationErrorPolicy == "continue") {
         loop.iterationErrorPolicy = WhileIterationErrorPolicy::ContinueLoop;
@@ -1389,7 +1397,7 @@ LoopPolicyDef SequenceCompiler::parseLoopPolicy(const QJsonObject& object,
         addError(errors,
                  childPath(path, "iterationErrorPolicy"),
                  "Unsupported while loop iteration error policy",
-                 "Use abortLoop or continueLoop");
+                 "Use continueOnFail, abortLoop, or continueLoop");
     }
 
     loop.intervalMs = readInt(object, "intervalMs", path, errors, 0);
@@ -1481,19 +1489,25 @@ ErrorPolicyDef SequenceCompiler::parseErrorPolicy(const QJsonObject& object,
 {
     ErrorPolicyDef policy;
     bool actionOk = false;
-    policy.onFail = parseFailureActionString(readString(object, "onFail", path, errors, "StopUut"), actionOk);
+    policy.onFail = parseFailureActionString(
+        readString(object, "onFail", path, errors, "Inherit"), actionOk);
     if (!actionOk) {
-        addError(errors, path + ".onFail", "Unsupported error action", "Use Continue, StopUut, Retry, RunCleanup, or Abort");
+        addError(errors, path + ".onFail", "Unsupported error action",
+                 "Use Inherit, Continue, StopUut, Retry, RunCleanup, or Abort");
     }
 
-    policy.onError = parseFailureActionString(readString(object, "onError", path, errors, "StopUut"), actionOk);
+    policy.onError = parseFailureActionString(
+        readString(object, "onError", path, errors, "Inherit"), actionOk);
     if (!actionOk) {
-        addError(errors, path + ".onError", "Unsupported error action", "Use Continue, StopUut, Retry, RunCleanup, or Abort");
+        addError(errors, path + ".onError", "Unsupported error action",
+                 "Use Inherit, Continue, StopUut, Retry, RunCleanup, or Abort");
     }
 
-    policy.onTimeout = parseFailureActionString(readString(object, "onTimeout", path, errors, "StopUut"), actionOk);
+    policy.onTimeout = parseFailureActionString(
+        readString(object, "onTimeout", path, errors, "Inherit"), actionOk);
     if (!actionOk) {
-        addError(errors, path + ".onTimeout", "Unsupported error action", "Use Continue, StopUut, Retry, RunCleanup, or Abort");
+        addError(errors, path + ".onTimeout", "Unsupported error action",
+                 "Use Inherit, Continue, StopUut, Retry, RunCleanup, or Abort");
     }
 
     policy.cleanupRegionId = readString(object, "cleanupRegionId", path, errors);

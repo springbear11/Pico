@@ -23,7 +23,7 @@
             "intervalMs": 10,
             "maxIterations": 20,
             "timeoutMs": 5000,
-            "iterationErrorPolicy": "continueLoop"
+            "iterationErrorPolicy": "continueOnFail"
           },
           "steps": [
             {
@@ -40,7 +40,7 @@
             },
             {
               "id": "check-voltage",
-              "name": "Voltage At Least 3 V",
+              "name": "Voltage Reached 3 V",
               "kind": "limit",
               "inputs": {"actual": "${step:read-voltage.outputs.voltage}"},
               "parameters": {
@@ -54,7 +54,7 @@
               "id": "stable-count",
               "name": "Consecutive Stable Count",
               "kind": "counter",
-              "inputs": {"condition": "${step:check-voltage.outcome}"},
+              "inputs": {"condition": "${step:check-voltage.passed}"},
               "parameters": {"mode": "consecutive", "start": 0, "increment": 1}
             },
             {

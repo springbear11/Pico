@@ -52,17 +52,27 @@ class StationPropertyEditor;
 class StationSettingsEditor;
 class StepPropertyEditor;
 class UutStepModel;
+class YieldDonutWidget;
 
 class MainWindow final : public QMainWindow
 {
+    Q_OBJECT
+
 public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
 
     bool openSequenceFile(const QString& filePath);
     bool openStationFile(const QString& filePath);
+    void setProductRoutingPath(const QString& productRoutingPath);
+    void configureAutoRouting(const QString& productRoutingPath);
+    void initializeNewProjectTemplate(const QString& projectRootPath = {});
+    void showStartupScanDialog();
     void showRunPage();
     void initializeAdminWorkspace();
+
+signals:
+    void adminWorkspaceReady();
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -73,6 +83,9 @@ private:
 
     void buildActions();
     void buildLayout();
+    void createNewProject();
+    bool saveNewProjectAs();
+    QString newProjectRootPath() const;
     void chooseSequence();
     void chooseStation();
     bool maybeSaveSequence();
@@ -105,7 +118,11 @@ private:
     void applyUndoRedo(bool redo);
     void compileSequence();
     void runSequence();
+    void openProductRoutingConfiguration();
+    QString effectiveProductRoutingPath() const;
     void runScannedUut(const QString& serialNumber);
+    void startAdminRunWithSerial(const QString& serialNumber);
+    void showProductRoutingError(const QString& message);
     void beginAdminRunIteration(int iteration, int totalIterations);
     void toggleScanDialog();
     void scanPlugins(bool interactive = true);
@@ -113,6 +130,7 @@ private:
     void buildStartupOverlay();
     void showStartupOverlay(const QString& message);
     void hideStartupOverlay();
+    void completeAdminWorkspaceInitialization();
     void waitForPluginScan();
     void updatePluginDeviceBindings();
     void addStationDevice();
@@ -156,6 +174,7 @@ private:
     void selectTimelineSequence(quint64 sequenceNumber);
     void selectTimelineEvent(const QModelIndex& index);
     void focusExecutionLogForResult(const QModelIndex& index);
+    void selectFlowNodeForResult(const QModelIndex& index);
     void focusDebugNode(const PicoATE::Core::RuntimeEvent& event);
     void updateStepDetails(const QModelIndex& index);
     void updateAttemptMeasurements(const QModelIndex& index);
@@ -192,6 +211,7 @@ private:
     RuntimeTimelineModel* m_runtimeTimelineModel = nullptr;
     DebugSnapshotModel* m_debugSnapshotModel = nullptr;
     QAction* m_openSequenceAction = nullptr;
+    QAction* m_newProjectAction = nullptr;
     QAction* m_saveSequenceAction = nullptr;
     QAction* m_saveSequenceAsAction = nullptr;
     QAction* m_undoAction = nullptr;
@@ -227,6 +247,7 @@ private:
     QAction* m_stepOverAction = nullptr;
     QAction* m_stopAction = nullptr;
     QAction* m_scanAction = nullptr;
+    QAction* m_productRoutingAction = nullptr;
     QAction* m_scanPluginsAction = nullptr;
     QAction* m_resetLayoutAction = nullptr;
     QThread* m_pluginScanThread = nullptr;
@@ -251,8 +272,8 @@ private:
     QLabel* m_adminPassCount = nullptr;
     QLabel* m_adminFailCount = nullptr;
     QLabel* m_adminTotalCount = nullptr;
-    QLabel* m_adminYield = nullptr;
     QLabel* m_adminAverageTime = nullptr;
+    YieldDonutWidget* m_adminYieldChart = nullptr;
     QProgressBar* m_adminProgress = nullptr;
     QTimer* m_adminElapsedTimer = nullptr;
     QWidget* m_startupOverlay = nullptr;
@@ -282,10 +303,14 @@ private:
     std::unique_ptr<RunArtifactWriter> m_runArtifactWriter;
     QStringList m_recentSequences;
     QStringList m_recentStations;
+    QString m_productRoutingPath;
+    QString m_newProjectRootPath;
+    QString m_pendingRoutedSerialNumber;
     QVector<QJsonObject> m_sequenceClipboard;
     SequenceItemPath m_selectedSequencePath;
     QString m_selectedSequenceNodePath;
     QVector<SequenceItemPath> m_expandedSequencePaths;
+    int m_flowSearchMatchIndex = -1;
     int m_sequenceTreeScrollValue = 0;
     int m_selectedStationDeviceRow = -1;
     QHash<QString, QString> m_pendingStationLogicalIdMigrations;
@@ -301,6 +326,9 @@ private:
     bool m_loadingSequenceFile = false;
     bool m_pluginScanInProgress = false;
     bool m_adminWorkspaceInitialized = false;
+    bool m_adminWorkspaceInitializing = false;
+    bool m_autoRouteBySn = false;
+    bool m_newProjectTemplate = false;
     int m_adminTotalNodes = 0;
     int m_adminPassedUnits = 0;
     int m_adminFailedUnits = 0;

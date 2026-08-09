@@ -1,5 +1,7 @@
 #include "RunnerModels.h"
 
+#include "FunctionIconProvider.h"
+
 #include "PicoATE/Core/MeasurementTypes.h"
 
 #include <QBrush>
@@ -497,6 +499,35 @@ QString joinedMeasurementText(
     return values.join(QStringLiteral("; "));
 }
 
+QString joinedActualText(
+    const QVector<PicoATE::Core::MeasurementResult>& measurements)
+{
+    if (measurements.isEmpty() ||
+        !measurements.first().attributes
+             .value(QStringLiteral("parserDisplay")).toBool()) {
+        return joinedMeasurementText(measurements, measurementValueText);
+    }
+
+    const auto original = measurements.first().attributes
+                              .value(QStringLiteral("parserOriginalDisplay"))
+                              .toString();
+    QString parsed;
+    if (measurements.size() == 1) {
+        parsed = measurementValueText(measurements.first());
+    } else {
+        QStringList fields;
+        fields.reserve(measurements.size());
+        for (const auto& measurement : measurements) {
+            fields.push_back(QStringLiteral("%1=%2").arg(
+                measurement.name.isEmpty() ? QStringLiteral("value")
+                                           : measurement.name,
+                measurementValueText(measurement)));
+        }
+        parsed = fields.join(QStringLiteral("; "));
+    }
+    return QStringLiteral("Raw: %1 | Parsed: %2").arg(original, parsed);
+}
+
 QString lowerLimitText(const PicoATE::Core::MeasurementResult& measurement)
 {
     return inferredLimitText(measurement, true);
@@ -816,6 +847,9 @@ QVariant UutStepModel::data(const QModelIndex& index, int role) const
         return {};
     }
     const auto& step = *stepPointer;
+    if (role == Qt::DecorationRole && index.column() == NameColumn) {
+        return functionIconForStep(step);
+    }
     if (role == Qt::BackgroundRole) {
         using PicoATE::Core::ActivationState;
         switch (step.state) {
@@ -862,7 +896,7 @@ QVariant UutStepModel::data(const QModelIndex& index, int role) const
     case UpperLimitColumn:
         return joinedMeasurementText(step.measurements, upperLimitText);
     case ActualColumn:
-        return joinedMeasurementText(step.measurements, measurementValueText);
+        return joinedActualText(step.measurements);
     case OutcomeColumn:
         return step.outcome == PicoATE::Core::NodeOutcome::Unknown
             ? activationStateName(step.state)
@@ -2060,39 +2094,53 @@ void RuntimeTimelineModel::appendEventRows(
             ? LineStyle::Passed
             : LineStyle::Failed;
     };
+    const auto attemptSuffix = [&event] {
+        const int maximum = event.details.value(
+            QStringLiteral("maxAttempts"), 1).toInt();
+        const int current = event.details.value(
+            QStringLiteral("retryAttemptIndex"), event.attemptIndex).toInt();
+        if (maximum <= 1 || current <= 0) {
+            return QString{};
+        }
+        return QStringLiteral(" | ATTEMPT %1/%2").arg(current).arg(maximum);
+    };
 
     switch (event.kind) {
     case RuntimeEventKind::AttemptStarted:
-        append(QStringLiteral("------------------------ %1_STEP_START ------------------------")
-                   .arg(nameToken()),
+        append(QStringLiteral("------------------------ %1_STEP_START%2 ------------------------")
+                   .arg(nameToken(), attemptSuffix()),
                LineStyle::Banner);
         break;
     case RuntimeEventKind::AttemptCompleted: {
         if (event.nodeKind == PicoATE::Core::ExecNodeKind::TestItem) {
             break;
         }
-        QString result = QStringLiteral("RESULT:%1").arg(resultText());
         if (event.nodeKind == PicoATE::Core::ExecNodeKind::Break &&
             event.details.contains(QStringLiteral("breakRequested"))) {
-            result += event.details.value(QStringLiteral("breakRequested")).toBool()
-                ? QStringLiteral(" | BREAK:CONDITION MET")
-                : QStringLiteral(" | BREAK:CONDITION NOT MET");
+            const bool requested = event.details.value(
+                QStringLiteral("breakRequested")).toBool();
+            append(requested
+                       ? QStringLiteral("BREAK_RESULT:TRIGGERED")
+                       : QStringLiteral("BREAK_RESULT:CONTINUE | CONDITION NOT MET"),
+                   requested ? LineStyle::Passed : LineStyle::Flow);
+        } else {
+            QString result = QStringLiteral("RESULT:%1").arg(resultText());
+            if (!event.errorCode.isEmpty()) {
+                result += QStringLiteral(" | ERROR:%1").arg(event.errorCode);
+            }
+            if (!event.message.trimmed().isEmpty()) {
+                result += QStringLiteral(" | %1").arg(event.message.trimmed());
+            }
+            append(result, resultStyle());
         }
-        if (!event.errorCode.isEmpty()) {
-            result += QStringLiteral(" | ERROR:%1").arg(event.errorCode);
-        }
-        if (!event.message.trimmed().isEmpty()) {
-            result += QStringLiteral(" | %1").arg(event.message.trimmed());
-        }
-        append(result, resultStyle());
         append(QStringLiteral("------------------------ %1_STEP_END ------------------------")
                    .arg(nameToken()),
                LineStyle::Banner);
         break;
     }
     case RuntimeEventKind::TestItemStarted:
-        append(QStringLiteral("======================== %1_TESTITEM_START ========================")
-                   .arg(nameToken()),
+        append(QStringLiteral("======================== %1_TESTITEM_START%2 ========================")
+                   .arg(nameToken(), attemptSuffix()),
                LineStyle::Banner);
         break;
     case RuntimeEventKind::TestItemCompleted:
@@ -2146,8 +2194,24 @@ void RuntimeTimelineModel::appendEventRows(
         break;
     }
     case RuntimeEventKind::RetryScheduled:
-        append(QStringLiteral("RETRY:%1").arg(event.message), LineStyle::Warning);
+    {
+        const int maximum = event.details.value(
+            QStringLiteral("maxAttempts"), 1).toInt();
+        const int current = event.details.value(
+            QStringLiteral("retryAttemptIndex"), event.attemptIndex).toInt();
+        QString retry = QStringLiteral("RETRY:SCHEDULED");
+        if (maximum > 1 && current > 0) {
+            retry += QStringLiteral(" | ATTEMPT %1/%2 FAILED | NEXT %3/%2")
+                         .arg(current)
+                         .arg(maximum)
+                         .arg(qMin(current + 1, maximum));
+        }
+        if (!event.message.trimmed().isEmpty()) {
+            retry += QStringLiteral(" | %1").arg(event.message.trimmed());
+        }
+        append(retry, LineStyle::Warning);
         break;
+    }
     case RuntimeEventKind::LoopIterationStarted:
         if (event.loopIteration.iterationNumber <= 1) {
             append(QStringLiteral("======================== %1_LOOP_START ========================")

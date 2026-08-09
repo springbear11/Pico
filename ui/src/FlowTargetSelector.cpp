@@ -97,35 +97,35 @@ FlowTargetSelector::FlowTargetSelector(QWidget* parent)
     root->addWidget(separator);
 
     setStyleSheet(QStringLiteral(R"(
-        QWidget#flowTargetSelector { background: #fbfcfd; border: 1px solid transparent; }
+        QWidget#flowTargetSelector { background: #f8f9fa; border: 1px solid transparent; }
         QWidget#flowTargetSelector[selectionRequired="true"] {
-            background: #fff1f0; border: 1px solid #e5484d; border-radius: 4px;
+            background: #fff2f1; border: 1px solid #d66b6b; border-radius: 5px;
         }
-        QLabel#flowTargetTitle { color: #344054; font-weight: 600; }
+        QLabel#flowTargetTitle { color: #344048; font-weight: 600; }
         QToolButton[deviceShortcut="true"] {
             min-width: 54px; min-height: 40px; padding: 3px 5px;
-            border: 1px solid #d7dce2; border-radius: 5px;
-            background: #ffffff; color: #344054;
+            border: 1px solid #d7dde1; border-radius: 5px;
+            background: #ffffff; color: #344048;
         }
         QToolButton[deviceShortcut="true"]:checked {
-            border-color: #75a7e8; background: #eaf3ff; color: #175cd3;
+            border-color: #9ebdce; background: #dcecf6; color: #203846;
         }
         QToolButton[deviceShortcut="true"]:disabled {
-            color: #98a2b3; background: #f5f6f7;
+            color: #9ca5ac; background: #f1f3f4;
         }
         QToolButton#flowMoreDevices {
             min-width: 26px; min-height: 40px; padding: 2px;
-            border: 1px solid #d7dce2; border-radius: 5px; background: #ffffff;
+            border: 1px solid #d7dde1; border-radius: 5px; background: #ffffff;
         }
         QToolButton[channelButton="true"] {
-            min-height: 25px; padding: 1px 10px; border: 1px solid #d0d5dd;
-            background: #ffffff; color: #475467;
+            min-height: 25px; padding: 1px 10px; border: 1px solid #cdd4d9;
+            background: #ffffff; color: #4e5a63;
         }
         QToolButton[channelButton="true"]:checked {
-            border-color: #75a7e8; background: #eaf3ff; color: #175cd3;
+            border-color: #9ebdce; background: #dcecf6; color: #203846;
         }
-        QLabel#flowCurrentTarget { color: #475467; padding: 2px 0; }
-        QFrame#flowTargetSeparator { color: #e4e7ec; }
+        QLabel#flowCurrentTarget { color: #56636c; padding: 2px 0; }
+        QFrame#flowTargetSeparator { color: #e0e4e7; }
     )"));
 }
 

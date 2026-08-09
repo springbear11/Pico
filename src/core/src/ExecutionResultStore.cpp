@@ -59,6 +59,7 @@ std::optional<StepResultReference> parseStepResultReference(const QString& expre
         {".outputs", StepResultField::Outputs},
         {".measurements", StepResultField::Measurements},
         {".outcome", StepResultField::Outcome},
+        {".passed", StepResultField::Passed},
     };
 
     int markerPosition = -1;
@@ -85,7 +86,9 @@ std::optional<StepResultReference> parseStepResultReference(const QString& expre
         }
         reference.valuePath = body.mid(valueStart + 1);
     }
-    if (reference.field == StepResultField::Outcome && !reference.valuePath.isEmpty()) {
+    if ((reference.field == StepResultField::Outcome ||
+         reference.field == StepResultField::Passed) &&
+        !reference.valuePath.isEmpty()) {
         return std::nullopt;
     }
     return reference;
@@ -154,7 +157,18 @@ StepResultLookup ExecutionResultStore::lookup(
     if (reference.field == StepResultField::Outcome) {
         return {true, nodeOutcomeName(source->result.outcome), {}, {}};
     }
+    if (reference.field == StepResultField::Passed) {
+        return {true, source->result.outcome == NodeOutcome::Passed, {}, {}};
+    }
     if (source->result.outcome != NodeOutcome::Passed) {
+        const auto* sourceNode = m_plan.node(*sourceNodeId);
+        const bool safeLimitPassFlag = reference.field == StepResultField::Outputs &&
+            reference.valuePath == QStringLiteral("passed") && sourceNode &&
+            sourceNode->kind == ExecNodeKind::Limit &&
+            source->result.outputs.contains(QStringLiteral("passed"));
+        if (safeLimitPassFlag) {
+            return {true, source->result.outputs.value(QStringLiteral("passed")), {}, {}};
+        }
         return {false, {}, "StepResultNotPassed",
                 QString("Referenced step %1 finished as %2")
                     .arg(*sourceNodeId, nodeOutcomeName(source->result.outcome))};
