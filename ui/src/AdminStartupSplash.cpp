@@ -19,7 +19,7 @@ AdminStartupSplash::AdminStartupSplash(QWidget* parent)
     setWindowTitle(tr("PicoATE"));
     setAttribute(Qt::WA_TranslucentBackground);
     setCursor(Qt::BusyCursor);
-    setFixedSize(450, 300);
+    setFixedSize(420, 230);
     setStyleSheet(QStringLiteral(
         "QFrame#adminStartupCard {"
         "  background: #ffffff;"
@@ -41,7 +41,7 @@ AdminStartupSplash::AdminStartupSplash(QWidget* parent)
     rootLayout->addWidget(card);
 
     auto* cardLayout = new QVBoxLayout(card);
-    cardLayout->setContentsMargins(24, 24, 24, 24);
+    cardLayout->setContentsMargins(24, 22, 24, 22);
     cardLayout->setSpacing(0);
     cardLayout->addStretch(1);
 
@@ -49,15 +49,15 @@ AdminStartupSplash::AdminStartupSplash(QWidget* parent)
     content->setObjectName(QStringLiteral("adminStartupContent"));
     auto* contentLayout = new QVBoxLayout(content);
     contentLayout->setContentsMargins(0, 0, 0, 0);
-    contentLayout->setSpacing(16);
+    contentLayout->setSpacing(18);
 
     m_logo = new QLabel(content);
     m_logo->setObjectName(QStringLiteral("adminStartupLogo"));
-    m_logo->setAccessibleName(tr("PICO"));
+    m_logo->setAccessibleName(tr("SINEXCEL"));
     m_logo->setAlignment(Qt::AlignCenter);
-    m_logo->setFixedSize(190, 155);
+    m_logo->setFixedSize(235, 44);
     const QPixmap source(QStringLiteral(
-        ":/branding/PicoATE-Lockup-Vertical.png"));
+        ":/branding/Sinexcel.png"));
     const qreal pixelRatio = devicePixelRatioF();
     auto scaled = source.scaled(
         QSize(qRound(m_logo->width() * pixelRatio),

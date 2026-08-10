@@ -12,6 +12,7 @@
 #include <memory>
 
 class QAction;
+class QEvent;
 class QLabel;
 class QProgressBar;
 class QTableView;
@@ -39,6 +40,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     void buildUi();

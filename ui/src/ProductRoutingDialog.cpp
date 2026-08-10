@@ -13,14 +13,17 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QIntValidator>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -28,6 +31,7 @@
 #include <QSet>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -38,6 +42,13 @@ namespace PicoATE::Ui {
 namespace {
 
 constexpr int LegacySequenceRole = Qt::UserRole + 1;
+
+QString snPatternHelp()
+{
+    return QObject::tr(
+        "SN wildcard: BTSN* = starts with, *BTSN* = contains, "
+        "*BTSN = ends with. ? matches one character.");
+}
 
 QIcon routingIcon(const char* name)
 {
@@ -64,8 +75,8 @@ ProductRoutingDialog::ProductRoutingDialog(QString routingPath, QWidget* parent)
 {
     setObjectName(QStringLiteral("productRoutingDialog"));
     setWindowTitle(tr("Product Routing"));
-    setMinimumSize(1040, 520);
-    resize(1120, 600);
+    setMinimumSize(1100, 520);
+    resize(1240, 600);
     buildUi();
     load();
 }
@@ -132,8 +143,8 @@ void ProductRoutingDialog::buildUi()
     m_table = new QTableWidget(0, ColumnCount, this);
     m_table->setObjectName(QStringLiteral("productRoutingTable"));
     m_table->setHorizontalHeaderLabels({
-        tr("Enabled"), tr("Product / Route"), tr("SN Pattern"), tr("Project"),
-        tr("Device Status"), tr("Devices"),
+        tr("Enabled"), tr("Product / Route"), tr("SN Pattern"),
+        tr("SN Length"), tr("Project"), tr("Device Status"), tr("Devices"),
     });
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -141,6 +152,7 @@ void ProductRoutingDialog::buildUi()
                              QAbstractItemView::EditKeyPressed |
                              QAbstractItemView::SelectedClicked);
     m_table->setAlternatingRowColors(true);
+    m_table->setMouseTracking(false);
     m_table->verticalHeader()->hide();
     m_table->verticalHeader()->setDefaultSectionSize(42);
     m_table->horizontalHeader()->setStretchLastSection(false);
@@ -151,11 +163,15 @@ void ProductRoutingDialog::buildUi()
     m_table->horizontalHeader()->setSectionResizeMode(
         PatternColumn, QHeaderView::Stretch);
     m_table->horizontalHeader()->setSectionResizeMode(
+        LengthColumn, QHeaderView::Fixed);
+    m_table->horizontalHeader()->resizeSection(LengthColumn, 110);
+    m_table->horizontalHeader()->setSectionResizeMode(
         ProjectColumn, QHeaderView::Stretch);
     m_table->horizontalHeader()->setSectionResizeMode(
         DeviceStatusColumn, QHeaderView::ResizeToContents);
     m_table->horizontalHeader()->setSectionResizeMode(
-        DevicesColumn, QHeaderView::ResizeToContents);
+        DevicesColumn, QHeaderView::Fixed);
+    m_table->horizontalHeader()->resizeSection(DevicesColumn, 168);
     m_table->setItemDelegateForColumn(
         EnabledColumn, new OnOffItemDelegate(m_table));
     root->addWidget(m_table, 1);
@@ -179,6 +195,12 @@ void ProductRoutingDialog::buildUi()
             this, &ProductRoutingDialog::removeSelectedRoute);
     connect(m_table, &QTableWidget::itemSelectionChanged,
             this, &ProductRoutingDialog::updateButtons);
+    connect(m_table, &QTableWidget::itemPressed, this,
+            [this](QTableWidgetItem* item) {
+                if (item) {
+                    selectRouteRow(item->row());
+                }
+            });
     connect(m_saveButton, &QPushButton::clicked,
             this, &ProductRoutingDialog::save);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -210,6 +232,16 @@ void ProductRoutingDialog::buildUi()
         QToolButton { border-radius: 4px; padding: 5px; }
         QToolButton:hover { background: #dcecf6; }
     )css"));
+}
+
+bool ProductRoutingDialog::eventFilter(QObject* watched, QEvent* event)
+{
+    if (event && event->type() == QEvent::MouseButtonPress &&
+        watched->property("preserveRouteSelection").toBool()) {
+        QTimer::singleShot(0, this,
+                           &ProductRoutingDialog::restoreSelectedRouteRow);
+    }
+    return QDialog::eventFilter(watched, event);
 }
 
 void ProductRoutingDialog::load()
@@ -255,7 +287,9 @@ void ProductRoutingDialog::populate(
         appendRoute(route);
     }
     if (m_table->rowCount() > 0) {
-        m_table->selectRow(0);
+        selectRouteRow(0);
+    } else {
+        m_selectedRouteRow = -1;
     }
     updateButtons();
 }
@@ -269,7 +303,7 @@ void ProductRoutingDialog::addRoute()
         route.projectPath = m_projects.first().directoryPath;
     }
     appendRoute(route);
-    m_table->selectRow(m_table->rowCount() - 1);
+    selectRouteRow(m_table->rowCount() - 1);
     m_table->editItem(m_table->item(m_table->rowCount() - 1, PatternColumn));
 }
 
@@ -283,13 +317,17 @@ void ProductRoutingDialog::duplicateSelectedRoute()
     route.enabled = m_table->item(row, EnabledColumn)->checkState() == Qt::Checked;
     route.name = m_table->item(row, NameColumn)->text().trimmed() + tr(" Copy");
     route.pattern = m_table->item(row, PatternColumn)->text().trimmed();
+    if (auto* length = qobject_cast<QLineEdit*>(
+            m_table->cellWidget(row, LengthColumn))) {
+        route.snLength = length->text().trimmed().toInt();
+    }
     if (auto* project = qobject_cast<QComboBox*>(
             m_table->cellWidget(row, ProjectColumn))) {
         route.projectPath = project->currentData().toString();
         route.sequencePath = project->currentData(LegacySequenceRole).toString();
     }
     appendRoute(route);
-    m_table->selectRow(m_table->rowCount() - 1);
+    selectRouteRow(m_table->rowCount() - 1);
     m_table->editItem(m_table->item(m_table->rowCount() - 1, PatternColumn));
 }
 
@@ -301,7 +339,10 @@ void ProductRoutingDialog::removeSelectedRoute()
     }
     m_table->removeRow(row);
     if (m_table->rowCount() > 0) {
-        m_table->selectRow(qMin(row, m_table->rowCount() - 1));
+        selectRouteRow(qMin(row, m_table->rowCount() - 1));
+    } else {
+        m_selectedRouteRow = -1;
+        m_table->clearSelection();
     }
     updateButtons();
 }
@@ -322,8 +363,21 @@ void ProductRoutingDialog::appendRoute(const PicoATE::Core::ProductRoute& route)
     m_table->setItem(row, NameColumn, name);
 
     auto* pattern = new QTableWidgetItem(route.pattern);
-    pattern->setToolTip(tr("Wildcard examples: BTSN* or *C1234567*"));
+    pattern->setToolTip(snPatternHelp());
     m_table->setItem(row, PatternColumn, pattern);
+
+    auto* length = new QLineEdit(m_table);
+    length->setObjectName(QStringLiteral("productRoutingSnLengthEdit"));
+    length->setValidator(new QIntValidator(1, 256, length));
+    length->setMaxLength(3);
+    length->setPlaceholderText(tr("Any"));
+    length->setAlignment(Qt::AlignCenter);
+    length->setText(route.snLength > 0 ? QString::number(route.snLength)
+                                      : QString{});
+    length->setToolTip(tr("Exact SN length. Leave empty for Any."));
+    length->setProperty("preserveRouteSelection", true);
+    length->installEventFilter(this);
+    m_table->setCellWidget(row, LengthColumn, length);
 
     auto* project = new QComboBox(m_table);
     project->setObjectName(QStringLiteral("productRoutingProjectCombo"));
@@ -367,6 +421,8 @@ void ProductRoutingDialog::appendRoute(const PicoATE::Core::ProductRoute& route)
             Qt::ToolTipRole);
     }
     project->setCurrentIndex(qMax(0, projectIndex));
+    project->setProperty("preserveRouteSelection", true);
+    project->installEventFilter(this);
     m_table->setCellWidget(row, ProjectColumn, project);
 
     auto* deviceStatus = new QTableWidgetItem;
@@ -375,8 +431,11 @@ void ProductRoutingDialog::appendRoute(const PicoATE::Core::ProductRoute& route)
 
     auto* devices = new QPushButton(tr("Configure"), m_table);
     devices->setObjectName(QStringLiteral("productRoutingDevicesButton"));
+    devices->setMinimumWidth(156);
     devices->setIcon(routingIcon("cable"));
     devices->setToolTip(tr("Configure the devices in this project's Station"));
+    devices->setProperty("preserveRouteSelection", true);
+    devices->installEventFilter(this);
     m_table->setCellWidget(row, DevicesColumn, devices);
     connect(project, &QComboBox::currentIndexChanged, this,
             [this, project] {
@@ -539,6 +598,11 @@ bool ProductRoutingDialog::collectAndValidate(
         route.enabled = m_table->item(row, EnabledColumn)->checkState() == Qt::Checked;
         route.name = m_table->item(row, NameColumn)->text().trimmed();
         route.pattern = m_table->item(row, PatternColumn)->text().trimmed();
+        if (auto* length = qobject_cast<QLineEdit*>(
+                m_table->cellWidget(row, LengthColumn))) {
+            const auto text = length->text().trimmed();
+            route.snLength = text.isEmpty() ? 0 : text.toInt();
+        }
         if (auto* project = qobject_cast<QComboBox*>(
                 m_table->cellWidget(row, ProjectColumn))) {
             route.projectPath = project->currentData().toString().trimmed();
@@ -560,7 +624,7 @@ bool ProductRoutingDialog::collectAndValidate(
     for (const auto& diagnostic : parsed.errors) {
         errors->push_back(diagnosticText(diagnostic));
         const QRegularExpression routePath(
-            QStringLiteral("^routes\\[(\\d+)\\]\\.(name|pattern|project|sequence)$"));
+            QStringLiteral("^routes\\[(\\d+)\\]\\.(name|pattern|snLength|project|sequence)$"));
         const auto match = routePath.match(diagnostic.path);
         if (!match.hasMatch()) {
             continue;
@@ -571,7 +635,8 @@ bool ProductRoutingDialog::collectAndValidate(
             row,
             field == QStringLiteral("name") ? NameColumn
                 : field == QStringLiteral("pattern") ? PatternColumn
-                                                       : ProjectColumn,
+                : field == QStringLiteral("snLength") ? LengthColumn
+                : ProjectColumn,
             diagnostic.message);
     }
     if (!errors->isEmpty()) {
@@ -660,11 +725,13 @@ void ProductRoutingDialog::clearValidationState()
             auto* item = m_table->item(row, column);
             item->setBackground(QBrush{});
             item->setToolTip(column == PatternColumn
-                ? tr("Wildcard examples: BTSN* or *C1234567*")
+                ? snPatternHelp()
                 : tr("A readable product or route name"));
         }
-        if (auto* project = m_table->cellWidget(row, ProjectColumn)) {
-            project->setStyleSheet({});
+        for (int column : {LengthColumn, ProjectColumn}) {
+            if (auto* widget = m_table->cellWidget(row, column)) {
+                widget->setStyleSheet({});
+            }
         }
     }
 }
@@ -676,12 +743,9 @@ void ProductRoutingDialog::markCellInvalid(int row,
     if (row < 0 || row >= m_table->rowCount()) {
         return;
     }
-    if (column == ProjectColumn) {
-        if (auto* project = m_table->cellWidget(row, column)) {
-            project->setStyleSheet(
-                QStringLiteral("QComboBox { border: 1px solid #d92d20; }"));
-            project->setToolTip(message);
-        }
+    if (auto* widget = m_table->cellWidget(row, column)) {
+        widget->setStyleSheet(QStringLiteral("border: 1px solid #d92d20;"));
+        widget->setToolTip(message);
         return;
     }
     if (auto* item = m_table->item(row, column)) {
@@ -692,11 +756,27 @@ void ProductRoutingDialog::markCellInvalid(int row,
 
 int ProductRoutingDialog::selectedRouteRow() const
 {
-    if (!m_table || !m_table->selectionModel()) {
-        return -1;
+    return m_table && m_selectedRouteRow >= 0 &&
+                   m_selectedRouteRow < m_table->rowCount()
+        ? m_selectedRouteRow
+        : -1;
+}
+
+void ProductRoutingDialog::selectRouteRow(int row)
+{
+    if (!m_table || row < 0 || row >= m_table->rowCount()) {
+        return;
     }
-    const auto rows = m_table->selectionModel()->selectedRows();
-    return rows.size() == 1 ? rows.constFirst().row() : -1;
+    m_selectedRouteRow = row;
+    m_table->selectRow(row);
+    updateButtons();
+}
+
+void ProductRoutingDialog::restoreSelectedRouteRow()
+{
+    if (selectedRouteRow() >= 0) {
+        m_table->selectRow(m_selectedRouteRow);
+    }
 }
 
 void ProductRoutingDialog::updateButtons()

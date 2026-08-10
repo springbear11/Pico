@@ -615,6 +615,7 @@ private slots:
     void planCacheKeepsRunningPlanAlive();
     void productRoutingLoadsRelativeSequencesAndMatchesExactlyOneRoute();
     void productRoutingRejectsMissingAndAmbiguousMatches();
+    void productRoutingSupportsWildcardFormsAndRouteSnRules();
     void nodeRunnerRunsRegisteredModuleAndMapsModuleResult();
     void nodeRunnerReportsMissingModule();
     void dataParserDecodesBinaryAndModbusValues();
@@ -1514,6 +1515,95 @@ void CoreTests::productRoutingRejectsMissingAndAmbiguousMatches()
     QCOMPARE(serialized.value(QStringLiteral("routes")).toArray().first()
                  .toObject().value(QStringLiteral("sequence")).toString(),
              QStringLiteral("target_sequence.json"));
+}
+
+void CoreTests::productRoutingSupportsWildcardFormsAndRouteSnRules()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto projectPath = directory.filePath(QStringLiteral("Product"));
+    QVERIFY(QDir().mkpath(projectPath));
+
+    QFile sequence(QDir(projectPath).filePath(
+        QStringLiteral("route_sequence.json")));
+    QVERIFY(sequence.open(QIODevice::WriteOnly));
+    sequence.write("{}");
+    sequence.close();
+    QFile station(QDir(projectPath).filePath(QStringLiteral("StationSystem.json")));
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(R"({
+        "stationId":"route-test",
+        "snAllowedRegex":"^[A-Z0-9]+$",
+        "devices":[]
+    })");
+    station.close();
+
+    const auto resolves = [&](const QString& pattern, const QString& sn) {
+        ProductRoutingConfig config;
+        ProductRoute route;
+        route.name = QStringLiteral("Route");
+        route.pattern = pattern;
+        route.projectPath = projectPath;
+        config.routes.push_back(route);
+        return resolveProductRoute(config, sn);
+    };
+    QVERIFY(resolves(QStringLiteral("BTSN*"),
+                     QStringLiteral("BTSN1234")).ok());
+    QVERIFY(resolves(QStringLiteral("*BTSN*"),
+                     QStringLiteral("AABTSN99")).ok());
+    QVERIFY(resolves(QStringLiteral("*BTSN"),
+                     QStringLiteral("99BTSN")).ok());
+    QVERIFY(!resolves(QStringLiteral("BTSN*"),
+                      QStringLiteral("00BTSN")).ok());
+    QVERIFY(!resolves(QStringLiteral("*BTSN"),
+                      QStringLiteral("BTSN00")).ok());
+
+    ProductRoutingConfig constrained;
+    ProductRoute constrainedRoute;
+    constrainedRoute.name = QStringLiteral("Constrained");
+    constrainedRoute.pattern = QStringLiteral("BTSN*");
+    constrainedRoute.snLength = 8;
+    constrainedRoute.projectPath = projectPath;
+    constrained.routes.push_back(constrainedRoute);
+
+    QVERIFY(resolveProductRoute(constrained,
+                                QStringLiteral("BTSN1234")).ok());
+    const auto wrongLength = resolveProductRoute(
+        constrained, QStringLiteral("BTSN123"));
+    QVERIFY(!wrongLength.ok());
+    QCOMPARE(wrongLength.errors.first().path,
+             QStringLiteral("serialNumber.length"));
+    const auto wrongCharacters = resolveProductRoute(
+        constrained, QStringLiteral("BTSN12-4"));
+    QVERIFY(!wrongCharacters.ok());
+    QCOMPARE(wrongCharacters.errors.first().path,
+             QStringLiteral("serialNumber.characters"));
+
+    QVERIFY(station.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    station.write(R"({
+        "stationId":"route-test",
+        "snAllowedRegex":"^[A-Z0-9-]+$",
+        "devices":[]
+    })");
+    station.close();
+    QVERIFY(resolveProductRoute(constrained,
+                                QStringLiteral("BTSN12-4")).ok());
+
+    const auto serialized = productRoutingToJson(
+        constrained,
+        directory.filePath(QStringLiteral("ProductRouting.json")));
+    const auto routeObject = serialized.value(QStringLiteral("routes"))
+                                 .toArray().first().toObject();
+    QCOMPARE(routeObject.value(QStringLiteral("snLength")).toInt(), 8);
+    QVERIFY(!routeObject.contains(QStringLiteral("allowedCharacters")));
+
+    const auto parsed = parseProductRoutingJson(
+        serialized,
+        directory.filePath(QStringLiteral("ProductRouting.json")));
+    QVERIFY2(parsed.ok(), parsed.errors.isEmpty()
+                             ? "routing parse failed"
+                             : qPrintable(parsed.errors.first().message));
+    QCOMPARE(parsed.config.routes.first().snLength, 8);
 }
 
 void CoreTests::nodeRunnerRunsRegisteredModuleAndMapsModuleResult()

@@ -1,5 +1,6 @@
 #include "StepPropertyEditor.h"
 
+#include "LoadingSpinner.h"
 #include "OnOffControl.h"
 
 #include <QAbstractButton>
@@ -923,8 +924,11 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
 
     m_tabs = new QTabWidget(this);
     buildGeneralPage();
+    serviceAdminStartupAnimation();
     buildDataPage();
+    serviceAdminStartupAnimation();
     buildPolicyPage();
+    serviceAdminStartupAnimation();
     root->addWidget(m_tabs, 1);
 
     m_errorLabel = new QLabel(this);
@@ -1263,8 +1267,11 @@ void StepPropertyEditor::setPluginRegistry(QVector<PluginManifest> plugins)
     }
     m_plugins = std::move(plugins);
     rebuildFunctionChoices();
+    serviceAdminStartupAnimation();
     rebuildDeviceChoices();
+    serviceAdminStartupAnimation();
     rebuildPluginInputEditors();
+    serviceAdminStartupAnimation();
     updateAdvancedJsonVisibility();
 }
 
@@ -1605,6 +1612,7 @@ void StepPropertyEditor::buildDataPage()
     m_limitUnitEdit->setObjectName(QStringLiteral("propertyLimitUnitEdit"));
     addInspectableRow(m_dataForm, tr("Unit"), m_limitUnitEdit,
                       QStringLiteral("parameters.unit"));
+    serviceAdminStartupAnimation();
 
     m_counterConditionEdit = new QLineEdit(content);
     m_counterConditionEdit->setObjectName(QStringLiteral("propertyCounterConditionEdit"));
@@ -1732,6 +1740,7 @@ void StepPropertyEditor::buildDataPage()
     addInspectableRow(m_dataForm, tr("Response timeout"),
                       m_promptTimeoutSpin,
                       QStringLiteral("prompt.timeoutMs"));
+    serviceAdminStartupAnimation();
 
     m_loopTypeCombo = new QComboBox(content);
     m_loopTypeCombo->setObjectName(QStringLiteral("propertyLoopTypeCombo"));
@@ -1795,6 +1804,7 @@ void StepPropertyEditor::buildDataPage()
     addInspectableRow(m_dataForm, tr("Iteration failure handling"),
                       m_conditionIterationErrorCombo,
                       QStringLiteral("loop.iterationErrorPolicy"));
+    serviceAdminStartupAnimation();
 
     m_barrierNameEdit = new QLineEdit(content);
     addInspectableRow(m_dataForm, tr("Barrier name"), m_barrierNameEdit,
@@ -1852,6 +1862,7 @@ void StepPropertyEditor::buildDataPage()
     addInspectableRow(m_dataForm, tr("Release resources"),
                       m_releaseResourcesCheck,
                       QStringLiteral("barrier.releaseHeldResourcesOnWait"));
+    serviceAdminStartupAnimation();
 
     m_advancedJsonToggle = new QToolButton(content);
     m_advancedJsonToggle->setObjectName(
@@ -1908,6 +1919,7 @@ void StepPropertyEditor::buildDataPage()
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidget(content);
     m_tabs->addTab(scroll, tr("Data"));
+    serviceAdminStartupAnimation();
 }
 
 void StepPropertyEditor::buildPolicyPage()
@@ -2023,6 +2035,7 @@ void StepPropertyEditor::buildPolicyPage()
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidget(content);
     m_tabs->addTab(scroll, tr("Policies"));
+    serviceAdminStartupAnimation();
 }
 
 void StepPropertyEditor::loadCurrentObject()

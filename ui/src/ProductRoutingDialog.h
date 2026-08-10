@@ -6,6 +6,7 @@
 #include <QStringList>
 
 class QLabel;
+class QEvent;
 class QPushButton;
 class QTableWidget;
 class QToolButton;
@@ -22,6 +23,9 @@ public:
     explicit ProductRoutingDialog(QString routingPath,
                                   QWidget* parent = nullptr);
 
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 signals:
     void routingSaved();
 
@@ -30,6 +34,7 @@ private:
         EnabledColumn,
         NameColumn,
         PatternColumn,
+        LengthColumn,
         ProjectColumn,
         DeviceStatusColumn,
         DevicesColumn,
@@ -51,6 +56,8 @@ private:
     QString validateSequence(const QString& sequencePath) const;
     void clearValidationState();
     void markCellInvalid(int row, int column, const QString& message);
+    void selectRouteRow(int row);
+    void restoreSelectedRouteRow();
     int selectedRouteRow() const;
     void updateButtons();
 
@@ -63,6 +70,7 @@ private:
     QToolButton* m_duplicateButton = nullptr;
     QToolButton* m_removeButton = nullptr;
     QPushButton* m_saveButton = nullptr;
+    int m_selectedRouteRow = -1;
 };
 
 } // namespace PicoATE::Ui

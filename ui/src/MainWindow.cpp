@@ -66,6 +66,7 @@
 #include <QProgressBar>
 #include <QPointer>
 #include <QPolygonF>
+#include <QPixmap>
 #include <QRegularExpression>
 #include <QScreen>
 #include <QScrollArea>
@@ -742,11 +743,13 @@ MainWindow::MainWindow(QWidget* parent)
     m_runtimeTimelineModel = new RuntimeTimelineModel(this);
     m_debugSnapshotModel = new DebugSnapshotModel(this);
     m_scanDialog = new ScanDialog(this);
+    serviceAdminStartupAnimation();
     buildActions();
+    serviceAdminStartupAnimation();
     buildLayout();
-    loadPluginRegistry();
+    serviceAdminStartupAnimation();
     restoreUiSettings();
-    refreshHistory();
+    serviceAdminStartupAnimation();
 
     connect(m_viewModel,
             &ExecutionViewModel::sequencePathChanged,
@@ -1206,6 +1209,11 @@ MainWindow::MainWindow(QWidget* parent)
                     }
                 }
                 m_previousWorkspaceTabIndex = currentIndex;
+                if (!m_historyLoaded && m_historyPage &&
+                    m_workspaceTabs->widget(currentIndex) == m_historyPage) {
+                    m_historyLoaded = true;
+                    QTimer::singleShot(0, this, [this] { refreshHistory(); });
+                }
                 updateCommandState();
             });
     connect(m_resultView->selectionModel(),
@@ -1228,6 +1236,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     updateCommandState();
     statusBar()->showMessage(uiRunStateName(m_viewModel->state()));
+    serviceAdminStartupAnimation();
 }
 
 MainWindow::~MainWindow()
@@ -1458,6 +1467,20 @@ void MainWindow::closeEvent(QCloseEvent* event)
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event)
 {
+    if (watched &&
+        watched->objectName() == QStringLiteral("adminRunSidebar") &&
+        event->type() == QEvent::Resize) {
+        if (auto* sidebar = qobject_cast<QWidget*>(watched);
+            sidebar) {
+            auto* brandSlot = findChild<QWidget*>(
+                QStringLiteral("adminBrandSlot"));
+            if (!brandSlot) {
+                return QMainWindow::eventFilter(watched, event);
+            }
+            brandSlot->setFixedWidth(
+                sidebar->width());
+        }
+    }
     if (m_startupOverlay && watched == centralWidget() &&
         event->type() == QEvent::Resize) {
         m_startupOverlay->setGeometry(centralWidget()->rect());
@@ -2677,13 +2700,6 @@ void MainWindow::runScannedUut(const QString& serialNumber)
             return;
         }
 
-        const auto snValidation = StartupSupport::validateSerialNumber(
-            sn, StartupSupport::stationSnValidationRules(route.stationPath));
-        if (!snValidation.ok()) {
-            showProductRoutingError(snValidation.errorMessage);
-            return;
-        }
-
         const auto currentPath = m_sequenceDocument &&
                                  !m_sequenceDocument->filePath().isEmpty()
             ? QFileInfo(m_sequenceDocument->filePath()).absoluteFilePath()
@@ -2886,6 +2902,10 @@ void MainWindow::scanPlugins(bool interactive)
             QStringLiteral("../../../src/nativehost/Debug/PicoATE.NativeHost.exe")),
     };
     if (firstExistingPath(nativeHostCandidates).isEmpty()) {
+        // Keep the last valid registry usable even when the scanner host is
+        // temporarily unavailable. Startup no longer preloads it in the
+        // MainWindow constructor.
+        loadPluginRegistry();
         const auto message = tr("No compatible PicoATE.NativeHost.exe was found. Rebuild or redeploy the UI so the Host supports --describe. Plugin DLLs are never loaded directly in the UI process.");
         if (interactive) {
             QMessageBox::critical(this, tr("Scan Plugins"), message);
@@ -3085,32 +3105,62 @@ void MainWindow::loadPluginRegistry()
     if (!m_pluginFunctionModel || !m_stepPropertyEditor) {
         return;
     }
+    QElapsedTimer loadTimer;
+    loadTimer.start();
+    qint64 previousStageMs = 0;
+    const auto recordStage = [&loadTimer, &previousStageMs](const char* stage) {
+        const auto elapsed = loadTimer.elapsed();
+        ApplicationDiagnostics::recordAction(
+            QStringLiteral("ADMIN_PLUGIN_REGISTRY_STAGE"),
+            QStringLiteral("%1=%2ms,total=%3ms")
+                .arg(QString::fromLatin1(stage))
+                .arg(elapsed - previousStageMs)
+                .arg(elapsed));
+        previousStageMs = elapsed;
+    };
     const auto registryPath = QDir(QCoreApplication::applicationDirPath())
         .absoluteFilePath(QStringLiteral("plugins/PluginRegistry.json"));
     if (!QFileInfo::exists(registryPath)) {
         m_pluginFunctionModel->setPlugins({});
+        serviceAdminStartupAnimation();
         m_stepPropertyEditor->setPluginRegistry({});
+        serviceAdminStartupAnimation();
         if (m_stationPropertyEditor) {
             m_stationPropertyEditor->setPluginRegistry({});
         }
+        serviceAdminStartupAnimation();
         if (m_stationDeviceModel) {
             m_stationDeviceModel->setPluginRegistry({});
         }
+        serviceAdminStartupAnimation();
         updatePluginDeviceBindings();
         updateStationEditor();
+        recordStage("empty");
         return;
     }
     const auto registry = PluginCatalog::loadRegistry(registryPath);
+    recordStage("parse");
     m_pluginFunctionModel->setPlugins(registry.plugins);
+    serviceAdminStartupAnimation();
+    recordStage("function-model");
     m_stepPropertyEditor->setPluginRegistry(registry.plugins);
+    serviceAdminStartupAnimation();
+    recordStage("step-editor");
     if (m_stationPropertyEditor) {
         m_stationPropertyEditor->setPluginRegistry(registry.plugins);
     }
+    serviceAdminStartupAnimation();
+    recordStage("station-editor");
     if (m_stationDeviceModel) {
         m_stationDeviceModel->setPluginRegistry(registry.plugins);
     }
+    serviceAdminStartupAnimation();
+    recordStage("station-model");
     updatePluginDeviceBindings();
+    serviceAdminStartupAnimation();
     updateStationEditor();
+    serviceAdminStartupAnimation();
+    recordStage("bindings");
     if (!registry.ok()) {
         statusBar()->showMessage(
             tr("Plugin registry contains %1 error(s)").arg(registry.errors.size()),
@@ -3120,6 +3170,8 @@ void MainWindow::loadPluginRegistry()
         m_pluginFunctionView->expandAll();
         m_pluginFunctionView->resizeColumnToContents(0);
     }
+    serviceAdminStartupAnimation();
+    recordStage("view");
 }
 
 void MainWindow::updatePluginDeviceBindings()
@@ -4387,10 +4439,42 @@ void MainWindow::buildLayout()
     m_stationPath->setPlaceholderText(tr("No station selected"));
     m_stationPath->hide();
 
+    constexpr int RunSidebarWidth = 230;
+    auto* brandHeader = new QHBoxLayout;
+    brandHeader->setContentsMargins(0, 0, 0, 0);
+    brandHeader->setSpacing(style()->pixelMetric(QStyle::PM_SplitterWidth));
+
+    auto* brandSlot = new QWidget(central);
+    brandSlot->setObjectName(QStringLiteral("adminBrandSlot"));
+    brandSlot->setFixedWidth(RunSidebarWidth);
+    auto* brandSlotLayout = new QHBoxLayout(brandSlot);
+    brandSlotLayout->setContentsMargins(0, 0, 0, 0);
+    brandSlotLayout->setSpacing(0);
+
+    auto* brandLogo = new QLabel(brandSlot);
+    brandLogo->setObjectName(QStringLiteral("adminBrandLogo"));
+    brandLogo->setAccessibleName(tr("SINEXCEL"));
+    brandLogo->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    brandLogo->setFixedSize(170, 32);
+    const QPixmap brandSource(QStringLiteral(":/branding/Sinexcel.png"));
+    const qreal brandPixelRatio = devicePixelRatioF();
+    auto scaledBrand = brandSource.scaled(
+        QSize(qRound(brandLogo->width() * brandPixelRatio),
+              qRound(brandLogo->height() * brandPixelRatio)),
+        Qt::KeepAspectRatio,
+        Qt::SmoothTransformation);
+    scaledBrand.setDevicePixelRatio(brandPixelRatio);
+    brandLogo->setPixmap(scaledBrand);
+    brandSlotLayout->addWidget(brandLogo, 0, Qt::AlignLeft | Qt::AlignVCenter);
+    brandSlotLayout->addStretch(1);
+    brandHeader->addWidget(brandSlot);
+
     m_adminSequenceLabel = new QLabel(tr("No sequence selected"), central);
     m_adminSequenceLabel->setObjectName(QStringLiteral("adminSequenceLabel"));
     m_adminSequenceLabel->setAlignment(Qt::AlignCenter);
-    rootLayout->addWidget(m_adminSequenceLabel);
+    m_adminSequenceLabel->setMinimumHeight(36);
+    brandHeader->addWidget(m_adminSequenceLabel, 1);
+    rootLayout->addLayout(brandHeader);
 
     m_workspaceTabs = new QTabWidget(central);
     m_workspaceTabs->setObjectName(QStringLiteral("workspaceTabs"));
@@ -4623,6 +4707,7 @@ void MainWindow::buildLayout()
     sequenceSplitter->setSizes({520, 140});
     sequenceEditorLayout->addWidget(sequenceSplitter, 1);
     m_workspaceTabs->addTab(sequenceEditorPage, tr("Flow Editor"));
+    serviceAdminStartupAnimation();
 
     m_stationEditorPage = new QWidget(m_workspaceTabs);
     auto* stationEditorPage = m_stationEditorPage;
@@ -4747,6 +4832,7 @@ void MainWindow::buildLayout()
     stationSplitter->setSizes({520, 140});
     stationEditorLayout->addWidget(stationSplitter, 1);
     m_workspaceTabs->addTab(stationEditorPage, tr("Station Config"));
+    serviceAdminStartupAnimation();
 
     auto* runPage = new QWidget(m_workspaceTabs);
     runPage->setObjectName(QStringLiteral("adminRunPage"));
@@ -4761,6 +4847,7 @@ void MainWindow::buildLayout()
     sidebar->setObjectName(QStringLiteral("adminRunSidebar"));
     sidebar->setMinimumWidth(205);
     sidebar->setMaximumWidth(265);
+    sidebar->installEventFilter(this);
     auto* sidebarLayout = new QVBoxLayout(sidebar);
     sidebarLayout->setContentsMargins(18, 18, 18, 18);
     sidebarLayout->setSpacing(12);
@@ -4922,7 +5009,9 @@ void MainWindow::buildLayout()
     installProportionalHeader(m_deviceStatusView, {2, 2, 3, 2, 5});
     details->addTab(m_deviceStatusView, tr("Devices"));
 
-    auto* historyPage = new QWidget(m_workspaceTabs);
+    serviceAdminStartupAnimation();
+    m_historyPage = new QWidget(m_workspaceTabs);
+    auto* historyPage = m_historyPage;
     historyPage->setObjectName(QStringLiteral("reportHistoryPage"));
     auto* historyLayout = new QVBoxLayout(historyPage);
     historyLayout->setContentsMargins(0, 0, 0, 0);
@@ -4994,7 +5083,7 @@ void MainWindow::buildLayout()
     runDataSplitter->setSizes({430, 250});
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({230, 930});
+    splitter->setSizes({RunSidebarWidth, 930});
     runPageLayout->addWidget(splitter, 1);
 
     auto* progressPanel = new QWidget(runPage);
@@ -5039,6 +5128,7 @@ void MainWindow::buildLayout()
 
     setCentralWidget(central);
     buildStartupOverlay();
+    serviceAdminStartupAnimation();
 
     setStyleSheet(QStringLiteral(R"css(
         QToolBar#runnerToolbar {
@@ -5105,6 +5195,7 @@ void MainWindow::buildLayout()
             border-bottom: 2px solid #30383e;
         }
     )css"));
+    serviceAdminStartupAnimation();
 
     m_adminElapsedTimer = new QTimer(this);
     m_adminElapsedTimer->setInterval(50);
@@ -5818,6 +5909,7 @@ void MainWindow::selectInitialResult()
 
 void MainWindow::refreshHistory()
 {
+    m_historyLoaded = true;
     QString errorMessage;
     m_historyModel->setEntries(m_historyStore->entries(&errorMessage));
     if (!errorMessage.isEmpty()) {

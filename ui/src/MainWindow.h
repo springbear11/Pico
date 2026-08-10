@@ -296,6 +296,7 @@ private:
     QTableView* m_debugSnapshotView = nullptr;
     QTableView* m_diagnosticView = nullptr;
     QTableView* m_deviceStatusView = nullptr;
+    QWidget* m_historyPage = nullptr;
     QTableView* m_historyView = nullptr;
     QLineEdit* m_historyFilter = nullptr;
     QSortFilterProxyModel* m_historyProxy = nullptr;
@@ -327,6 +328,7 @@ private:
     bool m_pluginScanInProgress = false;
     bool m_adminWorkspaceInitialized = false;
     bool m_adminWorkspaceInitializing = false;
+    bool m_historyLoaded = false;
     bool m_autoRouteBySn = false;
     bool m_newProjectTemplate = false;
     int m_adminTotalNodes = 0;
