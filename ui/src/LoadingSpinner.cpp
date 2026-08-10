@@ -1,9 +1,35 @@
 #include "LoadingSpinner.h"
 
+#include <QApplication>
+#include <QCoreApplication>
+#include <QEventLoop>
 #include <QPainter>
 #include <QTimer>
 
+#include <algorithm>
+
 namespace PicoATE::Ui {
+
+bool isAdminStartupSplashVisible()
+{
+    const auto topLevels = QApplication::topLevelWidgets();
+    return std::any_of(
+        topLevels.cbegin(), topLevels.cend(), [](const QWidget* widget) {
+            return widget && widget->isVisible() &&
+                   widget->objectName() == QStringLiteral("adminStartupSplash");
+        });
+}
+
+void serviceAdminStartupAnimation()
+{
+    static bool servicing = false;
+    if (servicing || !isAdminStartupSplashVisible()) {
+        return;
+    }
+    servicing = true;
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 8);
+    servicing = false;
+}
 
 LoadingSpinner::LoadingSpinner(QWidget* parent)
     : QWidget(parent)

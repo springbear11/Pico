@@ -11,6 +11,7 @@ namespace PicoATE::Core {
 struct ProductRoute {
     QString name;
     QString pattern;
+    int snLength = 0;
     QString projectPath;
     QString sequencePath;
     bool enabled = true;

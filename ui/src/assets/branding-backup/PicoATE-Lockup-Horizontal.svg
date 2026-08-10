@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-label="PicoATE horizontal logo">
+  <g fill="#181b1f" transform="translate(48 43) scale(.5)">
+    <path d="M0 0H620L533 219L0 330Z"/>
+    <path d="M95 346L620 236V550H15Z"/>
+  </g>
+  <text x="424" y="250"
+        fill="#252a31"
+        font-family="Bahnschrift, Segoe UI, sans-serif"
+        font-size="178"
+        font-weight="500"
+        letter-spacing="20">PICO</text>
+</svg>

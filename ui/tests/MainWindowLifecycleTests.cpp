@@ -3817,7 +3817,7 @@ void MainWindowLifecycleTests::loginDialogDiscoversSequenceAndValidatesAdminPass
     QVERIFY(login);
     QVERIFY(error);
     QVERIFY(brand);
-    QCOMPARE(brand->accessibleName(), QStringLiteral("PICO"));
+    QCOMPARE(brand->accessibleName(), QStringLiteral("SINEXCEL"));
     QVERIFY(!brand->pixmap().isNull());
     QCOMPARE(brand->alignment(), Qt::AlignCenter);
     QVERIFY(close);
@@ -4192,13 +4192,17 @@ void MainWindowLifecycleTests::productRoutingDialogEditsAndAtomicallySavesRoutes
     QCOMPARE(table->rowCount(), 2);
     table->item(1, 1)->setText(QStringLiteral("Product B"));
     table->item(1, 2)->setText(QStringLiteral("B-*"));
-    auto* project = qobject_cast<QComboBox*>(table->cellWidget(1, 3));
+    auto* length = qobject_cast<QLineEdit*>(table->cellWidget(1, 3));
+    auto* project = qobject_cast<QComboBox*>(table->cellWidget(1, 4));
+    QVERIFY(length);
     QVERIFY(project);
+    QCOMPARE(length->placeholderText(), QStringLiteral("Any"));
+    length->setText(QStringLiteral("10"));
     const int projectIndex = project->findData(
         QFileInfo(secondProject).absoluteFilePath());
     QVERIFY(projectIndex >= 0);
     project->setCurrentIndex(projectIndex);
-    auto* devices = qobject_cast<QPushButton*>(table->cellWidget(1, 5));
+    auto* devices = qobject_cast<QPushButton*>(table->cellWidget(1, 6));
     QVERIFY(devices);
     QVERIFY(devices->isEnabled());
 
@@ -4215,6 +4219,7 @@ void MainWindowLifecycleTests::productRoutingDialogEditsAndAtomicallySavesRoutes
     QCOMPARE(loaded.config.routes.size(), 2);
     QCOMPARE(loaded.config.routes.at(1).name, QStringLiteral("Product B"));
     QCOMPARE(loaded.config.routes.at(1).pattern, QStringLiteral("B-*"));
+    QCOMPARE(loaded.config.routes.at(1).snLength, 10);
     QCOMPARE(loaded.config.routes.at(1).projectPath,
              QFileInfo(secondProject).absoluteFilePath());
 
@@ -4224,6 +4229,9 @@ void MainWindowLifecycleTests::productRoutingDialogEditsAndAtomicallySavesRoutes
     QCOMPARE(savedObject.value(QStringLiteral("routes")).toArray().at(1)
                  .toObject().value(QStringLiteral("project")).toString(),
              QStringLiteral("ProductB"));
+    QCOMPARE(savedObject.value(QStringLiteral("routes")).toArray().at(1)
+                 .toObject().value(QStringLiteral("snLength")).toInt(),
+             10);
 }
 
 void MainWindowLifecycleTests::productRoutingDialogDeletesSelectedRouteInsteadOfCurrentRoute()
@@ -4252,10 +4260,24 @@ void MainWindowLifecycleTests::productRoutingDialogDeletesSelectedRouteInsteadOf
     QVERIFY(remove);
     QCOMPARE(table->rowCount(), 2);
 
-    table->selectRow(1);
+    dialog.show();
+    QTest::qWait(20);
+    QTest::mouseClick(
+        table->viewport(), Qt::LeftButton, Qt::NoModifier,
+        table->visualItemRect(table->item(1, 1)).center());
     QCOMPARE(table->selectionModel()->selectedRows().constFirst().row(), 1);
-    table->setCurrentCell(0, 1, QItemSelectionModel::NoUpdate);
-    QCOMPARE(table->currentRow(), 0);
+
+    auto* firstLength = qobject_cast<QLineEdit*>(table->cellWidget(0, 3));
+    auto* firstProject = qobject_cast<QComboBox*>(table->cellWidget(0, 4));
+    auto* firstDevices = qobject_cast<QPushButton*>(table->cellWidget(0, 6));
+    QVERIFY(firstLength);
+    QVERIFY(firstProject);
+    QVERIFY(firstDevices);
+    QTest::mouseMove(firstProject, firstProject->rect().center());
+    QTest::mouseMove(firstDevices, firstDevices->rect().center());
+    QTest::mouseClick(firstLength, Qt::LeftButton);
+    firstLength->setText(QStringLiteral("12"));
+    QCoreApplication::processEvents();
     QCOMPARE(table->selectionModel()->selectedRows().constFirst().row(), 1);
 
     remove->click();
@@ -4314,7 +4336,7 @@ void MainWindowLifecycleTests::productRoutingDialogRejectsOverlapAndBrokenSequen
     table->item(1, 1)->setText(QStringLiteral("Specific"));
     table->item(1, 2)->setText(QStringLiteral("*0001"));
     for (int row = 0; row < 2; ++row) {
-        auto* project = qobject_cast<QComboBox*>(table->cellWidget(row, 3));
+        auto* project = qobject_cast<QComboBox*>(table->cellWidget(row, 4));
         QVERIFY(project);
         const int index = project->findData(
             QFileInfo(validProject).absoluteFilePath());
@@ -4331,7 +4353,7 @@ void MainWindowLifecycleTests::productRoutingDialogRejectsOverlapAndBrokenSequen
 
     table->item(1, 2)->setText(QStringLiteral("OTHER-*"));
     auto* secondProjectCombo = qobject_cast<QComboBox*>(
-        table->cellWidget(1, 3));
+        table->cellWidget(1, 4));
     QVERIFY(secondProjectCombo);
     const int brokenIndex = secondProjectCombo->findData(
         QFileInfo(brokenProject).absoluteFilePath());
@@ -4360,7 +4382,9 @@ void MainWindowLifecycleTests::adminStartupSplashCentersLogoAndRunsSpinner()
     QVERIFY(logo);
     QVERIFY(spinner);
     QVERIFY(splash.windowFlags().testFlag(Qt::FramelessWindowHint));
-    QCOMPARE(splash.size(), QSize(450, 300));
+    QCOMPARE(splash.size(), QSize(420, 230));
+    QCOMPARE(logo->accessibleName(), QStringLiteral("SINEXCEL"));
+    QCOMPARE(logo->size(), QSize(235, 44));
     QVERIFY(!logo->pixmap().isNull());
     QCOMPARE(logo->alignment(), Qt::AlignCenter);
     QVERIFY(spinner->isRunning());
@@ -4369,6 +4393,13 @@ void MainWindowLifecycleTests::adminStartupSplashCentersLogoAndRunsSpinner()
         &splash, content->rect().center());
     QVERIFY(qAbs(contentCenter.x() - splash.rect().center().x()) <= 2);
     QVERIFY(qAbs(contentCenter.y() - splash.rect().center().y()) <= 2);
+
+    auto* spinnerTimer = spinner->findChild<QTimer*>();
+    QVERIFY(spinnerTimer);
+    QSignalSpy animationFrames(spinnerTimer, &QTimer::timeout);
+    MainWindow startupWindow;
+    QVERIFY2(animationFrames.count() >= 2,
+             "The Admin startup splash stopped animating while the main window was built");
 
     const auto screenshotPath = qEnvironmentVariable(
         "PICOATE_ADMIN_STARTUP_SCREENSHOT");
@@ -4644,6 +4675,10 @@ void MainWindowLifecycleTests::adminStartsOnProductionDashboardAndOpensScannerOn
     auto* compileAction = window.findChild<QAction*>(QStringLiteral("compileAction"));
     auto* scanDialog = window.findChild<ScanDialog*>();
     auto* sequenceLabel = window.findChild<QLabel*>(QStringLiteral("adminSequenceLabel"));
+    auto* brandLogo = window.findChild<QLabel*>(QStringLiteral("adminBrandLogo"));
+    auto* brandSlot = window.findChild<QWidget*>(QStringLiteral("adminBrandSlot"));
+    auto* runSplitter = window.findChild<QSplitter*>(QStringLiteral("runSplitter"));
+    auto* runSidebar = window.findChild<QWidget*>(QStringLiteral("adminRunSidebar"));
     auto* stationLabel = window.findChild<QLabel*>(QStringLiteral("adminStationLabel"));
     QVERIFY(tabs);
     QVERIFY(viewModel);
@@ -4652,6 +4687,10 @@ void MainWindowLifecycleTests::adminStartsOnProductionDashboardAndOpensScannerOn
     QVERIFY(compileAction);
     QVERIFY(scanDialog);
     QVERIFY(sequenceLabel);
+    QVERIFY(brandLogo);
+    QVERIFY(brandSlot);
+    QVERIFY(runSplitter);
+    QVERIFY(runSidebar);
     QVERIFY(stationLabel);
     QCOMPARE(tabs->count(), 4);
     QCOMPARE(tabs->currentIndex(), 0);
@@ -4660,6 +4699,16 @@ void MainWindowLifecycleTests::adminStartsOnProductionDashboardAndOpensScannerOn
     QCOMPARE(tabs->tabText(2), QStringLiteral("Station Config"));
     QCOMPARE(tabs->tabText(3), QStringLiteral("Reports"));
     QCOMPARE(sequenceLabel->text(), QStringLiteral("simple_sequence.json"));
+    QCOMPARE(brandLogo->accessibleName(), QStringLiteral("SINEXCEL"));
+    const auto headerMatchesRunColumns = [&] {
+        return brandSlot->width() == runSidebar->width() &&
+            qAbs(sequenceLabel->mapTo(&window, QPoint()).x()
+                 - runSplitter->widget(1)->mapTo(&window, QPoint()).x()) <= 4;
+    };
+    QVERIFY(headerMatchesRunColumns());
+    window.resize(1600, 900);
+    QTest::qWait(20);
+    QVERIFY(headerMatchesRunColumns());
     QCOMPARE(stationLabel->text(), QStringLiteral("bench-01"));
     QVERIFY(scanDialog->isHidden());
     QVERIFY(!scanAction->isEnabled());
@@ -4753,6 +4802,14 @@ void MainWindowLifecycleTests::productionWindowPreloadsFlowAndRunsWithoutScanner
         QStringLiteral("productionOverallResult"));
     auto* stationLabel = window.findChild<QLabel*>(
         QStringLiteral("productionStationLabel"));
+    auto* sequenceLabel = window.findChild<QLabel*>(
+        QStringLiteral("productionSequenceLabel"));
+    auto* brandLogo = window.findChild<QLabel*>(
+        QStringLiteral("productionBrandLogo"));
+    auto* brandSlot = window.findChild<QWidget*>(
+        QStringLiteral("productionBrandSlot"));
+    auto* toolbar = window.findChild<QToolBar*>(
+        QStringLiteral("productionToolbar"));
     auto* passCount = window.findChild<QLabel*>(
         QStringLiteral("productionPassCount"));
     auto* failCount = window.findChild<QLabel*>(
@@ -4774,6 +4831,8 @@ void MainWindowLifecycleTests::productionWindowPreloadsFlowAndRunsWithoutScanner
         QStringLiteral("productionContentSplitter"));
     auto* dataSplitter = window.findChild<QSplitter*>(
         QStringLiteral("productionDataSplitter"));
+    auto* sidebar = window.findChild<QWidget*>(
+        QStringLiteral("productionSidebar"));
     auto* scan = window.findChild<ScanDialog*>();
     QVERIFY(viewModel);
     QVERIFY(resultView);
@@ -4782,6 +4841,10 @@ void MainWindowLifecycleTests::productionWindowPreloadsFlowAndRunsWithoutScanner
     QVERIFY(routingAction);
     QVERIFY(overall);
     QVERIFY(stationLabel);
+    QVERIFY(sequenceLabel);
+    QVERIFY(brandLogo);
+    QVERIFY(brandSlot);
+    QVERIFY(toolbar);
     QVERIFY(passCount);
     QVERIFY(failCount);
     QVERIFY(totalCount);
@@ -4793,10 +4856,23 @@ void MainWindowLifecycleTests::productionWindowPreloadsFlowAndRunsWithoutScanner
     QVERIFY(productionStatusBar);
     QVERIFY(contentSplitter);
     QVERIFY(dataSplitter);
+    QVERIFY(sidebar);
     QVERIFY(scan);
     QCOMPARE(stationLabel->text(), QStringLiteral("line-1"));
     QCOMPARE(contentSplitter->orientation(), Qt::Horizontal);
     QCOMPARE(dataSplitter->orientation(), Qt::Vertical);
+    QCOMPARE(brandLogo->accessibleName(), QStringLiteral("SINEXCEL"));
+    QVERIFY(toolbar->mapTo(&window, QPoint()).y()
+            < brandLogo->mapTo(&window, QPoint()).y());
+    const auto headerMatchesRunColumns = [&] {
+        return brandSlot->width() == sidebar->width() &&
+            qAbs(sequenceLabel->mapTo(&window, QPoint()).x()
+                 - contentSplitter->widget(1)->mapTo(&window, QPoint()).x()) <= 4;
+    };
+    QVERIFY(headerMatchesRunColumns());
+    window.resize(1600, 900);
+    QTest::qWait(20);
+    QVERIFY(headerMatchesRunColumns());
     QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 3000);
     QCOMPARE(resultView->model()->rowCount(), 3);
     QVERIFY(resultView->isColumnHidden(UutStepModel::StateColumn));
@@ -4881,7 +4957,7 @@ void MainWindowLifecycleTests::productionWindowRoutesScannedSnBeforeCompiling()
     QVERIFY(station.open(QIODevice::WriteOnly));
     station.write(R"({
         "stationId":"auto-test","scanDialogEnabled":false,
-        "snLength":9,"snPattern":"AUTO-*",
+        "snLength":99,"snPattern":"STATION-ONLY-*",
         "snAllowedRegex":"^[A-Z0-9-]+$","devices":[]
     })");
     station.close();
@@ -4891,7 +4967,10 @@ void MainWindowLifecycleTests::productionWindowRoutesScannedSnBeforeCompiling()
     routing.write(R"({
         "allowManualInTest":false,
         "projectRoot":"projects",
-        "routes":[{"name":"Auto product","pattern":"AUTO-*","project":"AutoProduct"}]
+        "routes":[{
+            "name":"Auto product","pattern":"AUTO-*","snLength":9,
+            "project":"AutoProduct"
+        }]
     })");
     routing.close();
 
@@ -4953,8 +5032,8 @@ void MainWindowLifecycleTests::adminWindowRoutesScannedSnBeforeCompiling()
     QFile station(stationPath);
     QVERIFY(station.open(QIODevice::WriteOnly));
     station.write(R"({
-        "stationId":"auto-admin","snLength":10,
-        "snPattern":"ADMIN-*","snAllowedRegex":"^[A-Z0-9-]+$",
+        "stationId":"auto-admin","snLength":99,
+        "snPattern":"STATION-ONLY-*","snAllowedRegex":"^[A-Z0-9-]+$",
         "devices":[]
     })");
     station.close();
@@ -4973,7 +5052,10 @@ void MainWindowLifecycleTests::adminWindowRoutesScannedSnBeforeCompiling()
     routing.write(R"({
         "allowManualInTest":false,
         "projectRoot":"projects",
-        "routes":[{"name":"Admin product","pattern":"ADMIN-*","project":"AdminProduct"}]
+        "routes":[{
+            "name":"Admin product","pattern":"ADMIN-*","snLength":10,
+            "project":"AdminProduct"
+        }]
     })");
     routing.close();
 

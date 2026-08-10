@@ -1,5 +1,6 @@
 #include "StationPropertyEditor.h"
 
+#include "LoadingSpinner.h"
 #include "OnOffControl.h"
 #include "StationDocument.h"
 
@@ -197,7 +198,9 @@ StationPropertyEditor::StationPropertyEditor(StationDocument* document,
     layout->addWidget(m_title);
     m_tabs = new QTabWidget(this);
     buildStationPage();
+    serviceAdminStartupAnimation();
     buildDevicePage();
+    serviceAdminStartupAnimation();
     layout->addWidget(m_tabs, 1);
 
     for (auto* child : findChildren<QWidget*>()) {
@@ -253,6 +256,7 @@ StationPropertyEditor::StationPropertyEditor(StationDocument* document,
     connect(m_document, &StationDocument::documentChanged,
             this, &StationPropertyEditor::reload);
     reload();
+    serviceAdminStartupAnimation();
 }
 
 void StationPropertyEditor::buildStationPage()
@@ -452,6 +456,7 @@ void StationPropertyEditor::setPluginRegistry(QVector<PluginManifest> plugins)
 {
     m_plugins = std::move(plugins);
     loadDevice();
+    serviceAdminStartupAnimation();
 }
 
 bool StationPropertyEditor::focusField(const QString& path)

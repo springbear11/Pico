@@ -7,6 +7,9 @@ class QTimer;
 
 namespace PicoATE::Ui {
 
+bool isAdminStartupSplashVisible();
+void serviceAdminStartupAnimation();
+
 class LoadingSpinner final : public QWidget
 {
 public:

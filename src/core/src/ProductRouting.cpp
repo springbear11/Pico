@@ -1,4 +1,5 @@
 #include "PicoATE/Core/ProductRouting.h"
+#include "PicoATE/Core/StationConfig.h"
 
 #include <QDir>
 #include <QFile>
@@ -12,6 +13,7 @@
 #include <QStringList>
 
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <utility>
 
@@ -52,6 +54,37 @@ bool isSequenceCandidate(const QFileInfo& fileInfo)
 QString routeDisplayName(const ProductRoute& route)
 {
     return route.name.isEmpty() ? route.pattern : route.name;
+}
+
+bool validateStationSnCharacters(ProductRouteResolution& result,
+                                 const QString& serialNumber)
+{
+    const auto station = loadStationConfigFile(result.stationPath);
+    const auto allowedRegex = station.config.snAllowedRegex.trimmed();
+    if (allowedRegex.isEmpty()) {
+        return true;
+    }
+
+    const QRegularExpression expression(allowedRegex);
+    if (!expression.isValid()) {
+        addError(result.errors,
+                 QStringLiteral("routes.station.snAllowedRegex"),
+                 QStringLiteral("Target Station has an invalid SN character rule"),
+                 expression.errorString());
+        return false;
+    }
+    const auto match = expression.match(serialNumber);
+    if (match.hasMatch() && match.capturedStart() == 0 &&
+        match.capturedLength() == serialNumber.size()) {
+        return true;
+    }
+
+    addError(result.errors,
+             QStringLiteral("serialNumber.characters"),
+             QStringLiteral("SN contains characters not allowed by Station for route '%1'")
+                 .arg(result.routeName),
+             QStringLiteral("Update Allowed Characters in the target Station configuration"));
+    return false;
 }
 
 bool wildcardTokensOverlap(QChar left, QChar right)
@@ -199,6 +232,27 @@ ProductRoutingResult parseProductRoutingJson(const QJsonObject& object,
             exactPatterns.insert(route.pattern);
         }
 
+        const auto lengthValue = routeObject.value(QStringLiteral("snLength"));
+        if (!lengthValue.isUndefined()) {
+            if (!lengthValue.isDouble()) {
+                addError(result.errors,
+                         path + QStringLiteral(".snLength"),
+                         QStringLiteral("Expected whole number"),
+                         QStringLiteral("Use 0 for any length or 1-256 for an exact length"));
+            } else {
+                const double numericLength = lengthValue.toDouble();
+                if (std::floor(numericLength) != numericLength ||
+                    numericLength < 0.0 || numericLength > 256.0) {
+                    addError(result.errors,
+                             path + QStringLiteral(".snLength"),
+                             QStringLiteral("SN length must be a whole number from 0 to 256"),
+                             QStringLiteral("Use 0 for any length"));
+                } else {
+                    route.snLength = static_cast<int>(numericLength);
+                }
+            }
+        }
+
         auto projectValue = routeObject.value(QStringLiteral("project"));
         if (projectValue.isUndefined()) {
             projectValue = routeObject.value(QStringLiteral("projectPath"));
@@ -321,6 +375,9 @@ QJsonObject productRoutingToJson(const ProductRoutingConfig& config,
             {QStringLiteral("pattern"), route.pattern},
             {QStringLiteral("enabled"), route.enabled},
         };
+        if (route.snLength > 0) {
+            routeObject.insert(QStringLiteral("snLength"), route.snLength);
+        }
         if (!route.projectPath.trimmed().isEmpty()) {
             auto projectPath = route.projectPath.trimmed();
             if (QFileInfo(projectPath).isAbsolute()) {
@@ -470,6 +527,16 @@ ProductRouteResolution resolveProductRoute(const ProductRoutingConfig& config,
     const auto& route = *matches.first();
     result.routeName = routeDisplayName(route);
     result.pattern = route.pattern;
+    if (route.snLength > 0 && sn.size() != route.snLength) {
+        addError(result.errors,
+                 QStringLiteral("serialNumber.length"),
+                 QStringLiteral("SN length is %1; route '%2' requires exactly %3 characters")
+                     .arg(sn.size())
+                     .arg(result.routeName)
+                     .arg(route.snLength),
+                 QStringLiteral("Scan the complete SN or update the route length"));
+        return result;
+    }
     if (!route.projectPath.isEmpty()) {
         const auto project = inspectProductProject(route.projectPath);
         if (!project.ok()) {
@@ -480,6 +547,7 @@ ProductRouteResolution resolveProductRoute(const ProductRoutingConfig& config,
         result.projectPath = project.directoryPath;
         result.sequencePath = project.sequencePath;
         result.stationPath = project.stationPath;
+        validateStationSnCharacters(result, sn);
         return result;
     }
 
@@ -504,6 +572,7 @@ ProductRouteResolution resolveProductRoute(const ProductRoutingConfig& config,
     result.projectPath = QFileInfo(route.sequencePath).absolutePath();
     result.sequencePath = QFileInfo(route.sequencePath).absoluteFilePath();
     result.stationPath = QFileInfo(stationPath).absoluteFilePath();
+    validateStationSnCharacters(result, sn);
     return result;
 }
 

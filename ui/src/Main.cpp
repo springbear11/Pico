@@ -9,7 +9,6 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
-#include <QEventLoop>
 #include <QFileInfo>
 #include <QIcon>
 #include <QScreen>
@@ -75,53 +74,112 @@ int main(int argc, char* argv[])
     startupTimer.start();
     startupSplash.show();
     startupSplash.raise();
-    application.processEvents(QEventLoop::ExcludeUserInputEvents);
+    PicoATE::Ui::ApplicationDiagnostics::recordAction(
+        QStringLiteral("ADMIN_STARTUP_BEGIN"));
 
-    auto window = PicoATE::Ui::createMainWindow();
-    if (startupScreen) {
-        window->setGeometry(startupScreen->availableGeometry());
-    }
-    if (selection.sequenceLoadMode == PicoATE::Ui::SequenceLoadMode::AutoBySn) {
-        window->configureAutoRouting(selection.productRoutingPath);
-    } else {
-        window->setProductRoutingPath(selection.productRoutingPath);
-        if (selection.newProjectTemplate) {
-            window->initializeNewProjectTemplate(selection.projectRootPath);
-        } else {
-            window->openSequenceFile(selection.sequencePath);
-            window->openStationFile(selection.stationPath);
-        }
-    }
-    window->showRunPage();
-    auto* const windowPointer = window.get();
-    QObject::connect(
-        windowPointer,
-        &PicoATE::Ui::MainWindow::adminWorkspaceReady,
+    std::unique_ptr<PicoATE::Ui::MainWindow> window;
+    constexpr int SplashWarmupMs = 140;
+    QTimer::singleShot(
+        SplashWarmupMs,
         &startupSplash,
-        [windowPointer,
-         autoRouting = selection.sequenceLoadMode ==
-                           PicoATE::Ui::SequenceLoadMode::AutoBySn,
-         &startupSplash,
-         &startupTimer] {
-            constexpr qint64 MinimumSplashMs = 350;
-            const auto delay = static_cast<int>(
-                qMax<qint64>(0, MinimumSplashMs - startupTimer.elapsed()));
-            QTimer::singleShot(delay, &startupSplash,
-                               [windowPointer, autoRouting, &startupSplash] {
-                windowPointer->showMaximized();
-                windowPointer->raise();
-                windowPointer->activateWindow();
-                if (autoRouting) {
+        [&startupSplash,
+         &startupTimer,
+         &window,
+         startupScreen,
+         selection] {
+            const auto windowStartedAt = startupTimer.elapsed();
+            window = PicoATE::Ui::createMainWindow();
+            auto* const windowPointer = window.get();
+            PicoATE::Ui::ApplicationDiagnostics::recordAction(
+                QStringLiteral("ADMIN_STARTUP_WINDOW_CREATED"),
+                QStringLiteral("stage=%1ms,total=%2ms")
+                    .arg(startupTimer.elapsed() - windowStartedAt)
+                    .arg(startupTimer.elapsed()));
+
+            if (startupScreen) {
+                windowPointer->setGeometry(startupScreen->availableGeometry());
+            }
+            QObject::connect(
+                windowPointer,
+                &PicoATE::Ui::MainWindow::adminWorkspaceReady,
+                &startupSplash,
+                [windowPointer,
+                 autoRouting = selection.sequenceLoadMode ==
+                                   PicoATE::Ui::SequenceLoadMode::AutoBySn,
+                 &startupSplash,
+                 &startupTimer] {
+                    PicoATE::Ui::ApplicationDiagnostics::recordAction(
+                        QStringLiteral("ADMIN_STARTUP_READY"),
+                        QStringLiteral("total=%1ms").arg(startupTimer.elapsed()));
+                    constexpr qint64 MinimumSplashMs = 350;
+                    const auto delay = static_cast<int>(
+                        qMax<qint64>(0, MinimumSplashMs - startupTimer.elapsed()));
                     QTimer::singleShot(
-                        120, windowPointer,
-                        &PicoATE::Ui::MainWindow::showStartupScanDialog);
-                }
-                QTimer::singleShot(80, &startupSplash,
-                                   [&startupSplash] { startupSplash.hide(); });
-            });
+                        delay,
+                        &startupSplash,
+                        [windowPointer, autoRouting, &startupSplash] {
+                            windowPointer->showMaximized();
+                            windowPointer->raise();
+                            windowPointer->activateWindow();
+                            if (autoRouting) {
+                                QTimer::singleShot(
+                                    120,
+                                    windowPointer,
+                                    &PicoATE::Ui::MainWindow::showStartupScanDialog);
+                            }
+                            QTimer::singleShot(
+                                80,
+                                &startupSplash,
+                                [&startupSplash] { startupSplash.hide(); });
+                        });
+                });
+
+            QTimer::singleShot(
+                0,
+                &startupSplash,
+                [&startupSplash, &startupTimer, &window, selection] {
+                    auto* const stagedWindow = window.get();
+                    if (selection.sequenceLoadMode ==
+                        PicoATE::Ui::SequenceLoadMode::AutoBySn) {
+                        stagedWindow->configureAutoRouting(
+                            selection.productRoutingPath);
+                    } else {
+                        stagedWindow->setProductRoutingPath(
+                            selection.productRoutingPath);
+                        if (selection.newProjectTemplate) {
+                            stagedWindow->initializeNewProjectTemplate(
+                                selection.projectRootPath);
+                        } else {
+                            stagedWindow->openSequenceFile(selection.sequencePath);
+                        }
+                    }
+                    PicoATE::Ui::ApplicationDiagnostics::recordAction(
+                        QStringLiteral("ADMIN_STARTUP_SEQUENCE_READY"),
+                        QStringLiteral("total=%1ms").arg(startupTimer.elapsed()));
+
+                    QTimer::singleShot(
+                        0,
+                        &startupSplash,
+                        [&startupTimer, &window, selection] {
+                            auto* const stagedWindow = window.get();
+                            if (selection.sequenceLoadMode !=
+                                    PicoATE::Ui::SequenceLoadMode::AutoBySn &&
+                                !selection.newProjectTemplate) {
+                                stagedWindow->openStationFile(selection.stationPath);
+                            }
+                            stagedWindow->showRunPage();
+                            PicoATE::Ui::ApplicationDiagnostics::recordAction(
+                                QStringLiteral("ADMIN_STARTUP_SOURCES_READY"),
+                                QStringLiteral("total=%1ms")
+                                    .arg(startupTimer.elapsed()));
+                            QTimer::singleShot(
+                                0,
+                                stagedWindow,
+                                [stagedWindow] {
+                                    stagedWindow->initializeAdminWorkspace();
+                                });
+                        });
+                });
         });
-    QTimer::singleShot(0, windowPointer, [windowPointer] {
-        windowPointer->initializeAdminWorkspace();
-    });
     return application.exec();
 }

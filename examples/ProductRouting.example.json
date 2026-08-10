@@ -4,7 +4,8 @@
   "routes": [
     {
       "name": "Example Product",
-      "pattern": "EXAMPLE-*",
+      "pattern": "BTSN*",
+      "snLength": 16,
       "project": "ExampleProduct",
       "enabled": true
     }

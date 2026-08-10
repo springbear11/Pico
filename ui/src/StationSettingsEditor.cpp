@@ -1,5 +1,6 @@
 #include "StationSettingsEditor.h"
 
+#include "LoadingSpinner.h"
 #include "OnOffControl.h"
 #include "StationDocument.h"
 
@@ -123,6 +124,7 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_loopTestCountSpin->setToolTip(
         tr("Run the complete sequence this many times after one Run command"));
     form->addRow(tr("Loop Count"), m_loopTestCountSpin);
+    serviceAdminStartupAnimation();
 
     m_loopTestSwitch = new OnOffSwitch(this);
     m_loopTestSwitch->setObjectName(QStringLiteral("stationLoopTestSwitch"));
@@ -178,6 +180,7 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_errorLabel->hide();
     layout->addWidget(m_errorLabel);
     layout->addStretch(1);
+    serviceAdminStartupAnimation();
 
     const auto markPending = [this] { markPendingChanges(); };
     connect(m_stationIdEdit, &QLineEdit::textEdited, this, markPending);

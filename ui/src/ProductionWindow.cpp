@@ -19,6 +19,7 @@
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QDir>
+#include <QEvent>
 #include <QFileInfo>
 #include <QFile>
 #include <QFont>
@@ -30,6 +31,7 @@
 #include <QLabel>
 #include <QJsonDocument>
 #include <QMessageBox>
+#include <QPixmap>
 #include <QProgressBar>
 #include <QSizePolicy>
 #include <QSplitter>
@@ -231,6 +233,25 @@ void ProductionWindow::closeEvent(QCloseEvent* event)
     event->accept();
 }
 
+bool ProductionWindow::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched &&
+        watched->objectName() == QStringLiteral("productionSidebar") &&
+        event->type() == QEvent::Resize) {
+        if (auto* sidebar = qobject_cast<QWidget*>(watched);
+            sidebar) {
+            auto* brandSlot = findChild<QWidget*>(
+                QStringLiteral("productionBrandSlot"));
+            if (!brandSlot) {
+                return QMainWindow::eventFilter(watched, event);
+            }
+            brandSlot->setFixedWidth(
+                sidebar->width());
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
 void ProductionWindow::buildUi()
 {
     auto* central = new QWidget(this);
@@ -238,16 +259,6 @@ void ProductionWindow::buildUi()
     auto* layout = new QVBoxLayout(central);
     layout->setContentsMargins(16, 14, 16, 12);
     layout->setSpacing(10);
-
-    const auto sequenceTitle = m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn
-        ? tr("Auto By SN")
-        : QFileInfo(m_selection.sequencePath).fileName();
-    m_sequenceLabel = new QLabel(sequenceTitle, central);
-    m_sequenceLabel->setObjectName(QStringLiteral("productionSequenceLabel"));
-    m_sequenceLabel->setAlignment(Qt::AlignCenter);
-    m_sequenceLabel->setMinimumHeight(48);
-    m_sequenceLabel->setMaximumHeight(54);
-    layout->addWidget(m_sequenceLabel);
 
     auto* toolbar = new QToolBar(tr("TEST Controls"), central);
     toolbar->setObjectName(QStringLiteral("productionToolbar"));
@@ -293,6 +304,47 @@ void ProductionWindow::buildUi()
             this, &ProductionWindow::openProductRoutingConfiguration);
     layout->addWidget(toolbar);
 
+    constexpr int ProductionSidebarWidth = 235;
+    auto* brandHeader = new QHBoxLayout;
+    brandHeader->setContentsMargins(0, 0, 0, 0);
+    brandHeader->setSpacing(style()->pixelMetric(QStyle::PM_SplitterWidth));
+
+    auto* brandSlot = new QWidget(central);
+    brandSlot->setObjectName(QStringLiteral("productionBrandSlot"));
+    brandSlot->setFixedWidth(ProductionSidebarWidth);
+    auto* brandSlotLayout = new QHBoxLayout(brandSlot);
+    brandSlotLayout->setContentsMargins(0, 0, 0, 0);
+    brandSlotLayout->setSpacing(0);
+
+    auto* brandLogo = new QLabel(brandSlot);
+    brandLogo->setObjectName(QStringLiteral("productionBrandLogo"));
+    brandLogo->setAccessibleName(tr("SINEXCEL"));
+    brandLogo->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    brandLogo->setFixedSize(170, 32);
+    const QPixmap brandSource(QStringLiteral(":/branding/Sinexcel.png"));
+    const qreal brandPixelRatio = devicePixelRatioF();
+    auto scaledBrand = brandSource.scaled(
+        QSize(qRound(brandLogo->width() * brandPixelRatio),
+              qRound(brandLogo->height() * brandPixelRatio)),
+        Qt::KeepAspectRatio,
+        Qt::SmoothTransformation);
+    scaledBrand.setDevicePixelRatio(brandPixelRatio);
+    brandLogo->setPixmap(scaledBrand);
+    brandSlotLayout->addWidget(brandLogo, 0, Qt::AlignLeft | Qt::AlignVCenter);
+    brandSlotLayout->addStretch(1);
+    brandHeader->addWidget(brandSlot);
+
+    const auto sequenceTitle = m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn
+        ? tr("Auto By SN")
+        : QFileInfo(m_selection.sequencePath).fileName();
+    m_sequenceLabel = new QLabel(sequenceTitle, central);
+    m_sequenceLabel->setObjectName(QStringLiteral("productionSequenceLabel"));
+    m_sequenceLabel->setAlignment(Qt::AlignCenter);
+    m_sequenceLabel->setMinimumHeight(40);
+    m_sequenceLabel->setMaximumHeight(44);
+    brandHeader->addWidget(m_sequenceLabel, 1);
+    layout->addLayout(brandHeader);
+
     auto* contentSplitter = new QSplitter(Qt::Horizontal, central);
     contentSplitter->setObjectName(QStringLiteral("productionContentSplitter"));
     contentSplitter->setChildrenCollapsible(false);
@@ -301,6 +353,7 @@ void ProductionWindow::buildUi()
     sidebar->setObjectName(QStringLiteral("productionSidebar"));
     sidebar->setMinimumWidth(215);
     sidebar->setMaximumWidth(270);
+    sidebar->installEventFilter(this);
     auto* sidebarLayout = new QVBoxLayout(sidebar);
     sidebarLayout->setContentsMargins(18, 18, 18, 18);
     sidebarLayout->setSpacing(14);
@@ -430,7 +483,7 @@ void ProductionWindow::buildUi()
     rightSplitter->setSizes({520, 170});
     contentSplitter->setStretchFactor(0, 0);
     contentSplitter->setStretchFactor(1, 1);
-    contentSplitter->setSizes({235, 900});
+    contentSplitter->setSizes({ProductionSidebarWidth, 900});
     layout->addWidget(contentSplitter, 1);
 
     auto* progressPanel = new QWidget(central);
@@ -867,13 +920,6 @@ void ProductionWindow::beginAutoRoutedRun(const QString& serialNumber)
             details.push_back(error.message);
         }
         showRoutingError(details.join(QStringLiteral("\n")));
-        return;
-    }
-
-    const auto snValidation = StartupSupport::validateSerialNumber(
-        sn, StartupSupport::stationSnValidationRules(route.stationPath));
-    if (!snValidation.ok()) {
-        showRoutingError(snValidation.errorMessage);
         return;
     }
 

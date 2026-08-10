@@ -209,11 +209,11 @@ LoginDialog::LoginDialog(QString sequenceRootDirectory, QWidget* parent)
 
     auto* brand = new QLabel(m_header);
     brand->setObjectName(QStringLiteral("loginBrand"));
-    brand->setAccessibleName(tr("PICO"));
+    brand->setAccessibleName(tr("SINEXCEL"));
     brand->setAlignment(Qt::AlignCenter);
-    brand->setFixedSize(220, 180);
+    brand->setFixedSize(235, 44);
     const QPixmap brandImage(
-        QStringLiteral(":/branding/PicoATE-Lockup-Vertical.png"));
+        QStringLiteral(":/branding/Sinexcel.png"));
     const qreal pixelRatio = devicePixelRatioF();
     QPixmap scaledBrand = brandImage.scaled(
         QSize(qRound(brand->width() * pixelRatio),
@@ -947,7 +947,7 @@ void LoginDialog::updateDialogGeometry()
     const QPoint previousPosition = pos();
     const int previousHeight = height();
 
-    int targetHeight = 494;
+    int targetHeight = 398;
     if (m_passwordEdit && !m_passwordEdit->isHidden()) {
         targetHeight += 52;
     }
