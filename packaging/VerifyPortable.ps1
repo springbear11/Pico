@@ -44,6 +44,7 @@ $requiredFiles = @(
     'MSVCP140.dll',
     'VCRUNTIME140.dll',
     'VCRUNTIME140_1.dll',
+    'msvcr120.dll',
     'platforms\qwindows.dll',
     'plugins\PluginRegistry.json',
     'plugins\PicoATE.CAN.CX.dll',

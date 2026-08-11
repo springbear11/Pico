@@ -91,8 +91,9 @@ QByteArray executionLogHeader(const RunArtifactContext& context,
     appendField(QStringLiteral("Sequence Name"), context.sequenceName);
     appendField(QStringLiteral("Sequence Path"), context.sequenceFilePath);
     appendField(QStringLiteral("Serial Number"), context.serialNumber);
-    appendField(QStringLiteral("Station"), context.stationName);
     appendField(QStringLiteral("Station ID"), context.stationId);
+    appendField(QStringLiteral("Model"), context.model);
+    appendField(QStringLiteral("Customer ID"), context.customerId);
     appendField(QStringLiteral("Station Path"), context.stationFilePath);
     appendField(QStringLiteral("Order"), context.order);
     appendField(QStringLiteral("Tester"), context.tester);
@@ -148,11 +149,9 @@ RunArtifactContext runArtifactContextFromDocuments(
     resolverOptions.sequenceFilePath = stationFilePath;
     resolverOptions.projectDir = QCoreApplication::applicationDirPath();
     const auto parsed = PicoATE::Core::parseStationConfigJson(station, resolverOptions);
-    context.stationName = parsed.config.name.trimmed();
-    if (context.stationName.isEmpty() && !stationFilePath.trimmed().isEmpty()) {
-        context.stationName = QFileInfo(stationFilePath).completeBaseName();
-    }
     context.stationId = parsed.config.stationId.trimmed();
+    context.model = parsed.config.model.trimmed();
+    context.customerId = parsed.config.customerId.trimmed();
     context.stationFilePath = stationFilePath.trimmed().isEmpty()
         ? QString{}
         : QFileInfo(stationFilePath).absoluteFilePath();

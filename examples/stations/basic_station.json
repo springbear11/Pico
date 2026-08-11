@@ -1,6 +1,7 @@
 {
   "stationId": "bench-01",
-  "name": "PicoATE Bench 01",
+  "model": "PicoATE Demo Product",
+  "customerId": "DEMO-CUSTOMER",
   "stopOnFailure": true,
   "scanDialogEnabled": false,
   "txtLogEnabled": false,

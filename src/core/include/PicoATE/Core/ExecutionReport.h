@@ -55,7 +55,8 @@ struct UutReport {
 };
 
 struct ExecutionReportMetadata {
-    QString name;
+    QString model;
+    QString customerId;
     QString sequenceName;
     QString serialNumber;
     QString stationId;

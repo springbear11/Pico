@@ -77,9 +77,12 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_stationIdEdit = new QLineEdit(this);
     m_stationIdEdit->setObjectName(QStringLiteral("stationBasicIdEdit"));
     form->addRow(tr("Station ID"), m_stationIdEdit);
-    m_stationNameEdit = new QLineEdit(this);
-    m_stationNameEdit->setObjectName(QStringLiteral("stationBasicNameEdit"));
-    form->addRow(tr("Name"), m_stationNameEdit);
+    m_stationModelEdit = new QLineEdit(this);
+    m_stationModelEdit->setObjectName(QStringLiteral("stationModelEdit"));
+    form->addRow(tr("Model"), m_stationModelEdit);
+    m_customerIdEdit = new QLineEdit(this);
+    m_customerIdEdit->setObjectName(QStringLiteral("stationCustomerIdEdit"));
+    form->addRow(tr("Customer ID"), m_customerIdEdit);
 
     m_jigNoEdit = new QLineEdit(this);
     m_jigNoEdit->setObjectName(QStringLiteral("stationJigNoEdit"));
@@ -184,7 +187,8 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
 
     const auto markPending = [this] { markPendingChanges(); };
     connect(m_stationIdEdit, &QLineEdit::textEdited, this, markPending);
-    connect(m_stationNameEdit, &QLineEdit::textEdited, this, markPending);
+    connect(m_stationModelEdit, &QLineEdit::textEdited, this, markPending);
+    connect(m_customerIdEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_stopOnFailureSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_scanDialogSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_loopTestSwitch, &QAbstractButton::toggled, this, [this] {
@@ -225,7 +229,8 @@ void StationSettingsEditor::setEditable(bool editable)
     m_editable = editable;
     const bool valid = m_document && !m_document->isEmpty();
     for (auto* field : {static_cast<QWidget*>(m_stationIdEdit),
-                        static_cast<QWidget*>(m_stationNameEdit),
+                        static_cast<QWidget*>(m_stationModelEdit),
+                        static_cast<QWidget*>(m_customerIdEdit),
                         static_cast<QWidget*>(m_stopOnFailureSwitch),
                         static_cast<QWidget*>(m_scanDialogSwitch),
                         static_cast<QWidget*>(m_loopTestSwitch),
@@ -275,7 +280,9 @@ bool StationSettingsEditor::commitPendingChanges()
                      {"operator"});
     root.insert(QStringLiteral("stationId"), m_stationIdEdit->text().trimmed());
     root.remove(QStringLiteral("id"));
-    root.insert(QStringLiteral("name"), m_stationNameEdit->text().trimmed());
+    root.insert(QStringLiteral("model"), m_stationModelEdit->text().trimmed());
+    root.insert(QStringLiteral("customerId"), m_customerIdEdit->text().trimmed());
+    root.remove(QStringLiteral("name"));
     root.insert(QStringLiteral("stopOnFailure"), m_stopOnFailureSwitch->isChecked());
     root.insert(QStringLiteral("scanDialogEnabled"), m_scanDialogSwitch->isChecked());
     root.insert(QStringLiteral("loopTestEnabled"), m_loopTestSwitch->isChecked());
@@ -323,8 +330,11 @@ bool StationSettingsEditor::focusField(const QString& path)
     QWidget* field = nullptr;
     if (path == QStringLiteral("stationId") || path == QStringLiteral("id")) {
         field = m_stationIdEdit;
-    } else if (path == QStringLiteral("name")) {
-        field = m_stationNameEdit;
+    } else if (path == QStringLiteral("model") ||
+               path == QStringLiteral("name")) {
+        field = m_stationModelEdit;
+    } else if (path == QStringLiteral("customerId")) {
+        field = m_customerIdEdit;
     } else if (path == QStringLiteral("stopOnFailure")) {
         field = m_stopOnFailureSwitch;
     } else if (path == QStringLiteral("scanDialogEnabled")) {
@@ -377,7 +387,10 @@ void StationSettingsEditor::reload()
     const bool valid = !root.isEmpty();
     m_stationIdEdit->setText(root.value(QStringLiteral("stationId")).toString(
         root.value(QStringLiteral("id")).toString()));
-    m_stationNameEdit->setText(root.value(QStringLiteral("name")).toString());
+    m_stationModelEdit->setText(root.value(QStringLiteral("model")).toString(
+        root.value(QStringLiteral("name")).toString()));
+    m_customerIdEdit->setText(
+        root.value(QStringLiteral("customerId")).toString());
     m_stopOnFailureSwitch->setChecked(
         root.value(QStringLiteral("stopOnFailure")).toBool(true));
     m_scanDialogSwitch->setChecked(
@@ -409,7 +422,8 @@ void StationSettingsEditor::reload()
         metadata, {"tester", "operator"}));
 
     for (auto* field : {static_cast<QWidget*>(m_stationIdEdit),
-                        static_cast<QWidget*>(m_stationNameEdit),
+                        static_cast<QWidget*>(m_stationModelEdit),
+                        static_cast<QWidget*>(m_customerIdEdit),
                         static_cast<QWidget*>(m_stopOnFailureSwitch),
                         static_cast<QWidget*>(m_scanDialogSwitch),
                         static_cast<QWidget*>(m_loopTestSwitch),

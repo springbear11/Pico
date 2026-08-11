@@ -12,6 +12,8 @@ add_library(PicoATEUiRuntime STATIC
     FunctionIconProvider.cpp
     FunctionIconProvider.h
     IExecutionService.h
+    MeasurementDisplay.cpp
+    MeasurementDisplay.h
     PluginCatalog.cpp
     PluginCatalog.h
     PluginFunctionModel.cpp
@@ -165,6 +167,19 @@ if(TARGET PicoATENativeHost)
     )
 endif()
 
+# The GCAN ECanVci64 vendor DLL was built with Visual Studio 2013 and loads
+# MSVCR120 from the host executable directory on clean production PCs.
+set(PICOATE_GCAN_VS2013_RUNTIME_DLL
+    "${PICOATE_ROOT_DIR}/templates/dependencies/CAN/GCAN/x64/msvcr120.dll")
+if(EXISTS "${PICOATE_GCAN_VS2013_RUNTIME_DLL}")
+    add_custom_command(TARGET PicoATEUi POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${PICOATE_GCAN_VS2013_RUNTIME_DLL}"
+                "$<TARGET_FILE_DIR:PicoATEUi>"
+        COMMENT "Deploying the GCAN Visual Studio 2013 runtime beside PicoATE.UI"
+    )
+endif()
+
 find_program(PICOATE_UI_WINDEPLOYQT
     NAMES windeployqt
     HINTS "${Qt6_DIR}/../../../bin"
@@ -194,6 +209,15 @@ if(MSVC AND CMAKE_GENERATOR_INSTANCE)
             )
         endif()
     endif()
+endif()
+
+set(PICOATE_UI_LEGACY_RUNTIME_COPY_COMMAND)
+if(EXISTS "${PICOATE_GCAN_VS2013_RUNTIME_DLL}")
+    list(APPEND PICOATE_UI_LEGACY_RUNTIME_COPY_COMMAND
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${PICOATE_GCAN_VS2013_RUNTIME_DLL}"
+                "${PICOATE_UI_PORTABLE_DIR}/"
+    )
 endif()
 
 add_custom_target(PicoATEUiPortable
@@ -226,6 +250,7 @@ add_custom_target(PicoATEUiPortable
             "${PICOATE_UI_PORTABLE_DIR}/projects"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
             "${PICOATE_UI_PORTABLE_DIR}/projects"
+    ${PICOATE_UI_LEGACY_RUNTIME_COPY_COMMAND}
     ${PICOATE_UI_MSVC_RUNTIME_COPY_COMMAND}
     COMMAND "${PICOATE_UI_WINDEPLOYQT}"
             "--$<IF:$<CONFIG:Debug>,debug,release>"

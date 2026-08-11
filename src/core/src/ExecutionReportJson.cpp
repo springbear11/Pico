@@ -407,7 +407,8 @@ StepReport stepFromJson(const QJsonObject& object,
 QJsonObject reportMetadataToJson(const ExecutionReportMetadata& metadata)
 {
     return {
-        {"name", metadata.name},
+        {"model", metadata.model},
+        {"customerId", metadata.customerId},
         {"sequenceName", metadata.sequenceName},
         {"serialNumber", metadata.serialNumber},
         {"stationId", metadata.stationId},
@@ -427,7 +428,9 @@ QJsonObject reportMetadataToJson(const ExecutionReportMetadata& metadata)
 ExecutionReportMetadata reportMetadataFromJson(const QJsonObject& object)
 {
     ExecutionReportMetadata metadata;
-    metadata.name = object.value("name").toString();
+    metadata.model = object.value("model").toString(
+        object.value("name").toString());
+    metadata.customerId = object.value("customerId").toString();
     metadata.sequenceName = object.value("sequenceName").toString();
     metadata.serialNumber = object.value("serialNumber").toString();
     metadata.stationId = object.value("stationId").toString();

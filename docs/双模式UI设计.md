@@ -160,7 +160,7 @@ CLEANUP
 - 右下角 PASS/FAIL/TOTAL/YIELD 按整台产品统计，每份最终报告最多累计一次；Step 和 TestItem 的通过/失败数量不进入良率。
 - 正常完成且无错误记 PASS，完成但有错误记 FAIL，Abort 或未完成不进入 TOTAL；YIELD = PASS / TOTAL x 100%。
 - 当前版本按 TEST 窗口生命周期累计，重启应用后从 0 开始；班次持久化和清零按钮留作后续配置项。
-- `StationSystem.json` 的 `stationId` 和 `metadata.order/tester/jigNo` 可直接显示在左侧信息区，缺失值显示 `--`。
+- `StationSystem.json` 的 `stationId`、`model`、`customerId` 和 `metadata.order/tester/jigNo` 可直接显示在左侧信息区，缺失值显示 `--`。
 - 相同 SN 可以跨测试轮次重复使用，UI 不执行历史去重。
 - 已使用真实 Qt 窗口抓图检查 1180x760 基准布局，并增加成功、失败和 Skipped 数量的窗口测试。
 - 单 UUT 结果树已去除 `WAITING FOR SN` 层，改为 `SETUP / MAIN / CLEANUP` 三段流程；阶段信息贯穿 Plan、RuntimeEvent 和 ExecutionReport。
