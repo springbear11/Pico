@@ -876,6 +876,8 @@ void CoreTests::stationConfigParsesDevicesAndConfiguresSessionManager()
     const auto load = loadStationConfigFile(examplePath("stations/basic_station.json"), options);
     QVERIFY(load.ok());
     QCOMPARE(load.config.stationId, QString("bench-01"));
+    QCOMPARE(load.config.model, QString("PicoATE Demo Product"));
+    QCOMPARE(load.config.customerId, QString("DEMO-CUSTOMER"));
     QVERIFY(load.config.stopOnFailure);
     QVERIFY(!load.config.scanDialogEnabled);
     QVERIFY(!load.config.txtLogEnabled);
@@ -894,6 +896,16 @@ void CoreTests::stationConfigParsesDevicesAndConfiguresSessionManager()
     });
     QVERIFY(reportSettings.ok());
     QVERIFY(reportSettings.config.xlsxReportEnabled);
+
+    const auto legacyIdentity = parseStationConfigJson({
+        {QStringLiteral("stationId"), QStringLiteral("legacy-station")},
+        {QStringLiteral("name"), QStringLiteral("Legacy Product Model")},
+        {QStringLiteral("devices"), QJsonArray{}}
+    });
+    QVERIFY(legacyIdentity.ok());
+    QCOMPARE(legacyIdentity.config.model,
+             QStringLiteral("Legacy Product Model"));
+    QVERIFY(legacyIdentity.config.customerId.isEmpty());
 
     const auto dmm = load.config.devices[0];
     QCOMPARE(dmm.deviceId, QString("DMM1"));
@@ -1475,24 +1487,20 @@ void CoreTests::productRoutingRejectsMissingAndAmbiguousMatches()
     const QJsonObject object{
         {QStringLiteral("allowManualInTest"), true},
         {QStringLiteral("routes"), QJsonArray{
-            QJsonObject{{QStringLiteral("name"), QStringLiteral("Broad")},
-                        {QStringLiteral("pattern"), QStringLiteral("BTSN-*")},
+            QJsonObject{{QStringLiteral("name"), QStringLiteral("C Product")},
+                        {QStringLiteral("pattern"), QStringLiteral("*C1234567890*")},
                         {QStringLiteral("sequence"), sequencePath}},
-            QJsonObject{{QStringLiteral("name"), QStringLiteral("Specific")},
-                        {QStringLiteral("pattern"), QStringLiteral("*0001")},
+            QJsonObject{{QStringLiteral("name"), QStringLiteral("BTSN Product")},
+                        {QStringLiteral("pattern"), QStringLiteral("*BTSN*")},
                         {QStringLiteral("sequence"), sequencePath}}
         }}
     };
     const auto parsed = parseProductRoutingJson(
         object, directory.filePath(QStringLiteral("ProductRouting.json")));
-    QVERIFY(!parsed.ok());
+    QVERIFY2(parsed.ok(), parsed.errors.isEmpty()
+                             ? "routing parse failed"
+                             : qPrintable(parsed.errors.first().message));
     QVERIFY(parsed.config.allowManualInTest);
-    QVERIFY(std::any_of(parsed.errors.cbegin(), parsed.errors.cend(),
-                        [](const ProductRoutingDiagnostic& error) {
-                            return error.message.contains(
-                                QStringLiteral("overlap"),
-                                Qt::CaseInsensitive);
-                        }));
 
     const auto missing = resolveProductRoute(parsed.config,
                                              QStringLiteral("OTHER-0002"));
@@ -1500,13 +1508,22 @@ void CoreTests::productRoutingRejectsMissingAndAmbiguousMatches()
     QVERIFY(missing.errors.first().message.contains(
         QStringLiteral("No product route")));
 
-    const auto ambiguous = resolveProductRoute(parsed.config,
-                                               QStringLiteral("BTSN-0001"));
+    const auto cProduct = resolveProductRoute(
+        parsed.config, QStringLiteral("AAC1234567890ZZ"));
+    QVERIFY(cProduct.ok());
+    QCOMPARE(cProduct.routeName, QStringLiteral("C Product"));
+    const auto btsnProduct = resolveProductRoute(
+        parsed.config, QStringLiteral("AABTSNZZ"));
+    QVERIFY(btsnProduct.ok());
+    QCOMPARE(btsnProduct.routeName, QStringLiteral("BTSN Product"));
+
+    const auto ambiguous = resolveProductRoute(
+        parsed.config, QStringLiteral("C1234567890BTSN"));
     QVERIFY(!ambiguous.ok());
     QVERIFY(ambiguous.errors.first().message.contains(
         QStringLiteral("multiple"), Qt::CaseInsensitive));
-    QVERIFY(ambiguous.errors.first().message.contains(QStringLiteral("Broad")));
-    QVERIFY(ambiguous.errors.first().message.contains(QStringLiteral("Specific")));
+    QVERIFY(ambiguous.errors.first().message.contains(QStringLiteral("C Product")));
+    QVERIFY(ambiguous.errors.first().message.contains(QStringLiteral("BTSN Product")));
 
     const auto serialized = productRoutingToJson(
         parsed.config,
@@ -1604,6 +1621,48 @@ void CoreTests::productRoutingSupportsWildcardFormsAndRouteSnRules()
                              ? "routing parse failed"
                              : qPrintable(parsed.errors.first().message));
     QCOMPARE(parsed.config.routes.first().snLength, 8);
+
+    const QJsonObject lengthRoutesObject{
+        {QStringLiteral("routes"), QJsonArray{
+            QJsonObject{{QStringLiteral("name"), QStringLiteral("Eight")},
+                        {QStringLiteral("pattern"), QStringLiteral("BTSN*")},
+                        {QStringLiteral("snLength"), 8},
+                        {QStringLiteral("sequence"), sequence.fileName()}},
+            QJsonObject{{QStringLiteral("name"), QStringLiteral("Ten")},
+                        {QStringLiteral("pattern"), QStringLiteral("BTSN*")},
+                        {QStringLiteral("snLength"), 10},
+                        {QStringLiteral("sequence"), sequence.fileName()}}
+        }}
+    };
+    const auto lengthRoutes = parseProductRoutingJson(
+        lengthRoutesObject,
+        directory.filePath(QStringLiteral("LengthRouting.json")));
+    QVERIFY2(lengthRoutes.ok(), lengthRoutes.errors.isEmpty()
+                                    ? "length routing parse failed"
+                                    : qPrintable(lengthRoutes.errors.first().message));
+    QCOMPARE(resolveProductRoute(lengthRoutes.config,
+                                 QStringLiteral("BTSN1234")).routeName,
+             QStringLiteral("Eight"));
+    QCOMPARE(resolveProductRoute(lengthRoutes.config,
+                                 QStringLiteral("BTSN123456")).routeName,
+             QStringLiteral("Ten"));
+
+    const QJsonObject duplicateRoutesObject{
+        {QStringLiteral("routes"), QJsonArray{
+            QJsonObject{{QStringLiteral("name"), QStringLiteral("First")},
+                        {QStringLiteral("pattern"), QStringLiteral("*BTSN*")},
+                        {QStringLiteral("sequence"), sequence.fileName()}},
+            QJsonObject{{QStringLiteral("name"), QStringLiteral("Duplicate")},
+                        {QStringLiteral("pattern"), QStringLiteral("**BTSN**")},
+                        {QStringLiteral("sequence"), sequence.fileName()}}
+        }}
+    };
+    const auto duplicateRoutes = parseProductRoutingJson(
+        duplicateRoutesObject,
+        directory.filePath(QStringLiteral("DuplicateRouting.json")));
+    QVERIFY(!duplicateRoutes.ok());
+    QVERIFY(duplicateRoutes.errors.first().message.contains(
+        QStringLiteral("duplicates"), Qt::CaseInsensitive));
 }
 
 void CoreTests::nodeRunnerRunsRegisteredModuleAndMapsModuleResult()

@@ -364,7 +364,8 @@ PicoATE::Core::ExecutionReport sampleReport()
     report.sequenceVersion = QStringLiteral("1.2.3");
     report.state = ExecutionState::Completed;
     report.completed = true;
-    report.metadata.name = QStringLiteral("End-of-Line Station");
+    report.metadata.model = QStringLiteral("PICO-800V");
+    report.metadata.customerId = QStringLiteral("CUSTOMER-01");
     report.metadata.sequenceName = QStringLiteral("sample_sequence.json");
     report.metadata.serialNumber = QStringLiteral("SN-001");
     report.metadata.stationId = QStringLiteral("STATION-01");
@@ -800,7 +801,8 @@ void ExecutionViewModelTests::coreServiceCompilesAndRunsSimpleSequence()
     QVERIFY(!runResult.report.hasError);
     QCOMPARE(runResult.report.uuts.size(), 2);
     QCOMPARE(runResult.report.uuts.first().uutId, QStringLiteral("DUT-1"));
-    QCOMPARE(runResult.report.metadata.name, QStringLiteral("Simple Sequence"));
+    QVERIFY(runResult.report.metadata.model.isEmpty());
+    QVERIFY(runResult.report.metadata.customerId.isEmpty());
     QCOMPARE(runResult.report.metadata.sequenceName,
              QStringLiteral("simple_sequence.json"));
     QVERIFY(runResult.report.metadata.startedAt.isValid());
@@ -1023,8 +1025,11 @@ void ExecutionViewModelTests::newProjectTemplatesUseProductionDefaults()
     const auto stationRoot = StartupSupport::newProjectStationTemplate();
     QCOMPARE(stationRoot.value(QStringLiteral("stationId")).toString(),
              QStringLiteral("NA"));
-    QCOMPARE(stationRoot.value(QStringLiteral("name")).toString(),
+    QCOMPARE(stationRoot.value(QStringLiteral("model")).toString(),
              QStringLiteral("NA"));
+    QCOMPARE(stationRoot.value(QStringLiteral("customerId")).toString(),
+             QStringLiteral("NA"));
+    QVERIFY(!stationRoot.contains(QStringLiteral("name")));
     QVERIFY(stationRoot.value(QStringLiteral("stopOnFailure")).toBool());
     QVERIFY(stationRoot.value(QStringLiteral("scanDialogEnabled")).toBool());
     QVERIFY(stationRoot.value(QStringLiteral("txtLogEnabled")).toBool());
@@ -1733,6 +1738,8 @@ void ExecutionViewModelTests::runnerModelsExposeReportHierarchyAndDetails()
     measurement.hasUpperLimit = true;
     measurement.upperLimit = 5.1;
     measurement.status = PicoATE::Core::MeasurementStatus::Passed;
+    measurement.attributes.insert(QStringLiteral("comparison"),
+                                  QStringLiteral("between"));
 
     PicoATE::Core::AttemptReport attempt;
     attempt.index = 1;
@@ -1790,9 +1797,9 @@ void ExecutionViewModelTests::runnerModelsExposeReportHierarchyAndDetails()
     QCOMPARE(resultModel.data(stepIndex.siblingAtColumn(UutStepModel::ErrorCodeColumn)).toString(),
              QStringLiteral("E001"));
     QCOMPARE(resultModel.data(stepIndex.siblingAtColumn(UutStepModel::LowerLimitColumn)).toString(),
-             QStringLiteral("4.9"));
+             QStringLiteral(">= 4.9 V"));
     QCOMPARE(resultModel.data(stepIndex.siblingAtColumn(UutStepModel::UpperLimitColumn)).toString(),
-             QStringLiteral("5.1"));
+             QStringLiteral("<= 5.1 V"));
     QCOMPARE(resultModel.data(stepIndex.siblingAtColumn(UutStepModel::ActualColumn)).toString(),
              QStringLiteral("4.999 V"));
     QCOMPARE(resultModel.data(stepIndex.siblingAtColumn(UutStepModel::OutcomeColumn)).toString(),
@@ -1846,10 +1853,27 @@ void ExecutionViewModelTests::runnerModelsExposeReportHierarchyAndDetails()
     auto refreshedUut = resultModel.index(0, UutStepModel::NameColumn);
     auto refreshedStep = resultModel.index(0, UutStepModel::NameColumn, refreshedUut);
     QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::LowerLimitColumn)).toString(),
-             QStringLiteral("0x199"));
+             QStringLiteral("= 0x199"));
     QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::UpperLimitColumn)).toString(),
-             QStringLiteral("0x199"));
+             QStringLiteral("= 0x199"));
 
+    stringLimit.attributes.insert(QStringLiteral("comparison"),
+                                  QStringLiteral("contains"));
+    stringLimit.attributes.insert(QStringLiteral("expected"),
+                                  QStringLiteral("0x19"));
+    report.uuts[0].steps[0].measurements = {stringLimit};
+    resultModel.setReport(report);
+    refreshedUut = resultModel.index(0, UutStepModel::NameColumn);
+    refreshedStep = resultModel.index(0, UutStepModel::NameColumn, refreshedUut);
+    QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::LowerLimitColumn)).toString(),
+             QStringLiteral("CONTAINS 0x19"));
+    QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::UpperLimitColumn)).toString(),
+             QStringLiteral("-"));
+
+    stringLimit.attributes.insert(QStringLiteral("comparison"),
+                                  QStringLiteral("equal"));
+    stringLimit.attributes.insert(QStringLiteral("expected"),
+                                  QStringLiteral("0x199"));
     stringLimit.value = QStringLiteral("ID=0x199 | MASK=0x7FF | DATA=09 01 03 07 | DLC=4");
     stringLimit.attributes.insert(QStringLiteral("displayLower"),
                                   QStringLiteral("ID=0x199 | MASK=0x7FF"));
@@ -1860,9 +1884,9 @@ void ExecutionViewModelTests::runnerModelsExposeReportHierarchyAndDetails()
     refreshedUut = resultModel.index(0, UutStepModel::NameColumn);
     refreshedStep = resultModel.index(0, UutStepModel::NameColumn, refreshedUut);
     QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::LowerLimitColumn)).toString(),
-             QStringLiteral("ID=0x199 | MASK=0x7FF"));
+             QStringLiteral("= ID=0x199 | MASK=0x7FF"));
     QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::UpperLimitColumn)).toString(),
-             QStringLiteral("ID=0x199 | MASK=0x7FF"));
+             QStringLiteral("= ID=0x199 | MASK=0x7FF"));
     QVERIFY(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::ActualColumn))
                 .toString().contains(QStringLiteral("DATA=09 01 03 07")));
 
@@ -1887,7 +1911,7 @@ void ExecutionViewModelTests::runnerModelsExposeReportHierarchyAndDetails()
              QStringLiteral("VOUT"));
     QCOMPARE(measurementModel.data(
                  measurementModel.index(0, MeasurementModel::LimitsColumn)).toString(),
-             QStringLiteral("[4.9, 5.1]"));
+             QStringLiteral(">= 4.9 V .. <= 5.1 V"));
 
     DiagnosticModel diagnosticModel;
     QAbstractItemModelTester diagnosticTester(
@@ -1917,9 +1941,9 @@ void ExecutionViewModelTests::runnerModelsExposeReportHierarchyAndDetails()
     refreshedUut = resultModel.index(0, UutStepModel::NameColumn);
     refreshedStep = resultModel.index(0, UutStepModel::NameColumn, refreshedUut);
     QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::LowerLimitColumn)).toString(),
-             QStringLiteral("11.5"));
+             QStringLiteral(">= 11.5 V"));
     QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::UpperLimitColumn)).toString(),
-             QStringLiteral("12.5"));
+             QStringLiteral("<= 12.5 V"));
     QCOMPARE(resultModel.data(refreshedStep.siblingAtColumn(UutStepModel::ActualColumn)).toString(),
              QStringLiteral("-"));
 }
@@ -2907,7 +2931,8 @@ void ExecutionViewModelTests::executionReportJsonRoundTripsAndRejectsUnsupported
     QCOMPARE(parsed.report.planId, report.planId);
     QCOMPARE(parsed.report.sequenceId, report.sequenceId);
     QCOMPARE(parsed.report.state, PicoATE::Core::ExecutionState::Completed);
-    QCOMPARE(parsed.report.metadata.name, report.metadata.name);
+    QCOMPARE(parsed.report.metadata.model, report.metadata.model);
+    QCOMPARE(parsed.report.metadata.customerId, report.metadata.customerId);
     QCOMPARE(parsed.report.metadata.sequenceName, report.metadata.sequenceName);
     QCOMPARE(parsed.report.metadata.serialNumber, report.metadata.serialNumber);
     QCOMPARE(parsed.report.metadata.stationId, report.metadata.stationId);
@@ -3036,7 +3061,9 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(csv.startsWith("\xEF\xBB\xBF"));
     const auto text = QString::fromUtf8(csv);
     QVERIFY(text.contains(QStringLiteral("\"测量,\"\"输出\"\"\"")));
-    QVERIFY(text.contains(QStringLiteral("\"4.9\"")));
+    QVERIFY(text.contains(QStringLiteral("\">= 4.9 V\"")));
+    QVERIFY(text.contains(QStringLiteral("\"<= 5.1 V\"")));
+    QVERIFY(text.contains(QStringLiteral("\"4.999 V\"")));
     QVERIFY(text.contains(QStringLiteral("\"Actual Value\"")));
     QVERIFY(text.contains(QStringLiteral("\"Duration Ms\"")));
     QVERIFY(text.contains(QStringLiteral("\"1021\"")));
@@ -3044,13 +3071,16 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
         "\"Sequence Name\",\"sample_sequence.json\",\"\",\"\","
         "\"SN\",\"SN-001\",\"\"\r\n")));
     QVERIFY(text.contains(QStringLiteral(
-        "\"Name\",\"End-of-Line Station\","
         "\"Station ID\",\"STATION-01\","
-        "\"Jig No\",\"JIG-07\",\"\"\r\n")));
+        "\"Model\",\"PICO-800V\","
+        "\"Customer ID\",\"CUSTOMER-01\",\"\"\r\n")));
     QVERIFY(text.contains(QStringLiteral(
+        "\"Jig No\",\"JIG-07\","
         "\"Order\",\"ORDER-42\","
-        "\"Tester\",\"Tester-01\","
-        "\"Test Time\",\"2026-08-09 14:15:16\",\"\"\r\n")));
+        "\"Tester\",\"Tester-01\",\"\"\r\n")));
+    QVERIFY(text.contains(QStringLiteral(
+        "\"Test Time\",\"2026-08-09 14:15:16\","
+        "\"\",\"\",\"\",\"\",\"\"\r\n")));
     QVERIFY(text.contains(QStringLiteral(
         "\"TOTAL TEST ITEMS: 1\",\"\",\"\",\"PASS\",\"\",\"\","
         "\"TOTAL DURATION: 00:00:09.876\"\r\n")));
@@ -3062,6 +3092,7 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     errorStep.state = PicoATE::Core::ActivationState::Failed;
     auto& errorMeasurement = errorStep.measurements.first();
     errorMeasurement.value = {};
+    errorMeasurement.unit.clear();
     errorMeasurement.hasLowerLimit = false;
     errorMeasurement.hasUpperLimit = false;
     errorMeasurement.status = PicoATE::Core::MeasurementStatus::Error;
@@ -3080,7 +3111,7 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     const auto errorText = QString::fromUtf8(errorCsv.readAll());
     QVERIFY(errorText.contains(QStringLiteral(
         "\"Check GCAN CAN2 Payload\",\"RuntimeVariableResolutionError\","
-        "\"43 58 31 2D 47 43 41 4E\",\"43 58 31 2D 47 43 41 4E\",\"\",\"ERROR\"")));
+        "\"= 43 58 31 2D 47 43 41 4E\",\"= 43 58 31 2D 47 43 41 4E\",\"\",\"ERROR\"")));
 
     const auto xlsxResult = ReportExporter::saveXlsx(xlsxPath, report);
     QVERIFY2(xlsxResult.success, qPrintable(xlsxResult.errorMessage));
@@ -3092,22 +3123,26 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(xlsx.contains("xl/styles.xml"));
     QVERIFY(xlsx.contains("Actual Value"));
     QVERIFY(xlsx.contains(QStringLiteral("测量,&quot;输出&quot;").toUtf8()));
-    QVERIFY(xlsx.contains("End-of-Line Station"));
+    QVERIFY(xlsx.contains("PICO-800V"));
+    QVERIFY(xlsx.contains("CUSTOMER-01"));
     QVERIFY(xlsx.contains("sample_sequence.json"));
     QVERIFY(xlsx.contains("SN-001"));
     QVERIFY(xlsx.contains("STATION-01"));
+    QVERIFY(xlsx.contains("&gt;= 4.9 V") || xlsx.contains(">= 4.9 V"));
+    QVERIFY(xlsx.contains("&lt;= 5.1 V"));
+    QVERIFY(xlsx.contains("4.999 V"));
     QVERIFY(xlsx.contains("00:00:09.876"));
     QVERIFY(!xlsx.contains("state=\"frozen\""));
     QVERIFY(!xlsx.contains("ySplit="));
-    QVERIFY(xlsx.contains("ref=\"A4:G5\""));
+    QVERIFY(xlsx.contains("ref=\"A5:G6\""));
     QVERIFY(xlsx.contains("ref=\"B1:D1\""));
     QVERIFY(xlsx.contains("ref=\"F1:G1\""));
     QVERIFY(xlsx.contains("ref=\"F2:G2\""));
     QVERIFY(xlsx.contains("ref=\"F3:G3\""));
-    QVERIFY(xlsx.contains("ref=\"B6:F6\""));
-    QVERIFY(xlsx.contains("<c r=\"A6\" s=\"6\""));
-    QVERIFY(xlsx.contains("<c r=\"B6\" s=\"7\""));
-    QVERIFY(xlsx.contains("<c r=\"G6\" s=\"6\""));
+    QVERIFY(xlsx.contains("ref=\"B7:F7\""));
+    QVERIFY(xlsx.contains("<c r=\"A7\" s=\"6\""));
+    QVERIFY(xlsx.contains("<c r=\"B7\" s=\"7\""));
+    QVERIFY(xlsx.contains("<c r=\"G7\" s=\"6\""));
     QVERIFY(xlsx.contains("TOTAL TEST ITEMS"));
     QVERIFY(xlsx.contains("FF16794A"));
     QVERIFY(xlsx.contains("FFB42318"));
@@ -3119,7 +3154,7 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QFile errorXlsxFile(errorXlsxPath);
     QVERIFY(errorXlsxFile.open(QIODevice::ReadOnly));
     const auto errorXlsx = errorXlsxFile.readAll();
-    QVERIFY(errorXlsx.contains("<c r=\"B6\" s=\"8\""));
+    QVERIFY(errorXlsx.contains("<c r=\"B7\" s=\"8\""));
     QVERIFY(errorXlsx.contains(">FAIL<"));
 
     auto filteredReport = sampleReport();
@@ -3218,8 +3253,9 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
     artifactContext.sequenceFilePath = directory.filePath(
         QStringLiteral("product_sequence.json"));
     artifactContext.serialNumber = QStringLiteral("SN:001");
-    artifactContext.stationName = QStringLiteral("End Of Line");
     artifactContext.stationId = QStringLiteral("STATION-01");
+    artifactContext.model = QStringLiteral("PICO-800V");
+    artifactContext.customerId = QStringLiteral("CUSTOMER-01");
     artifactContext.stationFilePath = directory.filePath(
         QStringLiteral("StationSystem.json"));
     artifactContext.order = QStringLiteral("WO-20260719");
@@ -3268,8 +3304,9 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
     QVERIFY(savedLog.contains(QStringLiteral("Sequence Name   : product_sequence.json")));
     QVERIFY(savedLog.contains(QStringLiteral("Sequence Path   : ")));
     QVERIFY(savedLog.contains(QStringLiteral("Serial Number   : SN:001")));
-    QVERIFY(savedLog.contains(QStringLiteral("Station         : End Of Line")));
     QVERIFY(savedLog.contains(QStringLiteral("Station ID      : STATION-01")));
+    QVERIFY(savedLog.contains(QStringLiteral("Model           : PICO-800V")));
+    QVERIFY(savedLog.contains(QStringLiteral("Customer ID     : CUSTOMER-01")));
     QVERIFY(savedLog.contains(QStringLiteral("Order           : WO-20260719")));
     QVERIFY(savedLog.contains(QStringLiteral("Tester          : Tester-01")));
     QVERIFY(savedLog.contains(QStringLiteral("Jig No          : JIG-02")));
@@ -3330,7 +3367,7 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
     QFile legacyCsv(legacyCsvPath);
     QVERIFY(legacyCsv.open(QIODevice::ReadOnly));
     QVERIFY(QString::fromUtf8(legacyCsv.readAll()).contains(
-        QStringLiteral("\"8\",\"8\",\"8\",\"PASS\"")));
+        QStringLiteral("\"= 8 V\",\"= 8 V\",\"8 V\",\"PASS\"")));
 
     const auto second = writer.begin(settings, QString(), startedAt.addSecs(1));
     QVERIFY(second.success);
@@ -3397,7 +3434,9 @@ void ExecutionViewModelTests::testItemReportAndRuntimeEventsPreserveHierarchy()
     QCOMPARE(document.object().value(QStringLiteral("schemaVersion")).toInt(), 5);
     const auto parsed = PicoATE::Core::parseExecutionReport(serialized);
     QVERIFY(parsed.ok());
-    QCOMPARE(parsed.report.metadata.name, runResult.report.metadata.name);
+    QCOMPARE(parsed.report.metadata.model, runResult.report.metadata.model);
+    QCOMPARE(parsed.report.metadata.customerId,
+             runResult.report.metadata.customerId);
     QCOMPARE(parsed.report.metadata.stationId, runResult.report.metadata.stationId);
     QCOMPARE(parsed.report.metadata.startedAt, runResult.report.metadata.startedAt);
     QCOMPARE(parsed.report.metadata.finishedAt, runResult.report.metadata.finishedAt);
@@ -5509,7 +5548,8 @@ void ExecutionViewModelTests::stationFailurePolicyContinuesAllTestItemChildren()
     })";
     const QByteArray station = R"({
         "stationId": "policy-station",
-        "name": "Policy Line",
+        "model": "Policy Model",
+        "customerId": "Policy Customer",
         "stopOnFailure": false,
         "metadata": {
             "jigNo": "JIG-POLICY",
@@ -5552,7 +5592,8 @@ void ExecutionViewModelTests::stationFailurePolicyContinuesAllTestItemChildren()
     QCOMPARE(parent->children.at(0).state, PicoATE::Core::ActivationState::Failed);
     QCOMPARE(parent->children.at(1).state, PicoATE::Core::ActivationState::Passed);
     QCOMPARE(next->state, PicoATE::Core::ActivationState::Passed);
-    QCOMPARE(run.report.metadata.name, QStringLiteral("Policy Line"));
+    QCOMPARE(run.report.metadata.model, QStringLiteral("Policy Model"));
+    QCOMPARE(run.report.metadata.customerId, QStringLiteral("Policy Customer"));
     QCOMPARE(run.report.metadata.stationId, QStringLiteral("policy-station"));
     QCOMPARE(run.report.metadata.jigNo, QStringLiteral("JIG-POLICY"));
     QCOMPARE(run.report.metadata.order, QStringLiteral("ORDER-POLICY"));

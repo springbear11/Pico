@@ -1,6 +1,7 @@
 #include "RunnerModels.h"
 
 #include "FunctionIconProvider.h"
+#include "MeasurementDisplay.h"
 
 #include "PicoATE/Core/MeasurementTypes.h"
 
@@ -409,73 +410,7 @@ QString loopIterationDescription(const PicoATE::Core::LoopIterationContext& loop
 
 QString measurementLimits(const PicoATE::Core::MeasurementResult& measurement)
 {
-    if (measurement.hasLowerLimit && measurement.hasUpperLimit) {
-        return QStringLiteral("[%1, %2]")
-            .arg(measurement.lowerLimit)
-            .arg(measurement.upperLimit);
-    }
-    if (measurement.hasLowerLimit) {
-        return QStringLiteral(">= %1").arg(measurement.lowerLimit);
-    }
-    if (measurement.hasUpperLimit) {
-        return QStringLiteral("<= %1").arg(measurement.upperLimit);
-    }
-    return QStringLiteral("-");
-}
-
-QString measurementValueText(const PicoATE::Core::MeasurementResult& measurement)
-{
-    if (!measurement.value.isValid() || measurement.value.isNull()) {
-        return QStringLiteral("-");
-    }
-    const auto value = variantText(measurement.value);
-    return measurement.unit.isEmpty() ? value : QStringLiteral("%1 %2").arg(value, measurement.unit);
-}
-
-QString inferredLimitText(const PicoATE::Core::MeasurementResult& measurement,
-                          bool lower)
-{
-    const auto displayKey = lower ? QStringLiteral("displayLower")
-                                  : QStringLiteral("displayUpper");
-    const auto display = measurement.attributes.value(displayKey);
-    if (display.isValid() && !display.isNull()) {
-        return variantText(display);
-    }
-    if (lower && measurement.hasLowerLimit) {
-        return QString::number(measurement.lowerLimit, 'g', 12);
-    }
-    if (!lower && measurement.hasUpperLimit) {
-        return QString::number(measurement.upperLimit, 'g', 12);
-    }
-
-    auto comparison = measurement.attributes
-                          .value(QStringLiteral("comparison")).toString()
-                          .trimmed().toLower();
-    comparison.remove(QLatin1Char('-'));
-    comparison.remove(QLatin1Char('_'));
-    comparison.remove(QLatin1Char(' '));
-    const bool equality = comparison == QStringLiteral("==") ||
-        comparison == QStringLiteral("eq") || comparison == QStringLiteral("equal") ||
-        comparison == QStringLiteral("!=") || comparison == QStringLiteral("ne") ||
-        comparison == QStringLiteral("notequal");
-    const bool lowerBound = comparison == QStringLiteral(">") ||
-        comparison == QStringLiteral(">=") || comparison == QStringLiteral("gt") ||
-        comparison == QStringLiteral("ge") || comparison == QStringLiteral("gte") ||
-        comparison == QStringLiteral("greaterthan") ||
-        comparison == QStringLiteral("greaterorequal");
-    const bool upperBound = comparison == QStringLiteral("<") ||
-        comparison == QStringLiteral("<=") || comparison == QStringLiteral("lt") ||
-        comparison == QStringLiteral("le") || comparison == QStringLiteral("lte") ||
-        comparison == QStringLiteral("lessthan") ||
-        comparison == QStringLiteral("lessorequal");
-    if ((!equality && lower && !lowerBound) ||
-        (!equality && !lower && !upperBound)) {
-        return QStringLiteral("-");
-    }
-    const auto expected = measurement.attributes.value(QStringLiteral("expected"));
-    return expected.isValid() && !expected.isNull()
-        ? variantText(expected)
-        : QStringLiteral("-");
+    return measurementLimitsDisplay(measurement);
 }
 
 template <typename Formatter>
@@ -505,7 +440,7 @@ QString joinedActualText(
     if (measurements.isEmpty() ||
         !measurements.first().attributes
              .value(QStringLiteral("parserDisplay")).toBool()) {
-        return joinedMeasurementText(measurements, measurementValueText);
+        return joinedMeasurementText(measurements, measurementActualDisplay);
     }
 
     const auto original = measurements.first().attributes
@@ -513,7 +448,7 @@ QString joinedActualText(
                               .toString();
     QString parsed;
     if (measurements.size() == 1) {
-        parsed = measurementValueText(measurements.first());
+        parsed = measurementActualDisplay(measurements.first());
     } else {
         QStringList fields;
         fields.reserve(measurements.size());
@@ -521,7 +456,7 @@ QString joinedActualText(
             fields.push_back(QStringLiteral("%1=%2").arg(
                 measurement.name.isEmpty() ? QStringLiteral("value")
                                            : measurement.name,
-                measurementValueText(measurement)));
+                measurementActualDisplay(measurement)));
         }
         parsed = fields.join(QStringLiteral("; "));
     }
@@ -530,12 +465,12 @@ QString joinedActualText(
 
 QString lowerLimitText(const PicoATE::Core::MeasurementResult& measurement)
 {
-    return inferredLimitText(measurement, true);
+    return measurementLowerLimitDisplay(measurement);
 }
 
 QString upperLimitText(const PicoATE::Core::MeasurementResult& measurement)
 {
-    return inferredLimitText(measurement, false);
+    return measurementUpperLimitDisplay(measurement);
 }
 
 QString stepErrorCode(const PicoATE::Core::StepReport& step)

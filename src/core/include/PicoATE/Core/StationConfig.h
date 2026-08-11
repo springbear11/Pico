@@ -19,7 +19,8 @@ struct StationConfigDiagnostic {
 
 struct StationConfig {
     QString stationId;
-    QString name;
+    QString model;
+    QString customerId;
     bool stopOnFailure = true;
     bool scanDialogEnabled = true;
     bool txtLogEnabled = false;

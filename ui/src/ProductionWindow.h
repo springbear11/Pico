@@ -81,6 +81,8 @@ private:
     QLabel* m_sequenceLabel = nullptr;
     QLabel* m_serialLabel = nullptr;
     QLabel* m_stationLabel = nullptr;
+    QLabel* m_modelLabel = nullptr;
+    QLabel* m_customerIdLabel = nullptr;
     QLabel* m_orderLabel = nullptr;
     QLabel* m_testerLabel = nullptr;
     QLabel* m_jigLabel = nullptr;
@@ -109,6 +111,7 @@ private:
     QString m_activeUutId;
     QString m_pendingSerialNumber;
     bool m_currentRunCounted = false;
+    bool m_fieldDeviceDialogOpen = false;
 };
 
 std::unique_ptr<ProductionWindow> createProductionWindow(

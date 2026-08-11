@@ -1,111 +1,37 @@
 #include "ReportExporter.h"
+#include "MeasurementDisplay.h"
 #include "SimpleXlsxWriter.h"
 
 #include "PicoATE/Core/MeasurementTypes.h"
 
-#include <QJsonDocument>
 #include <QSaveFile>
 
 namespace PicoATE::Ui {
 
 namespace {
 
+QString reportLimitDisplay(
+    const PicoATE::Core::MeasurementResult& measurement,
+    bool lower)
+{
+    const auto value = lower
+        ? measurementLowerLimitDisplay(measurement)
+        : measurementUpperLimitDisplay(measurement);
+    return value == QStringLiteral("-") ? QString{} : value;
+}
+
+QString reportActualDisplay(
+    const PicoATE::Core::MeasurementResult& measurement)
+{
+    return !measurement.value.isValid() || measurement.value.isNull()
+        ? QString{}
+        : measurementActualDisplay(measurement);
+}
+
 QString csvCell(QString value)
 {
     value.replace('"', "\"\"");
     return '"' + value + '"';
-}
-
-QString variantText(const QVariant& value)
-{
-    if (!value.isValid() || value.isNull()) return {};
-    if (value.metaType().id() == QMetaType::QVariantMap ||
-        value.metaType().id() == QMetaType::QVariantList) {
-        return QString::fromUtf8(
-            QJsonDocument::fromVariant(value).toJson(QJsonDocument::Compact));
-    }
-    return value.toString();
-}
-
-QString optionalLimit(bool present, double value)
-{
-    return present ? QString::number(value, 'g', 15) : QString();
-}
-
-QString normalizedComparison(QString value)
-{
-    value = value.trimmed().toLower();
-    value.remove(QLatin1Char('-'));
-    value.remove(QLatin1Char('_'));
-    value.remove(QLatin1Char(' '));
-    return value;
-}
-
-QString inferredLimit(const PicoATE::Core::MeasurementResult& measurement,
-                      bool lower)
-{
-    const auto display = measurement.attributes.value(
-        lower ? QStringLiteral("displayLower") : QStringLiteral("displayUpper"));
-    if (display.isValid() && !display.isNull()) {
-        return variantText(display);
-    }
-    if (lower && measurement.hasLowerLimit) {
-        return optionalLimit(true, measurement.lowerLimit);
-    }
-    if (!lower && measurement.hasUpperLimit) {
-        return optionalLimit(true, measurement.upperLimit);
-    }
-
-    const auto comparison = normalizedComparison(
-        measurement.attributes.value(QStringLiteral("comparison")).toString());
-    const auto expected = measurement.attributes.value(QStringLiteral("expected"));
-    if (!expected.isValid() || expected.isNull()) {
-        return {};
-    }
-
-    const bool equality = comparison == QStringLiteral("==") ||
-        comparison == QStringLiteral("eq") ||
-        comparison == QStringLiteral("equal") ||
-        comparison == QStringLiteral("!=") ||
-        comparison == QStringLiteral("ne") ||
-        comparison == QStringLiteral("notequal");
-    const bool lowerBound = comparison == QStringLiteral(">") ||
-        comparison == QStringLiteral(">=") ||
-        comparison == QStringLiteral("gt") ||
-        comparison == QStringLiteral("ge") ||
-        comparison == QStringLiteral("gte") ||
-        comparison == QStringLiteral("greaterthan") ||
-        comparison == QStringLiteral("greaterorequal");
-    const bool upperBound = comparison == QStringLiteral("<") ||
-        comparison == QStringLiteral("<=") ||
-        comparison == QStringLiteral("lt") ||
-        comparison == QStringLiteral("le") ||
-        comparison == QStringLiteral("lte") ||
-        comparison == QStringLiteral("lessthan") ||
-        comparison == QStringLiteral("lessorequal");
-    if ((!equality && lower && !lowerBound) ||
-        (!equality && !lower && !upperBound)) {
-        return {};
-    }
-    if (equality &&
-        (expected.metaType().id() == QMetaType::QString ||
-         expected.metaType().id() == QMetaType::QByteArray)) {
-        return variantText(expected);
-    }
-
-    bool expectedOk = false;
-    const double expectedNumber = expected.toDouble(&expectedOk);
-    bool toleranceOk = false;
-    const double tolerance = measurement.attributes
-                                 .value(QStringLiteral("tolerance"), 0.0)
-                                 .toDouble(&toleranceOk);
-    if (equality && expectedOk && toleranceOk) {
-        return QString::number(
-            lower ? expectedNumber - tolerance : expectedNumber + tolerance,
-            'g',
-            15);
-    }
-    return variantText(expected);
 }
 
 QString outcomeToken(PicoATE::Core::NodeOutcome outcome)
@@ -154,7 +80,8 @@ QString totalDurationText(const PicoATE::Core::ExecutionReportMetadata& metadata
 }
 
 struct ReportSummary {
-    QString name;
+    QString model;
+    QString customerId;
     QString sequenceName;
     QString serialNumber;
     QString stationId;
@@ -196,7 +123,8 @@ int recordedStepCount(const PicoATE::Core::ExecutionReport& report)
 ReportSummary reportSummary(const PicoATE::Core::ExecutionReport& report)
 {
     ReportSummary summary;
-    summary.name = report.metadata.name;
+    summary.model = report.metadata.model;
+    summary.customerId = report.metadata.customerId;
     summary.sequenceName = report.metadata.sequenceName.trimmed();
     if (summary.sequenceName.isEmpty()) {
         summary.sequenceName = report.sequenceId;
@@ -292,9 +220,9 @@ QStringList reportCells(const PicoATE::Core::StepReport& step,
     return {
         step.displayName.isEmpty() ? step.stepId : step.displayName,
         errorCode,
-        measurement ? inferredLimit(*measurement, true) : QString(),
-        measurement ? inferredLimit(*measurement, false) : QString(),
-        measurement ? variantText(measurement->value) : QString(),
+        measurement ? reportLimitDisplay(*measurement, true) : QString(),
+        measurement ? reportLimitDisplay(*measurement, false) : QString(),
+        measurement ? reportActualDisplay(*measurement) : QString(),
         outcomeToken(step.outcome),
         step.durationMs >= 0 ? QString::number(step.durationMs) : QString(),
     };
@@ -478,12 +406,14 @@ ReportExportResult ReportExporter::saveCsv(
     csv += csvLine({QStringLiteral("Sequence Name"), summary.sequenceName,
                     {}, {}, QStringLiteral("SN"), summary.serialNumber, {}})
                .toUtf8();
-    csv += csvLine({QStringLiteral("Name"), summary.name,
-                    QStringLiteral("Station ID"), summary.stationId,
-                    QStringLiteral("Jig No"), summary.jigNo, {}}).toUtf8();
-    csv += csvLine({QStringLiteral("Order"), summary.order,
-                    QStringLiteral("Tester"), summary.tester,
-                    QStringLiteral("Test Time"), summary.testTime, {}}).toUtf8();
+    csv += csvLine({QStringLiteral("Station ID"), summary.stationId,
+                    QStringLiteral("Model"), summary.model,
+                    QStringLiteral("Customer ID"), summary.customerId, {}}).toUtf8();
+    csv += csvLine({QStringLiteral("Jig No"), summary.jigNo,
+                    QStringLiteral("Order"), summary.order,
+                    QStringLiteral("Tester"), summary.tester, {}}).toUtf8();
+    csv += csvLine({QStringLiteral("Test Time"), summary.testTime,
+                    {}, {}, {}, {}, {}}).toUtf8();
     csv += detailCsvHeader();
     for (const auto& step : report.sessionSteps) {
         if (step.phase == PicoATE::Core::ExecutionPhase::Setup) {
@@ -516,13 +446,16 @@ ReportExportResult ReportExporter::saveXlsx(
     const auto summary = reportSummary(report);
     rows.push_back(sequenceInfoRow(summary.sequenceName, summary.serialNumber));
     rows.push_back(summaryInfoRow(
-        QStringLiteral("Name"), summary.name,
         QStringLiteral("Station ID"), summary.stationId,
-        QStringLiteral("Jig No"), summary.jigNo));
+        QStringLiteral("Model"), summary.model,
+        QStringLiteral("Customer ID"), summary.customerId));
     rows.push_back(summaryInfoRow(
+        QStringLiteral("Jig No"), summary.jigNo,
         QStringLiteral("Order"), summary.order,
-        QStringLiteral("Tester"), summary.tester,
-        QStringLiteral("Test Time"), summary.testTime));
+        QStringLiteral("Tester"), summary.tester));
+    rows.push_back(summaryInfoRow(
+        QStringLiteral("Test Time"), summary.testTime,
+        {}, {}, {}, {}));
 
     rows.push_back({{QStringLiteral("Test Item"),
                      QStringLiteral("ERRORCODE"),

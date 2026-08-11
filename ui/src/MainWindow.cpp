@@ -4861,11 +4861,18 @@ void MainWindow::buildLayout()
     m_adminSerialLabel->setObjectName(QStringLiteral("adminSerialLabel"));
     m_adminStationLabel = new QLabel(tr("--"), sidebar);
     m_adminStationLabel->setObjectName(QStringLiteral("adminStationLabel"));
+    m_adminModelLabel = new QLabel(tr("--"), sidebar);
+    m_adminModelLabel->setObjectName(QStringLiteral("adminModelLabel"));
+    m_adminCustomerIdLabel = new QLabel(tr("--"), sidebar);
+    m_adminCustomerIdLabel->setObjectName(
+        QStringLiteral("adminCustomerIdLabel"));
     m_adminOrderLabel = new QLabel(tr("--"), sidebar);
     m_adminTesterLabel = new QLabel(tr("--"), sidebar);
     m_adminJigLabel = new QLabel(tr("--"), sidebar);
     unitDetails->addRow(tr("SN"), m_adminSerialLabel);
-    unitDetails->addRow(tr("Station"), m_adminStationLabel);
+    unitDetails->addRow(tr("Station ID"), m_adminStationLabel);
+    unitDetails->addRow(tr("Model"), m_adminModelLabel);
+    unitDetails->addRow(tr("Customer ID"), m_adminCustomerIdLabel);
     unitDetails->addRow(tr("Order"), m_adminOrderLabel);
     unitDetails->addRow(tr("Tester"), m_adminTesterLabel);
     unitDetails->addRow(tr("Jig No."), m_adminJigLabel);
@@ -5479,7 +5486,8 @@ void MainWindow::updateAdminRunState(UiRunState state)
 
 void MainWindow::updateAdminStationSummary()
 {
-    if (!m_adminStationLabel || !m_stationDocument ||
+    if (!m_adminStationLabel || !m_adminModelLabel ||
+        !m_adminCustomerIdLabel || !m_stationDocument ||
         m_stationDocument->filePath().isEmpty()) {
         return;
     }
@@ -5489,6 +5497,13 @@ void MainWindow::updateAdminStationSummary()
         ? QFileInfo(m_stationDocument->filePath()).completeBaseName()
         : result.config.stationId;
     m_adminStationLabel->setText(stationId);
+    m_adminModelLabel->setText(result.config.model.trimmed().isEmpty()
+                                   ? tr("--")
+                                   : result.config.model.trimmed());
+    m_adminCustomerIdLabel->setText(
+        result.config.customerId.trimmed().isEmpty()
+            ? tr("--")
+            : result.config.customerId.trimmed());
     m_adminOrderLabel->setText(stationMetadataValue(
         result.config.metadata, {"order", "orderNumber"}));
     m_adminTesterLabel->setText(stationMetadataValue(

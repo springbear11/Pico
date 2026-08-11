@@ -281,7 +281,11 @@ StationConfigResult parseStationConfigJson(const QJsonObject& object,
     if (result.config.stationId.isEmpty() && object.contains("id")) {
         result.config.stationId = readString(object, "id", result, "id");
     }
-    result.config.name = readString(object, "name", result, "name", result.config.stationId);
+    const auto legacyName = readString(object, "name", result, "name");
+    result.config.model = readString(
+        object, "model", result, "model", legacyName);
+    result.config.customerId = readString(
+        object, "customerId", result, "customerId");
     result.config.stopOnFailure = readBool(
         object, "stopOnFailure", result, "stopOnFailure", true);
     result.config.scanDialogEnabled = readBool(
@@ -327,7 +331,10 @@ StationConfigResult parseStationConfigJson(const QJsonObject& object,
     result.config.metadata = readObjectMap(object, "metadata", result, "metadata");
 
     result.config.stationId = resolveStringField(result.config.stationId, resolver, result, "stationId");
-    result.config.name = resolveStringField(result.config.name, resolver, result, "name");
+    result.config.model = resolveStringField(
+        result.config.model, resolver, result, "model");
+    result.config.customerId = resolveStringField(
+        result.config.customerId, resolver, result, "customerId");
     result.config.reportOutputDirectory = resolveStringField(
         result.config.reportOutputDirectory,
         resolver,

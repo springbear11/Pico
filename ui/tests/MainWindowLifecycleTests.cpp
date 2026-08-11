@@ -2,6 +2,7 @@
 
 #include "AdminStartupSplash.h"
 #include "ExecutionViewModel.h"
+#include "FieldDeviceDialog.h"
 #include "FlowTargetSelector.h"
 #include "LoginDialog.h"
 #include "LoadingSpinner.h"
@@ -28,6 +29,7 @@
 #include <QApplication>
 #include <QAbstractButton>
 #include <QAction>
+#include <QAbstractButton>
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QColor>
@@ -50,6 +52,7 @@
 #include <QMenu>
 #include <QLineEdit>
 #include <QListView>
+#include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QProgressBar>
@@ -306,10 +309,12 @@ private slots:
     void loginDialogAppliesRoutingPolicyAndRemembersLoadMode();
     void productRoutingDialogEditsAndAtomicallySavesRoutes();
     void productRoutingDialogDeletesSelectedRouteInsteadOfCurrentRoute();
-    void productRoutingDialogRejectsOverlapAndBrokenSequence();
+    void productRoutingDialogAllowsPotentialOverlapAndRejectsBrokenSequence();
     void adminStartupSplashCentersLogoAndRunsSpinner();
     void adminStartupInitializationShowsBusyOverlay();
     void stationScanDialogTogglePersists();
+    void fieldDeviceDialogAppliesCurrentDeviceAndSavesAll();
+    void productionFieldDeviceDialogDefersScannerUntilClosed();
     void scanDialogAcceptsRepeatedBarcodeAndHasNoWindowButtons();
     void adminStartsOnProductionDashboardAndOpensScannerOnDemand();
     void productionWindowPreloadsFlowAndRunsWithoutScanner();
@@ -3780,6 +3785,8 @@ void MainWindowLifecycleTests::loginDialogDiscoversSequenceAndValidatesAdminPass
     QVERIFY(station.open(QIODevice::WriteOnly));
     station.write(R"({
         "stationId":"line-1",
+        "name":"Legacy Model",
+        "customerId":"OLD-CUSTOMER",
         "scanDialogEnabled":true,
         "devices":[{
             "deviceId":"CAN1",
@@ -4273,6 +4280,9 @@ void MainWindowLifecycleTests::productRoutingDialogDeletesSelectedRouteInsteadOf
     QVERIFY(firstLength);
     QVERIFY(firstProject);
     QVERIFY(firstDevices);
+    QTest::mouseMove(firstLength, firstLength->rect().center());
+    QCoreApplication::processEvents();
+    QCOMPARE(table->selectionModel()->selectedRows().constFirst().row(), 1);
     QTest::mouseMove(firstProject, firstProject->rect().center());
     QTest::mouseMove(firstDevices, firstDevices->rect().center());
     QTest::mouseClick(firstLength, Qt::LeftButton);
@@ -4280,13 +4290,28 @@ void MainWindowLifecycleTests::productRoutingDialogDeletesSelectedRouteInsteadOf
     QCoreApplication::processEvents();
     QCOMPARE(table->selectionModel()->selectedRows().constFirst().row(), 1);
 
+    bool confirmationHandled = false;
+    QTimer::singleShot(0, &dialog, [&] {
+        auto* confirmation = qobject_cast<QMessageBox*>(
+            QApplication::activeModalWidget());
+        if (!confirmation) {
+            return;
+        }
+        auto* confirmDelete = confirmation->button(QMessageBox::Yes);
+        if (!confirmDelete) {
+            return;
+        }
+        confirmationHandled = true;
+        confirmDelete->click();
+    });
     remove->click();
+    QVERIFY(confirmationHandled);
     QCOMPARE(table->rowCount(), 1);
     QCOMPARE(table->item(0, 1)->text(), QStringLiteral("BTSN Product"));
     QCOMPARE(table->item(0, 2)->text(), QStringLiteral("BTSN*"));
 }
 
-void MainWindowLifecycleTests::productRoutingDialogRejectsOverlapAndBrokenSequence()
+void MainWindowLifecycleTests::productRoutingDialogAllowsPotentialOverlapAndRejectsBrokenSequence()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -4331,10 +4356,10 @@ void MainWindowLifecycleTests::productRoutingDialogRejectsOverlapAndBrokenSequen
     add->click();
     add->click();
     QCOMPARE(table->rowCount(), 2);
-    table->item(0, 1)->setText(QStringLiteral("Broad"));
-    table->item(0, 2)->setText(QStringLiteral("BTSN-*"));
-    table->item(1, 1)->setText(QStringLiteral("Specific"));
-    table->item(1, 2)->setText(QStringLiteral("*0001"));
+    table->item(0, 1)->setText(QStringLiteral("Contains C123"));
+    table->item(0, 2)->setText(QStringLiteral("*C1234567890*"));
+    table->item(1, 1)->setText(QStringLiteral("Contains BTSN"));
+    table->item(1, 2)->setText(QStringLiteral("*BTSN*"));
     for (int row = 0; row < 2; ++row) {
         auto* project = qobject_cast<QComboBox*>(table->cellWidget(row, 4));
         QVERIFY(project);
@@ -4346,24 +4371,39 @@ void MainWindowLifecycleTests::productRoutingDialogRejectsOverlapAndBrokenSequen
 
     QSignalSpy savedSpy(&dialog, &ProductRoutingDialog::routingSaved);
     save->click();
-    QCOMPARE(savedSpy.count(), 0);
-    QVERIFY(!QFileInfo::exists(routingPath));
-    QVERIFY(status->text().contains(QStringLiteral("overlap"),
-                                    Qt::CaseInsensitive));
+    QCOMPARE(savedSpy.count(), 1);
+    QVERIFY(QFileInfo::exists(routingPath));
 
-    table->item(1, 2)->setText(QStringLiteral("OTHER-*"));
+    QFile savedRouting(routingPath);
+    QVERIFY(savedRouting.open(QIODevice::ReadOnly));
+    const auto savedContents = savedRouting.readAll();
+    savedRouting.close();
+
+    ProductRoutingDialog brokenDialog(routingPath);
+    auto* brokenTable = brokenDialog.findChild<QTableWidget*>(
+        QStringLiteral("productRoutingTable"));
+    auto* brokenSave = brokenDialog.findChild<QPushButton*>(
+        QStringLiteral("productRoutingSaveButton"));
+    auto* brokenStatus = brokenDialog.findChild<QLabel*>(
+        QStringLiteral("productRoutingStatus"));
+    QVERIFY(brokenTable);
+    QVERIFY(brokenSave);
+    QVERIFY(brokenStatus);
     auto* secondProjectCombo = qobject_cast<QComboBox*>(
-        table->cellWidget(1, 4));
+        brokenTable->cellWidget(1, 4));
     QVERIFY(secondProjectCombo);
     const int brokenIndex = secondProjectCombo->findData(
         QFileInfo(brokenProject).absoluteFilePath());
     QVERIFY(brokenIndex >= 0);
     secondProjectCombo->setCurrentIndex(brokenIndex);
-    save->click();
-    QCOMPARE(savedSpy.count(), 0);
-    QVERIFY(!QFileInfo::exists(routingPath));
-    QVERIFY(status->text().contains(QStringLiteral("valid JSON"),
-                                    Qt::CaseInsensitive));
+    QSignalSpy brokenSavedSpy(&brokenDialog,
+                              &ProductRoutingDialog::routingSaved);
+    brokenSave->click();
+    QCOMPARE(brokenSavedSpy.count(), 0);
+    QVERIFY(brokenStatus->text().contains(QStringLiteral("valid JSON"),
+                                          Qt::CaseInsensitive));
+    QVERIFY(savedRouting.open(QIODevice::ReadOnly));
+    QCOMPARE(savedRouting.readAll(), savedContents);
 }
 
 void MainWindowLifecycleTests::adminStartupSplashCentersLogoAndRunsSpinner()
@@ -4448,6 +4488,8 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QVERIFY(station.open(QIODevice::WriteOnly));
     station.write(R"({
         "stationId":"line-1",
+        "name":"Legacy Model",
+        "customerId":"OLD-CUSTOMER",
         "metadata":{
             "jigNo":"JIG-01",
             "order":"ORDER-01",
@@ -4477,6 +4519,10 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
         QStringLiteral("stationSnPatternEdit"));
     auto* snAllowedRegex = window.findChild<QLineEdit*>(
         QStringLiteral("stationSnAllowedRegexEdit"));
+    auto* model = window.findChild<QLineEdit*>(
+        QStringLiteral("stationModelEdit"));
+    auto* customerId = window.findChild<QLineEdit*>(
+        QStringLiteral("stationCustomerIdEdit"));
     auto* jigNo = window.findChild<QLineEdit*>(
         QStringLiteral("stationJigNoEdit"));
     auto* order = window.findChild<QLineEdit*>(
@@ -4494,6 +4540,8 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QVERIFY(snLength);
     QVERIFY(snPattern);
     QVERIFY(snAllowedRegex);
+    QVERIFY(model);
+    QVERIFY(customerId);
     QVERIFY(jigNo);
     QVERIFY(order);
     QVERIFY(tester);
@@ -4541,6 +4589,8 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QVERIFY(stopOnFailure->isChecked());
     QVERIFY(scanEnabled->isChecked());
     QCOMPARE(snLength->value(), 0);
+    QCOMPARE(model->text(), QStringLiteral("Legacy Model"));
+    QCOMPARE(customerId->text(), QStringLiteral("OLD-CUSTOMER"));
     QCOMPARE(jigNo->text(), QStringLiteral("JIG-01"));
     QCOMPARE(order->text(), QStringLiteral("ORDER-01"));
     QCOMPARE(tester->text(), QStringLiteral("Tester A"));
@@ -4549,6 +4599,8 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     snLength->setValue(10);
     snPattern->setText(QStringLiteral("BTSN*"));
     snAllowedRegex->setText(QStringLiteral("^[A-Z0-9]+$"));
+    model->setText(QStringLiteral("PICO-M3"));
+    customerId->setText(QStringLiteral("CUSTOMER-03"));
     jigNo->setText(QStringLiteral("JIG-02"));
     order->setText(QStringLiteral("ORDER-02"));
     tester->setText(QStringLiteral("Tester B"));
@@ -4564,6 +4616,12 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QCOMPARE(document->rootObject().value(
                  QStringLiteral("snAllowedRegex")).toString(),
              QStringLiteral("^[A-Z0-9]+$"));
+    QCOMPARE(document->rootObject().value(QStringLiteral("model")).toString(),
+             QStringLiteral("PICO-M3"));
+    QCOMPARE(document->rootObject().value(
+                 QStringLiteral("customerId")).toString(),
+             QStringLiteral("CUSTOMER-03"));
+    QVERIFY(!document->rootObject().contains(QStringLiteral("name")));
     const auto metadata = document->rootObject()
                               .value(QStringLiteral("metadata")).toObject();
     QCOMPARE(metadata.value(QStringLiteral("jigNo")).toString(),
@@ -4582,6 +4640,160 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     const auto rules = StartupSupport::stationSnValidationRules(stationPath);
     QCOMPARE(rules.wildcardPattern, QStringLiteral("BTSN*"));
     QCOMPARE(rules.allowedRegex, QStringLiteral("^[A-Z0-9]+$"));
+    QVERIFY(window.close());
+}
+
+void MainWindowLifecycleTests::fieldDeviceDialogAppliesCurrentDeviceAndSavesAll()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(R"({
+        "stationId":"field-devices",
+        "devices":[
+            {"deviceId":"DMM1","deviceType":"DMM","driverId":"",
+             "connectionKind":"manual","resource":"OLD-DMM","enabled":true},
+            {"deviceId":"PSU1","deviceType":"PSU","driverId":"",
+             "connectionKind":"manual","resource":"OLD-PSU","enabled":true}
+        ]
+    })");
+    station.close();
+
+    FieldDeviceDialog dialog(stationPath);
+    auto* devices = dialog.findChild<QListWidget*>(QStringLiteral("fieldDeviceList"));
+    auto* resource = dialog.findChild<QComboBox*>(QStringLiteral("fieldResourceCombo"));
+    auto* apply = dialog.findChild<QPushButton*>(QStringLiteral("fieldApplyButton"));
+    auto* saveAll = dialog.findChild<QPushButton*>(QStringLiteral("fieldSaveAllButton"));
+    QVERIFY(devices);
+    QVERIFY(resource);
+    QVERIFY(apply);
+    QVERIFY(saveAll);
+    QCOMPARE(devices->count(), 2);
+
+    QSignalSpy savedSpy(&dialog, &FieldDeviceDialog::stationSaved);
+    resource->setEditText(QStringLiteral("DMM-NEW"));
+    QVERIFY(apply->isEnabled());
+    apply->click();
+    QCOMPARE(savedSpy.count(), 1);
+    QVERIFY(!saveAll->isEnabled());
+
+    QFile currentSaved(stationPath);
+    QVERIFY(currentSaved.open(QIODevice::ReadOnly));
+    auto root = QJsonDocument::fromJson(currentSaved.readAll()).object();
+    QCOMPARE(root.value(QStringLiteral("devices")).toArray().at(0).toObject()
+                 .value(QStringLiteral("resource")).toString(),
+             QStringLiteral("DMM-NEW"));
+    QCOMPARE(root.value(QStringLiteral("devices")).toArray().at(1).toObject()
+                 .value(QStringLiteral("resource")).toString(),
+             QStringLiteral("OLD-PSU"));
+    currentSaved.close();
+
+    devices->setCurrentRow(1);
+    QCOMPARE(resource->currentText(), QStringLiteral("OLD-PSU"));
+    resource->setEditText(QStringLiteral("PSU-NEW"));
+    saveAll->click();
+    QCOMPARE(savedSpy.count(), 2);
+    QVERIFY(!saveAll->isEnabled());
+
+    QFile saved(stationPath);
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    root = QJsonDocument::fromJson(saved.readAll()).object();
+    const auto savedDevices = root.value(QStringLiteral("devices")).toArray();
+    QCOMPARE(savedDevices.at(0).toObject().value(QStringLiteral("resource")).toString(),
+             QStringLiteral("DMM-NEW"));
+    QCOMPARE(savedDevices.at(1).toObject().value(QStringLiteral("resource")).toString(),
+             QStringLiteral("PSU-NEW"));
+}
+
+void MainWindowLifecycleTests::productionFieldDeviceDialogDefersScannerUntilClosed()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("product_sequence.json"));
+    QVERIFY(QFile::copy(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+                           + QStringLiteral("/examples/simple_sequence.json"),
+                       sequencePath));
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    QJsonObject stationRoot{
+        {QStringLiteral("stationId"), QStringLiteral("field-device-production")},
+        {QStringLiteral("scanDialogEnabled"), true},
+        {QStringLiteral("pluginRegistry"),
+         QFileInfo(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+                   + QStringLiteral("/out/build/vs2022-qt6-all/ui/src/Debug/plugins/PluginRegistry.json"))
+             .absoluteFilePath()},
+        {QStringLiteral("devices"), QJsonArray{
+            QJsonObject{
+                {QStringLiteral("deviceId"), QStringLiteral("MODBUS1")},
+                {QStringLiteral("deviceType"), QStringLiteral("MODBUS")},
+                {QStringLiteral("driverId"), QStringLiteral("plugin.modbus.tcp")},
+                {QStringLiteral("connectionKind"), QStringLiteral("tcpIp")},
+                {QStringLiteral("resource"), QStringLiteral("127.0.0.1:502")},
+                {QStringLiteral("enabled"), true}}}}};
+    station.write(QJsonDocument(stationRoot).toJson(QJsonDocument::Indented));
+    station.close();
+
+    StartupSelection selection;
+    selection.mode = UiMode::Test;
+    selection.sequencePath = sequencePath;
+    selection.stationPath = stationPath;
+    selection.scanDialogEnabled = true;
+    ProductionWindow window(selection);
+    window.show();
+
+    auto* viewModel = window.findChild<ExecutionViewModel*>();
+    auto* scan = window.findChild<ScanDialog*>();
+    auto* deviceAction = window.findChild<QAction*>(
+        QStringLiteral("productionFieldDeviceAction"));
+    QVERIFY(viewModel);
+    QVERIFY(scan);
+    QVERIFY(deviceAction);
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(scan->isVisible(), 1000);
+    QVERIFY(deviceAction->isEnabled());
+
+    bool foundDialog = false;
+    bool compileCompletedWhileOpen = false;
+    bool scannerStayedHidden = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = qobject_cast<FieldDeviceDialog*>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        foundDialog = true;
+        auto* resource = dialog->findChild<QComboBox*>(
+            QStringLiteral("fieldResourceCombo"));
+        auto* apply = dialog->findChild<QPushButton*>(
+            QStringLiteral("fieldApplyButton"));
+        if (!resource || !apply) {
+            dialog->reject();
+            return;
+        }
+        connect(viewModel, &ExecutionViewModel::compileSummaryChanged,
+                dialog, [&, dialog] {
+                    if (!viewModel->compileSummary().success) {
+                        return;
+                    }
+                    QTimer::singleShot(0, dialog, [&, dialog] {
+                        compileCompletedWhileOpen =
+                            viewModel->state() == UiRunState::Ready;
+                        scannerStayedHidden = scan->isHidden();
+                        dialog->reject();
+                    });
+        });
+        resource->setEditText(QStringLiteral("127.0.0.1:1502"));
+        apply->click();
+        QTimer::singleShot(3000, dialog, [dialog] {
+            if (dialog->isVisible()) dialog->reject();
+        });
+    });
+    deviceAction->trigger();
+
+    QVERIFY(foundDialog);
+    QVERIFY(compileCompletedWhileOpen);
+    QVERIFY(scannerStayedHidden);
+    QTRY_VERIFY_WITH_TIMEOUT(scan->isVisible(), 1000);
     QVERIFY(window.close());
 }
 
@@ -4659,7 +4871,7 @@ void MainWindowLifecycleTests::adminStartsOnProductionDashboardAndOpensScannerOn
     const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
     QFile station(stationPath);
     QVERIFY(station.open(QIODevice::WriteOnly));
-    station.write(R"({"stationId":"bench-01","scanDialogEnabled":true,"devices":[]})");
+    station.write(R"({"stationId":"bench-01","model":"PICO-M1","customerId":"CUSTOMER-01","scanDialogEnabled":true,"devices":[]})");
     station.close();
     MainWindow window;
     QVERIFY(window.openSequenceFile(sequencePath));
@@ -4680,6 +4892,9 @@ void MainWindowLifecycleTests::adminStartsOnProductionDashboardAndOpensScannerOn
     auto* runSplitter = window.findChild<QSplitter*>(QStringLiteral("runSplitter"));
     auto* runSidebar = window.findChild<QWidget*>(QStringLiteral("adminRunSidebar"));
     auto* stationLabel = window.findChild<QLabel*>(QStringLiteral("adminStationLabel"));
+    auto* modelLabel = window.findChild<QLabel*>(QStringLiteral("adminModelLabel"));
+    auto* customerIdLabel = window.findChild<QLabel*>(
+        QStringLiteral("adminCustomerIdLabel"));
     QVERIFY(tabs);
     QVERIFY(viewModel);
     QVERIFY(resultView);
@@ -4692,6 +4907,8 @@ void MainWindowLifecycleTests::adminStartsOnProductionDashboardAndOpensScannerOn
     QVERIFY(runSplitter);
     QVERIFY(runSidebar);
     QVERIFY(stationLabel);
+    QVERIFY(modelLabel);
+    QVERIFY(customerIdLabel);
     QCOMPARE(tabs->count(), 4);
     QCOMPARE(tabs->currentIndex(), 0);
     QCOMPARE(tabs->tabText(0), QStringLiteral("Run Test"));
@@ -4710,6 +4927,8 @@ void MainWindowLifecycleTests::adminStartsOnProductionDashboardAndOpensScannerOn
     QTest::qWait(20);
     QVERIFY(headerMatchesRunColumns());
     QCOMPARE(stationLabel->text(), QStringLiteral("bench-01"));
+    QCOMPARE(modelLabel->text(), QStringLiteral("PICO-M1"));
+    QCOMPARE(customerIdLabel->text(), QStringLiteral("CUSTOMER-01"));
     QVERIFY(scanDialog->isHidden());
     QVERIFY(!scanAction->isEnabled());
 
@@ -4777,7 +4996,7 @@ void MainWindowLifecycleTests::productionWindowPreloadsFlowAndRunsWithoutScanner
     const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
     QFile station(stationPath);
     QVERIFY(station.open(QIODevice::WriteOnly));
-    station.write(R"({"stationId":"line-1","scanDialogEnabled":false,"devices":[]})");
+    station.write(R"({"stationId":"line-1","model":"PICO-M2","customerId":"CUSTOMER-02","scanDialogEnabled":false,"devices":[]})");
     station.close();
 
     StartupSelection selection;
@@ -4802,6 +5021,10 @@ void MainWindowLifecycleTests::productionWindowPreloadsFlowAndRunsWithoutScanner
         QStringLiteral("productionOverallResult"));
     auto* stationLabel = window.findChild<QLabel*>(
         QStringLiteral("productionStationLabel"));
+    auto* modelLabel = window.findChild<QLabel*>(
+        QStringLiteral("productionModelLabel"));
+    auto* customerIdLabel = window.findChild<QLabel*>(
+        QStringLiteral("productionCustomerIdLabel"));
     auto* sequenceLabel = window.findChild<QLabel*>(
         QStringLiteral("productionSequenceLabel"));
     auto* brandLogo = window.findChild<QLabel*>(
@@ -4841,6 +5064,8 @@ void MainWindowLifecycleTests::productionWindowPreloadsFlowAndRunsWithoutScanner
     QVERIFY(routingAction);
     QVERIFY(overall);
     QVERIFY(stationLabel);
+    QVERIFY(modelLabel);
+    QVERIFY(customerIdLabel);
     QVERIFY(sequenceLabel);
     QVERIFY(brandLogo);
     QVERIFY(brandSlot);
@@ -4859,6 +5084,8 @@ void MainWindowLifecycleTests::productionWindowPreloadsFlowAndRunsWithoutScanner
     QVERIFY(sidebar);
     QVERIFY(scan);
     QCOMPARE(stationLabel->text(), QStringLiteral("line-1"));
+    QCOMPARE(modelLabel->text(), QStringLiteral("PICO-M2"));
+    QCOMPARE(customerIdLabel->text(), QStringLiteral("CUSTOMER-02"));
     QCOMPARE(contentSplitter->orientation(), Qt::Horizontal);
     QCOMPARE(dataSplitter->orientation(), Qt::Vertical);
     QCOMPARE(brandLogo->accessibleName(), QStringLiteral("SINEXCEL"));

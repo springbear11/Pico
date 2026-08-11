@@ -348,9 +348,10 @@ RunServiceResult CoreExecutionService::run(
     result.report.metadata.startedAt = startedAt;
     result.report.metadata.finishedAt = QDateTime::currentDateTime();
     result.report.metadata.durationMs = runTimer.elapsed();
-    result.report.metadata.name = runStation && !runStation->name.trimmed().isEmpty()
-        ? runStation->name.trimmed()
-        : m_compiled->sequence.name.trimmed();
+    if (runStation) {
+        result.report.metadata.model = runStation->model.trimmed();
+        result.report.metadata.customerId = runStation->customerId.trimmed();
+    }
     result.report.metadata.sequenceName =
         QFileInfo(m_compiled->sequencePath).fileName().trimmed();
     if (result.report.metadata.sequenceName.isEmpty()) {

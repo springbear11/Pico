@@ -277,11 +277,15 @@ void printStationSummary(const StationRuntime& runtime, QTextStream& out)
     }
 
     const auto& station = runtime.stationConfig();
-    out << "Station: " << (station.name.isEmpty() ? QString("<unnamed>") : station.name);
-    if (!station.stationId.isEmpty()) {
-        out << " [" << station.stationId << ']';
-    }
-    out << '\n';
+    out << "Station ID: "
+        << (station.stationId.isEmpty() ? QString("<unset>") : station.stationId)
+        << '\n';
+    out << "Model: "
+        << (station.model.isEmpty() ? QString("<unset>") : station.model)
+        << '\n';
+    out << "Customer ID: "
+        << (station.customerId.isEmpty() ? QString("<unset>") : station.customerId)
+        << '\n';
     out << "Devices: " << station.devices.size() << " configured\n";
     for (const auto& device : station.devices) {
         out << "  - " << device.deviceId

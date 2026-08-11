@@ -269,9 +269,14 @@ void StationPropertyEditor::buildStationPage()
     m_stationIdEdit = new QLineEdit(content);
     m_stationIdEdit->setObjectName(QStringLiteral("stationIdEdit"));
     form->addRow(tr("Station ID"), m_stationIdEdit);
-    m_stationNameEdit = new QLineEdit(content);
-    m_stationNameEdit->setObjectName(QStringLiteral("stationNameEdit"));
-    form->addRow(tr("Name"), m_stationNameEdit);
+    m_stationModelEdit = new QLineEdit(content);
+    m_stationModelEdit->setObjectName(
+        QStringLiteral("stationPropertyModelEdit"));
+    form->addRow(tr("Model"), m_stationModelEdit);
+    m_customerIdEdit = new QLineEdit(content);
+    m_customerIdEdit->setObjectName(
+        QStringLiteral("stationPropertyCustomerIdEdit"));
+    form->addRow(tr("Customer ID"), m_customerIdEdit);
     m_scanDialogEnabledCheck = new QCheckBox(content);
     m_scanDialogEnabledCheck->setObjectName(
         QStringLiteral("scanDialogEnabledCheck"));
@@ -464,8 +469,11 @@ bool StationPropertyEditor::focusField(const QString& path)
     QWidget* field = nullptr;
     if (path == QStringLiteral("stationId") || path == QStringLiteral("id")) {
         field = m_stationIdEdit;
-    } else if (path == QStringLiteral("name")) {
-        field = m_stationNameEdit;
+    } else if (path == QStringLiteral("model") ||
+               path == QStringLiteral("name")) {
+        field = m_stationModelEdit;
+    } else if (path == QStringLiteral("customerId")) {
+        field = m_customerIdEdit;
     } else if (path == QStringLiteral("scanDialogEnabled")) {
         field = m_scanDialogEnabledCheck;
     } else if (path.startsWith(QStringLiteral("metadata"))) {
@@ -529,7 +537,10 @@ void StationPropertyEditor::loadStation()
     const auto root = m_document ? m_document->rootObject() : QJsonObject{};
     m_stationIdEdit->setText(valueWithAlias(
         root, QStringLiteral("stationId"), QStringLiteral("id")));
-    m_stationNameEdit->setText(root.value(QStringLiteral("name")).toString());
+    m_stationModelEdit->setText(root.value(QStringLiteral("model")).toString(
+        root.value(QStringLiteral("name")).toString()));
+    m_customerIdEdit->setText(
+        root.value(QStringLiteral("customerId")).toString());
     m_scanDialogEnabledCheck->setChecked(
         root.value(QStringLiteral("scanDialogEnabled")).toBool(true));
     m_metadataEdit->setPlainText(
@@ -1013,8 +1024,11 @@ bool StationPropertyEditor::commitStation()
     root.insert(QStringLiteral("stationId"),
                 m_stationIdEdit->text().trimmed());
     root.remove(QStringLiteral("id"));
-    root.insert(QStringLiteral("name"),
-                m_stationNameEdit->text().trimmed());
+    root.insert(QStringLiteral("model"),
+                m_stationModelEdit->text().trimmed());
+    root.insert(QStringLiteral("customerId"),
+                m_customerIdEdit->text().trimmed());
+    root.remove(QStringLiteral("name"));
     root.insert(QStringLiteral("scanDialogEnabled"),
                 m_scanDialogEnabledCheck->isChecked());
     root.insert(QStringLiteral("metadata"), metadata);

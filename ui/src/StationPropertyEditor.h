@@ -86,7 +86,8 @@ private:
     QLabel* m_title = nullptr;
     QTabWidget* m_tabs = nullptr;
     QLineEdit* m_stationIdEdit = nullptr;
-    QLineEdit* m_stationNameEdit = nullptr;
+    QLineEdit* m_stationModelEdit = nullptr;
+    QLineEdit* m_customerIdEdit = nullptr;
     QCheckBox* m_scanDialogEnabledCheck = nullptr;
     QPlainTextEdit* m_metadataEdit = nullptr;
     QLabel* m_stationError = nullptr;

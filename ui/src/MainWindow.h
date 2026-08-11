@@ -264,6 +264,8 @@ private:
     QLabel* m_adminSequenceLabel = nullptr;
     QLabel* m_adminSerialLabel = nullptr;
     QLabel* m_adminStationLabel = nullptr;
+    QLabel* m_adminModelLabel = nullptr;
+    QLabel* m_adminCustomerIdLabel = nullptr;
     QLabel* m_adminOrderLabel = nullptr;
     QLabel* m_adminTesterLabel = nullptr;
     QLabel* m_adminJigLabel = nullptr;

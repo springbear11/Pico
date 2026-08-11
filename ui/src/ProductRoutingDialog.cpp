@@ -236,8 +236,15 @@ void ProductRoutingDialog::buildUi()
 
 bool ProductRoutingDialog::eventFilter(QObject* watched, QEvent* event)
 {
-    if (event && event->type() == QEvent::MouseButtonPress &&
-        watched->property("preserveRouteSelection").toBool()) {
+    const bool preserveSelection =
+        watched->property("preserveRouteSelection").toBool();
+    const bool mayRetargetRow = event &&
+        (event->type() == QEvent::Enter ||
+         event->type() == QEvent::FocusIn ||
+         event->type() == QEvent::MouseButtonPress ||
+         event->type() == QEvent::MouseButtonRelease);
+    if (preserveSelection && mayRetargetRow) {
+        restoreSelectedRouteRow();
         QTimer::singleShot(0, this,
                            &ProductRoutingDialog::restoreSelectedRouteRow);
     }
@@ -335,6 +342,19 @@ void ProductRoutingDialog::removeSelectedRoute()
 {
     const int row = selectedRouteRow();
     if (row < 0) {
+        return;
+    }
+    const auto routeName = m_table->item(row, NameColumn)->text().trimmed();
+    const auto pattern = m_table->item(row, PatternColumn)->text().trimmed();
+    const auto displayName = routeName.isEmpty() ? pattern : routeName;
+    if (QMessageBox::question(
+            this,
+            tr("Delete Route"),
+            tr("Delete route '%1' (%2)?")
+                .arg(displayName, pattern),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes) {
+        restoreSelectedRouteRow();
         return;
     }
     m_table->removeRow(row);

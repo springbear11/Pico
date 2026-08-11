@@ -40,7 +40,8 @@ private:
 
     QPointer<StationDocument> m_document;
     QLineEdit* m_stationIdEdit = nullptr;
-    QLineEdit* m_stationNameEdit = nullptr;
+    QLineEdit* m_stationModelEdit = nullptr;
+    QLineEdit* m_customerIdEdit = nullptr;
     QAbstractButton* m_stopOnFailureSwitch = nullptr;
     QAbstractButton* m_scanDialogSwitch = nullptr;
     QAbstractButton* m_loopTestSwitch = nullptr;

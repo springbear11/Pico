@@ -377,18 +377,34 @@ void ProductionWindow::buildUi()
     m_serialLabel->setObjectName(QStringLiteral("productionSerialLabel"));
     m_stationLabel = new QLabel(stationId, sidebar);
     m_stationLabel->setObjectName(QStringLiteral("productionStationLabel"));
+    m_modelLabel = new QLabel(stationResult.config.model.trimmed().isEmpty()
+                                  ? tr("--")
+                                  : stationResult.config.model.trimmed(),
+                              sidebar);
+    m_modelLabel->setObjectName(QStringLiteral("productionModelLabel"));
+    m_customerIdLabel = new QLabel(
+        stationResult.config.customerId.trimmed().isEmpty()
+            ? tr("--")
+            : stationResult.config.customerId.trimmed(),
+        sidebar);
+    m_customerIdLabel->setObjectName(
+        QStringLiteral("productionCustomerIdLabel"));
     m_orderLabel = new QLabel(metadataValue(metadata, {"order", "orderNumber"}), sidebar);
     m_orderLabel->setObjectName(QStringLiteral("productionOrderLabel"));
     m_testerLabel = new QLabel(metadataValue(metadata, {"tester", "operator"}), sidebar);
     m_testerLabel->setObjectName(QStringLiteral("productionTesterLabel"));
     m_jigLabel = new QLabel(metadataValue(metadata, {"jigNo", "fixtureId", "fixture"}), sidebar);
     m_jigLabel->setObjectName(QStringLiteral("productionJigLabel"));
-    for (auto* value : {m_serialLabel, m_stationLabel, m_orderLabel, m_testerLabel, m_jigLabel}) {
+    for (auto* value : {m_serialLabel, m_stationLabel, m_modelLabel,
+                        m_customerIdLabel, m_orderLabel, m_testerLabel,
+                        m_jigLabel}) {
         value->setTextInteractionFlags(Qt::TextSelectableByMouse);
         value->setWordWrap(true);
     }
     details->addRow(tr("SN"), m_serialLabel);
-    details->addRow(tr("Station"), m_stationLabel);
+    details->addRow(tr("Station ID"), m_stationLabel);
+    details->addRow(tr("Model"), m_modelLabel);
+    details->addRow(tr("Customer ID"), m_customerIdLabel);
     details->addRow(tr("Order"), m_orderLabel);
     details->addRow(tr("Tester"), m_testerLabel);
     details->addRow(tr("Jig No."), m_jigLabel);
@@ -988,6 +1004,7 @@ void ProductionWindow::openFieldDeviceConfiguration()
     }
     const bool restoreScanner = m_scanDialog->isVisible();
     m_scanDialog->hide();
+    m_fieldDeviceDialogOpen = true;
     FieldDeviceDialog dialog(m_selection.stationPath, this);
     connect(&dialog, &FieldDeviceDialog::stationSaved, this, [this] {
         QFile file(m_selection.stationPath);
@@ -999,6 +1016,7 @@ void ProductionWindow::openFieldDeviceConfiguration()
         }
     });
     dialog.exec();
+    m_fieldDeviceDialogOpen = false;
     if (restoreScanner) {
         showScanDialogWhenReady();
     }
@@ -1074,6 +1092,9 @@ void ProductionWindow::resetPreviewForUut(const QString& uutId)
 
 void ProductionWindow::showScanDialogWhenReady()
 {
+    if (m_fieldDeviceDialogOpen) {
+        return;
+    }
     const bool autoRouting =
         m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn;
     const bool ready = autoRouting
@@ -1122,7 +1143,8 @@ void ProductionWindow::updateYieldStatistics()
 
 void ProductionWindow::updateStationSummary()
 {
-    if (!m_stationLabel || !m_orderLabel || !m_testerLabel || !m_jigLabel) {
+    if (!m_stationLabel || !m_modelLabel || !m_customerIdLabel ||
+        !m_orderLabel || !m_testerLabel || !m_jigLabel) {
         return;
     }
     const auto stationResult = PicoATE::Core::loadStationConfigFile(
@@ -1132,6 +1154,13 @@ void ProductionWindow::updateStationSummary()
         : stationResult.config.stationId;
     const auto& metadata = stationResult.config.metadata;
     m_stationLabel->setText(stationId.isEmpty() ? tr("--") : stationId);
+    m_modelLabel->setText(stationResult.config.model.trimmed().isEmpty()
+                              ? tr("--")
+                              : stationResult.config.model.trimmed());
+    m_customerIdLabel->setText(
+        stationResult.config.customerId.trimmed().isEmpty()
+            ? tr("--")
+            : stationResult.config.customerId.trimmed());
     m_orderLabel->setText(metadataValue(metadata, {"order", "orderNumber"}));
     m_testerLabel->setText(metadataValue(metadata, {"tester", "operator"}));
     m_jigLabel->setText(metadataValue(

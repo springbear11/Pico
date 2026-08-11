@@ -27,8 +27,9 @@ struct RunArtifactContext {
     QString sequenceName;
     QString sequenceFilePath;
     QString serialNumber;
-    QString stationName;
     QString stationId;
+    QString model;
+    QString customerId;
     QString stationFilePath;
     QString order;
     QString tester;

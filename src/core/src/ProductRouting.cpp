@@ -7,9 +7,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
-#include <QQueue>
 #include <QRegularExpression>
-#include <QSet>
 #include <QStringList>
 
 #include <algorithm>
@@ -87,52 +85,30 @@ bool validateStationSnCharacters(ProductRouteResolution& result,
     return false;
 }
 
-bool wildcardTokensOverlap(QChar left, QChar right)
+QString canonicalWildcardPattern(const QString& pattern)
 {
-    return left == QLatin1Char('*') || left == QLatin1Char('?') ||
-           right == QLatin1Char('*') || right == QLatin1Char('?') ||
-           left == right;
+    QString canonical;
+    canonical.reserve(pattern.size());
+    bool previousWasStar = false;
+    for (const auto character : pattern) {
+        const bool isStar = character == QLatin1Char('*');
+        if (!isStar || !previousWasStar) {
+            canonical.append(character);
+        }
+        previousWasStar = isStar;
+    }
+    return canonical;
 }
 
-bool wildcardPatternsOverlap(const QString& left, const QString& right)
+bool duplicateRouteConstraints(const ProductRoute& left,
+                               const ProductRoute& right)
 {
-    QQueue<QPair<int, int>> pending;
-    QSet<quint64> visited;
-    const auto enqueue = [&pending, &visited](int leftIndex, int rightIndex) {
-        const auto key = (quint64(quint32(leftIndex)) << 32) |
-                         quint32(rightIndex);
-        if (!visited.contains(key)) {
-            visited.insert(key);
-            pending.enqueue({leftIndex, rightIndex});
-        }
-    };
-    enqueue(0, 0);
-
-    while (!pending.isEmpty()) {
-        const auto [leftIndex, rightIndex] = pending.dequeue();
-        if (leftIndex == left.size() && rightIndex == right.size()) {
-            return true;
-        }
-
-        const bool leftStar = leftIndex < left.size() &&
-                              left.at(leftIndex) == QLatin1Char('*');
-        const bool rightStar = rightIndex < right.size() &&
-                               right.at(rightIndex) == QLatin1Char('*');
-        if (leftStar) {
-            enqueue(leftIndex + 1, rightIndex);
-        }
-        if (rightStar) {
-            enqueue(leftIndex, rightIndex + 1);
-        }
-
-        if (leftIndex >= left.size() || rightIndex >= right.size() ||
-            !wildcardTokensOverlap(left.at(leftIndex), right.at(rightIndex))) {
-            continue;
-        }
-        enqueue(leftStar ? leftIndex : leftIndex + 1,
-                rightStar ? rightIndex : rightIndex + 1);
+    if (canonicalWildcardPattern(left.pattern) !=
+        canonicalWildcardPattern(right.pattern)) {
+        return false;
     }
-    return false;
+    return left.snLength == 0 || right.snLength == 0 ||
+           left.snLength == right.snLength;
 }
 
 } // namespace
@@ -180,7 +156,6 @@ ProductRoutingResult parseProductRoutingJson(const QJsonObject& object,
         return result;
     }
 
-    QSet<QString> exactPatterns;
     const auto routes = routesValue.toArray();
     result.config.routes.reserve(routes.size());
     for (int index = 0; index < routes.size(); ++index) {
@@ -222,14 +197,6 @@ ProductRoutingResult parseProductRoutingJson(const QJsonObject& object,
                      QStringLiteral("Examples: BTSN* or *C1234567*"));
         } else {
             route.pattern = patternValue.toString().trimmed();
-            if (exactPatterns.contains(route.pattern)) {
-                addError(result.errors,
-                         path + QStringLiteral(".pattern"),
-                         QStringLiteral("Duplicate SN route pattern: %1")
-                             .arg(route.pattern),
-                         QStringLiteral("Each exact pattern may appear only once"));
-            }
-            exactPatterns.insert(route.pattern);
         }
 
         const auto lengthValue = routeObject.value(QStringLiteral("snLength"));
@@ -305,14 +272,15 @@ ProductRoutingResult parseProductRoutingJson(const QJsonObject& object,
         for (int leftIndex = 0; leftIndex < rightIndex; ++leftIndex) {
             const auto& left = result.config.routes.at(leftIndex);
             if (!left.enabled || left.pattern.isEmpty() ||
-                !wildcardPatternsOverlap(left.pattern, right.pattern)) {
+                !duplicateRouteConstraints(left, right)) {
                 continue;
             }
             addError(result.errors,
                      QStringLiteral("routes[%1].pattern").arg(rightIndex),
-                     QStringLiteral("SN pattern overlaps route '%1': %2")
+                     QStringLiteral("SN pattern duplicates route '%1': %2")
                          .arg(routeDisplayName(left), left.pattern),
-                     QStringLiteral("Enabled routes must match mutually exclusive SN values"));
+                     QStringLiteral(
+                         "Use a different pattern or a non-overlapping exact SN length"));
         }
     }
     return result;
@@ -482,6 +450,7 @@ ProductRouteResolution resolveProductRoute(const ProductRoutingConfig& config,
         return result;
     }
 
+    QVector<const ProductRoute*> patternMatches;
     QVector<const ProductRoute*> matches;
     for (const auto& route : config.routes) {
         if (!route.enabled || route.pattern.isEmpty()) {
@@ -499,11 +468,32 @@ ProductRouteResolution resolveProductRoute(const ProductRoutingConfig& config,
             return result;
         }
         if (expression.match(sn).hasMatch()) {
-            matches.push_back(&route);
+            patternMatches.push_back(&route);
+            if (route.snLength == 0 || route.snLength == sn.size()) {
+                matches.push_back(&route);
+            }
         }
     }
 
     if (matches.isEmpty()) {
+        if (!patternMatches.isEmpty()) {
+            QStringList requirements;
+            for (const auto* route : patternMatches) {
+                requirements.push_back(
+                    route->snLength > 0
+                        ? QStringLiteral("%1 requires %2")
+                              .arg(routeDisplayName(*route))
+                              .arg(route->snLength)
+                        : QStringLiteral("%1 accepts any length")
+                              .arg(routeDisplayName(*route)));
+            }
+            addError(result.errors,
+                     QStringLiteral("serialNumber.length"),
+                     QStringLiteral("SN length is %1 and does not satisfy any matching route")
+                         .arg(sn.size()),
+                     requirements.join(QStringLiteral("; ")));
+            return result;
+        }
         addError(result.errors,
                  QStringLiteral("serialNumber"),
                  QStringLiteral("No product route matches SN: %1").arg(sn),
@@ -527,16 +517,6 @@ ProductRouteResolution resolveProductRoute(const ProductRoutingConfig& config,
     const auto& route = *matches.first();
     result.routeName = routeDisplayName(route);
     result.pattern = route.pattern;
-    if (route.snLength > 0 && sn.size() != route.snLength) {
-        addError(result.errors,
-                 QStringLiteral("serialNumber.length"),
-                 QStringLiteral("SN length is %1; route '%2' requires exactly %3 characters")
-                     .arg(sn.size())
-                     .arg(result.routeName)
-                     .arg(route.snLength),
-                 QStringLiteral("Scan the complete SN or update the route length"));
-        return result;
-    }
     if (!route.projectPath.isEmpty()) {
         const auto project = inspectProductProject(route.projectPath);
         if (!project.ok()) {

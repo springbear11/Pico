@@ -144,7 +144,8 @@ QJsonObject StartupSupport::newProjectStationTemplate()
 {
     return QJsonObject{
         {QStringLiteral("stationId"), QStringLiteral("NA")},
-        {QStringLiteral("name"), QStringLiteral("NA")},
+        {QStringLiteral("model"), QStringLiteral("NA")},
+        {QStringLiteral("customerId"), QStringLiteral("NA")},
         {QStringLiteral("pluginRegistry"),
          QStringLiteral("plugins/PluginRegistry.json")},
         {QStringLiteral("stopOnFailure"), true},
