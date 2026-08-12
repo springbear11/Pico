@@ -149,7 +149,8 @@ bool numericText(const QString& text)
 }
 
 QByteArray worksheetXml(const QVector<double>& columnWidths,
-                        const QVector<XlsxRow>& rows)
+                        const QVector<XlsxRow>& rows,
+                        bool hasDrawing)
 {
     int tableHeaderRow = -1;
     for (int row = 0; row < rows.size(); ++row) {
@@ -165,6 +166,11 @@ QByteArray worksheetXml(const QVector<double>& columnWidths,
     xml.writeStartElement(QStringLiteral("worksheet"));
     xml.writeDefaultNamespace(
         QStringLiteral("http://schemas.openxmlformats.org/spreadsheetml/2006/main"));
+    if (hasDrawing) {
+        xml.writeNamespace(
+            QStringLiteral("http://schemas.openxmlformats.org/officeDocument/2006/relationships"),
+            QStringLiteral("r"));
+    }
 
     xml.writeStartElement(QStringLiteral("sheetViews"));
     xml.writeStartElement(QStringLiteral("sheetView"));
@@ -260,6 +266,170 @@ QByteArray worksheetXml(const QVector<double>& columnWidths,
         }
         xml.writeEndElement();
     }
+    if (hasDrawing) {
+        xml.writeEmptyElement(QStringLiteral("drawing"));
+        xml.writeAttribute(
+            QStringLiteral("http://schemas.openxmlformats.org/officeDocument/2006/relationships"),
+            QStringLiteral("id"),
+            QStringLiteral("rId1"));
+    }
+    xml.writeEndElement();
+    xml.writeEndDocument();
+    return bytes;
+}
+
+QByteArray worksheetRelationshipsXml()
+{
+    return QByteArrayLiteral(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+        "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing\" Target=\"../drawings/drawing1.xml\"/>"
+        "</Relationships>");
+}
+
+QByteArray drawingXml(const QVector<XlsxImage>& images)
+{
+    constexpr qint64 emusPerPixel = 9525;
+    QByteArray bytes;
+    QXmlStreamWriter xml(&bytes);
+    xml.setAutoFormatting(false);
+    xml.writeStartDocument(QStringLiteral("1.0"));
+    xml.writeStartElement(QStringLiteral("xdr:wsDr"));
+    xml.writeNamespace(
+        QStringLiteral("http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"),
+        QStringLiteral("xdr"));
+    xml.writeNamespace(
+        QStringLiteral("http://schemas.openxmlformats.org/drawingml/2006/main"),
+        QStringLiteral("a"));
+    xml.writeNamespace(
+        QStringLiteral("http://schemas.openxmlformats.org/officeDocument/2006/relationships"),
+        QStringLiteral("r"));
+
+    for (int index = 0; index < images.size(); ++index) {
+        const auto& image = images[index];
+        xml.writeStartElement(QStringLiteral("xdr:oneCellAnchor"));
+        xml.writeStartElement(QStringLiteral("xdr:from"));
+        xml.writeTextElement(QStringLiteral("xdr:col"), QString::number(image.column));
+        xml.writeTextElement(
+            QStringLiteral("xdr:colOff"),
+            QString::number(qMax(0, image.columnOffsetPixels) * emusPerPixel));
+        xml.writeTextElement(QStringLiteral("xdr:row"), QString::number(image.row));
+        xml.writeTextElement(
+            QStringLiteral("xdr:rowOff"),
+            QString::number(qMax(0, image.rowOffsetPixels) * emusPerPixel));
+        xml.writeEndElement();
+        xml.writeEmptyElement(QStringLiteral("xdr:ext"));
+        xml.writeAttribute(
+            QStringLiteral("cx"),
+            QString::number(image.widthPixels * emusPerPixel));
+        xml.writeAttribute(
+            QStringLiteral("cy"),
+            QString::number(image.heightPixels * emusPerPixel));
+
+        xml.writeStartElement(QStringLiteral("xdr:pic"));
+        xml.writeStartElement(QStringLiteral("xdr:nvPicPr"));
+        xml.writeEmptyElement(QStringLiteral("xdr:cNvPr"));
+        xml.writeAttribute(QStringLiteral("id"), QString::number(index + 2));
+        xml.writeAttribute(
+            QStringLiteral("name"),
+            image.name.trimmed().isEmpty()
+                ? QStringLiteral("Image %1").arg(index + 1)
+                : image.name.trimmed());
+        xml.writeStartElement(QStringLiteral("xdr:cNvPicPr"));
+        xml.writeEmptyElement(QStringLiteral("a:picLocks"));
+        xml.writeAttribute(QStringLiteral("noChangeAspect"), QStringLiteral("1"));
+        xml.writeEndElement();
+        xml.writeEndElement();
+
+        xml.writeStartElement(QStringLiteral("xdr:blipFill"));
+        xml.writeEmptyElement(QStringLiteral("a:blip"));
+        xml.writeAttribute(
+            QStringLiteral("http://schemas.openxmlformats.org/officeDocument/2006/relationships"),
+            QStringLiteral("embed"),
+            QStringLiteral("rId%1").arg(index + 1));
+        xml.writeStartElement(QStringLiteral("a:stretch"));
+        xml.writeEmptyElement(QStringLiteral("a:fillRect"));
+        xml.writeEndElement();
+        xml.writeEndElement();
+
+        xml.writeStartElement(QStringLiteral("xdr:spPr"));
+        xml.writeStartElement(QStringLiteral("a:prstGeom"));
+        xml.writeAttribute(QStringLiteral("prst"), QStringLiteral("rect"));
+        xml.writeEmptyElement(QStringLiteral("a:avLst"));
+        xml.writeEndElement();
+        xml.writeEndElement();
+        xml.writeEndElement();
+        xml.writeEmptyElement(QStringLiteral("xdr:clientData"));
+        xml.writeEndElement();
+    }
+    xml.writeEndElement();
+    xml.writeEndDocument();
+    return bytes;
+}
+
+QByteArray drawingRelationshipsXml(int imageCount)
+{
+    QByteArray bytes;
+    QXmlStreamWriter xml(&bytes);
+    xml.setAutoFormatting(false);
+    xml.writeStartDocument(QStringLiteral("1.0"));
+    xml.writeStartElement(QStringLiteral("Relationships"));
+    xml.writeDefaultNamespace(
+        QStringLiteral("http://schemas.openxmlformats.org/package/2006/relationships"));
+    for (int index = 0; index < imageCount; ++index) {
+        xml.writeEmptyElement(QStringLiteral("Relationship"));
+        xml.writeAttribute(QStringLiteral("Id"), QStringLiteral("rId%1").arg(index + 1));
+        xml.writeAttribute(
+            QStringLiteral("Type"),
+            QStringLiteral("http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"));
+        xml.writeAttribute(
+            QStringLiteral("Target"),
+            QStringLiteral("../media/image%1.png").arg(index + 1));
+    }
+    xml.writeEndElement();
+    xml.writeEndDocument();
+    return bytes;
+}
+
+QByteArray contentTypesXml(bool hasImages)
+{
+    QByteArray bytes;
+    QXmlStreamWriter xml(&bytes);
+    xml.setAutoFormatting(false);
+    xml.writeStartDocument(QStringLiteral("1.0"));
+    xml.writeStartElement(QStringLiteral("Types"));
+    xml.writeDefaultNamespace(
+        QStringLiteral("http://schemas.openxmlformats.org/package/2006/content-types"));
+    const auto addDefault = [&xml](const QString& extension, const QString& type) {
+        xml.writeEmptyElement(QStringLiteral("Default"));
+        xml.writeAttribute(QStringLiteral("Extension"), extension);
+        xml.writeAttribute(QStringLiteral("ContentType"), type);
+    };
+    const auto addOverride = [&xml](const QString& part, const QString& type) {
+        xml.writeEmptyElement(QStringLiteral("Override"));
+        xml.writeAttribute(QStringLiteral("PartName"), part);
+        xml.writeAttribute(QStringLiteral("ContentType"), type);
+    };
+    addDefault(QStringLiteral("rels"),
+               QStringLiteral("application/vnd.openxmlformats-package.relationships+xml"));
+    addDefault(QStringLiteral("xml"), QStringLiteral("application/xml"));
+    if (hasImages) {
+        addDefault(QStringLiteral("png"), QStringLiteral("image/png"));
+    }
+    addOverride(
+        QStringLiteral("/xl/workbook.xml"),
+        QStringLiteral("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"));
+    addOverride(
+        QStringLiteral("/xl/worksheets/sheet1.xml"),
+        QStringLiteral("application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"));
+    addOverride(
+        QStringLiteral("/xl/styles.xml"),
+        QStringLiteral("application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"));
+    if (hasImages) {
+        addOverride(
+            QStringLiteral("/xl/drawings/drawing1.xml"),
+            QStringLiteral("application/vnd.openxmlformats-officedocument.drawing+xml"));
+    }
     xml.writeEndElement();
     xml.writeEndDocument();
     return bytes;
@@ -338,18 +508,20 @@ QByteArray stylesXml()
 SimpleXlsxWriteResult writeSimpleXlsx(const QString& filePath,
                                       const QString& sheetName,
                                       const QVector<double>& columnWidths,
-                                      const QVector<XlsxRow>& rows)
+                                      const QVector<XlsxRow>& rows,
+                                      const QVector<XlsxImage>& images)
 {
-    const QVector<ZipEntry> entries = {
-        {QByteArrayLiteral("[Content_Types].xml"), QByteArrayLiteral(
-             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
-             "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
-             "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
-             "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
-             "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
-             "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
-             "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>"
-             "</Types>")},
+    QVector<XlsxImage> validImages;
+    for (const auto& image : images) {
+        if (!image.pngData.isEmpty() && image.widthPixels > 0 &&
+            image.heightPixels > 0 && image.column >= 0 && image.row >= 0) {
+            validImages.push_back(image);
+        }
+    }
+    const bool hasImages = !validImages.isEmpty();
+
+    QVector<ZipEntry> entries = {
+        {QByteArrayLiteral("[Content_Types].xml"), contentTypesXml(hasImages)},
         {QByteArrayLiteral("_rels/.rels"), QByteArrayLiteral(
              "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
              "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
@@ -363,8 +535,24 @@ SimpleXlsxWriteResult writeSimpleXlsx(const QString& filePath,
              "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
              "</Relationships>")},
         {QByteArrayLiteral("xl/styles.xml"), stylesXml()},
-        {QByteArrayLiteral("xl/worksheets/sheet1.xml"), worksheetXml(columnWidths, rows)}
+        {QByteArrayLiteral("xl/worksheets/sheet1.xml"),
+         worksheetXml(columnWidths, rows, hasImages)}
     };
+    if (hasImages) {
+        entries.push_back({
+            QByteArrayLiteral("xl/worksheets/_rels/sheet1.xml.rels"),
+            worksheetRelationshipsXml()});
+        entries.push_back({QByteArrayLiteral("xl/drawings/drawing1.xml"),
+                           drawingXml(validImages)});
+        entries.push_back({
+            QByteArrayLiteral("xl/drawings/_rels/drawing1.xml.rels"),
+            drawingRelationshipsXml(validImages.size())});
+        for (int index = 0; index < validImages.size(); ++index) {
+            entries.push_back({
+                QStringLiteral("xl/media/image%1.png").arg(index + 1).toUtf8(),
+                validImages[index].pngData});
+        }
+    }
 
     QSaveFile file(filePath);
     if (!file.open(QIODevice::WriteOnly)) {

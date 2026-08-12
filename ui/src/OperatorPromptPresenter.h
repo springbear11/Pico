@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QObject>
 #include <QPointer>
+#include <QString>
 
 class QDialog;
 class QWidget;
@@ -24,6 +25,7 @@ public:
 
     void applyRuntimeEvents(const QVector<PicoATE::Core::RuntimeEvent>& events);
     void closeAll();
+    void setSequencePath(QString sequencePath);
 
 private:
     void showPrompt(const PicoATE::Core::RuntimeEvent& event);
@@ -33,6 +35,7 @@ private:
 
     ExecutionViewModel* m_viewModel = nullptr;
     QWidget* m_owner = nullptr;
+    QString m_sequencePath;
     QHash<QString, QPointer<QDialog>> m_dialogs;
     QHash<QString, QPointer<QDialog>> m_dialogsByKey;
 };

@@ -200,6 +200,175 @@ void collectBarrierWarnings(const QJsonObject& object,
     warnUnknownFields(object, path, barrierFieldNames(), warnings);
 }
 
+bool hasConfiguredValue(const QJsonObject& object, const QString& key)
+{
+    const auto value = object.value(key);
+    if (value.isUndefined() || value.isNull()) {
+        return false;
+    }
+    return !value.isString() || !value.toString().trimmed().isEmpty();
+}
+
+void addRequiredStepValueError(QVector<CompileError>& errors,
+                               const QString& path,
+                               const QString& message,
+                               const QString& suggestion)
+{
+    errors.push_back({path, message, suggestion});
+}
+
+void validatePredicateConfiguration(const QJsonObject& step,
+                                    const QString& path,
+                                    QVector<CompileError>& errors)
+{
+    const auto inputsValue = step.value(QStringLiteral("inputs"));
+    if (!inputsValue.isUndefined() && !inputsValue.isObject()) {
+        return;
+    }
+    const auto inputs = inputsValue.toObject();
+    if (!hasConfiguredValue(inputs, QStringLiteral("actual"))) {
+        addRequiredStepValueError(
+            errors,
+            childPath(childPath(path, QStringLiteral("inputs")),
+                      QStringLiteral("actual")),
+            QStringLiteral("Value to test is required"),
+            QStringLiteral("Select a runtime value or enter inputs.actual"));
+    }
+
+    const auto parametersValue = step.value(QStringLiteral("parameters"));
+    if (!parametersValue.isUndefined() && !parametersValue.isObject()) {
+        return;
+    }
+    const auto parameters = parametersValue.toObject();
+    const auto comparison = normalized(
+        parameters.value(QStringLiteral("comparison"))
+            .toString(QStringLiteral("between")));
+    const bool hasExpected = hasConfiguredValue(parameters, QStringLiteral("expected"));
+    const bool hasTolerance = hasConfiguredValue(parameters, QStringLiteral("tolerance"));
+    const bool hasLower = hasConfiguredValue(parameters, QStringLiteral("lower")) ||
+                          hasConfiguredValue(parameters, QStringLiteral("lowerLimit"));
+    const bool hasUpper = hasConfiguredValue(parameters, QStringLiteral("upper")) ||
+                          hasConfiguredValue(parameters, QStringLiteral("upperLimit"));
+
+    if (comparison == QStringLiteral("between") ||
+        comparison == QStringLiteral("range")) {
+        if (!((hasLower && hasUpper) || (hasExpected && hasTolerance))) {
+            addRequiredStepValueError(
+                errors,
+                childPath(path, QStringLiteral("parameters")),
+                QStringLiteral("Between comparison requires limits"),
+                QStringLiteral("Set lower and upper, or set expected and tolerance"));
+        }
+        return;
+    }
+
+    const bool booleanComparison = comparison == QStringLiteral("istrue") ||
+                                   comparison == QStringLiteral("isfalse");
+    if (booleanComparison) {
+        return;
+    }
+
+    const bool greaterComparison = comparison == QStringLiteral(">") ||
+                                   comparison == QStringLiteral("gt") ||
+                                   comparison == QStringLiteral("greaterthan") ||
+                                   comparison == QStringLiteral(">=") ||
+                                   comparison == QStringLiteral("ge") ||
+                                   comparison == QStringLiteral("gte") ||
+                                   comparison == QStringLiteral("greaterorequal");
+    const bool lessComparison = comparison == QStringLiteral("<") ||
+                                comparison == QStringLiteral("lt") ||
+                                comparison == QStringLiteral("lessthan") ||
+                                comparison == QStringLiteral("<=") ||
+                                comparison == QStringLiteral("le") ||
+                                comparison == QStringLiteral("lte") ||
+                                comparison == QStringLiteral("lessorequal");
+    const bool hasThreshold = hasExpected ||
+        (greaterComparison && hasLower) ||
+        (lessComparison && hasUpper);
+    if (!hasThreshold) {
+        addRequiredStepValueError(
+            errors,
+            childPath(childPath(path, QStringLiteral("parameters")),
+                      QStringLiteral("expected")),
+            QStringLiteral("Expected value is required for this comparison"),
+            QStringLiteral("Enter the expected or threshold value"));
+    }
+}
+
+void validateBuiltInStepRequirements(const QJsonArray& steps,
+                                     const QString& path,
+                                     bool parentEnabled,
+                                     QVector<CompileError>& errors)
+{
+    for (int index = 0; index < steps.size(); ++index) {
+        if (!steps[index].isObject()) {
+            continue;
+        }
+        const auto step = steps[index].toObject();
+        const auto stepPath = QStringLiteral("%1[%2]").arg(path).arg(index);
+        const bool enabled = parentEnabled &&
+            step.value(QStringLiteral("enabled")).toBool(true);
+        if (!enabled) {
+            continue;
+        }
+
+        const auto kindKey = step.contains(QStringLiteral("kind"))
+            ? QStringLiteral("kind") : QStringLiteral("type");
+        const auto kind = normalized(step.value(kindKey).toString());
+        if (kind == QStringLiteral("limit") ||
+            kind == QStringLiteral("numericlimit") ||
+            kind == QStringLiteral("break") ||
+            kind == QStringLiteral("breakif")) {
+            validatePredicateConfiguration(step, stepPath, errors);
+        } else if (kind == QStringLiteral("aggregate") ||
+                   kind == QStringLiteral("statistics")) {
+            const auto inputsValue = step.value(QStringLiteral("inputs"));
+            if (inputsValue.isUndefined() ||
+                (inputsValue.isObject() &&
+                 !hasConfiguredValue(inputsValue.toObject(), QStringLiteral("value")))) {
+                addRequiredStepValueError(
+                    errors,
+                    childPath(childPath(stepPath, QStringLiteral("inputs")),
+                              QStringLiteral("value")),
+                    QStringLiteral("Aggregate value is required"),
+                    QStringLiteral("Select the numeric value to aggregate"));
+            }
+        }
+
+        const auto children = step.value(QStringLiteral("steps"));
+        if (children.isArray()) {
+            validateBuiltInStepRequirements(
+                children.toArray(), childPath(stepPath, QStringLiteral("steps")),
+                enabled, errors);
+        }
+    }
+}
+
+void validateBuiltInStepRequirements(const QJsonObject& sequence,
+                                     QVector<CompileError>& errors)
+{
+    const auto groups = sequence.value(QStringLiteral("groups"));
+    if (!groups.isArray()) {
+        return;
+    }
+    const auto array = groups.toArray();
+    for (int index = 0; index < array.size(); ++index) {
+        if (!array[index].isObject()) {
+            continue;
+        }
+        const auto group = array[index].toObject();
+        const bool enabled = group.value(QStringLiteral("enabled")).toBool(true);
+        const auto steps = group.value(QStringLiteral("steps"));
+        if (steps.isArray()) {
+            validateBuiltInStepRequirements(
+                steps.toArray(),
+                QStringLiteral("groups[%1].steps").arg(index),
+                enabled,
+                errors);
+        }
+    }
+}
+
 void collectErrorPolicyWarnings(const QJsonObject& object,
                                 const QString& path,
                                 QVector<CompileWarning>& warnings)
@@ -685,6 +854,7 @@ CompileResult SequenceCompiler::compileJson(const QJsonObject& object) const
     CompileResult result;
     collectSequenceWarnings(object, result.warnings);
     result.sequence = parseSequence(object, result.errors);
+    validateBuiltInStepRequirements(object, result.errors);
     if (!result.errors.isEmpty()) {
         return result;
     }
@@ -1452,7 +1622,7 @@ OperatorPromptDef SequenceCompiler::parseOperatorPrompt(const QJsonObject& objec
             addError(errors,
                      childPath(path, "image"),
                      "Unsupported operator prompt image format",
-                     "Use a PNG, JPG, or JPEG image from the image folder");
+                     "Use a PNG, JPG, or JPEG image from the current project's images folder");
         }
     }
     if (prompt.mode == "confirm" && prompt.confirmText.isEmpty()) {

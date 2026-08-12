@@ -44,6 +44,45 @@ QString metadataValue(const QVariantMap& metadata,
     return {};
 }
 
+void appendUniquePlugins(QVector<PluginManifest>& target,
+                         const QVector<PluginManifest>& source)
+{
+    for (const auto& plugin : source) {
+        const auto existing = std::find_if(
+            target.cbegin(), target.cend(),
+            [&plugin](const PluginManifest& candidate) {
+                return candidate.moduleId.compare(
+                           plugin.moduleId, Qt::CaseInsensitive) == 0;
+            });
+        if (existing == target.cend()) {
+            target.push_back(plugin);
+        }
+    }
+}
+
+void appendPluginDiagnostics(
+    QVector<UiDiagnostic>& target,
+    const QVector<PluginBindingDiagnostic>& source)
+{
+    for (const auto& diagnostic : source) {
+        target.push_back(
+            {diagnostic.warning ? UiDiagnosticSeverity::Warning
+                                : UiDiagnosticSeverity::Error,
+             diagnostic.path,
+             diagnostic.message,
+             diagnostic.suggestion});
+    }
+}
+
+bool containsError(const QVector<UiDiagnostic>& diagnostics)
+{
+    return std::any_of(
+        diagnostics.cbegin(), diagnostics.cend(),
+        [](const UiDiagnostic& diagnostic) {
+            return diagnostic.severity == UiDiagnosticSeverity::Error;
+        });
+}
+
 class RunEventSequencer final : public PicoATE::Core::IRuntimeEventSink
 {
 public:
@@ -110,8 +149,13 @@ CompileServiceResult CoreExecutionService::compile(const CompileRequest& request
     artifact.sequence = compileResult.sequence;
     artifact.plan = compileResult.plan;
 
+    QVector<PluginManifest> pluginManifests{
+        builtInDataParserManifest(), builtInValueToolsManifest()};
+    QJsonObject stationObject;
+    QString registryPath = QDir(m_projectDir).absoluteFilePath(
+        QStringLiteral("plugins/PluginRegistry.json"));
+
     if (!request.stationPath.trimmed().isEmpty()) {
-        QJsonObject stationObject;
         const auto stationReadDiagnostics = readStationJson(
             request.stationPath, request.stationJson, stationObject);
         result.diagnostics += stationReadDiagnostics;
@@ -130,25 +174,19 @@ CompileServiceResult CoreExecutionService::compile(const CompileRequest& request
         artifact.station = stationResult.config;
         artifact.stationDocument = stationObject;
         artifact.stationPath = QFileInfo(request.stationPath).absoluteFilePath();
-        const auto registryPath =
+        registryPath =
             PicoATE::Core::resolveStationPluginRegistryPath(
                 stationResult.config.pluginRegistryPath,
                 request.stationPath,
                 m_projectDir);
         const auto registry = PluginCatalog::loadRegistry(registryPath);
+        appendUniquePlugins(pluginManifests, registry.plugins);
         const auto pluginDiagnostics = PluginCatalog::validateStationBindings(
             stationObject,
             registry.plugins,
             request.stationPath,
             m_projectDir);
-        for (const auto& diagnostic : pluginDiagnostics) {
-            result.diagnostics.push_back(
-                {diagnostic.warning ? UiDiagnosticSeverity::Warning
-                                    : UiDiagnosticSeverity::Error,
-                 diagnostic.path,
-                 diagnostic.message,
-                 diagnostic.suggestion});
-        }
+        appendPluginDiagnostics(result.diagnostics, pluginDiagnostics);
 
         QSet<QString> deviceIds;
         for (const auto& device : stationResult.config.devices) {
@@ -172,12 +210,20 @@ CompileServiceResult CoreExecutionService::compile(const CompileRequest& request
                     QStringLiteral("Add or enable the device in Station Config")));
             }
         }
-        if (std::any_of(result.diagnostics.cbegin(), result.diagnostics.cend(),
-                        [](const UiDiagnostic& diagnostic) {
-                            return diagnostic.severity == UiDiagnosticSeverity::Error;
-                        })) {
+        if (containsError(result.diagnostics)) {
             return result;
         }
+    } else if (QFileInfo::exists(registryPath)) {
+        appendUniquePlugins(
+            pluginManifests, PluginCatalog::loadRegistry(registryPath).plugins);
+    }
+
+    appendPluginDiagnostics(
+        result.diagnostics,
+        PluginCatalog::validateSequenceInputs(
+            sequenceObject, pluginManifests, stationObject));
+    if (containsError(result.diagnostics)) {
+        return result;
     }
 
     result.success = true;

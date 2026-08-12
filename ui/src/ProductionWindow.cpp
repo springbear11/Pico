@@ -173,6 +173,9 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
     m_viewModel = new ExecutionViewModel(this);
 #endif
     m_operatorPromptPresenter = new OperatorPromptPresenter(m_viewModel, this, this);
+    connect(m_viewModel, &ExecutionViewModel::sequencePathChanged,
+            m_operatorPromptPresenter,
+            &OperatorPromptPresenter::setSequencePath);
     m_resultModel = new UutStepModel(this);
     m_resultModel->setSingleUutPhaseLayout(true);
     m_logModel = new RuntimeTimelineModel(this);

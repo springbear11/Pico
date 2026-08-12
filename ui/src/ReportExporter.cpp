@@ -4,11 +4,29 @@
 
 #include "PicoATE/Core/MeasurementTypes.h"
 
+#include <QDir>
+#include <QFile>
 #include <QSaveFile>
 
 namespace PicoATE::Ui {
 
 namespace {
+
+QByteArray reportLogoPng()
+{
+    const auto read = [](const QString& path) {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray{};
+    };
+    auto bytes = read(QStringLiteral(":/branding/Sinexcel.png"));
+#ifdef PICOATE_PROJECT_DIR
+    if (bytes.isEmpty()) {
+        bytes = read(QDir(QStringLiteral(PICOATE_PROJECT_DIR)).filePath(
+            QStringLiteral("ui/src/assets/Sinexcel.png")));
+    }
+#endif
+    return bytes;
+}
 
 QString reportLimitDisplay(
     const PicoATE::Core::MeasurementResult& measurement,
@@ -443,6 +461,25 @@ ReportExportResult ReportExporter::saveXlsx(
     const PicoATE::Core::ExecutionReport& report)
 {
     QVector<XlsxRow> rows;
+    QVector<XlsxImage> images;
+    const auto logo = reportLogoPng();
+    if (!logo.isEmpty()) {
+        XlsxRow logoSpace;
+        logoSpace.cells = {QString(), QString(), QString(), QString(),
+                           QString(), QString(), QString()};
+        logoSpace.height = 60.0;
+        logoSpace.mergedColumnRanges = {{0, 6}};
+        logoSpace.excludeFromAutoFilter = true;
+        rows.push_back(std::move(logoSpace));
+        images.push_back({logo,
+                          QStringLiteral("SINEXCEL Logo"),
+                          1,
+                          0,
+                          180,
+                          18,
+                          320,
+                          44});
+    }
     const auto summary = reportSummary(report);
     rows.push_back(sequenceInfoRow(summary.sequenceName, summary.serialNumber));
     rows.push_back(summaryInfoRow(
@@ -502,7 +539,8 @@ ReportExportResult ReportExporter::saveXlsx(
         filePath,
         QStringLiteral("Test Report"),
         {34.0, 30.0, 18.0, 18.0, 28.0, 14.0, 20.0},
-        rows);
+        rows,
+        images);
     return {written.success, written.errorMessage};
 }
 

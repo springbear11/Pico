@@ -2,13 +2,13 @@
 
 #include "LoadingSpinner.h"
 #include "OnOffControl.h"
+#include "ProjectResourcePaths.h"
 
 #include <QAbstractButton>
 #include <QAbstractItemView>
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
-#include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -1690,7 +1690,7 @@ void StepPropertyEditor::buildDataPage()
     m_promptImageCombo->setObjectName(QStringLiteral("propertyPromptImageCombo"));
     m_promptImageCombo->setInsertPolicy(QComboBox::NoInsert);
     m_promptImageCombo->setToolTip(
-        tr("Optional PNG/JPG image from the image folder beside PicoATE.UI.exe"));
+        tr("Optional PNG/JPG image from this project's images folder"));
     addInspectableRow(m_dataForm, tr("Image (optional)"),
                       m_promptImageCombo,
                       QStringLiteral("prompt.image"));
@@ -2765,6 +2765,8 @@ void StepPropertyEditor::rebuildPluginInputEditors()
             table->verticalHeader()->hide();
             table->setSelectionBehavior(QAbstractItemView::SelectRows);
             table->setSelectionMode(QAbstractItemView::SingleSelection);
+            table->verticalHeader()->setMinimumSectionSize(38);
+            table->verticalHeader()->setDefaultSectionSize(38);
             table->setMinimumHeight(150);
 
             const auto configured = value.toList();
@@ -2785,18 +2787,36 @@ void StepPropertyEditor::rebuildPluginInputEditors()
             auto* controls = new QWidget(container);
             auto* controlsLayout = new QHBoxLayout(controls);
             controlsLayout->setContentsMargins(0, 0, 0, 0);
-            controlsLayout->setSpacing(4);
-            controlsLayout->addStretch(1);
+            controlsLayout->setSpacing(8);
             auto* add = new QToolButton(controls);
-            add->setText(QStringLiteral("+"));
+            add->setObjectName(QStringLiteral("expressionListAddButton"));
+            add->setText(tr("Add value"));
+            add->setIcon(QIcon(QStringLiteral(":/icons/list-plus.svg")));
+            add->setIconSize(QSize(16, 16));
+            add->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
             add->setToolTip(tr("Add value"));
-            add->setFixedSize(28, 28);
+            add->setMinimumSize(96, 30);
             auto* remove = new QToolButton(controls);
-            remove->setText(QStringLiteral("-"));
+            remove->setObjectName(QStringLiteral("expressionListRemoveButton"));
+            remove->setText(tr("Remove"));
+            remove->setIcon(QIcon(QStringLiteral(":/icons/trash-2.svg")));
+            remove->setIconSize(QSize(16, 16));
+            remove->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
             remove->setToolTip(tr("Remove selected value"));
-            remove->setFixedSize(28, 28);
+            remove->setMinimumSize(88, 30);
+            const auto controlStyle = QStringLiteral(
+                "QToolButton { background: #ffffff; color: #2d3943; "
+                "border: 1px solid #b7c1c9; border-radius: 4px; "
+                "padding: 3px 9px; font-weight: 600; }"
+                "QToolButton:hover { background: #e8f3f9; border-color: #568aa7; }"
+                "QToolButton:pressed { background: #d8eaf4; border-color: #3f7898; }"
+                "QToolButton:disabled { color: #a7adb3; background: #f3f5f6; "
+                "border-color: #d7dde1; }");
+            add->setStyleSheet(controlStyle);
+            remove->setStyleSheet(controlStyle);
             controlsLayout->addWidget(add);
             controlsLayout->addWidget(remove);
+            controlsLayout->addStretch(1);
             layout->addWidget(table);
             layout->addWidget(controls);
 
@@ -3437,15 +3457,20 @@ void StepPropertyEditor::appendExpressionListRow(QTableWidget* table,
 
     auto* nameEdit = new QLineEdit(table);
     nameEdit->setObjectName(QStringLiteral("expressionListName"));
+    nameEdit->setFixedHeight(32);
     nameEdit->setText(name);
     auto* valueEdit = new QLineEdit(table);
     valueEdit->setObjectName(QStringLiteral("expressionListValue"));
+    valueEdit->setFixedHeight(32);
     valueEdit->setPlaceholderText(tr("Number or ${step:...outputs...}"));
     if (value.isValid()) {
         valueEdit->setText(value.toString());
     }
+    auto* valueField = wrapExpressionEditor(valueEdit);
+    valueField->setFixedHeight(32);
     table->setCellWidget(row, 0, nameEdit);
-    table->setCellWidget(row, 1, wrapExpressionEditor(valueEdit));
+    table->setCellWidget(row, 1, valueField);
+    table->setRowHeight(row, 38);
     observeDraftWidget(nameEdit);
     observeDraftWidget(valueEdit);
 }
@@ -3763,38 +3788,16 @@ void StepPropertyEditor::rebuildPromptImageChoices(const QString& selectedImage)
     m_promptImageCombo->clear();
     m_promptImageCombo->addItem(tr("No image"), QString{});
 
-    QStringList roots = {
-        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("image")),
-        QDir(QDir::currentPath()).filePath(QStringLiteral("image")),
-    };
-    QSet<QString> seenRoots;
-    QSet<QString> seenFiles;
-    for (const auto& root : roots) {
-        const auto absoluteRoot = QFileInfo(root).absoluteFilePath();
-        const auto rootKey = QDir::cleanPath(absoluteRoot).toLower();
-        if (seenRoots.contains(rootKey)) {
-            continue;
-        }
-        seenRoots.insert(rootKey);
-
-        const QDir directory(absoluteRoot);
-        const auto files = directory.entryList(
-            {QStringLiteral("*.png"), QStringLiteral("*.jpg"),
-             QStringLiteral("*.jpeg")},
-            QDir::Files | QDir::Readable,
-            QDir::Name | QDir::IgnoreCase);
-        for (const auto& file : files) {
-            const auto fileKey = file.toLower();
-            if (seenFiles.contains(fileKey)) {
-                continue;
-            }
-            seenFiles.insert(fileKey);
-            m_promptImageCombo->addItem(file, file);
-            m_promptImageCombo->setItemData(
-                m_promptImageCombo->count() - 1,
-                directory.absoluteFilePath(file),
-                Qt::ToolTipRole);
-        }
+    const auto sequencePath = m_document ? m_document->filePath() : QString{};
+    const auto imagesDirectory =
+        ProjectResourcePaths::imagesDirectoryForSequence(sequencePath);
+    for (const auto& file :
+         ProjectResourcePaths::availableImages(sequencePath)) {
+        m_promptImageCombo->addItem(file, file);
+        m_promptImageCombo->setItemData(
+            m_promptImageCombo->count() - 1,
+            QDir(imagesDirectory).absoluteFilePath(file),
+            Qt::ToolTipRole);
     }
 
     const auto requested = selectedImage.trimmed();
@@ -3807,7 +3810,7 @@ void StepPropertyEditor::rebuildPromptImageChoices(const QString& selectedImage)
         selectedIndex = m_promptImageCombo->count() - 1;
         m_promptImageCombo->setItemData(
             selectedIndex,
-            tr("The configured image is not currently available in the image folder"),
+            tr("The configured image is not currently available in this project's images folder"),
             Qt::ToolTipRole);
     }
     m_promptImageCombo->setCurrentIndex(selectedIndex);

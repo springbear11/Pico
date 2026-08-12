@@ -409,6 +409,8 @@ private slots:
     void pluginCatalogParsesCompactDescriptionAndRoundTripsRegistry();
     void pluginCatalogScansNativeDllThroughHost();
     void pluginCatalogValidatesStationBindings();
+    void pluginCatalogValidatesNestedSequenceInputs();
+    void coreServiceRejectsUntouchedRequiredPluginInputs();
     void pluginFunctionModelBuildsHierarchyAndDropsGeneratedStep();
     void stepOutputExpressionsUsePreviousScopedPluginOutputs();
     void followingStepReferencesUseExecutionOrderAndScopedPaths();
@@ -1296,6 +1298,178 @@ void ExecutionViewModelTests::pluginCatalogValidatesStationBindings()
     QCOMPARE(diagnostics.first().path, QStringLiteral("devices[1].driverId"));
     QVERIFY(diagnostics.first().message.contains(QStringLiteral("plugin.unknown")));
     QVERIFY(diagnostics.first().message.contains(QStringLiteral("PluginRegistry.json")));
+}
+
+void ExecutionViewModelTests::pluginCatalogValidatesNestedSequenceInputs()
+{
+    const QByteArray description = R"json({
+      "name":"Validation Plugin","category":"CAN","functions":[
+        {"id":"write","name":"Write Frame","inputs":[
+          {"key":"mode","name":"Mode","type":"enum","default":"raw",
+           "options":[{"label":"Raw","value":"raw"},{"label":"Text","value":"text"}]},
+          {"key":"data","name":"Frame Data","type":"hex-bytes","required":true,
+           "visibleWhen":{"key":"mode","values":["raw"]}},
+          {"key":"count","name":"Count","type":"integer","minimum":1,"maximum":8}
+        ]},
+        {"id":"open","name":"Open","inputs":[
+          {"key":"address","name":"Address","type":"string","required":true}
+        ]}
+      ]
+    })json";
+    const auto parsed = PluginCatalog::parseDescription(
+        description, QStringLiteral("PicoATE.CAN.Validation.dll"), 1);
+    QVERIFY(parsed.ok());
+
+    const auto sequence = QJsonDocument::fromJson(R"json({
+      "groups":[{"id":"main","kind":"main","steps":[
+        {"id":"001","kind":"testItem","steps":[
+          {"id":"01","kind":"action","moduleId":"device","function":"write",
+           "inputs":{"deviceId":"CAN1","mode":"raw","count":9}},
+          {"id":"02","kind":"action","moduleId":"device","function":"write",
+           "enabled":false,"inputs":{"deviceId":"CAN1","mode":"raw"}}
+        ]},
+        {"id":"002","kind":"action","moduleId":"device","function":"open",
+         "inputs":{"deviceId":"CAN1"}}
+      ]}]
+    })json").object();
+    const auto station = QJsonDocument::fromJson(R"json({
+      "devices":[{"deviceId":"CAN1","driverId":"plugin.can.validation",
+                  "enabled":true,"options":{"address":"station-managed"}}]
+    })json").object();
+
+    const auto diagnostics = PluginCatalog::validateSequenceInputs(
+        sequence, {parsed.manifest}, station);
+    const auto hasPath = [&diagnostics](const QString& path) {
+        return std::any_of(
+            diagnostics.cbegin(), diagnostics.cend(),
+            [&path](const PluginBindingDiagnostic& diagnostic) {
+                return diagnostic.path == path;
+            });
+    };
+    QVERIFY(hasPath(QStringLiteral(
+        "groups[0].steps[0].steps[0].inputs.data")));
+    QVERIFY(hasPath(QStringLiteral(
+        "groups[0].steps[0].steps[0].inputs.count")));
+    QVERIFY(!hasPath(QStringLiteral(
+        "groups[0].steps[0].steps[1].inputs.data")));
+    QVERIFY(!hasPath(QStringLiteral("groups[0].steps[1].inputs.address")));
+}
+
+void ExecutionViewModelTests::coreServiceRejectsUntouchedRequiredPluginInputs()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("sequence.json"));
+    CoreExecutionService service(directory.path());
+
+    CompileRequest request;
+    request.sequencePath = sequencePath;
+    request.sequenceJson = R"json({
+      "id":"required-input-test","name":"Required Input Test","groups":[
+        {"id":"main","kind":"main","steps":[
+          {"id":"001","name":"Statistics","kind":"action",
+           "moduleId":"builtin.value-tools","function":"statistics"}
+        ]}
+      ]
+    })json";
+    const auto rejected = service.compile(request);
+    QVERIFY(!rejected.success);
+    QVERIFY(std::any_of(
+        rejected.diagnostics.cbegin(), rejected.diagnostics.cend(),
+        [](const UiDiagnostic& diagnostic) {
+            return diagnostic.path ==
+                       QStringLiteral("groups[0].steps[0].inputs.values") &&
+                   diagnostic.severity == UiDiagnosticSeverity::Error;
+        }));
+
+    request.sequenceJson = R"json({
+      "id":"required-input-test","name":"Required Input Test","groups":[
+        {"id":"main","kind":"main","steps":[
+          {"id":"001","name":"Statistics","kind":"action",
+           "moduleId":"builtin.value-tools","function":"statistics",
+           "inputs":{"values":[{"name":"Voltage","value":12.5}]}}
+        ]}
+      ]
+    })json";
+    const auto accepted = service.compile(request);
+    QVERIFY2(accepted.success,
+             qPrintable(accepted.diagnostics.isEmpty()
+                 ? QStringLiteral("compile failed without diagnostics")
+                 : accepted.diagnostics.first().path + QStringLiteral(": ") +
+                       accepted.diagnostics.first().message));
+
+    const auto pluginDirectory = directory.filePath(QStringLiteral("plugins"));
+    QVERIFY(QDir().mkpath(pluginDirectory));
+    const auto dllPath = pluginDirectory +
+        QStringLiteral("/PicoATE.CAN.Validation.dll");
+    QFile dll(dllPath);
+    QVERIFY(dll.open(QIODevice::WriteOnly));
+    dll.write("test");
+    dll.close();
+    const auto parsed = PluginCatalog::parseDescription(R"json({
+      "name":"Validation CAN","category":"CAN","functions":[
+        {"id":"write","name":"Write Frame","inputs":[
+          {"key":"data","name":"Frame Data","type":"hex-bytes","required":true},
+          {"key":"count","name":"Frame Count","type":"integer",
+           "required":true,"minimum":1,"maximum":8}
+        ]}
+      ]
+    })json", dllPath, 1);
+    QVERIFY(parsed.ok());
+    QString registryError;
+    QVERIFY2(PluginCatalog::saveRegistry(
+                 pluginDirectory + QStringLiteral("/PluginRegistry.json"),
+                 {parsed.manifest}, &registryError),
+             qPrintable(registryError));
+
+    request.stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    request.stationJson = R"json({
+      "stationId":"validation-station",
+      "pluginRegistry":"plugins/PluginRegistry.json",
+      "devices":[{
+        "deviceId":"CAN1","deviceType":"CAN",
+        "driverId":"plugin.can.validation",
+        "connectionKind":"canSerial","resource":"",
+        "lifetime":"Run","enabled":true,"options":{}
+      }]
+    })json";
+    request.sequenceJson = R"json({
+      "id":"device-required-input-test","name":"Device Required Input Test",
+      "groups":[{"id":"main","kind":"main","steps":[
+        {"id":"001","kind":"testItem","steps":[
+          {"id":"01","name":"Write Frame","kind":"action",
+           "moduleId":"device","function":"write",
+           "inputs":{"deviceId":"CAN1"}}
+        ]}
+      ]}]
+    })json";
+    const auto rejectedDeviceStep = service.compile(request);
+    QVERIFY(!rejectedDeviceStep.success);
+    QVERIFY(std::any_of(
+        rejectedDeviceStep.diagnostics.cbegin(),
+        rejectedDeviceStep.diagnostics.cend(),
+        [](const UiDiagnostic& diagnostic) {
+            return diagnostic.path == QStringLiteral(
+                "groups[0].steps[0].steps[0].inputs.data");
+        }));
+
+    request.sequenceJson = R"json({
+      "id":"device-required-input-test","name":"Device Required Input Test",
+      "groups":[{"id":"main","kind":"main","steps":[
+        {"id":"001","kind":"testItem","steps":[
+          {"id":"01","name":"Write Frame","kind":"action",
+           "moduleId":"device","function":"write",
+           "inputs":{"deviceId":"CAN1","data":"01 02 03 04","count":2}}
+        ]}
+      ]}]
+    })json";
+    const auto acceptedDeviceStep = service.compile(request);
+    QVERIFY2(acceptedDeviceStep.success,
+             qPrintable(acceptedDeviceStep.diagnostics.isEmpty()
+                 ? QStringLiteral("device step compile failed without diagnostics")
+                 : acceptedDeviceStep.diagnostics.first().path +
+                       QStringLiteral(": ") +
+                       acceptedDeviceStep.diagnostics.first().message));
 }
 
 void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGeneratedStep()
@@ -3121,6 +3295,13 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(xlsx.startsWith("PK\x03\x04"));
     QVERIFY(xlsx.contains("xl/worksheets/sheet1.xml"));
     QVERIFY(xlsx.contains("xl/styles.xml"));
+    QVERIFY(xlsx.contains("xl/worksheets/_rels/sheet1.xml.rels"));
+    QVERIFY(xlsx.contains("xl/drawings/drawing1.xml"));
+    QVERIFY(xlsx.contains("xl/drawings/_rels/drawing1.xml.rels"));
+    QVERIFY(xlsx.contains("xl/media/image1.png"));
+    QVERIFY(xlsx.contains("name=\"SINEXCEL Logo\""));
+    QVERIFY(xlsx.contains("Target=\"../media/image1.png\""));
+    QVERIFY(xlsx.contains(QByteArray("\x89PNG\r\n\x1a\n", 8)));
     QVERIFY(xlsx.contains("Actual Value"));
     QVERIFY(xlsx.contains(QStringLiteral("测量,&quot;输出&quot;").toUtf8()));
     QVERIFY(xlsx.contains("PICO-800V"));
@@ -3134,15 +3315,16 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(xlsx.contains("00:00:09.876"));
     QVERIFY(!xlsx.contains("state=\"frozen\""));
     QVERIFY(!xlsx.contains("ySplit="));
-    QVERIFY(xlsx.contains("ref=\"A5:G6\""));
-    QVERIFY(xlsx.contains("ref=\"B1:D1\""));
-    QVERIFY(xlsx.contains("ref=\"F1:G1\""));
+    QVERIFY(xlsx.contains("ref=\"A1:G1\""));
+    QVERIFY(xlsx.contains("ref=\"A6:G7\""));
+    QVERIFY(xlsx.contains("ref=\"B2:D2\""));
     QVERIFY(xlsx.contains("ref=\"F2:G2\""));
     QVERIFY(xlsx.contains("ref=\"F3:G3\""));
-    QVERIFY(xlsx.contains("ref=\"B7:F7\""));
-    QVERIFY(xlsx.contains("<c r=\"A7\" s=\"6\""));
-    QVERIFY(xlsx.contains("<c r=\"B7\" s=\"7\""));
-    QVERIFY(xlsx.contains("<c r=\"G7\" s=\"6\""));
+    QVERIFY(xlsx.contains("ref=\"F4:G4\""));
+    QVERIFY(xlsx.contains("ref=\"B8:F8\""));
+    QVERIFY(xlsx.contains("<c r=\"A8\" s=\"6\""));
+    QVERIFY(xlsx.contains("<c r=\"B8\" s=\"7\""));
+    QVERIFY(xlsx.contains("<c r=\"G8\" s=\"6\""));
     QVERIFY(xlsx.contains("TOTAL TEST ITEMS"));
     QVERIFY(xlsx.contains("FF16794A"));
     QVERIFY(xlsx.contains("FFB42318"));
@@ -3154,7 +3336,7 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QFile errorXlsxFile(errorXlsxPath);
     QVERIFY(errorXlsxFile.open(QIODevice::ReadOnly));
     const auto errorXlsx = errorXlsxFile.readAll();
-    QVERIFY(errorXlsx.contains("<c r=\"B7\" s=\"8\""));
+    QVERIFY(errorXlsx.contains("<c r=\"B8\" s=\"8\""));
     QVERIFY(errorXlsx.contains(">FAIL<"));
 
     auto filteredReport = sampleReport();

@@ -1,11 +1,10 @@
 #include "OperatorPromptPresenter.h"
 
 #include "ExecutionViewModel.h"
+#include "ProjectResourcePaths.h"
 
 #include <QCloseEvent>
-#include <QCoreApplication>
 #include <QDialog>
-#include <QDir>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -22,43 +21,6 @@
 namespace PicoATE::Ui {
 
 namespace {
-
-QString resolvePromptImagePath(const QString& configuredImage)
-{
-    const auto configured = configuredImage.trimmed();
-    if (configured.isEmpty()) {
-        return {};
-    }
-
-    const QFileInfo direct(configured);
-    if (direct.isAbsolute()) {
-        return direct.absoluteFilePath();
-    }
-
-    const auto normalized = QDir::fromNativeSeparators(configured);
-    const bool includesImageFolder =
-        normalized.compare(QStringLiteral("image"), Qt::CaseInsensitive) == 0 ||
-        normalized.startsWith(QStringLiteral("image/"), Qt::CaseInsensitive);
-    const QStringList roots = {
-        QCoreApplication::applicationDirPath(),
-        QDir::currentPath(),
-    };
-
-    QString firstCandidate;
-    for (const auto& root : roots) {
-        const auto candidate = QDir(root).absoluteFilePath(
-            includesImageFolder
-                ? normalized
-                : QStringLiteral("image/%1").arg(normalized));
-        if (firstCandidate.isEmpty()) {
-            firstCandidate = candidate;
-        }
-        if (QFileInfo::exists(candidate)) {
-            return candidate;
-        }
-    }
-    return firstCandidate;
-}
 
 class OperatorPromptDialog final : public QDialog
 {
@@ -131,7 +93,8 @@ public:
     QPushButton* failButton() const { return m_failButton; }
     QString currentInstanceId() const { return m_currentInstanceId; }
 
-    void configure(const PicoATE::Core::RuntimeEvent& event)
+    void configure(const PicoATE::Core::RuntimeEvent& event,
+                   const QString& sequencePath)
     {
         const auto mode = event.details.value("mode").toString();
         m_currentInstanceId = event.details.value("promptInstanceId").toString();
@@ -140,7 +103,7 @@ public:
                            : event.details.value("title").toString());
         m_messageLabel->setText(
             event.details.value("message", event.message).toString());
-        updateImage(event.details.value("image").toString());
+        updateImage(event.details.value("image").toString(), sequencePath);
 
         const bool notice = mode == QStringLiteral("notice");
         const bool judgment = mode == QStringLiteral("judgment");
@@ -206,7 +169,7 @@ protected:
     }
 
 private:
-    void updateImage(const QString& image)
+    void updateImage(const QString& image, const QString& sequencePath)
     {
         m_imageLabel->clear();
         m_imageLabel->setToolTip({});
@@ -215,7 +178,7 @@ private:
             return;
         }
 
-        const auto imagePath = resolvePromptImagePath(image);
+        const auto imagePath = ProjectResourcePaths::resolveImage(sequencePath, image);
         QPixmap pixmap(imagePath);
         m_imageLabel->setToolTip(imagePath);
         if (pixmap.isNull()) {
@@ -285,6 +248,14 @@ void OperatorPromptPresenter::closeAll()
     }
 }
 
+void OperatorPromptPresenter::setSequencePath(QString sequencePath)
+{
+    sequencePath = sequencePath.trimmed();
+    m_sequencePath = sequencePath.isEmpty()
+        ? QString{}
+        : QFileInfo(sequencePath).absoluteFilePath();
+}
+
 void OperatorPromptPresenter::showPrompt(const PicoATE::Core::RuntimeEvent& event)
 {
     const auto instanceId = event.details.value("promptInstanceId").toString();
@@ -312,7 +283,7 @@ void OperatorPromptPresenter::showPrompt(const PicoATE::Core::RuntimeEvent& even
             }
         });
     }
-    dialog->configure(event);
+    dialog->configure(event, m_sequencePath);
     m_dialogs.insert(instanceId, dialog);
     if (!key.isEmpty()) {
         m_dialogsByKey.insert(key, dialog);

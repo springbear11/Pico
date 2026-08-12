@@ -14,6 +14,8 @@ add_library(PicoATEUiRuntime STATIC
     IExecutionService.h
     MeasurementDisplay.cpp
     MeasurementDisplay.h
+    ProjectResourcePaths.cpp
+    ProjectResourcePaths.h
     PluginCatalog.cpp
     PluginCatalog.h
     PluginFunctionModel.cpp
@@ -148,15 +150,6 @@ add_custom_command(TARGET PicoATEUi POST_BUILD
     COMMENT "Ensuring the shared plugins directory exists"
 )
 
-add_custom_command(TARGET PicoATEUi POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:PicoATEUi>/image"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${PICOATE_ROOT_DIR}/image"
-            "$<TARGET_FILE_DIR:PicoATEUi>/image"
-    COMMENT "Deploying MessageBox images beside PicoATE.UI"
-)
-
 if(TARGET PicoATENativeHost)
     add_dependencies(PicoATEUi PicoATENativeHost)
     add_custom_command(TARGET PicoATEUi POST_BUILD
@@ -237,9 +230,6 @@ add_custom_target(PicoATEUiPortable
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "$<TARGET_FILE:PicoATENativeHost>"
             "${PICOATE_UI_PORTABLE_DIR}/"
-    COMMAND "${CMAKE_COMMAND}" -E copy_directory
-            "${PICOATE_ROOT_DIR}/image"
-            "${PICOATE_UI_PORTABLE_DIR}/image"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${PICOATE_ROOT_DIR}/templates/bin/$<CONFIG>"
             "${PICOATE_UI_PORTABLE_DIR}/plugins"

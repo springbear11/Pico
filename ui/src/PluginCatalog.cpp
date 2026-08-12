@@ -18,6 +18,7 @@
 #include <QSet>
 
 #include <algorithm>
+#include <cmath>
 
 namespace PicoATE::Ui {
 
@@ -323,6 +324,354 @@ PluginFunctionDefinition parseFunction(
         }
     }
     return result;
+}
+
+bool isRuntimeExpression(const QJsonValue& value)
+{
+    if (!value.isString()) {
+        return false;
+    }
+    const auto text = value.toString().trimmed();
+    return text.startsWith(QStringLiteral("${")) &&
+           text.endsWith(QLatin1Char('}'));
+}
+
+bool equivalentValue(const QVariant& left, const QVariant& right)
+{
+    if (left == right) {
+        return true;
+    }
+    bool leftNumber = false;
+    bool rightNumber = false;
+    const double leftValue = left.toDouble(&leftNumber);
+    const double rightValue = right.toDouble(&rightNumber);
+    return leftNumber && rightNumber && leftValue == rightValue;
+}
+
+bool inputIsVisible(const PluginParameterDefinition& definition,
+                    const QJsonObject& inputs,
+                    const PluginFunctionDefinition& function)
+{
+    if (definition.visibleWhenKey.isEmpty()) {
+        return true;
+    }
+    auto controllerValue = inputs.value(definition.visibleWhenKey);
+    if (controllerValue.isUndefined()) {
+        const auto controller = std::find_if(
+            function.inputs.cbegin(), function.inputs.cend(),
+            [&definition](const PluginParameterDefinition& candidate) {
+                return candidate.key == definition.visibleWhenKey;
+            });
+        if (controller != function.inputs.cend() &&
+            controller->defaultValue.isValid()) {
+            controllerValue = QJsonValue::fromVariant(controller->defaultValue);
+        }
+    }
+    if (controllerValue.isUndefined() || controllerValue.isNull()) {
+        return false;
+    }
+    if (isRuntimeExpression(controllerValue)) {
+        return true;
+    }
+    const auto value = controllerValue.toVariant();
+    return std::any_of(
+        definition.visibleWhenValues.cbegin(),
+        definition.visibleWhenValues.cend(),
+        [&value](const QVariant& allowed) {
+            return equivalentValue(value, allowed);
+        });
+}
+
+bool missingRequiredValue(const QJsonValue& value,
+                          const PluginParameterDefinition& definition)
+{
+    if (value.isUndefined() || value.isNull()) {
+        return true;
+    }
+    if (value.isString()) {
+        return value.toString().trimmed().isEmpty() && !definition.allowEmpty;
+    }
+    if (value.isArray()) {
+        return value.toArray().isEmpty();
+    }
+    return false;
+}
+
+void addBindingDiagnostic(QVector<PluginBindingDiagnostic>& diagnostics,
+                          QString path,
+                          QString message,
+                          QString suggestion)
+{
+    diagnostics.push_back({std::move(path),
+                           std::move(message),
+                           std::move(suggestion),
+                           false});
+}
+
+void validateExpressionList(const QJsonValue& value,
+                            const QString& path,
+                            const PluginParameterDefinition& definition,
+                            QVector<PluginBindingDiagnostic>& diagnostics)
+{
+    if (!value.isArray()) {
+        addBindingDiagnostic(
+            diagnostics, path,
+            QStringLiteral("%1 must be a list of values").arg(definition.name),
+            QStringLiteral("Add one or more numeric values or runtime expressions"));
+        return;
+    }
+    const auto values = value.toArray();
+    for (int index = 0; index < values.size(); ++index) {
+        auto item = values[index];
+        if (item.isObject()) {
+            item = item.toObject().value(QStringLiteral("value"));
+        }
+        if (item.isDouble() || isRuntimeExpression(item)) {
+            continue;
+        }
+        addBindingDiagnostic(
+            diagnostics,
+            QStringLiteral("%1[%2]").arg(path).arg(index),
+            QStringLiteral("%1 entry must be a number or runtime expression")
+                .arg(definition.name),
+            QStringLiteral("Use a number or an expression such as ${step:...outputs.value}"));
+    }
+}
+
+void validateParameterValue(const QJsonValue& value,
+                            const QString& path,
+                            const PluginParameterDefinition& definition,
+                            QVector<PluginBindingDiagnostic>& diagnostics)
+{
+    if (isRuntimeExpression(value)) {
+        return;
+    }
+
+    switch (definition.type) {
+    case PluginParameterType::String:
+    case PluginParameterType::HexBytes:
+        if (!value.isString()) {
+            addBindingDiagnostic(
+                diagnostics, path,
+                QStringLiteral("%1 must be text").arg(definition.name),
+                QStringLiteral("Enter text or select a runtime expression"));
+        }
+        return;
+    case PluginParameterType::Boolean:
+        if (!value.isBool()) {
+            addBindingDiagnostic(
+                diagnostics, path,
+                QStringLiteral("%1 must be ON or OFF").arg(definition.name),
+                QStringLiteral("Select ON/OFF or use a runtime expression"));
+        }
+        return;
+    case PluginParameterType::Enumeration: {
+        const auto selected = value.toVariant();
+        const bool supported = std::any_of(
+            definition.options.cbegin(), definition.options.cend(),
+            [&selected](const PluginParameterOption& option) {
+                return equivalentValue(selected, option.value);
+            });
+        if (!supported) {
+            addBindingDiagnostic(
+                diagnostics, path,
+                QStringLiteral("%1 contains an unsupported option")
+                    .arg(definition.name),
+                QStringLiteral("Select one of the values offered by the plugin"));
+        }
+        return;
+    }
+    case PluginParameterType::ExpressionList:
+        validateExpressionList(value, path, definition, diagnostics);
+        return;
+    case PluginParameterType::Integer:
+    case PluginParameterType::Number:
+        break;
+    }
+
+    if (!value.isDouble() || !std::isfinite(value.toDouble())) {
+        addBindingDiagnostic(
+            diagnostics, path,
+            definition.type == PluginParameterType::Integer
+                ? QStringLiteral("%1 must be an integer").arg(definition.name)
+                : QStringLiteral("%1 must be a number").arg(definition.name),
+            QStringLiteral("Enter a numeric value or select a runtime expression"));
+        return;
+    }
+    const double number = value.toDouble();
+    if (definition.type == PluginParameterType::Integer &&
+        std::trunc(number) != number) {
+        addBindingDiagnostic(
+            diagnostics, path,
+            QStringLiteral("%1 must be an integer").arg(definition.name),
+            QStringLiteral("Remove the decimal part"));
+        return;
+    }
+    if ((definition.minimum && number < *definition.minimum) ||
+        (definition.maximum && number > *definition.maximum)) {
+        QString range;
+        if (definition.minimum && definition.maximum) {
+            range = QStringLiteral("%1 to %2")
+                        .arg(*definition.minimum)
+                        .arg(*definition.maximum);
+        } else if (definition.minimum) {
+            range = QStringLiteral("at least %1").arg(*definition.minimum);
+        } else {
+            range = QStringLiteral("at most %1").arg(*definition.maximum);
+        }
+        addBindingDiagnostic(
+            diagnostics, path,
+            QStringLiteral("%1 is outside the allowed range")
+                .arg(definition.name),
+            QStringLiteral("Enter a value %1").arg(range));
+    }
+}
+
+const PluginManifest* findPlugin(const QVector<PluginManifest>& plugins,
+                                 const QString& moduleId)
+{
+    const auto plugin = std::find_if(
+        plugins.cbegin(), plugins.cend(),
+        [&moduleId](const PluginManifest& candidate) {
+            return candidate.moduleId.compare(moduleId, Qt::CaseInsensitive) == 0;
+        });
+    return plugin == plugins.cend() ? nullptr : &*plugin;
+}
+
+const QJsonObject* findStationDevice(const QHash<QString, QJsonObject>& devices,
+                                     const QString& deviceId)
+{
+    const auto iterator = devices.constFind(deviceId.trimmed().toLower());
+    return iterator == devices.constEnd() ? nullptr : &iterator.value();
+}
+
+bool stationManagedConnection(const QString& moduleId,
+                              const QString& functionId)
+{
+    if (moduleId.compare(QStringLiteral("device"), Qt::CaseInsensitive) != 0) {
+        return false;
+    }
+    return functionId.compare(QStringLiteral("open"), Qt::CaseInsensitive) == 0 ||
+           functionId.compare(QStringLiteral("connect"), Qt::CaseInsensitive) == 0 ||
+           functionId.compare(QStringLiteral("connectCan"), Qt::CaseInsensitive) == 0;
+}
+
+void validateStepPluginInputs(
+    const QJsonObject& step,
+    const QString& path,
+    const QVector<PluginManifest>& plugins,
+    const QHash<QString, QJsonObject>& stationDevices,
+    QVector<PluginBindingDiagnostic>& diagnostics)
+{
+    const auto moduleId = step.value(QStringLiteral("moduleId"))
+                              .toString().trimmed();
+    const auto functionId = step.value(QStringLiteral("function"))
+                                .toString().trimmed();
+    if (moduleId.isEmpty()) {
+        return;
+    }
+
+    const auto inputs = step.value(QStringLiteral("inputs")).toObject();
+    QString schemaModuleId = moduleId;
+    if (moduleId.compare(QStringLiteral("device"), Qt::CaseInsensitive) == 0) {
+        const auto deviceId = inputs.value(QStringLiteral("deviceId"))
+                                  .toString().trimmed();
+        const auto* device = findStationDevice(stationDevices, deviceId);
+        if (!device) {
+            return;
+        }
+        schemaModuleId = device->value(QStringLiteral("driverId"))
+                             .toString(device->value(QStringLiteral("driver"))
+                                           .toString())
+                             .trimmed();
+    }
+
+    const auto* plugin = findPlugin(plugins, schemaModuleId);
+    if (!plugin) {
+        return;
+    }
+    if (functionId.isEmpty()) {
+        addBindingDiagnostic(
+            diagnostics, path + QStringLiteral(".function"),
+            QStringLiteral("Plugin function is required"),
+            QStringLiteral("Select a function provided by %1").arg(plugin->name));
+        return;
+    }
+    const auto function = std::find_if(
+        plugin->functions.cbegin(), plugin->functions.cend(),
+        [&functionId](const PluginFunctionDefinition& candidate) {
+            return candidate.id.compare(functionId, Qt::CaseInsensitive) == 0;
+        });
+    if (function == plugin->functions.cend()) {
+        addBindingDiagnostic(
+            diagnostics, path + QStringLiteral(".function"),
+            QStringLiteral("Plugin function is not available: %1").arg(functionId),
+            QStringLiteral("Select a function currently described by %1").arg(plugin->name));
+        return;
+    }
+
+    // Device connection arguments live in Station Config. Empty resources remain
+    // a runtime connection error by design, so they must not block compilation.
+    if (stationManagedConnection(moduleId, functionId)) {
+        return;
+    }
+
+    for (const auto& definition : function->inputs) {
+        if (!inputIsVisible(definition, inputs, *function)) {
+            continue;
+        }
+        auto value = inputs.value(definition.key);
+        if ((value.isUndefined() || value.isNull()) &&
+            definition.defaultValue.isValid()) {
+            value = QJsonValue::fromVariant(definition.defaultValue);
+        }
+        const auto inputPath = QStringLiteral("%1.inputs.%2")
+                                   .arg(path, definition.key);
+        if (definition.required && missingRequiredValue(value, definition)) {
+            addBindingDiagnostic(
+                diagnostics, inputPath,
+                QStringLiteral("%1 is required").arg(definition.name),
+                QStringLiteral("Configure %1 before compiling this step")
+                    .arg(definition.name));
+            continue;
+        }
+        if (value.isUndefined() || value.isNull() ||
+            (value.isString() && value.toString().trimmed().isEmpty() &&
+             !definition.required)) {
+            continue;
+        }
+        validateParameterValue(value, inputPath, definition, diagnostics);
+    }
+}
+
+void validateStepArray(
+    const QJsonArray& steps,
+    const QString& path,
+    bool parentEnabled,
+    const QVector<PluginManifest>& plugins,
+    const QHash<QString, QJsonObject>& stationDevices,
+    QVector<PluginBindingDiagnostic>& diagnostics)
+{
+    for (int index = 0; index < steps.size(); ++index) {
+        if (!steps[index].isObject()) {
+            continue;
+        }
+        const auto step = steps[index].toObject();
+        const auto stepPath = QStringLiteral("%1[%2]").arg(path).arg(index);
+        const bool enabled = parentEnabled &&
+            step.value(QStringLiteral("enabled")).toBool(true);
+        if (!enabled) {
+            continue;
+        }
+        validateStepPluginInputs(
+            step, stepPath, plugins, stationDevices, diagnostics);
+        const auto children = step.value(QStringLiteral("steps"));
+        if (children.isArray()) {
+            validateStepArray(
+                children.toArray(), stepPath + QStringLiteral(".steps"),
+                enabled, plugins, stationDevices, diagnostics);
+        }
+    }
 }
 
 } // namespace
@@ -715,6 +1064,45 @@ QVector<PluginBindingDiagnostic> PluginCatalog::validateStationBindings(
                                   .arg(driverId, canonicalKind),
                               QStringLiteral("Select a connection kind declared by the plugin"),
                               false});
+        }
+    }
+    return result;
+}
+
+QVector<PluginBindingDiagnostic> PluginCatalog::validateSequenceInputs(
+    const QJsonObject& sequence,
+    const QVector<PluginManifest>& plugins,
+    const QJsonObject& station)
+{
+    QVector<PluginBindingDiagnostic> result;
+    QHash<QString, QJsonObject> devices;
+    for (const auto& value : station.value(QStringLiteral("devices")).toArray()) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const auto device = value.toObject();
+        const auto deviceId = device.value(QStringLiteral("deviceId"))
+                                  .toString(device.value(QStringLiteral("id"))
+                                                .toString())
+                                  .trimmed().toLower();
+        if (!deviceId.isEmpty()) {
+            devices.insert(deviceId, device);
+        }
+    }
+
+    const auto groups = sequence.value(QStringLiteral("groups")).toArray();
+    for (int index = 0; index < groups.size(); ++index) {
+        if (!groups[index].isObject()) {
+            continue;
+        }
+        const auto group = groups[index].toObject();
+        const bool enabled = group.value(QStringLiteral("enabled")).toBool(true);
+        const auto steps = group.value(QStringLiteral("steps"));
+        if (steps.isArray()) {
+            validateStepArray(
+                steps.toArray(),
+                QStringLiteral("groups[%1].steps").arg(index),
+                enabled, plugins, devices, result);
         }
     }
     return result;

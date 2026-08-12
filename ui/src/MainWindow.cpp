@@ -109,6 +109,18 @@ namespace {
 constexpr int MaxRecentFiles = 8;
 const QString StationDiagnosticPrefix = QStringLiteral("Station: ");
 
+bool containsSequencePath(const SequenceItemPath& parent,
+                          const SequenceItemPath& candidate)
+{
+    if (!parent.isValid() || !candidate.isValid() ||
+        parent.groupIndex != candidate.groupIndex ||
+        parent.stepIndices.size() > candidate.stepIndices.size()) {
+        return false;
+    }
+    return std::equal(parent.stepIndices.cbegin(), parent.stepIndices.cend(),
+                      candidate.stepIndices.cbegin());
+}
+
 QIcon toolbarIcon(const char* name)
 {
     return QIcon(QStringLiteral(":/icons/%1.svg")
@@ -724,6 +736,9 @@ MainWindow::MainWindow(QWidget* parent)
     m_viewModel = new ExecutionViewModel(this);
 #endif
     m_operatorPromptPresenter = new OperatorPromptPresenter(m_viewModel, this, this);
+    connect(m_viewModel, &ExecutionViewModel::sequencePathChanged,
+            m_operatorPromptPresenter,
+            &OperatorPromptPresenter::setSequencePath);
     m_sequenceDocument = new SequenceDocument(this);
     m_sequenceTreeModel = new SequenceTreeModel(m_sequenceDocument, this);
     m_pluginFunctionModel = new PluginFunctionModel(this);
@@ -1789,6 +1804,15 @@ bool MainWindow::saveNewProjectAs()
             tr("Failed to create the project files: %1").arg(errorMessage));
         return false;
     }
+    const auto imagesPath = QDir(projectPath).filePath(QStringLiteral("images"));
+    if (!QDir().mkpath(imagesPath)) {
+        QFile::remove(sequencePath);
+        QFile::remove(stationPath);
+        QMessageBox::critical(
+            this, tr("Save New Project As"),
+            tr("Cannot create the project images folder: %1").arg(imagesPath));
+        return false;
+    }
     if (!m_sequenceDocument->load(sequencePath) ||
         !m_stationDocument->load(stationPath)) {
         QMessageBox::critical(
@@ -2110,12 +2134,24 @@ void MainWindow::addSequenceStep()
 
 void MainWindow::deleteSequenceStep()
 {
-    if (!resolvePendingStepChanges()) {
-        return;
-    }
     const auto paths = selectedSequenceStepPaths();
     if (paths.isEmpty()) {
         return;
+    }
+
+    if (m_stepPropertyEditor && m_stepPropertyEditor->hasPendingChanges()) {
+        const auto draftPath = m_stepPropertyEditor->currentPath();
+        const bool removesDraft = std::any_of(
+            paths.cbegin(), paths.cend(), [&draftPath](const auto& path) {
+                return containsSequencePath(path, draftPath);
+            });
+        if (removesDraft) {
+            // A discarded item must not require a valid draft. Reloading here
+            // also prevents selection-change callbacks from trying to commit it.
+            m_stepPropertyEditor->discardPendingChanges();
+        } else if (!resolvePendingStepChanges()) {
+            return;
+        }
     }
 
     auto parentPath = paths.first();
@@ -4105,6 +4141,7 @@ void MainWindow::buildActions()
 
     m_deleteStepAction = new QAction(
         toolbarIcon("trash-2"), tr("Delete Step"), this);
+    m_deleteStepAction->setObjectName(QStringLiteral("deleteStepAction"));
     m_deleteStepAction->setShortcut(QKeySequence::Delete);
     connect(m_deleteStepAction, &QAction::triggered, this, [this] { deleteSequenceStep(); });
 

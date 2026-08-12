@@ -134,6 +134,10 @@ public:
         const QVector<PluginManifest>& plugins,
         const QString& stationFilePath,
         const QString& projectDir);
+    static QVector<PluginBindingDiagnostic> validateSequenceInputs(
+        const QJsonObject& sequence,
+        const QVector<PluginManifest>& plugins,
+        const QJsonObject& station = {});
     static QJsonObject createStep(const PluginManifest& manifest,
                                   const PluginFunctionDefinition& function,
                                   const QString& stepId) ;

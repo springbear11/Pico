@@ -424,7 +424,7 @@ Sequence 变量或前序 Step 输出，不会覆盖已经写好的提示文字�
 | `mode` | string | no | `confirm` | `confirm`、`notice` 或 `judgment` |
 | `title` | string | no | `Operator Action Required` | 弹窗标题 |
 | `message` | string | yes | empty | 给操作员看的明确动作说明 |
-| `image` | string | no | empty | 可选 PNG/JPG/JPEG 文件名；默认从程序根目录的 `image` 文件夹加载 |
+| `image` | string | no | empty | 可选 PNG/JPG/JPEG 文件名；从当前 `projects/<项目>/images` 文件夹加载 |
 | `confirmText` | string | confirm 模式 | `OK` | 确认按钮文字 |
 | `closeOnStep` | string | no | 下一正常 Step | notice 模式关闭目标；该 Step 完成全部 Retry 并进入最终状态后关闭弹窗 |
 | `dialogKey` | string | no | empty | 将前面的 notice 与后面的 judgment 绑定到同一个窗口；按 UUT 隔离 |
@@ -439,9 +439,9 @@ CLI 或其他没有注册交互响应器的运行环境会立即返回
 
 图片使用规则：
 
-- Flow Editor 的 `Image (optional)` 下拉框自动读取 `PicoATE.UI.exe` 同级 `image` 文件夹。
-- 工程开发目录中的 `image` 会在 UI 编译后复制到 Debug/Release 程序目录。
-- Sequence 推荐只保存文件名，例如 `fixture_connection.png`，整个工具包换电脑后仍可使用。
+- Flow Editor 的 `Image (optional)` 下拉框自动读取当前 Sequence 同级的 `images` 文件夹。
+- 标准项目结构为 `projects/<项目>/sequence.json`、`StationSystem.json` 和 `images/`；新建项目时自动创建该目录。
+- Sequence 推荐只保存文件名，例如 `fixture_connection.png`；也兼容 `images/fixture_connection.png`，项目整体换电脑后仍可使用。
 - 支持 `.png`、`.jpg`、`.jpeg`，其他扩展名在编译阶段报错。
 - 图片缺失或损坏时仍显示文字和确认按钮，同时在弹窗中提示图片不可用；不会把测试项判为 Error。
 - 大图片按比例缩小到弹窗可视范围，小图片不会强制拉伸。

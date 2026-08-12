@@ -64,7 +64,7 @@ foreach ($relativePath in $requiredFiles) {
         $errors.Add("Missing required file: $relativePath")
     }
 }
-foreach ($relativePath in @('plugins', 'projects', 'image', 'log', 'diagnostics')) {
+foreach ($relativePath in @('plugins', 'projects', 'log', 'diagnostics')) {
     if (-not (Test-Path -LiteralPath (Join-Path $portable $relativePath) -PathType Container)) {
         $errors.Add("Missing required directory: $relativePath")
     }

@@ -715,6 +715,7 @@ private slots:
     void sequenceCompilerRejectsInvalidOperatorPromptCloseTarget();
     void sequenceCompilerReportsUnsupportedStepKind();
     void sequenceCompilerReportsFieldTypeErrors();
+    void sequenceCompilerRejectsMissingBuiltInStepInputs();
     void sequenceCompilerReportsLoopErrors();
     void sequenceCompilerReportsUnknownFieldWarnings();
     void sequenceCompilerParsesModuleBindings();
@@ -5879,6 +5880,61 @@ void CoreTests::sequenceCompilerReportsFieldTypeErrors()
     QVERIFY(hasError("groups[0].steps[0].timeoutMs", "Expected number"));
     QVERIFY(hasError("groups[0].steps[0].errorPolicy.onFail", "Unsupported error action"));
     QVERIFY(hasError("groups[0].steps[0].tags[0]", "Expected string"));
+}
+
+void CoreTests::sequenceCompilerRejectsMissingBuiltInStepInputs()
+{
+    const auto document = QJsonDocument::fromJson(R"json(
+    {
+      "id": "missing-built-in-inputs",
+      "name": "Missing Built-in Inputs",
+      "groups": [
+        {
+          "id": "main",
+          "kind": "main",
+          "steps": [
+            {
+              "id": "001",
+              "kind": "testItem",
+              "steps": [
+                {
+                  "id": "01",
+                  "kind": "limit",
+                  "inputs": {"actual": ""},
+                  "parameters": {"comparison": "equal", "expected": 10}
+                },
+                {"id": "02", "kind": "aggregate", "inputs": {}},
+                {
+                  "id": "03",
+                  "kind": "limit",
+                  "enabled": false,
+                  "inputs": {"actual": ""},
+                  "parameters": {"comparison": "equal", "expected": 10}
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+    )json");
+    QVERIFY(document.isObject());
+
+    SequenceCompiler compiler;
+    const auto result = compiler.compileJson(document.object());
+    QVERIFY(!result.ok());
+    const auto hasPath = [&result](const QString& path) {
+        return std::any_of(result.errors.cbegin(), result.errors.cend(),
+                           [&path](const CompileError& diagnostic) {
+                               return diagnostic.path == path;
+                           });
+    };
+    QVERIFY(hasPath(QStringLiteral(
+        "groups[0].steps[0].steps[0].inputs.actual")));
+    QVERIFY(hasPath(QStringLiteral(
+        "groups[0].steps[0].steps[1].inputs.value")));
+    QVERIFY(!hasPath(QStringLiteral(
+        "groups[0].steps[0].steps[2].inputs.actual")));
 }
 
 void CoreTests::sequenceCompilerReportsLoopErrors()

@@ -8,6 +8,7 @@
 #include "LoadingSpinner.h"
 #include "MainWindow.h"
 #include "OperatorPromptPresenter.h"
+#include "ProjectResourcePaths.h"
 #include "ProductionWindow.h"
 #include "ProductRoutingDialog.h"
 #include "ProportionalHeaderView.h"
@@ -323,6 +324,7 @@ private slots:
     void productionStoppedRunCountsAsFailure();
     void productionLoopTestCountsAndArchivesEveryIteration();
     void productionWindowShowsSkippedStepsAndCleanupAfterFailure();
+    void projectImagePathsStayInsideCurrentProject();
     void pluginPropertyEditorValidatesRequiredAndRangeAndSavesInputs();
     void pluginPropertyEditorPreservesLegacyActionData();
     void pluginPropertyEditorAcceptsRevertedInvalidDraftAsNoOp();
@@ -334,6 +336,7 @@ private slots:
     void resourceRegionGutterTogglesBoundariesAndSelectsHardware();
     void sequenceVariablesToolbarEditsPerUutValuesAndFeedsFxMenu();
     void ctrlSaveCommitsCurrentStepDraftWithoutPrompt();
+    void deletingStepDiscardsItsInvalidPropertyDraft();
     void switchingStepsKeepsDraftWithoutPrompt();
     void leavingFlowPromptsOnceAndCanKeepDraft();
     void stepEditorRelocatesDraftAfterSequenceStructureChanges();
@@ -1989,6 +1992,53 @@ void MainWindowLifecycleTests::ctrlSaveCommitsCurrentStepDraftWithoutPrompt()
                                .toObject();
     QCOMPARE(savedStep.value(QStringLiteral("name")).toString(),
              QStringLiteral("Saved through Ctrl+S"));
+}
+
+void MainWindowLifecycleTests::deletingStepDiscardsItsInvalidPropertyDraft()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("delete_invalid_draft.json"));
+    QFile file(sequencePath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"json({
+      "id":"delete-invalid-draft","name":"Delete Invalid Draft","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"discard-me","name":"Discard Me","kind":"action"
+        }]
+      }]
+    })json");
+    file.close();
+
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(sequencePath));
+    window.show();
+    QTest::qWait(20);
+
+    auto* tree = window.findChild<QTreeView*>(QStringLiteral("sequenceTreeView"));
+    auto* model = window.findChild<SequenceTreeModel*>();
+    auto* document = window.findChild<SequenceDocument*>();
+    auto* editor = window.findChild<StepPropertyEditor*>();
+    auto* remove = window.findChild<QAction*>(QStringLiteral("deleteStepAction"));
+    QVERIFY(tree && model && document && editor && remove);
+
+    const auto main = sequenceGroupByKind(model, QStringLiteral("main"));
+    const auto step = model->index(0, SequenceTreeModel::NameColumn, main);
+    QVERIFY(step.isValid());
+    tree->setCurrentIndex(step);
+    const auto path = model->pathForIndex(step);
+    auto* idEdit = editor->findChild<QLineEdit*>(
+        QStringLiteral("propertyIdEdit"));
+    QVERIFY(idEdit);
+    idEdit->clear();
+    QVERIFY(editor->hasPendingChanges());
+    QVERIFY(!editor->commitPendingChanges());
+
+    remove->trigger();
+    QCoreApplication::processEvents();
+    QVERIFY(document->objectAt(path).isEmpty());
+    QVERIFY(!editor->hasPendingChanges());
+    QCOMPARE(model->rowCount(main), 0);
 }
 
 void MainWindowLifecycleTests::switchingStepsKeepsDraftWithoutPrompt()
@@ -3997,8 +4047,11 @@ void MainWindowLifecycleTests::newProjectTemplateSavesSequenceAndStationTogether
         QStringLiteral("sequence.json"));
     const auto stationPath = QDir(projectPath).filePath(
         QStringLiteral("StationSystem.json"));
+    const auto imagesPath = QDir(projectPath).filePath(
+        QStringLiteral("images"));
     QVERIFY(QFileInfo(sequencePath).isFile());
     QVERIFY(QFileInfo(stationPath).isFile());
+    QVERIFY(QFileInfo(imagesPath).isDir());
     QCOMPARE(sequence->filePath(), QFileInfo(sequencePath).absoluteFilePath());
     QCOMPARE(station->filePath(), QFileInfo(stationPath).absoluteFilePath());
     QVERIFY(!sequence->isModified());
@@ -5625,8 +5678,10 @@ void MainWindowLifecycleTests::productionWindowShowsSkippedStepsAndCleanupAfterF
 
 void MainWindowLifecycleTests::operatorPromptDialogCannotBeDismissedByKeyboardOrWindowControls()
 {
-    const auto imageDirectory = QDir(QCoreApplication::applicationDirPath())
-        .filePath(QStringLiteral("image"));
+    QTemporaryDir project;
+    QVERIFY(project.isValid());
+    const auto sequencePath = project.filePath(QStringLiteral("sequence.json"));
+    const auto imageDirectory = project.filePath(QStringLiteral("images"));
     QVERIFY(QDir().mkpath(imageDirectory));
     const auto imagePath = QDir(imageDirectory).filePath(
         QStringLiteral("picoate_prompt_presenter_test.png"));
@@ -5638,6 +5693,7 @@ void MainWindowLifecycleTests::operatorPromptDialogCannotBeDismissedByKeyboardOr
     owner.show();
     ExecutionViewModel viewModel;
     OperatorPromptPresenter presenter(&viewModel, &owner);
+    presenter.setSequencePath(sequencePath);
 
     PicoATE::Core::RuntimeEvent requested;
     requested.kind = PicoATE::Core::RuntimeEventKind::OperatorPromptRequested;
@@ -5676,6 +5732,45 @@ void MainWindowLifecycleTests::operatorPromptDialogCannotBeDismissedByKeyboardOr
     QTRY_VERIFY(!dialog->isVisible());
     viewModel.shutdown();
     QVERIFY(QFile::remove(imagePath));
+}
+
+void MainWindowLifecycleTests::projectImagePathsStayInsideCurrentProject()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const auto projectOne = root.filePath(QStringLiteral("projects/ProductOne"));
+    const auto projectTwo = root.filePath(QStringLiteral("projects/ProductTwo"));
+    QVERIFY(QDir().mkpath(QDir(projectOne).filePath(QStringLiteral("images"))));
+    QVERIFY(QDir().mkpath(QDir(projectTwo).filePath(QStringLiteral("images"))));
+
+    const auto sequenceOne = QDir(projectOne).filePath(QStringLiteral("sequence.json"));
+    const auto sequenceTwo = QDir(projectTwo).filePath(QStringLiteral("sequence.json"));
+    const auto imageOne = QDir(projectOne).filePath(
+        QStringLiteral("images/instruction.png"));
+    const auto imageTwo = QDir(projectTwo).filePath(
+        QStringLiteral("images/instruction.png"));
+    QPixmap blue(16, 16);
+    blue.fill(Qt::blue);
+    QVERIFY(blue.save(imageOne, "PNG"));
+    QPixmap red(16, 16);
+    red.fill(Qt::red);
+    QVERIFY(red.save(imageTwo, "PNG"));
+
+    QCOMPARE(ProjectResourcePaths::imagesDirectoryForSequence(sequenceOne),
+             QFileInfo(QDir(projectOne).filePath(QStringLiteral("images")))
+                 .absoluteFilePath());
+    QCOMPARE(ProjectResourcePaths::resolveImage(
+                 sequenceOne, QStringLiteral("instruction.png")),
+             QFileInfo(imageOne).absoluteFilePath());
+    QCOMPARE(ProjectResourcePaths::resolveImage(
+                 sequenceTwo, QStringLiteral("images/instruction.png")),
+             QFileInfo(imageTwo).absoluteFilePath());
+    QCOMPARE(ProjectResourcePaths::resolveImage(
+                 sequenceOne, QStringLiteral("image/instruction.png")),
+             QFileInfo(imageOne).absoluteFilePath());
+    QVERIFY(ProjectResourcePaths::resolveImage(
+                sequenceOne, QStringLiteral("../ProductTwo/images/instruction.png"))
+                .isEmpty());
 }
 
 void MainWindowLifecycleTests::operatorPromptDialogReusesKeyForJudgment()
@@ -5746,8 +5841,9 @@ void MainWindowLifecycleTests::operatorPromptDialogReusesKeyForJudgment()
 
 void MainWindowLifecycleTests::messageBoxPropertyEditorSwitchesConfirmationMode()
 {
-    const auto imageDirectory = QDir(QCoreApplication::applicationDirPath())
-        .filePath(QStringLiteral("image"));
+    QTemporaryDir project;
+    QVERIFY(project.isValid());
+    const auto imageDirectory = project.filePath(QStringLiteral("images"));
     QVERIFY(QDir().mkpath(imageDirectory));
     const auto imageFileName = QStringLiteral("picoate_prompt_editor_test.jpg");
     const auto imagePath = QDir(imageDirectory).filePath(imageFileName);
@@ -5755,8 +5851,10 @@ void MainWindowLifecycleTests::messageBoxPropertyEditorSwitchesConfirmationMode(
     sourceImage.fill(QColor(QStringLiteral("#d7ecff")));
     QVERIFY(sourceImage.save(imagePath, "PNG"));
 
-    const auto path = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
-        + QStringLiteral("/examples/operator_prompt_sequence.json");
+    const auto path = project.filePath(QStringLiteral("sequence.json"));
+    QVERIFY(QFile::copy(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+                           + QStringLiteral("/examples/operator_prompt_sequence.json"),
+                       path));
     SequenceDocument document;
     QVERIFY(document.load(path));
     StepPropertyEditor editor(&document);
@@ -6239,6 +6337,26 @@ void MainWindowLifecycleTests::valueToolsPropertyEditorUsesExpressionList()
         QStringLiteral("expressionListValue"));
     QVERIFY(secondValue);
     QCOMPARE(secondValue->text(), QStringLiteral("42.5"));
+    auto* firstName = qobject_cast<QLineEdit*>(values->cellWidget(0, 0));
+    auto* addValue = editor.findChild<QToolButton*>(
+        QStringLiteral("expressionListAddButton"));
+    auto* removeValue = editor.findChild<QToolButton*>(
+        QStringLiteral("expressionListRemoveButton"));
+    QVERIFY(firstName);
+    QVERIFY(addValue);
+    QVERIFY(removeValue);
+    QCOMPARE(values->verticalHeader()->defaultSectionSize(), 38);
+    QCOMPARE(values->rowHeight(0), 38);
+    QCOMPARE(firstName->height(), 32);
+    QCOMPARE(secondValue->height(), 32);
+    QCOMPARE(addValue->text(), QStringLiteral("Add value"));
+    QCOMPARE(removeValue->text(), QStringLiteral("Remove"));
+    QVERIFY(addValue->minimumWidth() >= 96);
+    QVERIFY(removeValue->minimumWidth() >= 88);
+    addValue->click();
+    QCOMPARE(values->rowCount(), 3);
+    removeValue->click();
+    QCOMPARE(values->rowCount(), 2);
     secondValue->setText(QStringLiteral("44.5"));
     QVERIFY(editor.commitPendingChanges());
 
