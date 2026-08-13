@@ -79,7 +79,7 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
-    enum class HistoryExportFormat { Text, Csv, Xlsx };
+    enum class HistoryExportFormat { Text, Csv, Xlsx, Pdf };
 
     void buildActions();
     void buildLayout();

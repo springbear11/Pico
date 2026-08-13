@@ -181,6 +181,14 @@ QVariantMap OperatorPromptDef::toPayload() const
         payload.insert("passText", passText);
         payload.insert("failText", failText);
         payload.insert("failureCode", failureCode);
+    } else if (mode == QStringLiteral("input")) {
+        payload.insert("inputType", inputType);
+        if (!inputPlaceholder.isEmpty()) {
+            payload.insert("inputPlaceholder", inputPlaceholder);
+        }
+        if (defaultValue.isValid() && !defaultValue.isNull()) {
+            payload.insert("defaultValue", defaultValue);
+        }
     }
     payload.insert("timeoutMs", timeoutMs);
     return payload;

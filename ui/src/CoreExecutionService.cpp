@@ -260,7 +260,6 @@ RunServiceResult CoreExecutionService::run(
         return result;
     }
 
-    const bool usesExplicitUuts = !request.uuts.isEmpty();
     QVector<RunRequest::UutInput> uutInputs = request.uuts;
     if (uutInputs.isEmpty()) {
         const QString prefix = request.uutPrefix.trimmed().isEmpty()
@@ -404,18 +403,8 @@ RunServiceResult CoreExecutionService::run(
         result.report.metadata.sequenceName = m_compiled->sequence.name.trimmed();
     }
     QStringList serialNumbers;
-    for (const auto& input : uutInputs) {
-        auto serialNumber = input.variables
-                                .value(QStringLiteral("serialNumber"))
-                                .toString()
-                                .trimmed();
-        if (serialNumber.isEmpty()) {
-            serialNumber = input.variables.value(QStringLiteral("sn"))
-                               .toString().trimmed();
-        }
-        if (serialNumber.isEmpty() && usesExplicitUuts) {
-            serialNumber = input.uutId.trimmed();
-        }
+    for (const auto& uut : result.report.uuts) {
+        const auto serialNumber = uut.serialNumber.trimmed();
         if (!serialNumber.isEmpty() && !serialNumbers.contains(serialNumber)) {
             serialNumbers.push_back(serialNumber);
         }

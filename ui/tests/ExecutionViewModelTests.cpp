@@ -354,8 +354,12 @@ PicoATE::Core::ExecutionReport sampleReport()
 
     UutReport uut;
     uut.uutId = QStringLiteral("UUT-中文-01");
+    uut.serialNumber = QStringLiteral("SN-001");
     uut.completed = true;
     uut.outcome = NodeOutcome::Passed;
+    uut.startedAt = QDateTime(QDate(2026, 8, 9), QTime(14, 15, 17));
+    uut.finishedAt = uut.startedAt.addMSecs(1021);
+    uut.durationMs = 1021;
     uut.steps = {step};
 
     ExecutionReport report;
@@ -431,6 +435,7 @@ private slots:
     void reportHistoryPersistsLoadsAndRebuildsIndex();
     void reportExporterWritesTextAndCsv();
     void runArtifactWriterStreamsAndClassifiesFiles();
+    void runArtifactWriterSeparatesMultipleUuts();
     void testItemReportAndRuntimeEventsPreserveHierarchy();
     void sequenceDocumentPreservesUnknownFieldsAndSnapshots();
     void sequenceDocumentCanonicalizesUiAuthoredFields();
@@ -523,6 +528,11 @@ void ExecutionViewModelTests::compileAndRunExecuteOffTheUiThread()
 
     viewModel.run(2, QStringLiteral("DUT"));
     QTRY_COMPARE_WITH_TIMEOUT(viewModel.state(), UiRunState::Completed, 1000);
+    const auto activeUuts = viewModel.activeRunUuts();
+    QCOMPARE(activeUuts.size(), 2);
+    QCOMPARE(activeUuts.first().uutId, QStringLiteral("DUT-1"));
+    QCOMPARE(activeUuts.last().variables.value(QStringLiteral("serialNumber")).toString(),
+             QStringLiteral("DUT-2"));
     QCOMPARE(control->runCalls.load(), 1);
     QVERIFY(control->runThread.load() != QThread::currentThread());
     QCOMPARE(viewModel.report().planId, QStringLiteral("fake-plan"));
@@ -803,6 +813,10 @@ void ExecutionViewModelTests::coreServiceCompilesAndRunsSimpleSequence()
     QVERIFY(!runResult.report.hasError);
     QCOMPARE(runResult.report.uuts.size(), 2);
     QCOMPARE(runResult.report.uuts.first().uutId, QStringLiteral("DUT-1"));
+    QCOMPARE(runResult.report.uuts.first().serialNumber, QStringLiteral("DUT-1"));
+    QCOMPARE(runResult.report.uuts.last().serialNumber, QStringLiteral("DUT-2"));
+    QCOMPARE(runResult.report.metadata.serialNumber,
+             QStringLiteral("DUT-1, DUT-2"));
     QVERIFY(runResult.report.metadata.model.isEmpty());
     QVERIFY(runResult.report.metadata.customerId.isEmpty());
     QCOMPARE(runResult.report.metadata.sequenceName,
@@ -1037,6 +1051,7 @@ void ExecutionViewModelTests::newProjectTemplatesUseProductionDefaults()
     QVERIFY(stationRoot.value(QStringLiteral("txtLogEnabled")).toBool());
     QVERIFY(stationRoot.value(QStringLiteral("csvReportEnabled")).toBool());
     QVERIFY(stationRoot.value(QStringLiteral("xlsxReportEnabled")).toBool());
+    QVERIFY(stationRoot.value(QStringLiteral("pdfReportEnabled")).toBool());
     QVERIFY(!stationRoot.value(QStringLiteral("loopTestEnabled")).toBool());
     QCOMPARE(stationRoot.value(QStringLiteral("loopTestCount")).toInt(), 1);
     QVERIFY(stationRoot.value(QStringLiteral("reportOutputDirectory"))
@@ -3240,24 +3255,30 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(text.contains(QStringLiteral("\"4.999 V\"")));
     QVERIFY(text.contains(QStringLiteral("\"Actual Value\"")));
     QVERIFY(text.contains(QStringLiteral("\"Duration Ms\"")));
+    QVERIFY(text.contains(QStringLiteral(
+        "\"No.\",\"Test Item\",\"ERRORCODE\",\"Lower Limit\","
+        "\"Upper Limit\",\"Actual Value\",\"Test Result\",\"Duration Ms\"")));
+    QVERIFY(text.contains(QStringLiteral("\"1\",\"测量,\"\"输出\"\"\"")));
     QVERIFY(text.contains(QStringLiteral("\"1021\"")));
     QVERIFY(text.contains(QStringLiteral(
         "\"Sequence Name\",\"sample_sequence.json\",\"\",\"\","
-        "\"SN\",\"SN-001\",\"\"\r\n")));
+        "\"SN\",\"SN-001\",\"\",\"\"\r\n")));
     QVERIFY(text.contains(QStringLiteral(
         "\"Station ID\",\"STATION-01\","
         "\"Model\",\"PICO-800V\","
-        "\"Customer ID\",\"CUSTOMER-01\",\"\"\r\n")));
+        "\"Customer ID\",\"CUSTOMER-01\",\"\",\"\"\r\n")));
     QVERIFY(text.contains(QStringLiteral(
         "\"Jig No\",\"JIG-07\","
         "\"Order\",\"ORDER-42\","
-        "\"Tester\",\"Tester-01\",\"\"\r\n")));
+        "\"Tester\",\"Tester-01\",\"\",\"\"\r\n")));
     QVERIFY(text.contains(QStringLiteral(
         "\"Test Time\",\"2026-08-09 14:15:16\","
-        "\"\",\"\",\"\",\"\",\"\"\r\n")));
+        "\"\",\"\",\"\",\"\",\"\",\"\"\r\n")));
     QVERIFY(text.contains(QStringLiteral(
-        "\"TOTAL TEST ITEMS: 1\",\"\",\"\",\"PASS\",\"\",\"\","
-        "\"TOTAL DURATION: 00:00:09.876\"\r\n")));
+        "\"TOTAL TEST ITEMS: 1\",\"\",\"PASS\",\"\",\"\",\"\","
+        "\"TOTAL DURATION: 00:00:09.876\",\"\"\r\n")));
+    QVERIFY(text.indexOf(QStringLiteral("TOTAL TEST ITEMS")) <
+            text.indexOf(QStringLiteral("\"No.\",\"Test Item\"")));
 
     auto resolutionErrorReport = sampleReport();
     auto& errorStep = resolutionErrorReport.uuts.first().steps.first();
@@ -3284,7 +3305,7 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(errorCsv.open(QIODevice::ReadOnly));
     const auto errorText = QString::fromUtf8(errorCsv.readAll());
     QVERIFY(errorText.contains(QStringLiteral(
-        "\"Check GCAN CAN2 Payload\",\"RuntimeVariableResolutionError\","
+        "\"1\",\"Check GCAN CAN2 Payload\",\"RuntimeVariableResolutionError\","
         "\"= 43 58 31 2D 47 43 41 4E\",\"= 43 58 31 2D 47 43 41 4E\",\"\",\"ERROR\"")));
 
     const auto xlsxResult = ReportExporter::saveXlsx(xlsxPath, report);
@@ -3300,6 +3321,8 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(xlsx.contains("xl/drawings/_rels/drawing1.xml.rels"));
     QVERIFY(xlsx.contains("xl/media/image1.png"));
     QVERIFY(xlsx.contains("name=\"SINEXCEL Logo\""));
+    QVERIFY(xlsx.contains("<xdr:col>2</xdr:col>"));
+    QVERIFY(xlsx.contains("<xdr:colOff>1438275</xdr:colOff>"));
     QVERIFY(xlsx.contains("Target=\"../media/image1.png\""));
     QVERIFY(xlsx.contains(QByteArray("\x89PNG\r\n\x1a\n", 8)));
     QVERIFY(xlsx.contains("Actual Value"));
@@ -3315,16 +3338,17 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(xlsx.contains("00:00:09.876"));
     QVERIFY(!xlsx.contains("state=\"frozen\""));
     QVERIFY(!xlsx.contains("ySplit="));
-    QVERIFY(xlsx.contains("ref=\"A1:G1\""));
-    QVERIFY(xlsx.contains("ref=\"A6:G7\""));
+    QVERIFY(xlsx.contains("ref=\"A1:H1\""));
+    QVERIFY(xlsx.contains("ref=\"A7:H8\""));
     QVERIFY(xlsx.contains("ref=\"B2:D2\""));
-    QVERIFY(xlsx.contains("ref=\"F2:G2\""));
-    QVERIFY(xlsx.contains("ref=\"F3:G3\""));
-    QVERIFY(xlsx.contains("ref=\"F4:G4\""));
-    QVERIFY(xlsx.contains("ref=\"B8:F8\""));
-    QVERIFY(xlsx.contains("<c r=\"A8\" s=\"6\""));
-    QVERIFY(xlsx.contains("<c r=\"B8\" s=\"7\""));
-    QVERIFY(xlsx.contains("<c r=\"G8\" s=\"6\""));
+    QVERIFY(xlsx.contains("ref=\"F2:H2\""));
+    QVERIFY(xlsx.contains("ref=\"F3:H3\""));
+    QVERIFY(xlsx.contains("ref=\"F4:H4\""));
+    QVERIFY(xlsx.contains("ref=\"B6:F6\""));
+    QVERIFY(xlsx.contains("ref=\"G6:H6\""));
+    QVERIFY(xlsx.contains("<c r=\"A6\" s=\"6\""));
+    QVERIFY(xlsx.contains("<c r=\"B6\" s=\"7\""));
+    QVERIFY(xlsx.contains("<c r=\"G6\" s=\"6\""));
     QVERIFY(xlsx.contains("TOTAL TEST ITEMS"));
     QVERIFY(xlsx.contains("FF16794A"));
     QVERIFY(xlsx.contains("FFB42318"));
@@ -3336,7 +3360,7 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QFile errorXlsxFile(errorXlsxPath);
     QVERIFY(errorXlsxFile.open(QIODevice::ReadOnly));
     const auto errorXlsx = errorXlsxFile.readAll();
-    QVERIFY(errorXlsx.contains("<c r=\"B8\" s=\"8\""));
+    QVERIFY(errorXlsx.contains("<c r=\"B8\" s=\"3\""));
     QVERIFY(errorXlsx.contains(">FAIL<"));
 
     auto filteredReport = sampleReport();
@@ -3480,6 +3504,10 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
     QVERIFY(QFileInfo::exists(passText));
     QVERIFY(QFileInfo::exists(passCsv));
     QVERIFY(QFileInfo::exists(passXlsx));
+    QFile savedCsv(passCsv);
+    QVERIFY(savedCsv.open(QIODevice::ReadOnly));
+    QVERIFY(QString::fromUtf8(savedCsv.readAll()).contains(
+        QStringLiteral("TOTAL DURATION: 00:00:09.876")));
     QFile savedText(passText);
     QVERIFY(savedText.open(QIODevice::ReadOnly));
     const auto savedLog = QString::fromUtf8(savedText.readAll());
@@ -3561,6 +3589,159 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
         QStringLiteral("FAIL/20260719_080911_111.txt"))));
 }
 
+void ExecutionViewModelTests::runArtifactWriterSeparatesMultipleUuts()
+{
+    using namespace PicoATE::Core;
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    RunArtifactSettings settings;
+    settings.txtLogEnabled = true;
+    settings.csvReportEnabled = true;
+    settings.xlsxReportEnabled = true;
+    settings.outputDirectory = directory.path();
+
+    RunArtifactContext context;
+    context.sequenceName = QStringLiteral("multi_uut_sequence.json");
+    context.stationId = QStringLiteral("STATION-MULTI");
+    const QDateTime startedAt(
+        QDate(2026, 8, 13), QTime(20, 10, 11, 123));
+    const QVector<RunArtifactUutContext> uutContexts = {
+        {QStringLiteral("SLOT-1"), QStringLiteral("SN-A")},
+        {QStringLiteral("SLOT-2"), QStringLiteral("SN-B")},
+    };
+
+    RunArtifactWriter writer;
+    const auto begun = writer.beginForUuts(
+        settings, context, uutContexts, startedAt);
+    QVERIFY2(begun.success, qPrintable(begun.errorMessage));
+    QCOMPARE(writer.baseNames(),
+             QStringList({QStringLiteral("SN-A_SLOT-1_201011123"),
+                          QStringLiteral("SN-B_SLOT-2_201011123")}));
+
+    const QVector<RuntimeLogLine> lines = {
+        {startedAt, QStringLiteral("SHARED SETUP"), {}},
+        {startedAt.addMSecs(1), QStringLiteral("SLOT-1 PRIVATE"),
+         QStringLiteral("SLOT-1")},
+        {startedAt.addMSecs(2), QStringLiteral("SLOT-2 PRIVATE"),
+         QStringLiteral("SLOT-2")},
+        {startedAt.addMSecs(3), QStringLiteral("SHARED CLEANUP"), {}},
+    };
+    const auto appended = writer.appendLogLines(lines);
+    QVERIFY2(appended.success, qPrintable(appended.errorMessage));
+
+    auto report = sampleReport();
+    auto setup = report.uuts.first().steps.first();
+    setup.stepId = QStringLiteral("shared-setup");
+    setup.displayName = QStringLiteral("Shared Setup");
+    setup.phase = ExecutionPhase::Setup;
+    auto cleanup = setup;
+    cleanup.stepId = QStringLiteral("shared-cleanup");
+    cleanup.displayName = QStringLiteral("Shared Cleanup");
+    cleanup.phase = ExecutionPhase::Cleanup;
+    report.sessionSteps = {setup, cleanup};
+
+    auto first = report.uuts.first();
+    first.uutId = QStringLiteral("SLOT-1");
+    first.serialNumber = QStringLiteral("SN-A");
+    first.steps.first().stepId = QStringLiteral("slot-1-main");
+    first.steps.first().displayName = QStringLiteral("Slot One Main");
+    first.steps.first().phase = ExecutionPhase::Main;
+    first.startedAt = startedAt.addMSecs(10);
+    first.finishedAt = startedAt.addMSecs(110);
+    first.durationMs = 100;
+
+    auto second = first;
+    second.uutId = QStringLiteral("SLOT-2");
+    second.serialNumber = QStringLiteral("SN-B");
+    second.steps.first().stepId = QStringLiteral("slot-2-main");
+    second.steps.first().displayName = QStringLiteral("Slot Two Main");
+    second.steps.first().state = ActivationState::Failed;
+    second.steps.first().outcome = NodeOutcome::Failed;
+    second.steps.first().wasError = true;
+    second.steps.first().attempts.last().outcome = NodeOutcome::Failed;
+    second.completed = true;
+    second.hasError = true;
+    second.outcome = NodeOutcome::Failed;
+    second.startedAt = startedAt.addMSecs(120);
+    second.finishedAt = startedAt.addMSecs(260);
+    second.durationMs = 140;
+
+    report.uuts = {first, second};
+    report.state = ExecutionState::CompletedWithError;
+    report.completed = true;
+    report.hasError = true;
+    report.sessionHasError = false;
+    report.metadata.serialNumber = QStringLiteral("SN-A, SN-B");
+
+    const auto archived = writer.finalize(report);
+    QVERIFY2(archived.success, qPrintable(archived.errorMessage));
+    const auto dateDirectory = directory.filePath(QStringLiteral("20260813"));
+    const auto firstPrefix = QDir(dateDirectory).filePath(
+        QStringLiteral("PASS/SN-A_SLOT-1_201011123"));
+    const auto secondPrefix = QDir(dateDirectory).filePath(
+        QStringLiteral("FAIL/SN-B_SLOT-2_201011123"));
+    for (const auto& suffix : {QStringLiteral(".txt"), QStringLiteral(".csv"),
+                               QStringLiteral(".xlsx")}) {
+        QVERIFY2(QFileInfo::exists(firstPrefix + suffix),
+                 qPrintable(firstPrefix + suffix));
+        QVERIFY2(QFileInfo::exists(secondPrefix + suffix),
+                 qPrintable(secondPrefix + suffix));
+    }
+
+    QFile firstLog(firstPrefix + QStringLiteral(".txt"));
+    QVERIFY(firstLog.open(QIODevice::ReadOnly));
+    const auto firstLogText = QString::fromUtf8(firstLog.readAll());
+    QVERIFY(firstLogText.contains(QStringLiteral("SHARED SETUP")));
+    QVERIFY(firstLogText.contains(QStringLiteral("SLOT-1 PRIVATE")));
+    QVERIFY(!firstLogText.contains(QStringLiteral("SLOT-2 PRIVATE")));
+    QVERIFY(firstLogText.contains(QStringLiteral("SHARED CLEANUP")));
+
+    QFile secondLog(secondPrefix + QStringLiteral(".txt"));
+    QVERIFY(secondLog.open(QIODevice::ReadOnly));
+    const auto secondLogText = QString::fromUtf8(secondLog.readAll());
+    QVERIFY(secondLogText.contains(QStringLiteral("SHARED SETUP")));
+    QVERIFY(!secondLogText.contains(QStringLiteral("SLOT-1 PRIVATE")));
+    QVERIFY(secondLogText.contains(QStringLiteral("SLOT-2 PRIVATE")));
+    QVERIFY(secondLogText.contains(QStringLiteral("SHARED CLEANUP")));
+
+    QFile firstCsv(firstPrefix + QStringLiteral(".csv"));
+    QVERIFY(firstCsv.open(QIODevice::ReadOnly));
+    const auto firstCsvText = QString::fromUtf8(firstCsv.readAll());
+    QVERIFY(firstCsvText.contains(QStringLiteral("SN-A")));
+    QVERIFY(firstCsvText.contains(QStringLiteral("Slot One Main")));
+    QVERIFY(!firstCsvText.contains(QStringLiteral("Slot Two Main")));
+    QVERIFY(firstCsvText.contains(QStringLiteral("Shared Setup")));
+    QVERIFY(firstCsvText.contains(QStringLiteral("Shared Cleanup")));
+    QVERIFY(firstCsvText.contains(
+        QStringLiteral("TOTAL DURATION: 00:00:00.100")));
+
+    QFile secondCsv(secondPrefix + QStringLiteral(".csv"));
+    QVERIFY(secondCsv.open(QIODevice::ReadOnly));
+    const auto secondCsvText = QString::fromUtf8(secondCsv.readAll());
+    QVERIFY(secondCsvText.contains(QStringLiteral("SN-B")));
+    QVERIFY(!secondCsvText.contains(QStringLiteral("Slot One Main")));
+    QVERIFY(secondCsvText.contains(QStringLiteral("Slot Two Main")));
+    QVERIFY(secondCsvText.contains(
+        QStringLiteral("TOTAL DURATION: 00:00:00.140")));
+
+    report.sessionHasError = true;
+    report.sessionSteps.first().state = ActivationState::Failed;
+    report.sessionSteps.first().outcome = NodeOutcome::Error;
+    report.sessionSteps.first().wasError = true;
+    const auto sharedFailureBegun = writer.beginForUuts(
+        settings, context, uutContexts, startedAt.addSecs(1));
+    QVERIFY(sharedFailureBegun.success);
+    const auto sharedFailureArchived = writer.finalize(report);
+    QVERIFY2(sharedFailureArchived.success,
+             qPrintable(sharedFailureArchived.errorMessage));
+    QVERIFY(QFileInfo::exists(QDir(dateDirectory).filePath(
+        QStringLiteral("FAIL/SN-A_SLOT-1_201012123.csv"))));
+    QVERIFY(QFileInfo::exists(QDir(dateDirectory).filePath(
+        QStringLiteral("FAIL/SN-B_SLOT-2_201012123.csv"))));
+}
+
 void ExecutionViewModelTests::testItemReportAndRuntimeEventsPreserveHierarchy()
 {
     const QString projectDir = QString::fromUtf8(PICOATE_UI_TEST_PROJECT_DIR);
@@ -3613,7 +3794,7 @@ void ExecutionViewModelTests::testItemReportAndRuntimeEventsPreserveHierarchy()
 
     const auto serialized = PicoATE::Core::serializeExecutionReport(runResult.report);
     const auto document = QJsonDocument::fromJson(serialized);
-    QCOMPARE(document.object().value(QStringLiteral("schemaVersion")).toInt(), 5);
+    QCOMPARE(document.object().value(QStringLiteral("schemaVersion")).toInt(), 6);
     const auto parsed = PicoATE::Core::parseExecutionReport(serialized);
     QVERIFY(parsed.ok());
     QCOMPARE(parsed.report.metadata.model, runResult.report.metadata.model);
@@ -3623,6 +3804,14 @@ void ExecutionViewModelTests::testItemReportAndRuntimeEventsPreserveHierarchy()
     QCOMPARE(parsed.report.metadata.startedAt, runResult.report.metadata.startedAt);
     QCOMPARE(parsed.report.metadata.finishedAt, runResult.report.metadata.finishedAt);
     QCOMPARE(parsed.report.metadata.durationMs, runResult.report.metadata.durationMs);
+    QCOMPARE(parsed.report.uuts.first().serialNumber,
+             runResult.report.uuts.first().serialNumber);
+    QCOMPARE(parsed.report.uuts.first().startedAt,
+             runResult.report.uuts.first().startedAt);
+    QCOMPARE(parsed.report.uuts.first().finishedAt,
+             runResult.report.uuts.first().finishedAt);
+    QCOMPARE(parsed.report.uuts.first().durationMs,
+             runResult.report.uuts.first().durationMs);
     QCOMPARE(parsed.report.uuts.first().steps.first().children.size(), 2);
     QCOMPARE(parsed.report.uuts.first().steps.first().phase,
              PicoATE::Core::ExecutionPhase::Main);

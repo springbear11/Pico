@@ -297,6 +297,28 @@ void ExecutionViewModel::runUut(const QString& uutId, const QVariantMap& variabl
     startRun(std::move(request));
 }
 
+QVector<RunRequest::UutInput> ExecutionViewModel::activeRunUuts() const
+{
+    if (!m_activeRunRequest.uuts.isEmpty()) {
+        return m_activeRunRequest.uuts;
+    }
+
+    QVector<RunRequest::UutInput> uuts;
+    const auto prefix = m_activeRunRequest.uutPrefix.trimmed().isEmpty()
+        ? QStringLiteral("UUT")
+        : m_activeRunRequest.uutPrefix.trimmed();
+    const auto count = qMax(1, m_activeRunRequest.uutCount);
+    uuts.reserve(count);
+    for (int index = 1; index <= count; ++index) {
+        RunRequest::UutInput input;
+        input.uutId = QStringLiteral("%1-%2").arg(prefix).arg(index);
+        input.variables.insert(QStringLiteral("sn"), input.uutId);
+        input.variables.insert(QStringLiteral("serialNumber"), input.uutId);
+        uuts.push_back(std::move(input));
+    }
+    return uuts;
+}
+
 void ExecutionViewModel::startRun(RunRequest request)
 {
     if (!canRun()) {
@@ -406,10 +428,13 @@ void ExecutionViewModel::setBreakpoints(
 
 bool ExecutionViewModel::respondToOperatorPrompt(
     const QString& instanceId,
-    PicoATE::Core::OperatorPromptResponse response)
+    PicoATE::Core::OperatorPromptResponse response,
+    QVariantMap values)
 {
     return m_executionControl &&
-           m_executionControl->operatorPrompts().respond(instanceId, response);
+           m_executionControl->operatorPrompts().respond(instanceId,
+                                                         response,
+                                                         std::move(values));
 }
 
 void ExecutionViewModel::testDeviceConnection(const QString& deviceId, int timeoutMs)

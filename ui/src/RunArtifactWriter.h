@@ -3,10 +3,12 @@
 #include "PicoATE/Core/ExecutionReport.h"
 
 #include <QDateTime>
-#include <QFile>
 #include <QJsonObject>
 #include <QString>
 #include <QVector>
+
+#include <memory>
+#include <vector>
 
 namespace PicoATE::Ui {
 
@@ -20,6 +22,7 @@ struct RunArtifactSettings {
     bool txtLogEnabled = false;
     bool csvReportEnabled = false;
     bool xlsxReportEnabled = false;
+    bool pdfReportEnabled = false;
     QString outputDirectory;
 };
 
@@ -34,6 +37,11 @@ struct RunArtifactContext {
     QString order;
     QString tester;
     QString jigNo;
+};
+
+struct RunArtifactUutContext {
+    PicoATE::Core::UutId uutId;
+    QString serialNumber;
 };
 
 struct RunArtifactResult {
@@ -55,7 +63,7 @@ RunArtifactContext runArtifactContextFromDocuments(
 class RunArtifactWriter
 {
 public:
-    RunArtifactWriter() = default;
+    RunArtifactWriter();
     ~RunArtifactWriter();
 
     RunArtifactResult begin(const RunArtifactSettings& settings,
@@ -64,6 +72,11 @@ public:
     RunArtifactResult begin(const RunArtifactSettings& settings,
                             const RunArtifactContext& context,
                             const QDateTime& startedAt = QDateTime::currentDateTime());
+    RunArtifactResult beginForUuts(
+        const RunArtifactSettings& settings,
+        const RunArtifactContext& context,
+        const QVector<RunArtifactUutContext>& uuts,
+        const QDateTime& startedAt = QDateTime::currentDateTime());
     RunArtifactResult appendLogLines(const QVector<RuntimeLogLine>& lines);
     RunArtifactResult finalize(const PicoATE::Core::ExecutionReport& report);
     void abandon();
@@ -71,17 +84,16 @@ public:
     bool active() const;
     QString dateDirectory() const;
     QString baseName() const;
+    QStringList baseNames() const;
 
 private:
     void closeFiles();
     RunArtifactResult failure(const QString& message) const;
 
     RunArtifactSettings m_settings;
-    QFile m_txtFile;
-    QFile m_csvFile;
-    QString m_xlsxFilePath;
+    struct ArtifactChannel;
+    std::vector<std::unique_ptr<ArtifactChannel>> m_channels;
     QString m_dateDirectory;
-    QString m_baseName;
     bool m_active = false;
 };
 

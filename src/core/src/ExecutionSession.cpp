@@ -711,8 +711,49 @@ ExecutionReport ExecutionSession::report() const
     for (const auto& uut : m_uuts) {
         UutReport uutReport;
         uutReport.uutId = uut.uutId;
+        uutReport.serialNumber = uut.variables.value(
+            QStringLiteral("serialNumber")).toString().trimmed();
+        if (uutReport.serialNumber.isEmpty()) {
+            uutReport.serialNumber = uut.variables.value(
+                QStringLiteral("sn")).toString().trimmed();
+        }
+        if (uutReport.serialNumber.isEmpty()) {
+            const auto uutVariables = uut.variables.value(
+                QStringLiteral("uut")).toMap();
+            uutReport.serialNumber = uutVariables.value(
+                QStringLiteral("serialNumber")).toString().trimmed();
+        }
+        if (uutReport.serialNumber.isEmpty()) {
+            uutReport.serialNumber = uut.uutId;
+        }
         uutReport.completed = uutComplete(uut);
         uutReport.steps.reserve(nodeIds.size());
+
+        for (auto activation = uut.activations.cbegin();
+             activation != uut.activations.cend(); ++activation) {
+            const auto* activationNode = m_plan.node(activation.key());
+            if (!activationNode ||
+                executionPhaseOf(*activationNode) != ExecutionPhase::Main) {
+                continue;
+            }
+            for (const auto& attempt : activation->attempts) {
+                const auto& attemptResult = attempt.result;
+                if (attemptResult.startedAt.isValid() &&
+                    (!uutReport.startedAt.isValid() ||
+                     attemptResult.startedAt < uutReport.startedAt)) {
+                    uutReport.startedAt = attemptResult.startedAt;
+                }
+                if (attemptResult.finishedAt.isValid() &&
+                    (!uutReport.finishedAt.isValid() ||
+                     attemptResult.finishedAt > uutReport.finishedAt)) {
+                    uutReport.finishedAt = attemptResult.finishedAt;
+                }
+            }
+        }
+        if (uutReport.startedAt.isValid() && uutReport.finishedAt.isValid()) {
+            uutReport.durationMs = uutReport.startedAt.msecsTo(
+                uutReport.finishedAt);
+        }
 
         for (const auto& nodeId : nodeIds) {
             const auto* node = m_plan.node(nodeId);
@@ -733,9 +774,21 @@ ExecutionReport ExecutionSession::report() const
         report.uuts.push_back(uutReport);
     }
 
+    const bool sessionTerminationRequested =
+        (m_stopToken && m_stopToken->isStopRequested()) ||
+        (m_scheduler && m_scheduler->sessionCleanupRequested());
+    const bool anyUutHasError = std::any_of(
+        report.uuts.cbegin(), report.uuts.cend(), [](const UutReport& uut) {
+            return uut.hasError;
+        });
+    if (sessionTerminationRequested || m_state == ExecutionState::Aborted ||
+        (m_state == ExecutionState::CompletedWithError &&
+         !report.sessionHasError && !anyUutHasError)) {
+        report.sessionHasError = true;
+    }
+    report.hasError = report.hasError || report.sessionHasError;
     if (m_state == ExecutionState::CompletedWithError ||
         m_state == ExecutionState::Aborted) {
-        report.sessionHasError = true;
         report.hasError = true;
     }
 

@@ -26,6 +26,7 @@ struct StationConfig {
     bool txtLogEnabled = false;
     bool csvReportEnabled = false;
     bool xlsxReportEnabled = false;
+    bool pdfReportEnabled = false;
     bool loopTestEnabled = false;
     int loopTestCount = 1;
     QString pluginRegistryPath = QStringLiteral("plugins/PluginRegistry.json");

@@ -181,6 +181,9 @@ private:
     QWidget* m_promptMessageField = nullptr;
     QComboBox* m_promptImageCombo = nullptr;
     QLineEdit* m_promptConfirmTextEdit = nullptr;
+    QComboBox* m_promptInputTypeCombo = nullptr;
+    QLineEdit* m_promptInputPlaceholderEdit = nullptr;
+    QLineEdit* m_promptDefaultValueEdit = nullptr;
     QComboBox* m_promptCloseOnStepCombo = nullptr;
     QLineEdit* m_promptDialogKeyEdit = nullptr;
     QLineEdit* m_promptPassTextEdit = nullptr;

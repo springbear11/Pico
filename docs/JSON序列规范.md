@@ -301,7 +301,7 @@ RuntimeEvent 并等待 UI 回应，不依赖 Qt Widgets；TEST 和 Admin 使用�
 Presenter，因此不会破坏 UI、调度器、业务插件三层解耦。
 
 Flow Editor 对工程师只展示一个 `MessageBox` 基础功能。拖入时默认是人工确认，
-在右侧 `Mode` 下拉框中可以切换为提示后继续或人工 PASS/FAIL 判断。`operatorPrompt`
+在右侧 `Mode` 下拉框中可以切换为提示后继续、人工 PASS/FAIL 判断或人工输入。`operatorPrompt`
 只是 JSON 和 Core 内部名称，避免与 Qt 的 `QMessageBox` 类型混淆。
 
 ### 等待人工确认
@@ -394,6 +394,37 @@ Flow Editor 的 `Close after step` 使用可编辑下拉框：第一项是“下
 操作员点击 PASS 时该 Step 返回 Passed；点击 FAIL 时返回 Failed，并使用
 `failureCode` 作为错误码。后续停止还是继续，仍由 Station 的失败策略统一决定。
 
+### 人工输入并供后续步骤使用
+
+`input` 模式用于让操作员输入数值或文本。弹窗会在提交前校验输入类型，Core 还会
+再次校验，避免其他前端绕过 UI 后写入错误类型。输入不能为空。
+
+```json
+{
+  "id": "enter-voltage",
+  "kind": "operatorPrompt",
+  "prompt": {
+    "mode": "input",
+    "title": "人工测量值",
+    "message": "请输入万用表显示的电压。",
+    "inputType": "number",
+    "inputPlaceholder": "例如 12.50",
+    "defaultValue": 12.5,
+    "confirmText": "提交",
+    "timeoutMs": 60000
+  }
+}
+```
+
+节点通过后输出 `value`、`text`、`inputType` 和 `response`：
+
+- `${step:enter-voltage.outputs.value}`：带类型的输入值；Text 为字符串，Integer 为整数，Number 为浮点数。
+- `${step:enter-voltage.outputs.text}`：操作员输入的原始文字。
+- `${step:enter-voltage.outputs.inputType}`：`text`、`integer` 或 `number`。
+- `${step:enter-voltage.outputs.response}`：固定为 `submitted`。
+
+Flow Editor 的后续步骤 `fx` 选择器会直接列出这些输出，不要求工程师手写表达式。
+
 ### 在弹窗中显示运行值
 
 `message` 和 `title` 会在 MessageBox 执行前经过统一运行时变量解析。Flow Editor 的
@@ -421,17 +452,29 @@ Sequence 变量或前序 Step 输出，不会覆盖已经写好的提示文字�
 
 | prompt 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `mode` | string | no | `confirm` | `confirm`、`notice` 或 `judgment` |
+| `mode` | string | no | `confirm` | `confirm`、`notice`、`judgment` 或 `input` |
 | `title` | string | no | `Operator Action Required` | 弹窗标题 |
 | `message` | string | yes | empty | 给操作员看的明确动作说明 |
 | `image` | string | no | empty | 可选 PNG/JPG/JPEG 文件名；从当前 `projects/<项目>/images` 文件夹加载 |
-| `confirmText` | string | confirm 模式 | `OK` | 确认按钮文字 |
+| `confirmText` | string | confirm/input 模式 | `OK` | 确认或提交按钮文字 |
+| `inputType` | string | input 模式 | `text` | `text`、`integer` 或 `number` |
+| `inputPlaceholder` | string | no | empty | 输入框内的可选提示文字 |
+| `defaultValue` | string/number | no | empty | 可选默认值，必须符合 `inputType` |
 | `closeOnStep` | string | no | 下一正常 Step | notice 模式关闭目标；该 Step 完成全部 Retry 并进入最终状态后关闭弹窗 |
 | `dialogKey` | string | no | empty | 将前面的 notice 与后面的 judgment 绑定到同一个窗口；按 UUT 隔离 |
 | `passText` | string | judgment 模式 | `PASS` | 人工通过按钮文字 |
 | `failText` | string | judgment 模式 | `FAIL` | 人工失败按钮文字 |
 | `failureCode` | string | judgment 模式 | `OperatorCheckFailed` | 点击 FAIL 后写入结果的错误码 |
 | `timeoutMs` | number | no | `60000` | confirm/judgment 等待超时；0 表示不限制。notice 用于确认 UI 已成功显示，内部最多等待 5 秒 |
+
+### 等待期间的调度行为
+
+- `confirm`、`judgment` 和 `input` 会暂停当前 UUT 的后续流程，但不会阻塞调度线程。
+- 操作员等待期间，已登记的周期后台任务和其他 UUT 仍可继续调度；每个 UUT 的弹窗实例彼此独立。
+- MessageBox 没有配置资源时，不会占用设备。若显式配置了 `resources`，租约会保持到操作员响应、超时或 Stop，使用同一设备的后台任务会正常等待资源。
+- `timeoutMs` 由调度器的异步截止时间处理。超时后节点返回 `Timeout`，再按照该节点或 Station 的失败策略处理。
+- Stop/Abort 会立即取消仍在等待的弹窗，把当前等待节点结算为 `Skipped`，跳过剩余普通步骤并继续执行 Cleanup，不会等待原超时时间。
+- UI 的响应采用“第一次有效响应生效”规则，重复点击或迟到响应不会覆盖已经提交的结果。
 
 CLI 或其他没有注册交互响应器的运行环境会立即返回
 `OperatorPromptResponderUnavailable`，不会无期限卡住。完整示例见

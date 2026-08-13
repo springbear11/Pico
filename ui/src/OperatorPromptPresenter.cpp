@@ -9,14 +9,17 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPointer>
 #include <QPixmap>
 #include <QPushButton>
 #include <QSet>
+#include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
 
 #include <utility>
+#include <cmath>
 
 namespace PicoATE::Ui {
 
@@ -49,6 +52,16 @@ public:
         m_imageLabel->setWordWrap(true);
         layout->addWidget(m_imageLabel, 0, Qt::AlignCenter);
 
+        m_inputEdit = new QLineEdit(this);
+        m_inputEdit->setObjectName(QStringLiteral("operatorPromptInput"));
+        m_inputEdit->setMinimumHeight(40);
+        layout->addWidget(m_inputEdit);
+
+        m_inputErrorLabel = new QLabel(this);
+        m_inputErrorLabel->setObjectName(QStringLiteral("operatorPromptInputError"));
+        m_inputErrorLabel->setWordWrap(true);
+        layout->addWidget(m_inputErrorLabel);
+
         m_statusLabel = new QLabel(this);
         m_statusLabel->setObjectName(QStringLiteral("operatorPromptWaitingLabel"));
         layout->addWidget(m_statusLabel);
@@ -77,6 +90,12 @@ public:
             "QLabel#operatorPromptImage { background: #f5f7fa; border: 1px solid #dce2e8; }"
             "QLabel#operatorPromptImageError { color: #b42318; font-size: 12px; }"
             "QLabel#operatorPromptWaitingLabel { color: #5f6b7a; font-size: 12px; }"
+            "QLabel#operatorPromptInputError { color: #b42318; font-size: 12px; }"
+            "QLineEdit#operatorPromptInput { border: 1px solid #b8c2cc; border-radius: 4px; "
+            "padding: 0 10px; color: #172033; background: #ffffff; font-size: 14px; }"
+            "QLineEdit#operatorPromptInput:focus { border-color: #2f7ed8; }"
+            "QLineEdit#operatorPromptInput[invalid=\"true\"] { border-color: #b42318; "
+            "background: #fff7f6; }"
             "QPushButton#operatorPromptConfirmButton { min-width: 96px; min-height: 34px; "
             "background: #2f7ed8; color: white; border: 0; border-radius: 4px; padding: 0 18px; }"
             "QPushButton#operatorPromptConfirmButton:hover { background: #246fbe; }"
@@ -93,6 +112,55 @@ public:
     QPushButton* failButton() const { return m_failButton; }
     QString currentInstanceId() const { return m_currentInstanceId; }
 
+    bool inputValues(QVariantMap& values)
+    {
+        if (!m_isInput) {
+            values.clear();
+            return true;
+        }
+
+        const auto text = m_inputEdit->text();
+        if (text.trimmed().isEmpty()) {
+            setInputError(tr("Enter a value."));
+            return false;
+        }
+
+        QVariant value = text;
+        if (m_inputType == QStringLiteral("integer")) {
+            bool ok = false;
+            const auto parsed = text.trimmed().toLongLong(&ok, 10);
+            if (!ok) {
+                setInputError(tr("Enter a valid integer."));
+                return false;
+            }
+            value = parsed;
+        } else if (m_inputType == QStringLiteral("number")) {
+            bool ok = false;
+            const auto parsed = text.trimmed().toDouble(&ok);
+            if (!ok || !std::isfinite(parsed)) {
+                setInputError(tr("Enter a valid number."));
+                return false;
+            }
+            value = parsed;
+        }
+
+        setInputError({});
+        values = {
+            {QStringLiteral("value"), value},
+            {QStringLiteral("text"), text},
+            {QStringLiteral("inputType"), m_inputType}
+        };
+        return true;
+    }
+
+    void focusInput()
+    {
+        if (m_isInput) {
+            m_inputEdit->setFocus(Qt::OtherFocusReason);
+            m_inputEdit->selectAll();
+        }
+    }
+
     void configure(const PicoATE::Core::RuntimeEvent& event,
                    const QString& sequencePath)
     {
@@ -107,11 +175,25 @@ public:
 
         const bool notice = mode == QStringLiteral("notice");
         const bool judgment = mode == QStringLiteral("judgment");
+        m_isInput = mode == QStringLiteral("input");
+        m_inputType = event.details.value("inputType", QStringLiteral("text"))
+                          .toString()
+                          .trimmed()
+                          .toLower();
+        m_inputEdit->setVisible(m_isInput);
+        m_inputErrorLabel->setVisible(false);
+        m_inputEdit->setPlaceholderText(
+            event.details.value("inputPlaceholder").toString());
+        m_inputEdit->setText(event.details.value("defaultValue").toString());
+        setInputError({});
         m_confirmButton->setVisible(!notice && !judgment);
         m_passButton->setVisible(judgment);
         m_failButton->setVisible(judgment);
         m_confirmButton->setText(
-            event.details.value("confirmText", QStringLiteral("OK")).toString());
+            event.details.value(
+                "confirmText",
+                m_isInput ? QStringLiteral("Submit") : QStringLiteral("OK"))
+                .toString());
         m_passButton->setText(
             event.details.value("passText", QStringLiteral("PASS")).toString());
         m_failButton->setText(
@@ -153,6 +235,12 @@ protected:
 
     void keyPressEvent(QKeyEvent* event) override
     {
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
+            m_isInput) {
+            m_confirmButton->click();
+            event->accept();
+            return;
+        }
         if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter ||
             event->key() == Qt::Key_Escape) {
             event->accept();
@@ -169,6 +257,18 @@ protected:
     }
 
 private:
+    void setInputError(const QString& message)
+    {
+        m_inputErrorLabel->setText(message);
+        m_inputErrorLabel->setVisible(!message.isEmpty());
+        m_inputEdit->setProperty("invalid", !message.isEmpty());
+        m_inputEdit->style()->unpolish(m_inputEdit);
+        m_inputEdit->style()->polish(m_inputEdit);
+        if (!message.isEmpty()) {
+            m_inputEdit->setFocus(Qt::OtherFocusReason);
+        }
+    }
+
     void updateImage(const QString& image, const QString& sequencePath)
     {
         m_imageLabel->clear();
@@ -202,11 +302,15 @@ private:
 
     QLabel* m_messageLabel = nullptr;
     QLabel* m_imageLabel = nullptr;
+    QLineEdit* m_inputEdit = nullptr;
+    QLabel* m_inputErrorLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
     QPushButton* m_confirmButton = nullptr;
     QPushButton* m_passButton = nullptr;
     QPushButton* m_failButton = nullptr;
     QString m_currentInstanceId;
+    QString m_inputType = QStringLiteral("text");
+    bool m_isInput = false;
     bool m_allowClose = false;
 };
 
@@ -295,14 +399,22 @@ void OperatorPromptPresenter::showPrompt(const PicoATE::Core::RuntimeEvent& even
         QObject::disconnect(button, nullptr, this, nullptr);
         connect(button, &QPushButton::clicked, this,
                 [this, instanceId, dialog, response] {
+            QVariantMap values;
+            if (response == PicoATE::Core::OperatorPromptResponse::Submitted &&
+                !dialog->inputValues(values)) {
+                return;
+            }
             if (m_viewModel && m_viewModel->respondToOperatorPrompt(instanceId,
-                                                                    response)) {
+                                                                    response,
+                                                                    values)) {
                 dialog->setResponsePending(true);
             }
         });
     };
     bindResponse(dialog->confirmButton(),
-                 PicoATE::Core::OperatorPromptResponse::Confirmed);
+                 mode == QStringLiteral("input")
+                     ? PicoATE::Core::OperatorPromptResponse::Submitted
+                     : PicoATE::Core::OperatorPromptResponse::Confirmed);
     bindResponse(dialog->passButton(),
                  PicoATE::Core::OperatorPromptResponse::Passed);
     bindResponse(dialog->failButton(),
@@ -311,6 +423,7 @@ void OperatorPromptPresenter::showPrompt(const PicoATE::Core::RuntimeEvent& even
     dialog->show();
     dialog->raise();
     dialog->activateWindow();
+    dialog->focusInput();
 
     if (notice) {
         QPointer<OperatorPromptPresenter> self(this);

@@ -9,6 +9,8 @@
 #include "MainWindow.h"
 #include "OperatorPromptPresenter.h"
 #include "ProjectResourcePaths.h"
+#include "ReportExporter.h"
+#include "RunArtifactWriter.h"
 #include "ProductionWindow.h"
 #include "ProductRoutingDialog.h"
 #include "ProportionalHeaderView.h"
@@ -274,6 +276,57 @@ bool chooseExpression(QToolButton* picker,
     return selected;
 }
 
+PicoATE::Core::ExecutionReport pdfReportFixture(int detailCount = 12)
+{
+    using namespace PicoATE::Core;
+    ExecutionReport report;
+    report.planId = QStringLiteral("pdf-plan");
+    report.sequenceId = QStringLiteral("pdf-sequence");
+    report.state = ExecutionState::Completed;
+    report.completed = true;
+    report.metadata.model = QStringLiteral("PICO-800V");
+    report.metadata.customerId = QStringLiteral("CUSTOMER-01");
+    report.metadata.sequenceName = QStringLiteral("charging_station_sequence.json");
+    report.metadata.serialNumber = QStringLiteral("BTSN2608130001");
+    report.metadata.stationId = QStringLiteral("STATION-01");
+    report.metadata.jigNo = QStringLiteral("JIG-07");
+    report.metadata.order = QStringLiteral("ORDER-20260813");
+    report.metadata.tester = QStringLiteral("Tester-01");
+    report.metadata.startedAt = QDateTime(QDate(2026, 8, 13), QTime(19, 53, 10));
+    report.metadata.finishedAt = report.metadata.startedAt.addMSecs(84382);
+    report.metadata.durationMs = 84382;
+
+    UutReport uut;
+    uut.uutId = QStringLiteral("UUT-1");
+    uut.completed = true;
+    uut.outcome = NodeOutcome::Passed;
+    for (int index = 0; index < detailCount; ++index) {
+        MeasurementResult measurement;
+        measurement.name = QStringLiteral("Voltage");
+        measurement.value = 800.0 + index / 100.0;
+        measurement.unit = QStringLiteral("V");
+        measurement.hasLowerLimit = true;
+        measurement.lowerLimit = 795.0;
+        measurement.hasUpperLimit = true;
+        measurement.upperLimit = 805.0;
+        measurement.status = MeasurementStatus::Passed;
+
+        StepReport step;
+        step.stepId = QStringLiteral("step-%1").arg(index + 1);
+        step.displayName = index == 0
+            ? QStringLiteral("Open CAN Device")
+            : QStringLiteral("Stable Sample %1").arg(index, 2, 10, QLatin1Char('0'));
+        step.kind = ExecNodeKind::Action;
+        step.state = ActivationState::Passed;
+        step.outcome = NodeOutcome::Passed;
+        step.durationMs = 1000 + index;
+        step.measurements = {measurement};
+        uut.steps.push_back(std::move(step));
+    }
+    report.uuts = {std::move(uut)};
+    return report;
+}
+
 } // namespace
 
 class MainWindowLifecycleTests final : public QObject
@@ -314,6 +367,7 @@ private slots:
     void adminStartupSplashCentersLogoAndRunsSpinner();
     void adminStartupInitializationShowsBusyOverlay();
     void stationScanDialogTogglePersists();
+    void pdfReportExportsAndArchivesWithStationPolicy();
     void fieldDeviceDialogAppliesCurrentDeviceAndSavesAll();
     void productionFieldDeviceDialogDefersScannerUntilClosed();
     void scanDialogAcceptsRepeatedBarcodeAndHasNoWindowButtons();
@@ -352,9 +406,11 @@ private slots:
     void flowEnableTogglePreservesTreePosition();
     void flowDropTargetPrefersTestItemInterior();
     void operatorPromptDialogCannotBeDismissedByKeyboardOrWindowControls();
+    void operatorPromptDialogValidatesInputMode();
     void operatorPromptDialogReusesKeyForJudgment();
     void messageBoxPropertyEditorSwitchesConfirmationMode();
     void messageBoxPropertyEditorConfiguresJudgmentMode();
+    void messageBoxPropertyEditorConfiguresInputMode();
     void messageBoxPropertyEditorInsertsRuntimeValues();
     void parserPropertyEditorCreatesNamedOutputsForFx();
     void parserPropertyEditorSwitchesRegisterModes();
@@ -4566,6 +4622,8 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
         QStringLiteral("stationStopOnFailureSwitch"));
     auto* scanEnabled = window.findChild<QAbstractButton*>(
         QStringLiteral("stationScanDialogSwitch"));
+    auto* pdfReport = window.findChild<QAbstractButton*>(
+        QStringLiteral("stationPdfReportSwitch"));
     auto* snLength = window.findChild<QSpinBox*>(
         QStringLiteral("stationSnLengthSpin"));
     auto* snPattern = window.findChild<QLineEdit*>(
@@ -4590,6 +4648,7 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     auto* document = window.findChild<StationDocument*>();
     QVERIFY(stopOnFailure);
     QVERIFY(scanEnabled);
+    QVERIFY(pdfReport);
     QVERIFY(snLength);
     QVERIFY(snPattern);
     QVERIFY(snAllowedRegex);
@@ -4649,6 +4708,7 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QCOMPARE(tester->text(), QStringLiteral("Tester A"));
     stopOnFailure->setChecked(false);
     scanEnabled->setChecked(false);
+    pdfReport->setChecked(true);
     snLength->setValue(10);
     snPattern->setText(QStringLiteral("BTSN*"));
     snAllowedRegex->setText(QStringLiteral("^[A-Z0-9]+$"));
@@ -4663,6 +4723,8 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
              false);
     QCOMPARE(document->rootObject().value(QStringLiteral("scanDialogEnabled")).toBool(),
              false);
+    QCOMPARE(document->rootObject().value(QStringLiteral("pdfReportEnabled")).toBool(),
+             true);
     QCOMPARE(document->rootObject().value(QStringLiteral("snLength")).toInt(), 10);
     QCOMPARE(document->rootObject().value(QStringLiteral("snPattern")).toString(),
              QStringLiteral("BTSN*"));
@@ -4694,6 +4756,67 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QCOMPARE(rules.wildcardPattern, QStringLiteral("BTSN*"));
     QCOMPARE(rules.allowedRegex, QStringLiteral("^[A-Z0-9]+$"));
     QVERIFY(window.close());
+}
+
+void MainWindowLifecycleTests::pdfReportExportsAndArchivesWithStationPolicy()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto requestedPreview = qEnvironmentVariable(
+        "PICOATE_REPORT_PREVIEW_PATH");
+    const auto pdfPath = requestedPreview.isEmpty()
+        ? directory.filePath(QStringLiteral("report.pdf"))
+        : requestedPreview;
+    QVERIFY(QDir().mkpath(QFileInfo(pdfPath).absolutePath()));
+
+    const auto report = pdfReportFixture();
+    const auto exported = ReportExporter::savePdf(pdfPath, report);
+    QVERIFY2(exported.success, qPrintable(exported.errorMessage));
+    QFile pdf(pdfPath);
+    QVERIFY(pdf.open(QIODevice::ReadOnly));
+    const auto bytes = pdf.readAll();
+    QVERIFY(bytes.startsWith("%PDF-"));
+    QVERIFY(bytes.size() > 10000);
+
+    const auto requestedLongPreview = qEnvironmentVariable(
+        "PICOATE_LONG_REPORT_PREVIEW_PATH");
+    const auto longPdfPath = requestedLongPreview.isEmpty()
+        ? directory.filePath(QStringLiteral("long-report.pdf"))
+        : requestedLongPreview;
+    QVERIFY(QDir().mkpath(QFileInfo(longPdfPath).absolutePath()));
+    const auto longExported = ReportExporter::savePdf(
+        longPdfPath, pdfReportFixture(60));
+    QVERIFY2(longExported.success, qPrintable(longExported.errorMessage));
+    QFile longPdf(longPdfPath);
+    QVERIFY(longPdf.open(QIODevice::ReadOnly));
+    const auto longBytes = longPdf.readAll();
+    QVERIFY(longBytes.startsWith("%PDF-"));
+    QVERIFY(longBytes.contains("/Count 3") || longBytes.contains("/Count 4"));
+
+    const QJsonObject station{
+        {QStringLiteral("stationId"), QStringLiteral("STATION-01")},
+        {QStringLiteral("pdfReportEnabled"), true},
+        {QStringLiteral("devices"), QJsonArray{}},
+    };
+    const auto settings = runArtifactSettingsFromStation(station);
+    QVERIFY(settings.pdfReportEnabled);
+    QVERIFY(!settings.txtLogEnabled);
+    QVERIFY(!settings.csvReportEnabled);
+    QVERIFY(!settings.xlsxReportEnabled);
+
+    auto archiveSettings = settings;
+    archiveSettings.outputDirectory = directory.path();
+    const auto startedAt = QDateTime(QDate(2026, 8, 13), QTime(19, 53, 10, 123));
+    RunArtifactWriter writer;
+    const auto begun = writer.begin(
+        archiveSettings, QStringLiteral("SN-PDF"), startedAt);
+    QVERIFY2(begun.success, qPrintable(begun.errorMessage));
+    const auto archived = writer.finalize(report);
+    QVERIFY2(archived.success, qPrintable(archived.errorMessage));
+    const auto archivedPdf = QDir(directory.path()).filePath(
+        QStringLiteral("20260813/PASS/SN-PDF_195310123.pdf"));
+    QVERIFY(QFileInfo::exists(archivedPdf));
+    QVERIFY(archived.filePaths.contains(archivedPdf));
 }
 
 void MainWindowLifecycleTests::fieldDeviceDialogAppliesCurrentDeviceAndSavesAll()
@@ -5734,6 +5857,56 @@ void MainWindowLifecycleTests::operatorPromptDialogCannotBeDismissedByKeyboardOr
     QVERIFY(QFile::remove(imagePath));
 }
 
+void MainWindowLifecycleTests::operatorPromptDialogValidatesInputMode()
+{
+    QWidget owner;
+    owner.show();
+    ExecutionViewModel viewModel;
+    OperatorPromptPresenter presenter(&viewModel, &owner);
+
+    PicoATE::Core::RuntimeEvent requested;
+    requested.kind = PicoATE::Core::RuntimeEventKind::OperatorPromptRequested;
+    requested.message = QStringLiteral("Enter measured voltage");
+    requested.details = {
+        {QStringLiteral("promptInstanceId"), QStringLiteral("input-1")},
+        {QStringLiteral("mode"), QStringLiteral("input")},
+        {QStringLiteral("title"), QStringLiteral("Voltage")},
+        {QStringLiteral("message"), QStringLiteral("Enter measured voltage")},
+        {QStringLiteral("inputType"), QStringLiteral("number")},
+        {QStringLiteral("inputPlaceholder"), QStringLiteral("Example: 12.5")},
+        {QStringLiteral("defaultValue"), 12.5},
+        {QStringLiteral("confirmText"), QStringLiteral("Submit")},
+    };
+    presenter.applyRuntimeEvents({requested});
+
+    auto* dialog = owner.findChild<QDialog*>(QStringLiteral("operatorPromptDialog"));
+    QVERIFY(dialog);
+    QTRY_VERIFY(dialog->isVisible());
+    auto* input = dialog->findChild<QLineEdit*>(QStringLiteral("operatorPromptInput"));
+    auto* error = dialog->findChild<QLabel*>(QStringLiteral("operatorPromptInputError"));
+    auto* submit = dialog->findChild<QPushButton*>(
+        QStringLiteral("operatorPromptConfirmButton"));
+    QVERIFY(input && error && submit);
+    QVERIFY(!input->isHidden());
+    QCOMPARE(input->placeholderText(), QStringLiteral("Example: 12.5"));
+    QCOMPARE(input->text(), QStringLiteral("12.5"));
+    QCOMPARE(submit->text(), QStringLiteral("Submit"));
+
+    input->setText(QStringLiteral("not-a-number"));
+    submit->click();
+    QVERIFY(!error->isHidden());
+    QVERIFY(error->text().contains(QStringLiteral("valid number")));
+    QCOMPARE(input->property("invalid").toBool(), true);
+
+    input->setText(QStringLiteral("13.75"));
+    submit->click();
+    QVERIFY(error->isHidden());
+    QCOMPARE(input->property("invalid").toBool(), false);
+
+    presenter.closeAll();
+    viewModel.shutdown();
+}
+
 void MainWindowLifecycleTests::projectImagePathsStayInsideCurrentProject()
 {
     QTemporaryDir root;
@@ -5952,6 +6125,87 @@ void MainWindowLifecycleTests::messageBoxPropertyEditorConfiguresJudgmentMode()
              QStringLiteral("RgbLampOperatorFail"));
     QVERIFY(!prompt.contains(QStringLiteral("confirmText")));
     QVERIFY(!prompt.contains(QStringLiteral("closeOnStep")));
+}
+
+void MainWindowLifecycleTests::messageBoxPropertyEditorConfiguresInputMode()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath(QStringLiteral("operator_input.json"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"json({
+      "id":"operator-input-editor","name":"Operator Input Editor","groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"enter-voltage","name":"Enter Voltage","kind":"operatorPrompt",
+           "prompt":{"mode":"confirm","title":"Voltage","message":"Enter voltage",
+                     "confirmText":"OK","timeoutMs":60000}},
+          {"id":"check-voltage","name":"Check Voltage","kind":"limit",
+           "inputs":{"actual":""},
+           "parameters":{"comparison":"equal","expected":12.5}}
+        ]
+      }]
+    })json");
+    file.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(path));
+    StepPropertyEditor editor(&document);
+    const SequenceItemPath promptPath{0, {0}};
+    editor.setCurrentItem(promptPath);
+
+    auto* mode = editor.findChild<QComboBox*>(
+        QStringLiteral("propertyPromptModeCombo"));
+    auto* inputType = editor.findChild<QComboBox*>(
+        QStringLiteral("propertyPromptInputTypeCombo"));
+    auto* inputHint = editor.findChild<QLineEdit*>(
+        QStringLiteral("propertyPromptInputPlaceholderEdit"));
+    auto* defaultValue = editor.findChild<QLineEdit*>(
+        QStringLiteral("propertyPromptDefaultValueEdit"));
+    auto* buttonText = editor.findChild<QLineEdit*>(
+        QStringLiteral("propertyPromptConfirmTextEdit"));
+    QVERIFY(mode && inputType && inputHint && defaultValue && buttonText);
+
+    mode->setCurrentIndex(mode->findData(QStringLiteral("input")));
+    QVERIFY(!inputType->isHidden());
+    QVERIFY(!inputHint->isHidden());
+    QVERIFY(!defaultValue->isHidden());
+    QVERIFY(!buttonText->isHidden());
+    inputType->setCurrentIndex(inputType->findData(QStringLiteral("number")));
+    inputHint->setText(QStringLiteral("Example: 12.5"));
+    defaultValue->setText(QStringLiteral("12.5"));
+    buttonText->setText(QStringLiteral("Submit"));
+    QVERIFY(editor.commitPendingChanges());
+
+    const auto prompt = document.objectAt(promptPath)
+                            .value(QStringLiteral("prompt"))
+                            .toObject();
+    QCOMPARE(prompt.value(QStringLiteral("mode")).toString(),
+             QStringLiteral("input"));
+    QCOMPARE(prompt.value(QStringLiteral("inputType")).toString(),
+             QStringLiteral("number"));
+    QCOMPARE(prompt.value(QStringLiteral("inputPlaceholder")).toString(),
+             QStringLiteral("Example: 12.5"));
+    QCOMPARE(prompt.value(QStringLiteral("defaultValue")).toDouble(), 12.5);
+    QCOMPARE(prompt.value(QStringLiteral("confirmText")).toString(),
+             QStringLiteral("Submit"));
+    QVERIFY(!prompt.contains(QStringLiteral("closeOnStep")));
+    QVERIFY(!prompt.contains(QStringLiteral("passText")));
+
+    const auto candidates = buildStepOutputExpressionCandidates(
+        document.rootObject(), SequenceItemPath{0, {1}}, {});
+    const auto value = std::find_if(
+        candidates.cbegin(), candidates.cend(), [](const auto& candidate) {
+            return candidate.expression ==
+                   QStringLiteral("${step:enter-voltage.outputs.value}");
+        });
+    QVERIFY(value != candidates.cend());
+    QCOMPARE(value->type, PluginParameterType::Number);
+    QVERIFY(std::any_of(candidates.cbegin(), candidates.cend(),
+                        [](const auto& candidate) {
+                            return candidate.expression ==
+                                   QStringLiteral("${step:enter-voltage.outputs.text}");
+                        }));
 }
 
 void MainWindowLifecycleTests::messageBoxPropertyEditorInsertsRuntimeValues()

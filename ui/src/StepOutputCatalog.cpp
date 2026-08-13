@@ -77,6 +77,28 @@ void appendBuiltInOutputs(const QJsonObject& step,
                    {QStringLiteral("minimum"), PluginParameterType::Number},
                    {QStringLiteral("maximum"), PluginParameterType::Number},
                    {QStringLiteral("average"), PluginParameterType::Number}};
+    } else if (kind == QStringLiteral("operatorprompt") &&
+               step.value(QStringLiteral("prompt"))
+                       .toObject()
+                       .value(QStringLiteral("mode"))
+                       .toString()
+                       .compare(QStringLiteral("input"), Qt::CaseInsensitive) == 0) {
+        const auto inputType = step.value(QStringLiteral("prompt"))
+                                   .toObject()
+                                   .value(QStringLiteral("inputType"))
+                                   .toString(QStringLiteral("text"))
+                                   .trimmed()
+                                   .toLower();
+        auto valueType = PluginParameterType::String;
+        if (inputType == QStringLiteral("integer")) {
+            valueType = PluginParameterType::Integer;
+        } else if (inputType == QStringLiteral("number")) {
+            valueType = PluginParameterType::Number;
+        }
+        outputs = {{QStringLiteral("value"), valueType},
+                   {QStringLiteral("text"), PluginParameterType::String},
+                   {QStringLiteral("inputType"), PluginParameterType::String},
+                   {QStringLiteral("response"), PluginParameterType::String}};
     }
 
     for (const auto& output : outputs) {

@@ -23,6 +23,9 @@ public:
     static ReportExportResult saveXlsx(
         const QString& filePath,
         const PicoATE::Core::ExecutionReport& report);
+    static ReportExportResult savePdf(
+        const QString& filePath,
+        const PicoATE::Core::ExecutionReport& report);
     static QByteArray csvHeader();
 };
 

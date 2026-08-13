@@ -5,7 +5,9 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QSet>
 
 #include <initializer_list>
 
@@ -35,7 +37,8 @@ bool artifactExists(const QString& dateDirectory, const QString& baseName)
     for (const auto& directory : directories) {
         if (QFileInfo::exists(QDir(directory).filePath(baseName + QStringLiteral(".txt"))) ||
             QFileInfo::exists(QDir(directory).filePath(baseName + QStringLiteral(".csv"))) ||
-            QFileInfo::exists(QDir(directory).filePath(baseName + QStringLiteral(".xlsx")))) {
+            QFileInfo::exists(QDir(directory).filePath(baseName + QStringLiteral(".xlsx"))) ||
+            QFileInfo::exists(QDir(directory).filePath(baseName + QStringLiteral(".pdf")))) {
             return true;
         }
     }
@@ -104,7 +107,90 @@ QByteArray executionLogHeader(const RunArtifactContext& context,
     return header.toUtf8();
 }
 
+const PicoATE::Core::UutReport* findUutReport(
+    const PicoATE::Core::ExecutionReport& report,
+    const PicoATE::Core::UutId& uutId)
+{
+    for (const auto& uut : report.uuts) {
+        if (uut.uutId == uutId) {
+            return &uut;
+        }
+    }
+    return nullptr;
+}
+
+PicoATE::Core::ExecutionReport reportForUut(
+    const PicoATE::Core::ExecutionReport& source,
+    const PicoATE::Core::UutReport& uut,
+    const QString& serialNumberFallback,
+    bool useUutTiming)
+{
+    using namespace PicoATE::Core;
+
+    auto result = source;
+    result.uuts = {uut};
+    result.metadata.serialNumber = uut.serialNumber.trimmed();
+    if (result.metadata.serialNumber.isEmpty()) {
+        result.metadata.serialNumber = serialNumberFallback.trimmed();
+    }
+    if (result.metadata.serialNumber.isEmpty()) {
+        result.metadata.serialNumber = uut.uutId;
+    }
+    if (useUutTiming) {
+        if (uut.startedAt.isValid()) {
+            result.metadata.startedAt = uut.startedAt;
+        }
+        if (uut.finishedAt.isValid()) {
+            result.metadata.finishedAt = uut.finishedAt;
+        }
+        if (uut.durationMs >= 0) {
+            result.metadata.durationMs = uut.durationMs;
+        } else if (result.metadata.startedAt.isValid() &&
+                   result.metadata.finishedAt.isValid()) {
+            result.metadata.durationMs = result.metadata.startedAt.msecsTo(
+                result.metadata.finishedAt);
+        }
+    }
+
+    const bool aborted = source.state == ExecutionState::Aborted;
+    result.completed = source.completed && uut.completed;
+    result.hasError = source.sessionHasError || uut.hasError || aborted;
+    if (aborted) {
+        result.state = ExecutionState::Aborted;
+    } else if (result.completed) {
+        result.state = result.hasError
+            ? ExecutionState::CompletedWithError
+            : ExecutionState::Completed;
+    } else if (source.state == ExecutionState::Completed ||
+               source.state == ExecutionState::CompletedWithError) {
+        result.state = ExecutionState::CompletedWithError;
+        result.hasError = true;
+    }
+    return result;
+}
+
+void appendError(RunArtifactResult& result, const QString& message)
+{
+    result.success = false;
+    if (!result.errorMessage.isEmpty()) {
+        result.errorMessage += QStringLiteral("; ");
+    }
+    result.errorMessage += message;
+}
+
 } // namespace
+
+struct RunArtifactWriter::ArtifactChannel {
+    PicoATE::Core::UutId uutId;
+    RunArtifactContext context;
+    QFile txtFile;
+    QFile csvFile;
+    QString xlsxFilePath;
+    QString pdfFilePath;
+    QString baseName;
+};
+
+RunArtifactWriter::RunArtifactWriter() = default;
 
 RunArtifactSettings runArtifactSettingsFromStation(
     const QJsonObject& station,
@@ -119,6 +205,7 @@ RunArtifactSettings runArtifactSettingsFromStation(
     settings.txtLogEnabled = parsed.config.txtLogEnabled;
     settings.csvReportEnabled = parsed.config.csvReportEnabled;
     settings.xlsxReportEnabled = parsed.config.xlsxReportEnabled;
+    settings.pdfReportEnabled = parsed.config.pdfReportEnabled;
     settings.outputDirectory = resolvedOutputDirectory(
         parsed.config.reportOutputDirectory,
         stationFilePath);
@@ -186,10 +273,22 @@ RunArtifactResult RunArtifactWriter::begin(const RunArtifactSettings& settings,
                                            const RunArtifactContext& context,
                                            const QDateTime& startedAt)
 {
+    RunArtifactUutContext uut;
+    uut.uutId = context.serialNumber.trimmed();
+    uut.serialNumber = context.serialNumber.trimmed();
+    return beginForUuts(settings, context, {uut}, startedAt);
+}
+
+RunArtifactResult RunArtifactWriter::beginForUuts(
+    const RunArtifactSettings& settings,
+    const RunArtifactContext& context,
+    const QVector<RunArtifactUutContext>& uuts,
+    const QDateTime& startedAt)
+{
     abandon();
     m_settings = settings;
     if (!settings.txtLogEnabled && !settings.csvReportEnabled &&
-        !settings.xlsxReportEnabled) {
+        !settings.xlsxReportEnabled && !settings.pdfReportEnabled) {
         return {};
     }
 
@@ -208,50 +307,113 @@ RunArtifactResult RunArtifactWriter::begin(const RunArtifactSettings& settings,
                            .arg(m_dateDirectory));
     }
 
-    const auto serialPrefix = safeFileName(context.serialNumber);
-    auto fileTimestamp = localStart;
-    do {
-        m_baseName = serialPrefix.isEmpty()
-            ? fileTimestamp.toString(QStringLiteral("yyyyMMdd_HHmmsszzz"))
-            : serialPrefix + fileTimestamp.toString(QStringLiteral("_HHmmsszzz"));
-        if (!artifactExists(m_dateDirectory, m_baseName)) {
-            break;
-        }
-        fileTimestamp = fileTimestamp.addMSecs(1);
-    } while (true);
+    QVector<RunArtifactUutContext> requestedUuts = uuts;
+    if (requestedUuts.isEmpty()) {
+        requestedUuts.push_back(
+            {context.serialNumber.trimmed(), context.serialNumber.trimmed()});
+    }
 
+    QSet<QString> seenUutIds;
+    QSet<QString> reservedBaseNames;
     RunArtifactResult result;
-    if (settings.txtLogEnabled) {
-        const auto path = QDir(m_dateDirectory).filePath(m_baseName + QStringLiteral(".txt"));
-        m_txtFile.setFileName(path);
-        if (!m_txtFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            closeFiles();
-            return failure(m_txtFile.errorString());
+    for (qsizetype index = 0; index < requestedUuts.size(); ++index) {
+        auto uut = requestedUuts.at(index);
+        uut.uutId = uut.uutId.trimmed();
+        uut.serialNumber = uut.serialNumber.trimmed();
+        if (uut.uutId.isEmpty()) {
+            uut.uutId = uut.serialNumber;
         }
-        m_txtFile.write("\xEF\xBB\xBF");
-        const auto header = executionLogHeader(context, localStart);
-        if (m_txtFile.write(header) != header.size()) {
-            closeFiles();
-            return failure(m_txtFile.errorString());
+        if (uut.uutId.isEmpty()) {
+            uut.uutId = QStringLiteral("UUT-%1").arg(index + 1);
         }
-        m_txtFile.flush();
-        result.filePaths.push_back(path);
-    }
-    if (settings.csvReportEnabled) {
-        const auto path = QDir(m_dateDirectory).filePath(m_baseName + QStringLiteral(".csv"));
-        m_csvFile.setFileName(path);
-        if (!m_csvFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (seenUutIds.contains(uut.uutId)) {
             closeFiles();
-            return failure(m_csvFile.errorString());
+            m_channels.clear();
+            return failure(QStringLiteral("Duplicate report UUT ID: %1")
+                               .arg(uut.uutId));
         }
-        m_csvFile.write(ReportExporter::csvHeader());
-        m_csvFile.flush();
-        result.filePaths.push_back(path);
+        seenUutIds.insert(uut.uutId);
+
+        auto channel = std::make_unique<ArtifactChannel>();
+        channel->uutId = uut.uutId;
+        channel->context = context;
+        channel->context.serialNumber = uut.serialNumber;
+        if (channel->context.serialNumber.isEmpty() &&
+            requestedUuts.size() > 1) {
+            channel->context.serialNumber = uut.uutId;
+        }
+
+        auto filePrefix = safeFileName(channel->context.serialNumber);
+        const auto uutPrefix = safeFileName(uut.uutId);
+        if (requestedUuts.size() > 1 && !uutPrefix.isEmpty() &&
+            filePrefix.compare(uutPrefix, Qt::CaseInsensitive) != 0) {
+            filePrefix = filePrefix.isEmpty()
+                ? uutPrefix
+                : filePrefix + QLatin1Char('_') + uutPrefix;
+        }
+
+        auto fileTimestamp = localStart;
+        do {
+            channel->baseName = filePrefix.isEmpty()
+                ? fileTimestamp.toString(QStringLiteral("yyyyMMdd_HHmmsszzz"))
+                : filePrefix + fileTimestamp.toString(
+                      QStringLiteral("_HHmmsszzz"));
+            if (!artifactExists(m_dateDirectory, channel->baseName) &&
+                !reservedBaseNames.contains(channel->baseName)) {
+                break;
+            }
+            fileTimestamp = fileTimestamp.addMSecs(1);
+        } while (true);
+        reservedBaseNames.insert(channel->baseName);
+
+        if (settings.txtLogEnabled) {
+            const auto path = QDir(m_dateDirectory).filePath(
+                channel->baseName + QStringLiteral(".txt"));
+            channel->txtFile.setFileName(path);
+            if (!channel->txtFile.open(QIODevice::WriteOnly |
+                                       QIODevice::Truncate)) {
+                const auto message = channel->txtFile.errorString();
+                closeFiles();
+                m_channels.clear();
+                return failure(message);
+            }
+            channel->txtFile.write("\xEF\xBB\xBF");
+            const auto header = executionLogHeader(channel->context, localStart);
+            if (channel->txtFile.write(header) != header.size()) {
+                const auto message = channel->txtFile.errorString();
+                closeFiles();
+                m_channels.clear();
+                return failure(message);
+            }
+            channel->txtFile.flush();
+            result.filePaths.push_back(path);
+        }
+        if (settings.csvReportEnabled) {
+            const auto path = QDir(m_dateDirectory).filePath(
+                channel->baseName + QStringLiteral(".csv"));
+            channel->csvFile.setFileName(path);
+            if (!channel->csvFile.open(QIODevice::WriteOnly |
+                                       QIODevice::Truncate)) {
+                const auto message = channel->csvFile.errorString();
+                closeFiles();
+                m_channels.clear();
+                return failure(message);
+            }
+            channel->csvFile.write(ReportExporter::csvHeader());
+            channel->csvFile.flush();
+            result.filePaths.push_back(path);
+        }
+        if (settings.xlsxReportEnabled) {
+            channel->xlsxFilePath = QDir(m_dateDirectory).filePath(
+                channel->baseName + QStringLiteral(".xlsx"));
+        }
+        if (settings.pdfReportEnabled) {
+            channel->pdfFilePath = QDir(m_dateDirectory).filePath(
+                channel->baseName + QStringLiteral(".pdf"));
+        }
+        m_channels.push_back(std::move(channel));
     }
-    if (settings.xlsxReportEnabled) {
-        m_xlsxFilePath = QDir(m_dateDirectory).filePath(
-            m_baseName + QStringLiteral(".xlsx"));
-    }
+
     m_active = true;
     return result;
 }
@@ -269,19 +431,29 @@ RunArtifactResult RunArtifactWriter::appendLogLines(
         const auto bytes = QStringLiteral("[%1] %2\r\n")
                                .arg(timestamp, line.message)
                                .toUtf8();
-        if (m_txtFile.write(bytes) != bytes.size()) {
-            return failure(m_txtFile.errorString());
-        }
-        if (line.message.contains(QStringLiteral("_TESTITEM_END ")) &&
-            line.message.contains(QStringLiteral("========================"))) {
-            constexpr auto separator = "\r\n\r\n\r\n";
-            if (m_txtFile.write(separator) != 6) {
-                return failure(m_txtFile.errorString());
+        const bool sharedLine = line.uutId.trimmed().isEmpty();
+        for (auto& channel : m_channels) {
+            const bool belongsToChannel = sharedLine ||
+                channel->uutId == line.uutId || m_channels.size() == 1;
+            if (!belongsToChannel || !channel->txtFile.isOpen()) {
+                continue;
+            }
+            if (channel->txtFile.write(bytes) != bytes.size()) {
+                return failure(channel->txtFile.errorString());
+            }
+            if (line.message.contains(QStringLiteral("_TESTITEM_END ")) &&
+                line.message.contains(QStringLiteral("========================"))) {
+                constexpr auto separator = "\r\n\r\n\r\n";
+                if (channel->txtFile.write(separator) != 6) {
+                    return failure(channel->txtFile.errorString());
+                }
             }
         }
     }
-    if (!m_txtFile.flush()) {
-        return failure(m_txtFile.errorString());
+    for (auto& channel : m_channels) {
+        if (channel->txtFile.isOpen() && !channel->txtFile.flush()) {
+            return failure(channel->txtFile.errorString());
+        }
     }
     return {};
 }
@@ -293,48 +465,79 @@ RunArtifactResult RunArtifactWriter::finalize(
         return {};
     }
 
-    if (m_settings.csvReportEnabled) {
-        m_csvFile.close();
-        const auto exported = ReportExporter::saveCsv(m_csvFile.fileName(), report);
-        if (!exported.success) {
-            m_txtFile.close();
-            m_active = false;
-            return failure(exported.errorMessage);
-        }
-    }
-    if (m_settings.xlsxReportEnabled) {
-        const auto exported = ReportExporter::saveXlsx(m_xlsxFilePath, report);
-        if (!exported.success) {
-            m_txtFile.close();
-            m_active = false;
-            return failure(exported.errorMessage);
-        }
-    }
-    if (m_txtFile.isOpen()) {
-        m_txtFile.flush();
-        m_txtFile.close();
-    }
-
-    const bool passed = report.completed && !report.hasError &&
-        report.state == PicoATE::Core::ExecutionState::Completed;
-    const auto classification = passed ? QStringLiteral("PASS") : QStringLiteral("FAIL");
-    const auto destinationDirectory = QDir(m_dateDirectory).filePath(classification);
     RunArtifactResult result;
-    for (const auto& source : {m_txtFile.fileName(), m_csvFile.fileName(), m_xlsxFilePath}) {
-        if (source.isEmpty() || !QFileInfo::exists(source)) {
-            continue;
+    for (auto& channel : m_channels) {
+        const auto* uut = findUutReport(report, channel->uutId);
+        if (!uut && m_channels.size() == 1 && report.uuts.size() == 1) {
+            uut = &report.uuts.constFirst();
         }
-        const auto destination = QDir(destinationDirectory).filePath(QFileInfo(source).fileName());
-        if (!QFile::rename(source, destination)) {
-            result.success = false;
-            if (!result.errorMessage.isEmpty()) {
-                result.errorMessage += QStringLiteral("; ");
+
+        if (channel->csvFile.isOpen()) {
+            channel->csvFile.flush();
+            channel->csvFile.close();
+        }
+        if (channel->txtFile.isOpen()) {
+            channel->txtFile.flush();
+            channel->txtFile.close();
+        }
+
+        if (!uut) {
+            appendError(result,
+                        QStringLiteral("No execution report found for UUT %1")
+                            .arg(channel->uutId));
+        }
+        const auto uutReport = uut
+            ? reportForUut(report,
+                           *uut,
+                           channel->context.serialNumber,
+                           m_channels.size() > 1)
+            : report;
+
+        const auto exportReport = [&](const ReportExportResult& exported,
+                                      const QString& format) {
+            if (!exported.success) {
+                appendError(result,
+                            QStringLiteral("%1 export failed for UUT %2: %3")
+                                .arg(format, channel->uutId,
+                                     exported.errorMessage));
             }
-            result.errorMessage += QStringLiteral("Cannot move %1 to %2")
-                                       .arg(source, destination);
-            result.filePaths.push_back(source);
-        } else {
-            result.filePaths.push_back(destination);
+        };
+        if (uut && m_settings.csvReportEnabled) {
+            exportReport(ReportExporter::saveCsv(
+                             channel->csvFile.fileName(), uutReport),
+                         QStringLiteral("CSV"));
+        }
+        if (uut && m_settings.xlsxReportEnabled) {
+            exportReport(ReportExporter::saveXlsx(
+                             channel->xlsxFilePath, uutReport),
+                         QStringLiteral("XLSX"));
+        }
+        if (uut && m_settings.pdfReportEnabled) {
+            exportReport(ReportExporter::savePdf(
+                             channel->pdfFilePath, uutReport),
+                         QStringLiteral("PDF"));
+        }
+
+        const bool passed = uut && uutReport.completed && !uutReport.hasError &&
+            uutReport.state == PicoATE::Core::ExecutionState::Completed;
+        const auto destinationDirectory = QDir(m_dateDirectory).filePath(
+            passed ? QStringLiteral("PASS") : QStringLiteral("FAIL"));
+        const QStringList sources = {
+            channel->txtFile.fileName(), channel->csvFile.fileName(),
+            channel->xlsxFilePath, channel->pdfFilePath};
+        for (const auto& source : sources) {
+            if (source.isEmpty() || !QFileInfo::exists(source)) {
+                continue;
+            }
+            const auto destination = QDir(destinationDirectory).filePath(
+                QFileInfo(source).fileName());
+            if (!QFile::rename(source, destination)) {
+                appendError(result, QStringLiteral("Cannot move %1 to %2")
+                                        .arg(source, destination));
+                result.filePaths.push_back(source);
+            } else {
+                result.filePaths.push_back(destination);
+            }
         }
     }
     m_active = false;
@@ -344,9 +547,7 @@ RunArtifactResult RunArtifactWriter::finalize(
 void RunArtifactWriter::abandon()
 {
     closeFiles();
-    m_txtFile.setFileName({});
-    m_csvFile.setFileName({});
-    m_xlsxFilePath.clear();
+    m_channels.clear();
     m_active = false;
 }
 
@@ -362,18 +563,30 @@ QString RunArtifactWriter::dateDirectory() const
 
 QString RunArtifactWriter::baseName() const
 {
-    return m_baseName;
+    return m_channels.empty() ? QString{} : m_channels.front()->baseName;
+}
+
+QStringList RunArtifactWriter::baseNames() const
+{
+    QStringList names;
+    names.reserve(static_cast<qsizetype>(m_channels.size()));
+    for (const auto& channel : m_channels) {
+        names.push_back(channel->baseName);
+    }
+    return names;
 }
 
 void RunArtifactWriter::closeFiles()
 {
-    if (m_txtFile.isOpen()) {
-        m_txtFile.flush();
-        m_txtFile.close();
-    }
-    if (m_csvFile.isOpen()) {
-        m_csvFile.flush();
-        m_csvFile.close();
+    for (auto& channel : m_channels) {
+        if (channel->txtFile.isOpen()) {
+            channel->txtFile.flush();
+            channel->txtFile.close();
+        }
+        if (channel->csvFile.isOpen()) {
+            channel->csvFile.flush();
+            channel->csvFile.close();
+        }
     }
 }
 

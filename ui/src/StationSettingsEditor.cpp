@@ -161,6 +161,11 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_xlsxReportSwitch->setAccessibleName(tr("Enable XLSX result report"));
     form->addRow(tr("XLSX Report"), m_xlsxReportSwitch);
 
+    m_pdfReportSwitch = new OnOffSwitch(this);
+    m_pdfReportSwitch->setObjectName(QStringLiteral("stationPdfReportSwitch"));
+    m_pdfReportSwitch->setAccessibleName(tr("Enable PDF result report"));
+    form->addRow(tr("PDF Report"), m_pdfReportSwitch);
+
     auto* outputRow = new QWidget(this);
     auto* outputLayout = new QHBoxLayout(outputRow);
     outputLayout->setContentsMargins(0, 0, 0, 0);
@@ -200,6 +205,7 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     connect(m_txtLogSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_csvReportSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_xlsxReportSwitch, &QAbstractButton::toggled, this, markPending);
+    connect(m_pdfReportSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_reportOutputEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_browseReportOutputButton, &QPushButton::clicked, this, [this] {
         const auto selected = QFileDialog::getExistingDirectory(
@@ -292,6 +298,7 @@ bool StationSettingsEditor::commitPendingChanges()
     root.insert(QStringLiteral("txtLogEnabled"), m_txtLogSwitch->isChecked());
     root.insert(QStringLiteral("csvReportEnabled"), m_csvReportSwitch->isChecked());
     root.insert(QStringLiteral("xlsxReportEnabled"), m_xlsxReportSwitch->isChecked());
+    root.insert(QStringLiteral("pdfReportEnabled"), m_pdfReportSwitch->isChecked());
     const auto outputDirectory = m_reportOutputEdit->text().trimmed();
     if (outputDirectory.isEmpty()) {
         root.remove(QStringLiteral("reportOutputDirectory"));
@@ -349,6 +356,8 @@ bool StationSettingsEditor::focusField(const QString& path)
         field = m_csvReportSwitch;
     } else if (path == QStringLiteral("xlsxReportEnabled")) {
         field = m_xlsxReportSwitch;
+    } else if (path == QStringLiteral("pdfReportEnabled")) {
+        field = m_pdfReportSwitch;
     } else if (path == QStringLiteral("reportOutputDirectory")) {
         field = m_reportOutputEdit;
     } else if (path == QStringLiteral("snLength")) {
@@ -405,6 +414,8 @@ void StationSettingsEditor::reload()
         root.value(QStringLiteral("csvReportEnabled")).toBool(false));
     m_xlsxReportSwitch->setChecked(
         root.value(QStringLiteral("xlsxReportEnabled")).toBool(false));
+    m_pdfReportSwitch->setChecked(
+        root.value(QStringLiteral("pdfReportEnabled")).toBool(false));
     m_reportOutputEdit->setText(
         root.value(QStringLiteral("reportOutputDirectory")).toString());
     m_snLengthSpin->setValue(
@@ -431,6 +442,7 @@ void StationSettingsEditor::reload()
                         static_cast<QWidget*>(m_txtLogSwitch),
                         static_cast<QWidget*>(m_csvReportSwitch),
                         static_cast<QWidget*>(m_xlsxReportSwitch),
+                        static_cast<QWidget*>(m_pdfReportSwitch),
                         static_cast<QWidget*>(m_reportOutputEdit),
                         static_cast<QWidget*>(m_browseReportOutputButton),
                         static_cast<QWidget*>(m_snLengthSpin),

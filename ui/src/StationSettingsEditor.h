@@ -49,6 +49,7 @@ private:
     QAbstractButton* m_txtLogSwitch = nullptr;
     QAbstractButton* m_csvReportSwitch = nullptr;
     QAbstractButton* m_xlsxReportSwitch = nullptr;
+    QAbstractButton* m_pdfReportSwitch = nullptr;
     QLineEdit* m_reportOutputEdit = nullptr;
     QPushButton* m_browseReportOutputButton = nullptr;
     QSpinBox* m_snLengthSpin = nullptr;

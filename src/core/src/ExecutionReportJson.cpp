@@ -459,9 +459,17 @@ QJsonObject reportBodyToJson(const ExecutionReport& report)
         for (const auto& step : uut.steps) steps.push_back(stepToJson(step));
         uuts.push_back(QJsonObject{
             {"uutId", uut.uutId},
+            {"serialNumber", uut.serialNumber},
             {"completed", uut.completed},
             {"hasError", uut.hasError},
             {"outcome", nodeOutcomeName(uut.outcome)},
+            {"startedAt", uut.startedAt.isValid()
+                              ? uut.startedAt.toString(Qt::ISODateWithMs)
+                              : QString()},
+            {"finishedAt", uut.finishedAt.isValid()
+                               ? uut.finishedAt.toString(Qt::ISODateWithMs)
+                               : QString()},
+            {"durationMs", uut.durationMs},
             {"steps", steps},
         });
     }
@@ -561,8 +569,17 @@ ExecutionReportJsonResult executionReportFromJson(const QJsonObject& object)
         const auto uutObject = uuts[uutIndex].toObject();
         UutReport uut;
         uut.uutId = uutObject.value("uutId").toString();
+        uut.serialNumber = uutObject.value("serialNumber").toString();
         uut.completed = uutObject.value("completed").toBool(false);
         uut.hasError = uutObject.value("hasError").toBool(false);
+        uut.startedAt = QDateTime::fromString(
+            uutObject.value("startedAt").toString(), Qt::ISODateWithMs);
+        uut.finishedAt = QDateTime::fromString(
+            uutObject.value("finishedAt").toString(), Qt::ISODateWithMs);
+        if (uutObject.contains("durationMs")) {
+            uut.durationMs = uutObject.value("durationMs")
+                                 .toVariant().toLongLong();
+        }
         const auto uutOutcomeText = uutObject.value("outcome").toString("Unknown");
         const auto uutOutcome = outcomeFromString(uutOutcomeText);
         if (uutOutcome) {

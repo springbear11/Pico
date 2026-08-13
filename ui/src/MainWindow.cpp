@@ -2830,11 +2830,22 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
         m_stationDocument ? m_stationDocument->rootObject() : QJsonObject{},
         m_stationDocument ? m_stationDocument->filePath() : QString{},
         m_adminSerialLabel->text().trimmed());
-    const auto artifact = m_runArtifactWriter->begin(
+    QVector<RunArtifactUutContext> artifactUuts;
+    for (const auto& input : m_viewModel->activeRunUuts()) {
+        auto serialNumber = input.variables.value(
+            QStringLiteral("serialNumber")).toString().trimmed();
+        if (serialNumber.isEmpty()) {
+            serialNumber = input.variables.value(
+                QStringLiteral("sn")).toString().trimmed();
+        }
+        artifactUuts.push_back({input.uutId, serialNumber});
+    }
+    const auto artifact = m_runArtifactWriter->beginForUuts(
         runArtifactSettingsFromStation(
             m_stationDocument ? m_stationDocument->rootObject() : QJsonObject{},
             m_stationDocument ? m_stationDocument->filePath() : QString()),
-        artifactContext);
+        artifactContext,
+        artifactUuts);
     if (!artifact.success) {
         statusBar()->showMessage(
             tr("Cannot create report files: %1").arg(artifact.errorMessage),
@@ -5072,14 +5083,18 @@ void MainWindow::buildLayout()
         style()->standardIcon(QStyle::SP_DialogSaveButton), tr("CSV"), historyPage);
     auto* exportXlsx = new QPushButton(
         style()->standardIcon(QStyle::SP_DialogSaveButton), tr("XLSX"), historyPage);
+    auto* exportPdf = new QPushButton(
+        style()->standardIcon(QStyle::SP_DialogSaveButton), tr("PDF"), historyPage);
     openHistory->setToolTip(tr("Open selected report"));
     exportText->setToolTip(tr("Export selected report as TXT"));
     exportCsv->setToolTip(tr("Export selected report as CSV"));
     exportXlsx->setToolTip(tr("Export selected report as XLSX"));
+    exportPdf->setToolTip(tr("Export selected report as PDF"));
     historyCommands->addWidget(openHistory);
     historyCommands->addWidget(exportText);
     historyCommands->addWidget(exportCsv);
     historyCommands->addWidget(exportXlsx);
+    historyCommands->addWidget(exportPdf);
     historyLayout->addLayout(historyCommands);
 
     m_historyProxy = new QSortFilterProxyModel(this);
@@ -5110,6 +5125,9 @@ void MainWindow::buildLayout()
     });
     connect(exportXlsx, &QPushButton::clicked, this, [this] {
         exportSelectedHistory(HistoryExportFormat::Xlsx);
+    });
+    connect(exportPdf, &QPushButton::clicked, this, [this] {
+        exportSelectedHistory(HistoryExportFormat::Pdf);
     });
     connect(m_historyView, &QTableView::doubleClicked, this, [this] { loadSelectedHistory(); });
 
@@ -6011,23 +6029,32 @@ void MainWindow::exportSelectedHistory(HistoryExportFormat format)
     }
     const bool csv = format == HistoryExportFormat::Csv;
     const bool xlsx = format == HistoryExportFormat::Xlsx;
-    const auto suffix = xlsx
-        ? QStringLiteral("xlsx")
-        : (csv ? QStringLiteral("csv") : QStringLiteral("txt"));
+    const bool pdf = format == HistoryExportFormat::Pdf;
+    const auto suffix = pdf
+        ? QStringLiteral("pdf")
+        : (xlsx ? QStringLiteral("xlsx")
+                : (csv ? QStringLiteral("csv") : QStringLiteral("txt")));
+    const auto title = pdf
+        ? tr("Export PDF Report")
+        : (xlsx ? tr("Export XLSX Report")
+                : (csv ? tr("Export CSV Report") : tr("Export TXT Report")));
+    const auto filter = pdf
+        ? tr("PDF Report (*.pdf)")
+        : (xlsx ? tr("Excel Workbook (*.xlsx)")
+                : (csv ? tr("CSV Report (*.csv)") : tr("TXT Report (*.txt)")));
     const auto path = QFileDialog::getSaveFileName(
         this,
-        xlsx ? tr("Export XLSX Report")
-             : (csv ? tr("Export CSV Report") : tr("Export TXT Report")),
+        title,
         entry->id + '.' + suffix,
-        xlsx ? tr("Excel Workbook (*.xlsx)")
-             : (csv ? tr("CSV Report (*.csv)") : tr("TXT Report (*.txt)")));
+        filter);
     if (path.isEmpty()) {
         return;
     }
-    const auto result = xlsx
-        ? ReportExporter::saveXlsx(path, loaded.report)
-        : (csv ? ReportExporter::saveCsv(path, loaded.report)
-               : ReportExporter::saveText(path, loaded.report));
+    const auto result = pdf
+        ? ReportExporter::savePdf(path, loaded.report)
+        : (xlsx ? ReportExporter::saveXlsx(path, loaded.report)
+                : (csv ? ReportExporter::saveCsv(path, loaded.report)
+                       : ReportExporter::saveText(path, loaded.report)));
     statusBar()->showMessage(result.success
                                  ? tr("Report exported")
                                  : tr("Export failed: %1").arg(result.errorMessage));

@@ -201,16 +201,28 @@ ExecutionGraphScheduler::ExecutionGraphScheduler(const ExecutionPlan& plan,
 
 bool ExecutionGraphScheduler::hasPendingRequests() const
 {
-    return m_timers.hasPendingRequests();
+    return m_timers.hasPendingRequests() || !m_pendingOperatorPrompts.isEmpty();
 }
 
 bool ExecutionGraphScheduler::hasPendingRequestForUut(const UutId& uutId) const
 {
-    return m_timers.hasPendingRequestForUut(uutId);
+    if (m_timers.hasPendingRequestForUut(uutId)) {
+        return true;
+    }
+    return std::any_of(
+        m_pendingOperatorPrompts.cbegin(),
+        m_pendingOperatorPrompts.cend(),
+        [&uutId](const PendingOperatorPrompt& pending) {
+            return pending.uutId == uutId;
+        });
 }
 
 bool ExecutionGraphScheduler::waitForPendingRequest(std::chrono::milliseconds maximumWait)
 {
+    if (!m_pendingOperatorPrompts.isEmpty() && m_executionControl) {
+        m_executionControl->operatorPrompts().waitForChange(maximumWait);
+        return true;
+    }
     return m_timers.waitForNextDeadline(maximumWait);
 }
 
@@ -481,6 +493,11 @@ SchedulerStepResult ExecutionGraphScheduler::pumpPendingRequestOnce(
     SchedulerStepResult step;
     discardObsoletePendingWaits(uut);
     discardObsoletePendingRetries(uut);
+    discardObsoletePendingOperatorPrompts(uut);
+    if (completePendingOperatorPrompt(uut, frameId, phase, step)) {
+        releaseCompletedResourceRegions(uut, frameId);
+        return step;
+    }
     const auto completion = m_timers.takeReadyForContext(uut.uutId, frameId);
     if (!completion) {
         step.blocked = true;
@@ -591,6 +608,7 @@ void ExecutionGraphScheduler::skipPendingNonAlwaysRun(
         }
 
         if (cancelPendingWait(uut, node, frameId, reason) ||
+            cancelPendingOperatorPrompt(uut, node, frameId, reason) ||
             cancelPendingRetry(uut, node, frameId, reason)) {
             continue;
         }
@@ -1090,6 +1108,82 @@ bool ExecutionGraphScheduler::cancelPendingRetry(UutExecution& uut,
     return true;
 }
 
+bool ExecutionGraphScheduler::cancelPendingOperatorPrompt(
+    UutExecution& uut,
+    const ExecNode& node,
+    const FrameId& frameId,
+    const QString& reason)
+{
+    auto pendingIt = std::find_if(
+        m_pendingOperatorPrompts.begin(),
+        m_pendingOperatorPrompts.end(),
+        [&uut, &node, &frameId](const PendingOperatorPrompt& pending) {
+            return pending.uutId == uut.uutId && pending.nodeId == node.id &&
+                   pending.frameId == frameId;
+        });
+    if (pendingIt == m_pendingOperatorPrompts.end()) {
+        return false;
+    }
+
+    const auto pending = pendingIt.value();
+    m_pendingOperatorPrompts.erase(pendingIt);
+    if (m_executionControl) {
+        m_executionControl->operatorPrompts().cancelPrompt(pending.instanceId);
+    }
+
+    auto activationIt = uut.activations.find(node.id);
+    if (activationIt != uut.activations.end()) {
+        auto attemptIt = std::find_if(
+            activationIt->attempts.begin(),
+            activationIt->attempts.end(),
+            [&pending](const NodeAttempt& attempt) {
+                return attempt.requestId == pending.requestId &&
+                       attempt.id == pending.attemptId;
+            });
+        if (attemptIt != activationIt->attempts.end()) {
+            attemptIt->state = AttemptState::Cancelled;
+            attemptIt->result.nodeId = node.id;
+            attemptIt->result.outcome = NodeOutcome::Skipped;
+            attemptIt->result.errorMessage = reason;
+            attemptIt->result.finishedAt = QDateTime::currentDateTimeUtc();
+            m_results.commit(uut.uutId,
+                             frameId,
+                             node.id,
+                             attemptIt->attemptIndex,
+                             attemptIt->result);
+            publishAttemptEvent(RuntimeEventKind::AttemptCompleted,
+                                uut,
+                                node,
+                                *attemptIt,
+                                reason);
+        }
+
+        activationIt->state = ActivationState::Skipped;
+        activationIt->completedAt = QDateTime::currentDateTimeUtc();
+        publishNodeEvent(RuntimeEventKind::NodeStateChanged,
+                         uut,
+                         node,
+                         activationIt->state,
+                         NodeOutcome::Skipped,
+                         reason,
+                         attemptIt == activationIt->attempts.end()
+                             ? LoopIterationContext{}
+                             : attemptIt->loopIteration);
+    }
+
+    publishOperatorPromptClosed(uut.uutId,
+                                node.id,
+                                pending.instanceId,
+                                QStringLiteral("cancelled"),
+                                {},
+                                NodeOutcome::Skipped,
+                                reason);
+    if (!pending.leaseId.isEmpty()) {
+        m_resources.release(pending.leaseId);
+    }
+    return true;
+}
+
 void ExecutionGraphScheduler::discardObsoletePendingWaits(UutExecution& uut)
 {
     QVector<RequestId> obsolete;
@@ -1242,6 +1336,46 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
 
         publishAttemptEvent(RuntimeEventKind::AttemptStarted, uut, node, attempt);
         result = m_runner.run(node, context);
+        if (node.kind == ExecNodeKind::OperatorPrompt &&
+            result.outcome == NodeOutcome::Unknown) {
+            attempt.result = result;
+            activation.attempts.push_back(attempt);
+
+            PendingOperatorPrompt pending;
+            pending.requestId = attempt.requestId;
+            pending.instanceId = result.outputs.value("promptInstanceId").toString();
+            pending.uutId = uut.uutId;
+            pending.frameId = frameId;
+            pending.nodeId = node.id;
+            pending.attemptId = attempt.id;
+            pending.leaseId = hasLease ? lease.leaseId : ResourceLeaseId{};
+            pending.mode = operatorPromptModeFromName(
+                result.outputs.value("mode", "confirm").toString());
+            pending.acceptedResponse = pending.mode == OperatorPromptMode::Notice
+                ? OperatorPromptResponse::Shown
+                : (pending.mode == OperatorPromptMode::Judgment
+                       ? OperatorPromptResponse::Passed
+                       : (pending.mode == OperatorPromptMode::Input
+                              ? OperatorPromptResponse::Submitted
+                              : OperatorPromptResponse::Confirmed));
+            pending.rejectedResponse = pending.mode == OperatorPromptMode::Judgment
+                ? OperatorPromptResponse::Failed
+                : OperatorPromptResponse::None;
+            pending.promptDetails = result.outputs;
+            int timeoutMs = pending.promptDetails.value("timeoutMs", 60000).toInt();
+            if (pending.mode == OperatorPromptMode::Notice) {
+                timeoutMs = timeoutMs > 0 ? qMin(timeoutMs, 5000) : 5000;
+            }
+            pending.timeoutEnabled = timeoutMs > 0;
+            pending.deadline = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(qMax(0, timeoutMs));
+            m_pendingOperatorPrompts.insert(pending.requestId, std::move(pending));
+
+            NodeResult waiting;
+            waiting.nodeId = node.id;
+            waiting.outcome = NodeOutcome::Unknown;
+            return waiting;
+        }
         attempt.state = AttemptState::Completed;
         attempt.result = result;
         activation.attempts.push_back(attempt);
@@ -1648,7 +1782,9 @@ void ExecutionGraphScheduler::publishOperatorPromptClosed(const UutId& uutId,
                                                            const NodeId& sourceNodeId,
                                                            const QString& instanceId,
                                                            const QString& reason,
-                                                           const NodeId& closedByNodeId)
+                                                           const NodeId& closedByNodeId,
+                                                           NodeOutcome outcome,
+                                                           const QString& message)
 {
     if (!m_events || !m_events->hasSink()) {
         return;
@@ -1657,8 +1793,8 @@ void ExecutionGraphScheduler::publishOperatorPromptClosed(const UutId& uutId,
     event.kind = RuntimeEventKind::OperatorPromptClosed;
     event.uutId = uutId;
     event.nodeId = sourceNodeId;
-    event.outcome = NodeOutcome::Passed;
-    event.message = reason;
+    event.outcome = outcome;
+    event.message = message.isEmpty() ? reason : message;
     event.details.insert("promptInstanceId", instanceId);
     event.details.insert("reason", reason);
     if (!closedByNodeId.isEmpty()) {
@@ -1734,6 +1870,305 @@ void ExecutionGraphScheduler::handleTestItemChildFailure(UutExecution& uut,
     for (int index = failedIndex + 1; index < region->childNodeIds.size(); ++index) {
         skipNodeSubtree(uut, region->childNodeIds[index], frameId, reason);
     }
+}
+
+void ExecutionGraphScheduler::discardObsoletePendingOperatorPrompts(UutExecution& uut)
+{
+    QVector<RequestId> obsolete;
+    for (auto it = m_pendingOperatorPrompts.cbegin();
+         it != m_pendingOperatorPrompts.cend(); ++it) {
+        if (it->uutId != uut.uutId) {
+            continue;
+        }
+        const auto activation = uut.activations.constFind(it->nodeId);
+        const bool attemptStillRunning = activation != uut.activations.constEnd() &&
+            std::any_of(activation->attempts.cbegin(),
+                        activation->attempts.cend(),
+                        [&pending = *it](const NodeAttempt& attempt) {
+                            return attempt.requestId == pending.requestId &&
+                                   attempt.id == pending.attemptId &&
+                                   attempt.state == AttemptState::Running;
+                        });
+        if (activation == uut.activations.constEnd() ||
+            activation->state != ActivationState::Running ||
+            !attemptStillRunning) {
+            obsolete.push_back(it.key());
+        }
+    }
+
+    for (const auto& requestId : obsolete) {
+        const auto pending = m_pendingOperatorPrompts.take(requestId);
+        if (m_executionControl) {
+            m_executionControl->operatorPrompts().cancelPrompt(pending.instanceId);
+        }
+        publishOperatorPromptClosed(pending.uutId,
+                                    pending.nodeId,
+                                    pending.instanceId,
+                                    QStringLiteral("obsolete"),
+                                    {},
+                                    NodeOutcome::Cancelled,
+                                    QStringLiteral("Operator prompt request became obsolete"));
+        if (!pending.leaseId.isEmpty()) {
+            m_resources.release(pending.leaseId);
+        }
+    }
+}
+
+bool ExecutionGraphScheduler::completePendingOperatorPrompt(
+    UutExecution& uut,
+    const FrameId& frameId,
+    std::optional<ExecutionPhase> phase,
+    SchedulerStepResult& step)
+{
+    if (!m_executionControl) {
+        return false;
+    }
+
+    auto& controller = m_executionControl->operatorPrompts();
+    const auto now = std::chrono::steady_clock::now();
+    for (auto pendingIt = m_pendingOperatorPrompts.begin();
+         pendingIt != m_pendingOperatorPrompts.end(); ++pendingIt) {
+        if (pendingIt->uutId != uut.uutId || pendingIt->frameId != frameId) {
+            continue;
+        }
+        const auto* node = m_plan.node(pendingIt->nodeId);
+        if (!node || (phase && executionPhaseOf(*node) != *phase)) {
+            continue;
+        }
+
+        QVariantMap responseValues;
+        auto waitStatus = controller.takeResponse(pendingIt->instanceId,
+                                                  pendingIt->acceptedResponse,
+                                                  pendingIt->rejectedResponse,
+                                                  &responseValues);
+        if (waitStatus == OperatorPromptWaitStatus::Pending &&
+            pendingIt->timeoutEnabled && now >= pendingIt->deadline) {
+            controller.cancelPrompt(pendingIt->instanceId);
+            waitStatus = OperatorPromptWaitStatus::Timeout;
+        }
+        if (waitStatus == OperatorPromptWaitStatus::Pending) {
+            continue;
+        }
+
+        const auto pending = pendingIt.value();
+        m_pendingOperatorPrompts.erase(pendingIt);
+        auto activationIt = uut.activations.find(pending.nodeId);
+        if (activationIt == uut.activations.end() ||
+            activationIt->state != ActivationState::Running) {
+            if (!pending.leaseId.isEmpty()) {
+                m_resources.release(pending.leaseId);
+            }
+            step.progressed = true;
+            step.nodeId = pending.nodeId;
+            return true;
+        }
+
+        auto attemptIt = std::find_if(
+            activationIt->attempts.begin(),
+            activationIt->attempts.end(),
+            [&pending](const NodeAttempt& attempt) {
+                return attempt.requestId == pending.requestId &&
+                       attempt.id == pending.attemptId;
+            });
+        if (attemptIt == activationIt->attempts.end() ||
+            attemptIt->state != AttemptState::Running) {
+            if (!pending.leaseId.isEmpty()) {
+                m_resources.release(pending.leaseId);
+            }
+            step.progressed = true;
+            step.nodeId = pending.nodeId;
+            return true;
+        }
+
+        NodeResult result;
+        result.nodeId = node->id;
+        result.startedAt = attemptIt->result.startedAt;
+        QString closeReason;
+        switch (waitStatus) {
+        case OperatorPromptWaitStatus::Accepted:
+            result.outcome = NodeOutcome::Passed;
+            result.outputs = pending.promptDetails;
+            if (pending.mode == OperatorPromptMode::Input) {
+                if (!normalizeOperatorPromptInput(node->payload,
+                                                  responseValues,
+                                                  result.outputs,
+                                                  result.errorMessage)) {
+                    result.outcome = NodeOutcome::Error;
+                    result.errorCode = QStringLiteral("OperatorInputInvalid");
+                    closeReason = QStringLiteral("invalid-input");
+                } else {
+                    closeReason = QStringLiteral("submitted");
+                }
+            } else {
+                const auto response = pending.mode == OperatorPromptMode::Judgment
+                    ? QStringLiteral("pass")
+                    : (pending.mode == OperatorPromptMode::Notice
+                           ? QStringLiteral("shown")
+                           : QStringLiteral("confirmed"));
+                result.outputs.insert(QStringLiteral("response"), response);
+                closeReason = response;
+            }
+            break;
+        case OperatorPromptWaitStatus::Rejected:
+            result.outcome = NodeOutcome::Failed;
+            result.errorCode = node->payload.value(
+                QStringLiteral("failureCode"),
+                QStringLiteral("OperatorCheckFailed")).toString();
+            result.errorMessage = QStringLiteral("Operator marked the check as failed");
+            result.outputs = pending.promptDetails;
+            result.outputs.insert(QStringLiteral("response"), QStringLiteral("fail"));
+            closeReason = QStringLiteral("fail");
+            break;
+        case OperatorPromptWaitStatus::Timeout:
+            result.outcome = NodeOutcome::Timeout;
+            result.errorCode = QStringLiteral("OperatorPromptTimeout");
+            result.errorMessage = QStringLiteral("Operator prompt timed out");
+            closeReason = QStringLiteral("timeout");
+            break;
+        case OperatorPromptWaitStatus::Unavailable:
+            result.outcome = NodeOutcome::Error;
+            result.errorCode = QStringLiteral("OperatorPromptResponderUnavailable");
+            result.errorMessage = QStringLiteral("Operator prompt responder became unavailable");
+            closeReason = QStringLiteral("unavailable");
+            break;
+        case OperatorPromptWaitStatus::Cancelled:
+            result.outcome = NodeOutcome::Cancelled;
+            result.errorCode = QStringLiteral("OperatorPromptCancelled");
+            result.errorMessage = QStringLiteral("Operator prompt was cancelled");
+            closeReason = QStringLiteral("cancelled");
+            break;
+        case OperatorPromptWaitStatus::Pending:
+            return false;
+        }
+        result.finishedAt = QDateTime::currentDateTimeUtc();
+
+        attemptIt->state = AttemptState::Completed;
+        attemptIt->result = result;
+        m_results.commit(uut.uutId,
+                         frameId,
+                         node->id,
+                         attemptIt->attemptIndex,
+                         result);
+        publishAttemptEvent(RuntimeEventKind::AttemptCompleted,
+                            uut,
+                            *node,
+                            *attemptIt,
+                            result.errorMessage);
+
+        if (pending.mode != OperatorPromptMode::Notice ||
+            waitStatus != OperatorPromptWaitStatus::Accepted) {
+            publishOperatorPromptClosed(uut.uutId,
+                                        node->id,
+                                        pending.instanceId,
+                                        closeReason,
+                                        {},
+                                        result.outcome,
+                                        result.outcome == NodeOutcome::Passed
+                                            ? closeReason
+                                            : result.errorMessage);
+        }
+
+        auto finalDecision = m_errorPolicy.decide(
+            *node,
+            result,
+            activationIt->attempts.size() - activationIt->retryAttemptBase,
+            inheritedErrorAction(*node, result.outcome));
+        if (finalDecision.action == ErrorAction::Retry) {
+            publishAttemptEvent(RuntimeEventKind::RetryScheduled,
+                                uut,
+                                *node,
+                                *attemptIt,
+                                node->retry.delayMs > 0
+                                    ? QStringLiteral("%1; delay %2 ms")
+                                          .arg(finalDecision.reason)
+                                          .arg(node->retry.delayMs)
+                                    : finalDecision.reason);
+            if (!scheduleRetryDelay(uut, *node, frameId)) {
+                activationIt->state = ActivationState::Created;
+                activationIt->completedAt = {};
+                publishNodeEvent(RuntimeEventKind::NodeStateChanged,
+                                 uut,
+                                 *node,
+                                 activationIt->state,
+                                 NodeOutcome::Unknown,
+                                 QStringLiteral("retry ready"),
+                                 attemptIt->loopIteration);
+            }
+            if (!pending.leaseId.isEmpty()) {
+                m_resources.release(pending.leaseId);
+            }
+            step.progressed = true;
+            step.nodeId = node->id;
+            return true;
+        }
+
+        if (result.outcome != NodeOutcome::Passed &&
+            result.outcome != NodeOutcome::Skipped &&
+            result.outcome != NodeOutcome::Unknown &&
+            bestEffortCleanupApplies(uut, node->id)) {
+            finalDecision.action = ErrorAction::Continue;
+            finalDecision.reason =
+                QStringLiteral("best-effort cleanup continues after error");
+        }
+
+        activationIt->state = outcomeToActivationState(result.outcome);
+        activationIt->completedAt = result.finishedAt;
+        publishNodeEvent(RuntimeEventKind::NodeStateChanged,
+                         uut,
+                         *node,
+                         activationIt->state,
+                         result.outcome,
+                         result.errorMessage,
+                         attemptIt->loopIteration,
+                         result.errorCode);
+
+        if (pending.mode == OperatorPromptMode::Notice &&
+            result.outcome == NodeOutcome::Passed) {
+            trackOperatorPrompt(uut, *node, result);
+        }
+        closeOperatorPromptsForNode(uut, *node, result);
+        if (!pending.leaseId.isEmpty()) {
+            m_resources.release(pending.leaseId);
+        }
+
+        if (result.outcome != NodeOutcome::Passed &&
+            result.outcome != NodeOutcome::Skipped &&
+            result.outcome != NodeOutcome::Unknown) {
+            const bool isTestItemChild = m_plan.testItemRegionForChild(node->id).has_value();
+            const bool isLoopChild = isLoopBodyNode(node->id);
+            if (isTestItemChild) {
+                handleTestItemChildFailure(
+                    uut, *node, result, finalDecision.action, frameId);
+            } else if (isLoopChild) {
+                handleLoopBodyFailure(
+                    uut, *node, result, finalDecision.action, frameId);
+            } else {
+                if (finalDecision.action == ErrorAction::RunCleanup) {
+                    requestSessionCleanup(uut, *node, finalDecision.reason);
+                } else if (finalDecision.action == ErrorAction::Abort) {
+                    requestSessionAbort();
+                }
+                handleNodeFailureForBarriers(uut, *node, result, frameId);
+                if (finalDecision.action == ErrorAction::StopUut ||
+                    finalDecision.action == ErrorAction::RunCleanup ||
+                    finalDecision.action == ErrorAction::Abort) {
+                    skipPendingNonAlwaysRun(
+                        uut, frameId, executionPhaseOf(*node));
+                }
+            }
+        }
+
+        step.progressed = true;
+        step.nodeId = node->id;
+        step.nodeResults.push_back(result);
+        step.hasError = !m_plan.isInsideTestItem(node->id) &&
+                        !isLoopBodyNode(node->id) &&
+                        (result.outcome == NodeOutcome::Failed ||
+                         result.outcome == NodeOutcome::Error ||
+                         result.outcome == NodeOutcome::Timeout);
+        return true;
+    }
+    return false;
 }
 
 void ExecutionGraphScheduler::handleLoopBodyFailure(UutExecution& uut,

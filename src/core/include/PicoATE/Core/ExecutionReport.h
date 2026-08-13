@@ -48,9 +48,13 @@ struct StepReport {
 
 struct UutReport {
     UutId uutId;
+    QString serialNumber;
     bool completed = false;
     bool hasError = false;
     NodeOutcome outcome = NodeOutcome::Unknown;
+    QDateTime startedAt;
+    QDateTime finishedAt;
+    qint64 durationMs = -1;
     QVector<StepReport> steps;
 };
 

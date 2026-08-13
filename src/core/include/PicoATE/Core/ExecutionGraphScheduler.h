@@ -107,8 +107,18 @@ private:
                             const ExecNode& node,
                             const FrameId& frameId,
                             const QString& reason);
+    bool cancelPendingOperatorPrompt(UutExecution& uut,
+                                     const ExecNode& node,
+                                     const FrameId& frameId,
+                                     const QString& reason);
     void discardObsoletePendingWaits(UutExecution& uut);
     void discardObsoletePendingRetries(UutExecution& uut);
+    void discardObsoletePendingOperatorPrompts(UutExecution& uut);
+    bool completePendingOperatorPrompt(
+        UutExecution& uut,
+        const FrameId& frameId,
+        std::optional<ExecutionPhase> phase,
+        SchedulerStepResult& step);
     NodeResult executeNode(UutExecution& uut, const ExecNode& node, const FrameId& frameId);
     NodeResult registerPeriodicTask(UutExecution& uut,
                                     const ExecNode& node,
@@ -195,7 +205,9 @@ private:
                                      const NodeId& sourceNodeId,
                                      const QString& instanceId,
                                      const QString& reason,
-                                     const NodeId& closedByNodeId = {});
+                                     const NodeId& closedByNodeId = {},
+                                     NodeOutcome outcome = NodeOutcome::Passed,
+                                     const QString& message = {});
     bool acquireResourceRegionForNode(UutExecution& uut,
                                       const ExecNode& node,
                                       const FrameId& frameId);
@@ -232,6 +244,22 @@ private:
         ActivationId activationId;
     };
 
+    struct PendingOperatorPrompt {
+        RequestId requestId;
+        QString instanceId;
+        UutId uutId;
+        FrameId frameId;
+        NodeId nodeId;
+        AttemptId attemptId;
+        ResourceLeaseId leaseId;
+        OperatorPromptMode mode = OperatorPromptMode::Confirm;
+        OperatorPromptResponse acceptedResponse = OperatorPromptResponse::Confirmed;
+        OperatorPromptResponse rejectedResponse = OperatorPromptResponse::None;
+        QVariantMap promptDetails;
+        bool timeoutEnabled = false;
+        std::chrono::steady_clock::time_point deadline;
+    };
+
     const ExecutionPlan& m_plan;
     ResourceManager& m_resources;
     BarrierController& m_barriers;
@@ -250,6 +278,7 @@ private:
     TimerService m_timers;
     QHash<RequestId, PendingWait> m_pendingWaits;
     QHash<RequestId, PendingRetry> m_pendingRetries;
+    QHash<RequestId, PendingOperatorPrompt> m_pendingOperatorPrompts;
     QHash<QString, ErrorAction> m_testItemFailureEscalations;
     QHash<QString, ErrorAction> m_loopFailureEscalations;
     PeriodicTaskController m_periodicTasks;

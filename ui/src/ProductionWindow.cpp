@@ -1049,9 +1049,20 @@ void ProductionWindow::beginRunIteration(int iteration, int totalIterations)
         stationObject,
         m_selection.stationPath,
         m_activeUutId);
-    const auto artifact = m_runArtifactWriter->begin(
+    QVector<RunArtifactUutContext> artifactUuts;
+    for (const auto& input : m_viewModel->activeRunUuts()) {
+        auto serialNumber = input.variables.value(
+            QStringLiteral("serialNumber")).toString().trimmed();
+        if (serialNumber.isEmpty()) {
+            serialNumber = input.variables.value(
+                QStringLiteral("sn")).toString().trimmed();
+        }
+        artifactUuts.push_back({input.uutId, serialNumber});
+    }
+    const auto artifact = m_runArtifactWriter->beginForUuts(
         runArtifactSettingsFromStation(stationObject, m_selection.stationPath),
-        artifactContext);
+        artifactContext,
+        artifactUuts);
     if (!artifact.success) {
         statusBar()->showMessage(
             tr("Cannot create report files: %1").arg(artifact.errorMessage),

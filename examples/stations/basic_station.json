@@ -6,6 +6,8 @@
   "scanDialogEnabled": false,
   "txtLogEnabled": false,
   "csvReportEnabled": false,
+  "xlsxReportEnabled": false,
+  "pdfReportEnabled": false,
   "reportOutputDirectory": "",
   "snLength": 12,
   "snPattern": "BTSN*",

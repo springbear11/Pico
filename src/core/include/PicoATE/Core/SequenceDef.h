@@ -136,6 +136,9 @@ struct OperatorPromptDef {
     QString passText = "PASS";
     QString failText = "FAIL";
     QString failureCode = "OperatorCheckFailed";
+    QString inputType = "text";
+    QString inputPlaceholder;
+    QVariant defaultValue;
     int timeoutMs = 60000;
 
     QVariantMap toPayload() const;

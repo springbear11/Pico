@@ -1365,6 +1365,9 @@ bool StepPropertyEditor::focusField(const QString& fieldPath)
         else if (nested == "message") widget = m_promptMessageEdit;
         else if (nested == "image") widget = m_promptImageCombo;
         else if (nested == "confirmText") widget = m_promptConfirmTextEdit;
+        else if (nested == "inputType") widget = m_promptInputTypeCombo;
+        else if (nested == "inputPlaceholder") widget = m_promptInputPlaceholderEdit;
+        else if (nested == "defaultValue") widget = m_promptDefaultValueEdit;
         else if (nested == "closeOnStep") widget = m_promptCloseOnStepCombo;
         else if (nested == "dialogKey") widget = m_promptDialogKeyEdit;
         else if (nested == "passText") widget = m_promptPassTextEdit;
@@ -1497,8 +1500,8 @@ void StepPropertyEditor::buildGeneralPage()
     m_resultRecordingCheck->setObjectName(
         QStringLiteral("propertyResultRecordingCheck"));
     m_resultRecordingCheck->setToolTip(tr(
-        "Include this item in CSV and XLSX reports. TXT logs and the overall pass/fail result are unaffected."));
-    addInspectableRow(m_generalForm, tr("Record in CSV / XLSX"),
+        "Include this item in CSV, XLSX, and PDF reports. TXT logs and the overall pass/fail result are unaffected."));
+    addInspectableRow(m_generalForm, tr("Record in CSV / XLSX / PDF"),
                       m_resultRecordingCheck,
                       QStringLiteral("resultRecording"));
     m_checkpointBeforeCheck = new QCheckBox(page);
@@ -1672,6 +1675,8 @@ void StepPropertyEditor::buildDataPage()
                                QStringLiteral("notice"));
     m_promptModeCombo->addItem(tr("Operator PASS / FAIL judgment"),
                                QStringLiteral("judgment"));
+    m_promptModeCombo->addItem(tr("Operator input"),
+                               QStringLiteral("input"));
     addInspectableRow(m_dataForm, tr("Mode"), m_promptModeCombo,
                       QStringLiteral("prompt.mode"));
     m_promptTitleEdit = new QLineEdit(content);
@@ -1699,6 +1704,28 @@ void StepPropertyEditor::buildDataPage()
     addInspectableRow(m_dataForm, tr("Button text"),
                       m_promptConfirmTextEdit,
                       QStringLiteral("prompt.confirmText"));
+    m_promptInputTypeCombo = new QComboBox(content);
+    m_promptInputTypeCombo->setObjectName(QStringLiteral("propertyPromptInputTypeCombo"));
+    m_promptInputTypeCombo->addItem(tr("Text"), QStringLiteral("text"));
+    m_promptInputTypeCombo->addItem(tr("Integer"), QStringLiteral("integer"));
+    m_promptInputTypeCombo->addItem(tr("Number"), QStringLiteral("number"));
+    addInspectableRow(m_dataForm, tr("Input type"),
+                      m_promptInputTypeCombo,
+                      QStringLiteral("prompt.inputType"));
+    m_promptInputPlaceholderEdit = new QLineEdit(content);
+    m_promptInputPlaceholderEdit->setObjectName(
+        QStringLiteral("propertyPromptInputPlaceholderEdit"));
+    m_promptInputPlaceholderEdit->setPlaceholderText(
+        tr("Optional hint shown inside the input box"));
+    addInspectableRow(m_dataForm, tr("Input hint (optional)"),
+                      m_promptInputPlaceholderEdit,
+                      QStringLiteral("prompt.inputPlaceholder"));
+    m_promptDefaultValueEdit = new QLineEdit(content);
+    m_promptDefaultValueEdit->setObjectName(
+        QStringLiteral("propertyPromptDefaultValueEdit"));
+    addInspectableRow(m_dataForm, tr("Default value (optional)"),
+                      m_promptDefaultValueEdit,
+                      QStringLiteral("prompt.defaultValue"));
     m_promptCloseOnStepCombo = new QComboBox(content);
     m_promptCloseOnStepCombo->setObjectName(QStringLiteral("propertyPromptCloseOnStepCombo"));
     m_promptCloseOnStepCombo->setEditable(true);
@@ -2146,6 +2173,7 @@ void StepPropertyEditor::loadCurrentObject()
     const auto prompt = m_sourceObject.value("prompt").toObject();
     setComboValue(m_promptModeCombo,
                   prompt.value("mode").toString(QStringLiteral("confirm")));
+    const auto promptMode = m_promptModeCombo->currentData().toString();
     m_promptTitleEdit->setText(
         prompt.value("title").toString(tr("Message")));
     m_promptMessageEdit->setPlainText(prompt.value("message").toString());
@@ -2154,7 +2182,16 @@ void StepPropertyEditor::loadCurrentObject()
         rebuildPromptImageChoices(prompt.value("image").toString());
     }
     m_promptConfirmTextEdit->setText(
-        prompt.value("confirmText").toString(QStringLiteral("OK")));
+        prompt.value("confirmText").toString(
+            promptMode == QStringLiteral("input")
+                ? QStringLiteral("Submit")
+                : QStringLiteral("OK")));
+    setComboValue(m_promptInputTypeCombo,
+                  prompt.value("inputType").toString(QStringLiteral("text")));
+    m_promptInputPlaceholderEdit->setText(
+        prompt.value("inputPlaceholder").toString());
+    m_promptDefaultValueEdit->setText(
+        jsonValueText(prompt.value("defaultValue")));
     if (editorKind == QStringLiteral("operatorPrompt")) {
         rebuildPromptCloseStepChoices(prompt.value("closeOnStep").toString());
     }
@@ -2268,6 +2305,8 @@ void StepPropertyEditor::updateKindRows()
         m_promptModeCombo->currentData().toString() == QStringLiteral("notice");
     const bool judgmentPrompt = operatorPrompt &&
         m_promptModeCombo->currentData().toString() == QStringLiteral("judgment");
+    const bool inputPrompt = operatorPrompt &&
+        m_promptModeCombo->currentData().toString() == QStringLiteral("input");
     const bool periodic = action && m_periodicEnabledCheck->isChecked();
 
     setFormRowVisible(m_dataForm, m_moduleIdEdit, action || moduleCall);
@@ -2290,6 +2329,9 @@ void StepPropertyEditor::updateKindRows()
     setFormRowVisible(m_dataForm, m_promptImageCombo, operatorPrompt);
     setFormRowVisible(m_dataForm, m_promptConfirmTextEdit,
                       operatorPrompt && !noticePrompt && !judgmentPrompt);
+    setFormRowVisible(m_dataForm, m_promptInputTypeCombo, inputPrompt);
+    setFormRowVisible(m_dataForm, m_promptInputPlaceholderEdit, inputPrompt);
+    setFormRowVisible(m_dataForm, m_promptDefaultValueEdit, inputPrompt);
     setFormRowVisible(m_dataForm, m_promptCloseOnStepCombo, noticePrompt);
     setFormRowVisible(m_dataForm, m_promptDialogKeyEdit,
                       noticePrompt || judgmentPrompt);
@@ -4338,10 +4380,55 @@ bool StepPropertyEditor::commitPendingChanges()
                 prompt.remove("passText");
                 prompt.remove("failText");
                 prompt.remove("failureCode");
+                prompt.remove("inputType");
+                prompt.remove("inputPlaceholder");
+                prompt.remove("defaultValue");
             } else if (mode == QStringLiteral("notice")) {
                 prompt.remove("confirmText");
                 insertOrRemove(prompt, "closeOnStep", selectedPromptCloseStep());
                 insertOrRemove(prompt, "dialogKey", m_promptDialogKeyEdit->text());
+                prompt.remove("passText");
+                prompt.remove("failText");
+                prompt.remove("failureCode");
+                prompt.remove("inputType");
+                prompt.remove("inputPlaceholder");
+                prompt.remove("defaultValue");
+            } else if (mode == QStringLiteral("input")) {
+                const auto buttonText = m_promptConfirmTextEdit->text().trimmed();
+                if (buttonText.isEmpty()) {
+                    showError(tr("Submit button text is required"));
+                    return false;
+                }
+                const auto inputType = m_promptInputTypeCombo->currentData().toString();
+                const auto defaultValue = m_promptDefaultValueEdit->text().trimmed();
+                if (!defaultValue.isEmpty()) {
+                    bool valid = true;
+                    if (inputType == QStringLiteral("integer")) {
+                        defaultValue.toLongLong(&valid, 10);
+                    } else if (inputType == QStringLiteral("number")) {
+                        defaultValue.toDouble(&valid);
+                    }
+                    if (!valid) {
+                        showError(tr("Default value does not match the selected input type"));
+                        return false;
+                    }
+                }
+                prompt.insert("confirmText", buttonText);
+                prompt.insert("inputType", inputType);
+                insertOrRemove(prompt, "inputPlaceholder",
+                               m_promptInputPlaceholderEdit->text());
+                if (defaultValue.isEmpty()) {
+                    prompt.remove("defaultValue");
+                } else if (inputType == QStringLiteral("integer")) {
+                    prompt.insert("defaultValue",
+                                  static_cast<double>(defaultValue.toLongLong()));
+                } else if (inputType == QStringLiteral("number")) {
+                    prompt.insert("defaultValue", defaultValue.toDouble());
+                } else {
+                    prompt.insert("defaultValue", defaultValue);
+                }
+                prompt.remove("closeOnStep");
+                prompt.remove("dialogKey");
                 prompt.remove("passText");
                 prompt.remove("failText");
                 prompt.remove("failureCode");
@@ -4359,6 +4446,9 @@ bool StepPropertyEditor::commitPendingChanges()
                 prompt.insert("passText", passText);
                 prompt.insert("failText", failText);
                 prompt.insert("failureCode", failureCode);
+                prompt.remove("inputType");
+                prompt.remove("inputPlaceholder");
+                prompt.remove("defaultValue");
             }
             prompt.insert("timeoutMs", m_promptTimeoutSpin->value());
             updated.insert("prompt", prompt);

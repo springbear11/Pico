@@ -36,6 +36,7 @@ public:
     std::optional<PicoATE::Core::ExecutionDebugSnapshot> debugSnapshot() const;
     QVector<PicoATE::Core::BreakpointSpec> breakpoints() const;
     DeviceConnectionTestResult deviceConnectionTestResult() const;
+    QVector<RunRequest::UutInput> activeRunUuts() const;
 
     bool canChangeSources() const;
     bool canCompile() const;
@@ -64,7 +65,8 @@ public slots:
     void stop(PicoATE::Core::StopMode mode = PicoATE::Core::StopMode::Graceful);
     void setBreakpoints(QVector<PicoATE::Core::BreakpointSpec> breakpoints);
     bool respondToOperatorPrompt(const QString& instanceId,
-                                 PicoATE::Core::OperatorPromptResponse response);
+                                 PicoATE::Core::OperatorPromptResponse response,
+                                 QVariantMap values = {});
     void testDeviceConnection(const QString& deviceId, int timeoutMs = 5000);
 
 signals:

@@ -426,7 +426,8 @@ void collectOperatorPromptWarnings(const QJsonObject& object,
                       path,
                       {"mode", "title", "message", "image", "confirmText",
                        "closeOnStep", "dialogKey", "passText", "failText",
-                       "failureCode", "timeoutMs"},
+                       "failureCode", "inputType", "inputPlaceholder",
+                       "defaultValue", "timeoutMs"},
                       warnings);
 }
 
@@ -1589,11 +1590,13 @@ OperatorPromptDef SequenceCompiler::parseOperatorPrompt(const QJsonObject& objec
     } else if (mode == "judgment" || mode == "passfail" ||
                mode == "operatorcheck") {
         prompt.mode = "judgment";
+    } else if (mode == "input" || mode == "entry" || mode == "valueinput") {
+        prompt.mode = "input";
     } else {
         addError(errors,
                  childPath(path, "mode"),
                  "Unsupported operator prompt mode",
-                 "Use confirm, notice, or judgment");
+                 "Use confirm, notice, judgment, or input");
     }
 
     prompt.title = readString(object, "title", path, errors, "Message");
@@ -1606,6 +1609,34 @@ OperatorPromptDef SequenceCompiler::parseOperatorPrompt(const QJsonObject& objec
     prompt.failText = readString(object, "failText", path, errors, "FAIL").trimmed();
     prompt.failureCode = readString(object, "failureCode", path, errors,
                                     "OperatorCheckFailed").trimmed();
+    const auto inputType = normalized(
+        readString(object, "inputType", path, errors, "text"));
+    if (inputType == "text" || inputType == "string") {
+        prompt.inputType = "text";
+    } else if (inputType == "integer" || inputType == "int") {
+        prompt.inputType = "integer";
+    } else if (inputType == "number" || inputType == "double" ||
+               inputType == "float") {
+        prompt.inputType = "number";
+    } else {
+        addError(errors,
+                 childPath(path, "inputType"),
+                 "Unsupported operator input type",
+                 "Use text, integer, or number");
+    }
+    prompt.inputPlaceholder = readString(
+        object, "inputPlaceholder", path, errors).trimmed();
+    if (object.contains("defaultValue")) {
+        const auto value = object.value("defaultValue");
+        if (value.isString() || value.isDouble()) {
+            prompt.defaultValue = value.toVariant();
+        } else if (!value.isNull()) {
+            addTypeError(errors,
+                         childPath(path, "defaultValue"),
+                         QString("string or number, got %1")
+                             .arg(jsonTypeName(value)));
+        }
+    }
     prompt.timeoutMs = readInt(object, "timeoutMs", path, errors, 60000);
 
     if (prompt.message.isEmpty()) {
@@ -1625,7 +1656,8 @@ OperatorPromptDef SequenceCompiler::parseOperatorPrompt(const QJsonObject& objec
                      "Use a PNG, JPG, or JPEG image from the current project's images folder");
         }
     }
-    if (prompt.mode == "confirm" && prompt.confirmText.isEmpty()) {
+    if ((prompt.mode == "confirm" || prompt.mode == "input") &&
+        prompt.confirmText.isEmpty()) {
         addError(errors,
                  childPath(path, "confirmText"),
                  "Confirm button text must not be empty",
@@ -1643,6 +1675,21 @@ OperatorPromptDef SequenceCompiler::parseOperatorPrompt(const QJsonObject& objec
                  childPath(path, "failureCode"),
                  "Judgment failure code must not be empty",
                  "Use OperatorCheckFailed or a project-specific error code");
+    }
+    if (prompt.mode == "input" && prompt.defaultValue.isValid()) {
+        const auto text = prompt.defaultValue.toString().trimmed();
+        bool valid = true;
+        if (prompt.inputType == QStringLiteral("integer")) {
+            text.toLongLong(&valid, 0);
+        } else if (prompt.inputType == QStringLiteral("number")) {
+            text.toDouble(&valid);
+        }
+        if (!valid) {
+            addError(errors,
+                     childPath(path, "defaultValue"),
+                     "Operator input default value does not match inputType",
+                     "Enter a valid value or remove the default");
+        }
     }
     if (prompt.timeoutMs < 0) {
         addError(errors,

@@ -377,9 +377,11 @@ class OperatorPromptResponderSink final : public IRuntimeEventSink {
 public:
     explicit OperatorPromptResponderSink(
         std::shared_ptr<ExecutionControl> control,
-        OperatorPromptResponse judgmentResponse = OperatorPromptResponse::Passed)
+        OperatorPromptResponse judgmentResponse = OperatorPromptResponse::Passed,
+        QVariantMap inputValues = {})
         : m_control(std::move(control))
         , m_judgmentResponse(judgmentResponse)
+        , m_inputValues(std::move(inputValues))
     {
     }
 
@@ -397,9 +399,13 @@ public:
             ? OperatorPromptResponse::Shown
             : (mode == QStringLiteral("judgment")
                    ? m_judgmentResponse
-                   : OperatorPromptResponse::Confirmed);
+                   : (mode == QStringLiteral("input")
+                          ? OperatorPromptResponse::Submitted
+                          : OperatorPromptResponse::Confirmed));
         m_control->operatorPrompts().respond(
-            event.details.value("promptInstanceId").toString(), response);
+            event.details.value("promptInstanceId").toString(),
+            response,
+            mode == QStringLiteral("input") ? m_inputValues : QVariantMap{});
     }
 
     QVector<RuntimeEvent> records() const
@@ -411,8 +417,49 @@ public:
 private:
     std::shared_ptr<ExecutionControl> m_control;
     OperatorPromptResponse m_judgmentResponse;
+    QVariantMap m_inputValues;
     mutable QMutex m_mutex;
     QVector<RuntimeEvent> m_events;
+};
+
+class DelayedOperatorPromptResponderSink final : public IRuntimeEventSink {
+public:
+    DelayedOperatorPromptResponderSink(std::shared_ptr<ExecutionControl> control,
+                                       QElapsedTimer* clock,
+                                       int delayMs)
+        : m_control(std::move(control))
+        , m_clock(clock)
+        , m_delayMs(delayMs)
+    {
+    }
+
+    void publish(const RuntimeEvent& event) override
+    {
+        if (event.kind != RuntimeEventKind::OperatorPromptRequested || !m_control) {
+            return;
+        }
+        requestedAtMs = m_clock && m_clock->isValid() ? m_clock->elapsed() : 0;
+        const auto control = m_control;
+        const auto instanceId = event.details.value("promptInstanceId").toString();
+        const auto delayMs = m_delayMs;
+        const auto clock = m_clock;
+        m_responder = std::jthread(
+            [this, control, instanceId, delayMs, clock](std::stop_token) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+                respondedAtMs = clock && clock->isValid() ? clock->elapsed() : delayMs;
+                control->operatorPrompts().respond(
+                    instanceId, OperatorPromptResponse::Confirmed);
+            });
+    }
+
+    std::atomic<qint64> requestedAtMs{-1};
+    std::atomic<qint64> respondedAtMs{-1};
+
+private:
+    std::shared_ptr<ExecutionControl> m_control;
+    QElapsedTimer* m_clock = nullptr;
+    int m_delayMs = 0;
+    std::jthread m_responder;
 };
 
 class PauseOnBarrierEventSink final : public IRuntimeEventSink {
@@ -708,8 +755,13 @@ private slots:
     void sequenceCompilerRejectsInvalidSequenceVariables();
     void operatorPromptsConfirmAndCloseOnCompletedStep();
     void operatorPromptJudgmentMapsPassAndFail();
+    void operatorPromptInputFeedsLaterStep();
     void operatorPromptInterpolatesRuntimeValues();
     void operatorPromptWaitsForFinalRetryAttemptBeforeClosing();
+    void operatorPromptDoesNotBlockPeriodicTask();
+    void operatorPromptTimeoutCompletesPendingRequest();
+    void operatorPromptStopCancelsPendingRequestAndRunsCleanup();
+    void operatorPromptsRemainIndependentAcrossUuts();
     void operatorPromptWithoutResponderFailsWithoutBlocking();
     void sequenceCompilerRejectsInvalidOperatorPrompt();
     void sequenceCompilerRejectsInvalidOperatorPromptCloseTarget();
@@ -884,6 +936,7 @@ void CoreTests::stationConfigParsesDevicesAndConfiguresSessionManager()
     QVERIFY(!load.config.txtLogEnabled);
     QVERIFY(!load.config.csvReportEnabled);
     QVERIFY(!load.config.xlsxReportEnabled);
+    QVERIFY(!load.config.pdfReportEnabled);
     QVERIFY(load.config.reportOutputDirectory.isEmpty());
     QCOMPARE(load.config.snLength, 12);
     QCOMPARE(load.config.snPattern, QString("BTSN*"));
@@ -893,10 +946,12 @@ void CoreTests::stationConfigParsesDevicesAndConfiguresSessionManager()
     const auto reportSettings = parseStationConfigJson({
         {QStringLiteral("stationId"), QStringLiteral("report-station")},
         {QStringLiteral("xlsxReportEnabled"), true},
+        {QStringLiteral("pdfReportEnabled"), true},
         {QStringLiteral("devices"), QJsonArray{}}
     });
     QVERIFY(reportSettings.ok());
     QVERIFY(reportSettings.config.xlsxReportEnabled);
+    QVERIFY(reportSettings.config.pdfReportEnabled);
 
     const auto legacyIdentity = parseStationConfigJson({
         {QStringLiteral("stationId"), QStringLiteral("legacy-station")},
@@ -3789,7 +3844,9 @@ void CoreTests::executionSessionRunsSetupCleanupOnceAndIsolatesFailedUut()
     auto module = std::make_shared<MultiUutLifecycleModule>();
     QVERIFY(session.registerModule(module));
     for (int index = 1; index <= 4; ++index) {
-        session.addUut(QString("UUT-%1").arg(index));
+        auto& uut = session.addUut(QString("UUT-%1").arg(index));
+        uut.variables.insert(QStringLiteral("serialNumber"),
+                             QString("SN-%1").arg(index));
     }
 
     const auto result = session.run();
@@ -3819,9 +3876,17 @@ void CoreTests::executionSessionRunsSetupCleanupOnceAndIsolatesFailedUut()
     const auto report = session.report();
     QCOMPARE(report.sessionSteps.size(), 2);
     QCOMPARE(report.uuts.size(), 4);
+    QVERIFY(report.hasError);
+    QVERIFY(!report.sessionHasError);
     for (const auto& uut : report.uuts) {
         QCOMPARE(uut.steps.size(), 2);
         QVERIFY(uut.completed);
+        QCOMPARE(uut.serialNumber,
+                 QStringLiteral("SN-%1").arg(uut.uutId.section('-', -1)));
+        QVERIFY(uut.startedAt.isValid());
+        QVERIFY(uut.finishedAt.isValid());
+        QVERIFY(uut.finishedAt >= uut.startedAt);
+        QVERIFY(uut.durationMs >= 0);
         QCOMPARE(uut.hasError, uut.uutId == "UUT-2");
         QCOMPARE(uut.outcome,
                  uut.uutId == "UUT-2" ? NodeOutcome::Failed : NodeOutcome::Passed);
@@ -4409,6 +4474,7 @@ void CoreTests::executionSessionStopRunsCleanupOnly()
     const auto report = session.report();
     QVERIFY(report.completed);
     QVERIFY(report.hasError);
+    QVERIFY(report.sessionHasError);
     QCOMPARE(report.state, ExecutionState::CompletedWithError);
     QCOMPARE(report.sessionSteps.first().outcome, NodeOutcome::Passed);
 }
@@ -9495,6 +9561,55 @@ void CoreTests::operatorPromptJudgmentMapsPassAndFail()
              QStringLiteral("fail"));
 }
 
+void CoreTests::operatorPromptInputFeedsLaterStep()
+{
+    const auto json = R"json({
+      "id":"operator-input","name":"Operator Input","groups":[
+        {"id":"main","kind":"main","steps":[
+          {"id":"read-value","name":"Enter Voltage","kind":"operatorPrompt","prompt":{
+            "mode":"input","title":"Measured Voltage","message":"Enter voltage",
+            "inputType":"number","inputPlaceholder":"Example: 12.5",
+            "confirmText":"Submit","timeoutMs":1000
+          }},
+          {"id":"check-value","name":"Check Voltage","kind":"limit",
+           "inputs":{"actual":"${step:read-value.outputs.value}"},
+           "parameters":{"comparison":"between","lower":12.4,"upper":12.6}}
+        ]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QString() : compiled.errors.first().message));
+
+    auto control = std::make_shared<ExecutionControl>();
+    control->operatorPrompts().setResponderAvailable(true);
+    OperatorPromptResponderSink events(
+        control,
+        OperatorPromptResponse::Passed,
+        {{QStringLiteral("text"), QStringLiteral("12.5")}});
+    ExecutionSession session(compiled.plan, {}, &events, control);
+    session.addUut(QStringLiteral("uut-1"));
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(!run.hasError);
+
+    const auto input = session.results().latest("uut-1", "root", "read-value");
+    QVERIFY(input.has_value());
+    QCOMPARE(input->result.outcome, NodeOutcome::Passed);
+    QCOMPARE(input->result.outputs.value("text").toString(), QStringLiteral("12.5"));
+    QCOMPARE(input->result.outputs.value("value").toDouble(), 12.5);
+    QCOMPARE(input->result.outputs.value("inputType").toString(),
+             QStringLiteral("number"));
+    QCOMPARE(input->result.outputs.value("response").toString(),
+             QStringLiteral("submitted"));
+
+    const auto limit = session.results().latest("uut-1", "root", "check-value");
+    QVERIFY(limit.has_value());
+    QCOMPARE(limit->result.outcome, NodeOutcome::Passed);
+}
+
 void CoreTests::operatorPromptInterpolatesRuntimeValues()
 {
     const auto json = R"json({
@@ -9603,6 +9718,228 @@ void CoreTests::operatorPromptWaitsForFinalRetryAttemptBeforeClosing()
     }
     QVERIFY(finalAttemptCompletedIndex >= 0);
     QVERIFY(promptClosedIndex > finalAttemptCompletedIndex);
+}
+
+void CoreTests::operatorPromptDoesNotBlockPeriodicTask()
+{
+    const auto json = R"json({
+      "id":"prompt-periodic","name":"Prompt Periodic","groups":[
+        {"id":"setup","kind":"setup","steps":[{
+          "id":"heartbeat","kind":"action","moduleId":"test.periodic","function":"send",
+          "inputs":{"heartbeat":"${periodic.counter}"},
+          "resources":[{"resourceId":"DEVICE1","mode":"exclusive"}],
+          "periodic":{"intervalMs":10,"runImmediately":true,
+                      "counter":{"start":1,"increment":1}}
+        }]},
+        {"id":"main","kind":"main","steps":[{
+          "id":"inspection","kind":"testItem","steps":[{
+            "id":"confirm","kind":"operatorPrompt","prompt":{
+              "mode":"confirm","message":"Confirm after observing the product",
+              "timeoutMs":1000
+            }
+          }]
+        }]},
+        {"id":"cleanup","kind":"cleanup","steps":[
+          {"id":"cleanup-done","kind":"cleanup"}
+        ]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), compiled.errors.isEmpty()
+                                ? "compile failed"
+                                : qPrintable(compiled.errors.first().message));
+
+    auto module = std::make_shared<PeriodicRecordingModule>();
+    module->clock.start();
+    auto control = std::make_shared<ExecutionControl>();
+    control->operatorPrompts().setResponderAvailable(true);
+    DelayedOperatorPromptResponderSink events(control, &module->clock, 100);
+    ExecutionSession session(compiled.plan, {}, &events, control);
+    QVERIFY(session.registerModule(module));
+    session.addUut(QStringLiteral("UUT-1"));
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(!result.hasError);
+    QVERIFY(events.requestedAtMs.load() >= 0);
+    QVERIFY(events.respondedAtMs.load() > events.requestedAtMs.load());
+    QVERIFY2(std::any_of(
+                 module->callTimesMs.cbegin(),
+                 module->callTimesMs.cend(),
+                 [&events](qint64 callTimeMs) {
+                     return callTimeMs >= events.requestedAtMs.load() &&
+                            callTimeMs < events.respondedAtMs.load();
+                 }),
+             "A periodic task must run while a blocking operator prompt is awaiting input");
+}
+
+void CoreTests::operatorPromptTimeoutCompletesPendingRequest()
+{
+    const auto json = R"json({
+      "id":"prompt-timeout","name":"Prompt Timeout","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"confirm","kind":"operatorPrompt","prompt":{
+            "mode":"confirm","message":"No response expected","timeoutMs":30
+          },
+          "errorPolicy":{"onTimeout":"Continue","stopUutOnFailure":false}
+        },{
+          "id":"after","kind":"noop"
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compiled.ok());
+
+    auto control = std::make_shared<ExecutionControl>();
+    control->operatorPrompts().setResponderAvailable(true);
+    CollectingRuntimeEventSink events;
+    ExecutionSession session(compiled.plan, {}, &events, control);
+    session.addUut(QStringLiteral("UUT-1"));
+    QElapsedTimer elapsed;
+    elapsed.start();
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    QVERIFY2(elapsed.elapsed() >= 20 && elapsed.elapsed() < 500,
+             "An unanswered prompt must finish at its asynchronous timeout");
+    const auto prompt = session.results().latest(
+        QStringLiteral("UUT-1"), QStringLiteral("root"), QStringLiteral("confirm"));
+    QVERIFY(prompt.has_value());
+    QCOMPARE(prompt->result.outcome, NodeOutcome::Timeout);
+    QCOMPARE(prompt->result.errorCode, QStringLiteral("OperatorPromptTimeout"));
+    const auto after = session.results().latest(
+        QStringLiteral("UUT-1"), QStringLiteral("root"), QStringLiteral("after"));
+    QVERIFY(after.has_value());
+    QCOMPARE(after->result.outcome, NodeOutcome::Passed);
+}
+
+void CoreTests::operatorPromptStopCancelsPendingRequestAndRunsCleanup()
+{
+    const auto json = R"json({
+      "id":"prompt-stop","name":"Prompt Stop","groups":[
+        {"id":"main","kind":"main","steps":[{
+          "id":"confirm","kind":"operatorPrompt","prompt":{
+            "mode":"confirm","message":"Wait for Stop","timeoutMs":10000
+          }
+        },{
+          "id":"after","kind":"noop"
+        }]},
+        {"id":"cleanup","kind":"cleanup","steps":[{
+          "id":"cleanup-done","kind":"cleanup"
+        }]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compiled.ok());
+
+    auto control = std::make_shared<ExecutionControl>();
+    control->operatorPrompts().setResponderAvailable(true);
+    CollectingRuntimeEventSink events;
+    ExecutionSession session(compiled.plan, {}, &events, control);
+    session.addUut(QStringLiteral("UUT-1"));
+
+    ExecutionSessionResult result;
+    std::jthread runner([&] { result = session.run(); });
+
+    bool promptRequested = false;
+    for (int attempt = 0; attempt < 200 && !promptRequested; ++attempt) {
+        const auto records = events.records();
+        promptRequested = std::any_of(
+            records.cbegin(), records.cend(), [](const RuntimeEvent& event) {
+                return event.kind == RuntimeEventKind::OperatorPromptRequested &&
+                       event.nodeId == QStringLiteral("confirm");
+            });
+        if (!promptRequested) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+
+    QElapsedTimer stopElapsed;
+    stopElapsed.start();
+    session.requestStop();
+    runner.join();
+
+    QVERIFY2(promptRequested, "The prompt must be active before Stop is requested");
+    QVERIFY2(stopElapsed.elapsed() < 1000,
+             "Stop must cancel an unanswered prompt without waiting for its timeout");
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(result.state, ExecutionState::CompletedWithError);
+
+    const auto prompt = session.results().latest(
+        QStringLiteral("UUT-1"), QStringLiteral("root"), QStringLiteral("confirm"));
+    QVERIFY(prompt.has_value());
+    QCOMPARE(prompt->result.outcome, NodeOutcome::Skipped);
+
+    QCOMPARE(session.uuts().first().outcomeOf(QStringLiteral("after")),
+             NodeOutcome::Skipped);
+
+    const auto report = session.report();
+    const auto* cleanup = findStep(report.sessionSteps, QStringLiteral("cleanup-done"));
+    QVERIFY(cleanup != nullptr);
+    QCOMPARE(cleanup->outcome, NodeOutcome::Passed);
+
+    const auto records = events.records();
+    const auto closed = std::find_if(
+        records.cbegin(), records.cend(), [](const RuntimeEvent& event) {
+            return event.kind == RuntimeEventKind::OperatorPromptClosed &&
+                   event.nodeId == QStringLiteral("confirm");
+        });
+    QVERIFY(closed != records.cend());
+    QCOMPARE(closed->details.value(QStringLiteral("reason")).toString(),
+             QStringLiteral("cancelled"));
+}
+
+void CoreTests::operatorPromptsRemainIndependentAcrossUuts()
+{
+    const auto json = R"json({
+      "id":"prompt-multi-uut","name":"Prompt Multi UUT","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"confirm","kind":"operatorPrompt","prompt":{
+            "mode":"confirm","message":"Confirm ${uut.id}","timeoutMs":1000
+          }
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compiled.ok());
+
+    auto control = std::make_shared<ExecutionControl>();
+    control->operatorPrompts().setResponderAvailable(true);
+    OperatorPromptResponderSink events(control);
+    ExecutionSession session(compiled.plan, {}, &events, control);
+    session.addUut(QStringLiteral("UUT-1"));
+    session.addUut(QStringLiteral("UUT-2"));
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(!result.hasError);
+    QCOMPARE(result.state, ExecutionState::Completed);
+    QCOMPARE(session.uuts().size(), 2);
+    for (const auto& uut : session.uuts()) {
+        QCOMPARE(uut.outcomeOf(QStringLiteral("confirm")), NodeOutcome::Passed);
+    }
+
+    QSet<QString> instanceIds;
+    QSet<QString> uutIds;
+    for (const auto& event : events.records()) {
+        if (event.kind != RuntimeEventKind::OperatorPromptRequested) {
+            continue;
+        }
+        instanceIds.insert(event.details.value(QStringLiteral("promptInstanceId")).toString());
+        uutIds.insert(event.uutId);
+    }
+    QCOMPARE(instanceIds.size(), 2);
+    QCOMPARE(uutIds, QSet<QString>({QStringLiteral("UUT-1"), QStringLiteral("UUT-2")}));
 }
 
 void CoreTests::operatorPromptWithoutResponderFailsWithoutBlocking()

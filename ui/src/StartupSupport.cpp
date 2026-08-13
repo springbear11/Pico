@@ -153,6 +153,7 @@ QJsonObject StartupSupport::newProjectStationTemplate()
         {QStringLiteral("txtLogEnabled"), true},
         {QStringLiteral("csvReportEnabled"), true},
         {QStringLiteral("xlsxReportEnabled"), true},
+        {QStringLiteral("pdfReportEnabled"), true},
         {QStringLiteral("loopTestEnabled"), false},
         {QStringLiteral("loopTestCount"), 1},
         {QStringLiteral("reportOutputDirectory"), QString{}},

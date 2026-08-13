@@ -296,6 +296,8 @@ StationConfigResult parseStationConfigJson(const QJsonObject& object,
         object, "csvReportEnabled", result, "csvReportEnabled", false);
     result.config.xlsxReportEnabled = readBool(
         object, "xlsxReportEnabled", result, "xlsxReportEnabled", false);
+    result.config.pdfReportEnabled = readBool(
+        object, "pdfReportEnabled", result, "pdfReportEnabled", false);
     result.config.loopTestEnabled = readBool(
         object, "loopTestEnabled", result, "loopTestEnabled", false);
     result.config.loopTestCount = readInt(
