@@ -144,6 +144,19 @@ QString staticDeviceResourceId(const StepDef& step)
     return deviceId.trimmed();
 }
 
+EdgeTrigger serialTriggerForTarget(const ExecutionPlan& plan,
+                                   const NodeId& targetNodeId,
+                                   EdgeTrigger requestedTrigger)
+{
+    const auto* targetNode = plan.node(targetNodeId);
+    if (requestedTrigger == EdgeTrigger::OnSuccess &&
+        targetNode && targetNode->alwaysRun &&
+        executionPhaseOf(*targetNode) != ExecutionPhase::Cleanup) {
+        return EdgeTrigger::Finally;
+    }
+    return requestedTrigger;
+}
+
 } // namespace
 
 PlanBuildResult PlanBuilder::build(const SequenceDef& sequence) const
@@ -369,6 +382,16 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
             ? segment
             : QString("%1.%2").arg(parentPath, segment);
         activeNodePathCounts[nodePath] += 1;
+
+        if (step.kind == StepKind::Cleanup &&
+            groupKind != StepGroupKind::Cleanup) {
+            result.errors.push_back({
+                "Cleanup step kind is only valid in the Cleanup group",
+                QString(
+                    "Change %1 to an Action with alwaysRun enabled, or move it "
+                    "into the Cleanup group")
+                    .arg(nodePath)});
+        }
 
         if (step.kind == StepKind::Loop) {
             if (insideLoop) {
@@ -681,7 +704,12 @@ ExecNode PlanBuilder::buildNode(const StepDef& step,
     node.localId = step.id;
     node.key = step.key;
     node.displayName = step.name.isEmpty() ? step.id : step.name;
-    node.kind = toExecNodeKind(step.kind);
+    // Cleanup used to be both a step handler and an execution phase. Compiled
+    // plans now take their phase only from the containing group while retaining
+    // old JSON compatibility at the compiler boundary.
+    node.kind = step.kind == StepKind::Cleanup
+        ? (step.moduleId.isEmpty() ? ExecNodeKind::Noop : ExecNodeKind::Action)
+        : toExecNodeKind(step.kind);
     node.phase = toExecutionPhase(groupKind);
     node.payload = step.parameters;
     if (!step.moduleId.isEmpty()) {
@@ -697,7 +725,7 @@ ExecNode PlanBuilder::buildNode(const StepDef& step,
     node.timeout = step.timeout.toRuntimePolicy();
     node.periodic = step.periodic.toRuntimePolicy();
     node.errorPolicy = step.errorPolicy.toRuntimePolicy();
-    node.alwaysRun = step.alwaysRun || groupKind == StepGroupKind::Cleanup || step.kind == StepKind::Cleanup;
+    node.alwaysRun = step.alwaysRun || groupKind == StepGroupKind::Cleanup;
     node.resultRecording = step.resultRecording;
     node.checkpointBefore = step.checkpointBefore;
     node.checkpointAfter = step.checkpointAfter;
@@ -722,7 +750,6 @@ ExecNode PlanBuilder::buildNode(const StepDef& step,
     }
 
     if (groupKind != StepGroupKind::Cleanup &&
-        step.kind != StepKind::Cleanup &&
         node.errorPolicy.cleanupRegionId.isEmpty()) {
         node.errorPolicy.cleanupRegionId = cleanupRegionId;
     }
@@ -736,11 +763,13 @@ void PlanBuilder::addSerialEdges(const QVector<NodeId>& nodeIds,
                                  EdgeTrigger trigger) const
 {
     for (int i = 0; i + 1 < nodeIds.size(); ++i) {
+        const auto edgeTrigger = serialTriggerForTarget(
+            plan, nodeIds[i + 1], trigger);
         plan.addEdge({QString("%1:%2:%3").arg(edgePrefix, nodeIds[i], nodeIds[i + 1]),
                       nodeIds[i],
                       nodeIds[i + 1],
                       EdgeKind::Control,
-                      trigger,
+                      edgeTrigger,
                       {},
                       0});
     }
@@ -757,11 +786,13 @@ void PlanBuilder::addGroupBridge(const GroupBuildInfo& from,
         return;
     }
 
+    const auto edgeTrigger = serialTriggerForTarget(
+        plan, to.nodeIds.first(), trigger);
     plan.addEdge({QString("%1:%2:%3").arg(edgePrefix, from.nodeIds.last(), to.nodeIds.first()),
                   from.nodeIds.last(),
                   to.nodeIds.first(),
                   kind,
-                  trigger,
+                  edgeTrigger,
                   {},
                   0});
 }

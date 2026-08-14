@@ -1115,7 +1115,10 @@ QJsonObject PluginCatalog::createStep(const PluginManifest& manifest,
     auto step = function.stepTemplate;
     step.insert(QStringLiteral("id"), stepId);
     step.insert(QStringLiteral("name"), function.name);
-    step.insert(QStringLiteral("kind"), function.stepKind);
+    step.insert(QStringLiteral("kind"),
+                function.stepKind == QStringLiteral("cleanup")
+                    ? QStringLiteral("action")
+                    : function.stepKind);
     step.insert(QStringLiteral("enabled"), true);
     step.insert(QStringLiteral("moduleId"), manifest.moduleId);
     step.insert(QStringLiteral("function"), function.id);

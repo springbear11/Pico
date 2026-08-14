@@ -29,6 +29,7 @@
 #include <QPersistentModelIndex>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QSet>
 #include <QSignalBlocker>
@@ -906,7 +907,7 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
     , m_document(document)
 {
     setObjectName(QStringLiteral("stepPropertyEditor"));
-    setMinimumWidth(300);
+    setMinimumWidth(240);
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(8, 0, 0, 0);
@@ -1031,6 +1032,32 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
     }
 
     setCurrentItem({});
+}
+
+void StepPropertyEditor::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    applyResponsiveFormLayout();
+}
+
+void StepPropertyEditor::applyResponsiveFormLayout()
+{
+    const bool compact = width() < 330;
+    if (m_compactFormLayout == compact) {
+        return;
+    }
+    m_compactFormLayout = compact;
+
+    const auto policy = compact
+        ? QFormLayout::WrapAllRows
+        : QFormLayout::WrapLongRows;
+    for (auto* form : {m_generalForm, m_dataForm, m_pluginInputsForm,
+                       m_advancedJsonForm, m_policyForm}) {
+        if (form) {
+            form->setRowWrapPolicy(policy);
+            form->invalidate();
+        }
+    }
 }
 
 void StepPropertyEditor::addInspectableRow(QFormLayout* form,
@@ -1467,36 +1494,36 @@ bool StepPropertyEditor::focusField(const QString& fieldPath)
 
 void StepPropertyEditor::buildGeneralPage()
 {
-    auto* page = new QWidget(m_tabs);
-    m_generalForm = new QFormLayout(page);
+    auto* content = new QWidget;
+    m_generalForm = new QFormLayout(content);
     m_generalForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     m_generalForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
     m_generalForm->setContentsMargins(8, 8, 8, 8);
 
-    m_idEdit = new QLineEdit(page);
+    m_idEdit = new QLineEdit(content);
     m_idEdit->setObjectName(QStringLiteral("propertyIdEdit"));
     addInspectableRow(m_generalForm, tr("ID"), m_idEdit,
                       QStringLiteral("id"));
-    m_keyEdit = new QLineEdit(page);
+    m_keyEdit = new QLineEdit(content);
     m_keyEdit->setObjectName(QStringLiteral("propertyKeyEdit"));
     addInspectableRow(m_generalForm, tr("Key"), m_keyEdit,
                       QStringLiteral("key"));
-    m_nameEdit = new QLineEdit(page);
+    m_nameEdit = new QLineEdit(content);
     m_nameEdit->setObjectName(QStringLiteral("propertyNameEdit"));
     addInspectableRow(m_generalForm, tr("Name"), m_nameEdit,
                       QStringLiteral("name"));
-    m_kindCombo = new QComboBox(page);
+    m_kindCombo = new QComboBox(content);
     m_kindCombo->setObjectName(QStringLiteral("propertyKindCombo"));
     addInspectableRow(m_generalForm, tr("Kind"), m_kindCombo,
                       QStringLiteral("kind"));
-    m_enabledCheck = new QCheckBox(page);
+    m_enabledCheck = new QCheckBox(content);
     m_enabledCheck->setObjectName(QStringLiteral("propertyEnabledCheck"));
     addInspectableRow(m_generalForm, tr("Enabled"), m_enabledCheck,
                       QStringLiteral("enabled"));
-    m_alwaysRunCheck = new QCheckBox(page);
+    m_alwaysRunCheck = new QCheckBox(content);
     addInspectableRow(m_generalForm, tr("Always run"), m_alwaysRunCheck,
                       QStringLiteral("alwaysRun"));
-    m_resultRecordingCheck = new QCheckBox(page);
+    m_resultRecordingCheck = new QCheckBox(content);
     m_resultRecordingCheck->setObjectName(
         QStringLiteral("propertyResultRecordingCheck"));
     m_resultRecordingCheck->setToolTip(tr(
@@ -1504,20 +1531,25 @@ void StepPropertyEditor::buildGeneralPage()
     addInspectableRow(m_generalForm, tr("Record in CSV / XLSX / PDF"),
                       m_resultRecordingCheck,
                       QStringLiteral("resultRecording"));
-    m_checkpointBeforeCheck = new QCheckBox(page);
+    m_checkpointBeforeCheck = new QCheckBox(content);
     addInspectableRow(m_generalForm, tr("Checkpoint before"),
                       m_checkpointBeforeCheck,
                       QStringLiteral("checkpointBefore"));
-    m_checkpointAfterCheck = new QCheckBox(page);
+    m_checkpointAfterCheck = new QCheckBox(content);
     addInspectableRow(m_generalForm, tr("Checkpoint after"),
                       m_checkpointAfterCheck,
                       QStringLiteral("checkpointAfter"));
-    m_tagsEdit = new QLineEdit(page);
+    m_tagsEdit = new QLineEdit(content);
     m_tagsEdit->setObjectName(QStringLiteral("propertyTagsEdit"));
     addInspectableRow(m_generalForm, tr("Tags"), m_tagsEdit,
                       QStringLiteral("tags"));
 
-    m_tabs->addTab(page, tr("General"));
+    auto* scroll = new QScrollArea(m_tabs);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidget(content);
+    m_tabs->addTab(scroll, tr("General"));
 }
 
 void StepPropertyEditor::buildDataPage()
@@ -2095,7 +2127,7 @@ void StepPropertyEditor::loadCurrentObject()
     if (m_isGroup) {
         addItems(m_kindCombo, {"setup", "main", "custom", "cleanup"});
     } else {
-        addItems(m_kindCombo, {"noop", "wait", "action", "limit", "break", "counter", "aggregate", "operatorPrompt", "barrier", "cleanup", "loop", "testItem", "statement", "sequenceCall"});
+        addItems(m_kindCombo, {"noop", "wait", "action", "limit", "break", "counter", "aggregate", "operatorPrompt", "barrier", "loop", "testItem", "statement", "sequenceCall"});
     }
     const auto rawKind = m_sourceObject.value(QStringLiteral("kind")).toString(
         m_sourceObject.value(QStringLiteral("type")).toString(

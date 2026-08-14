@@ -24,6 +24,7 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -186,7 +187,7 @@ StationPropertyEditor::StationPropertyEditor(StationDocument* document,
 {
     Q_ASSERT(m_document);
     setObjectName(QStringLiteral("stationPropertyEditor"));
-    setMinimumWidth(260);
+    setMinimumWidth(230);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 0, 0, 0);
@@ -259,11 +260,37 @@ StationPropertyEditor::StationPropertyEditor(StationDocument* document,
     serviceAdminStartupAnimation();
 }
 
+void StationPropertyEditor::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    applyResponsiveFormLayout();
+}
+
+void StationPropertyEditor::applyResponsiveFormLayout()
+{
+    const bool compact = width() < 300;
+    if (m_compactFormLayout == compact) {
+        return;
+    }
+
+    m_compactFormLayout = compact;
+    const auto policy = compact ? QFormLayout::WrapAllRows
+                                : QFormLayout::WrapLongRows;
+    for (auto* form : {m_stationForm, m_deviceForm, m_optionsForm}) {
+        if (form) {
+            form->setRowWrapPolicy(policy);
+            form->invalidate();
+        }
+    }
+    updateGeometry();
+}
+
 void StationPropertyEditor::buildStationPage()
 {
     auto* content = new QWidget;
     auto* layout = new QVBoxLayout(content);
-    auto* form = new QFormLayout;
+    m_stationForm = new QFormLayout;
+    auto* form = m_stationForm;
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     m_stationIdEdit = new QLineEdit(content);
@@ -302,7 +329,8 @@ void StationPropertyEditor::buildDevicePage()
     auto* content = new QWidget;
     content->setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 9));
     auto* layout = new QVBoxLayout(content);
-    auto* form = new QFormLayout;
+    m_deviceForm = new QFormLayout;
+    auto* form = m_deviceForm;
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->setRowWrapPolicy(QFormLayout::WrapLongRows);
 

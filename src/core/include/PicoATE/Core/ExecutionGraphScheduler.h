@@ -154,7 +154,9 @@ private:
     void skipNodeSubtree(UutExecution& uut,
                          const NodeId& rootNodeId,
                          const FrameId& frameId,
-                         const QString& reason);
+                         const QString& reason,
+                         bool preserveAlwaysRun = false);
+    bool shouldPreserveForAlwaysRun(const ExecNode& node) const;
     void resetTestItemForRetry(UutExecution& uut,
                                const ExecNode& testItemNode,
                                const FrameId& frameId);

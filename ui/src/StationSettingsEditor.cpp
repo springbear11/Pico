@@ -7,9 +7,11 @@
 #include <QFormLayout>
 #include <QFileDialog>
 #include <QHBoxLayout>
+#include <QIntValidator>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
@@ -56,7 +58,7 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     , m_document(document)
 {
     setObjectName(QStringLiteral("stationSettingsEditor"));
-    setMinimumWidth(210);
+    setMinimumWidth(160);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(12, 8, 12, 12);
@@ -69,7 +71,8 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_title->setFont(titleFont);
     layout->addWidget(m_title);
 
-    auto* form = new QFormLayout;
+    m_form = new QFormLayout;
+    auto* form = m_form;
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     form->setVerticalSpacing(10);
@@ -97,13 +100,14 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_testerEdit->setPlaceholderText(tr("Tester or operator name"));
     form->addRow(tr("Tester"), m_testerEdit);
 
-    m_snLengthSpin = new QSpinBox(this);
-    m_snLengthSpin->setObjectName(QStringLiteral("stationSnLengthSpin"));
-    m_snLengthSpin->setRange(0, 256);
-    m_snLengthSpin->setSpecialValueText(tr("Any"));
-    m_snLengthSpin->setSuffix(tr(" chars"));
-    m_snLengthSpin->setToolTip(tr("0 means no SN length restriction"));
-    form->addRow(tr("SN Length"), m_snLengthSpin);
+    m_snLengthEdit = new QLineEdit(this);
+    m_snLengthEdit->setObjectName(QStringLiteral("stationSnLengthEdit"));
+    m_snLengthEdit->setValidator(new QIntValidator(1, 256, m_snLengthEdit));
+    m_snLengthEdit->setMaxLength(3);
+    m_snLengthEdit->setPlaceholderText(tr("Any"));
+    m_snLengthEdit->setAlignment(Qt::AlignCenter);
+    m_snLengthEdit->setToolTip(tr("Exact SN length. Leave empty for Any."));
+    form->addRow(tr("SN Length"), m_snLengthEdit);
 
     m_snPatternEdit = new QLineEdit(this);
     m_snPatternEdit->setObjectName(QStringLiteral("stationSnPatternEdit"));
@@ -217,7 +221,7 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
             markPendingChanges();
         }
     });
-    connect(m_snLengthSpin, &QSpinBox::valueChanged, this, markPending);
+    connect(m_snLengthEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_snPatternEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_snAllowedRegexEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_jigNoEdit, &QLineEdit::textEdited, this, markPending);
@@ -228,6 +232,30 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
                 this, &StationSettingsEditor::reload);
     }
     reload();
+}
+
+void StationSettingsEditor::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    applyResponsiveFormLayout();
+}
+
+void StationSettingsEditor::applyResponsiveFormLayout()
+{
+    if (!m_form) {
+        return;
+    }
+
+    const bool compact = width() < 245;
+    if (m_compactFormLayout == compact) {
+        return;
+    }
+
+    m_compactFormLayout = compact;
+    m_form->setRowWrapPolicy(compact ? QFormLayout::WrapAllRows
+                                     : QFormLayout::WrapLongRows);
+    m_form->invalidate();
+    updateGeometry();
 }
 
 void StationSettingsEditor::setEditable(bool editable)
@@ -246,7 +274,7 @@ void StationSettingsEditor::setEditable(bool editable)
                         static_cast<QWidget*>(m_xlsxReportSwitch),
                         static_cast<QWidget*>(m_reportOutputEdit),
                         static_cast<QWidget*>(m_browseReportOutputButton),
-                        static_cast<QWidget*>(m_snLengthSpin),
+                        static_cast<QWidget*>(m_snLengthEdit),
                         static_cast<QWidget*>(m_snPatternEdit),
                         static_cast<QWidget*>(m_snAllowedRegexEdit),
                         static_cast<QWidget*>(m_jigNoEdit),
@@ -274,6 +302,13 @@ bool StationSettingsEditor::commitPendingChanges()
     }
     if (m_stationIdEdit->text().trimmed().isEmpty()) {
         showError(tr("Station ID cannot be empty"));
+        return false;
+    }
+    const auto snLengthText = m_snLengthEdit->text().trimmed();
+    if (!snLengthText.isEmpty() && !m_snLengthEdit->hasAcceptableInput()) {
+        showError(tr("SN Length must be an integer from 1 to 256, or empty for Any"));
+        m_snLengthEdit->setFocus();
+        m_snLengthEdit->selectAll();
         return false;
     }
     auto root = m_document->rootObject();
@@ -305,7 +340,8 @@ bool StationSettingsEditor::commitPendingChanges()
     } else {
         root.insert(QStringLiteral("reportOutputDirectory"), outputDirectory);
     }
-    root.insert(QStringLiteral("snLength"), m_snLengthSpin->value());
+    root.insert(QStringLiteral("snLength"),
+                snLengthText.isEmpty() ? 0 : snLengthText.toInt());
     const auto snPattern = m_snPatternEdit->text().trimmed();
     if (snPattern.isEmpty()) {
         root.remove(QStringLiteral("snPattern"));
@@ -361,7 +397,7 @@ bool StationSettingsEditor::focusField(const QString& path)
     } else if (path == QStringLiteral("reportOutputDirectory")) {
         field = m_reportOutputEdit;
     } else if (path == QStringLiteral("snLength")) {
-        field = m_snLengthSpin;
+        field = m_snLengthEdit;
     } else if (path == QStringLiteral("snPattern")) {
         field = m_snPatternEdit;
     } else if (path == QStringLiteral("snAllowedRegex")) {
@@ -418,8 +454,10 @@ void StationSettingsEditor::reload()
         root.value(QStringLiteral("pdfReportEnabled")).toBool(false));
     m_reportOutputEdit->setText(
         root.value(QStringLiteral("reportOutputDirectory")).toString());
-    m_snLengthSpin->setValue(
-        qBound(0, root.value(QStringLiteral("snLength")).toInt(0), 256));
+    const int snLength = qBound(
+        0, root.value(QStringLiteral("snLength")).toInt(0), 256);
+    m_snLengthEdit->setText(snLength > 0 ? QString::number(snLength)
+                                        : QString{});
     m_snPatternEdit->setText(
         root.value(QStringLiteral("snPattern")).toString());
     m_snAllowedRegexEdit->setText(
@@ -445,7 +483,7 @@ void StationSettingsEditor::reload()
                         static_cast<QWidget*>(m_pdfReportSwitch),
                         static_cast<QWidget*>(m_reportOutputEdit),
                         static_cast<QWidget*>(m_browseReportOutputButton),
-                        static_cast<QWidget*>(m_snLengthSpin),
+                        static_cast<QWidget*>(m_snLengthEdit),
                         static_cast<QWidget*>(m_snPatternEdit),
                         static_cast<QWidget*>(m_snAllowedRegexEdit),
                         static_cast<QWidget*>(m_jigNoEdit),

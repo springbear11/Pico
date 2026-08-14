@@ -598,7 +598,7 @@ void ExecutionGraphScheduler::skipPendingNonAlwaysRun(
             continue;
         }
         if (node.kind == ExecNodeKind::Cleanup ||
-            (node.alwaysRun && !includeAlwaysRun)) {
+            (!includeAlwaysRun && shouldPreserveForAlwaysRun(node))) {
             continue;
         }
 
@@ -702,6 +702,19 @@ bool ExecutionGraphScheduler::dependenciesSatisfied(
         }
         if (!isTerminalActivation(uut.stateOf(edge.from))) {
             return false;
+        }
+
+        // Older plans encoded serial ordering as an unconditional OnSuccess
+        // control edge for alwaysRun targets. A TestItem that only carries an
+        // alwaysRun descendant needs the same ordering-only interpretation.
+        const bool legacyAlwaysRunOrderingEdge =
+            shouldPreserveForAlwaysRun(node) &&
+            executionPhaseOf(node) != ExecutionPhase::Cleanup &&
+            edge.kind == EdgeKind::Control &&
+            edge.trigger == EdgeTrigger::OnSuccess &&
+            edge.condition.isEmpty();
+        if (legacyAlwaysRunOrderingEdge) {
+            continue;
         }
 
         if (bestEffortCleanupEdgeActive(uut, edge.from, node.id)) {
@@ -1868,7 +1881,11 @@ void ExecutionGraphScheduler::handleTestItemChildFailure(UutExecution& uut,
     const auto reason = QString("skipped after TestItem child %1 returned %2")
                             .arg(childNode.id, nodeOutcomeName(result.outcome));
     for (int index = failedIndex + 1; index < region->childNodeIds.size(); ++index) {
-        skipNodeSubtree(uut, region->childNodeIds[index], frameId, reason);
+        skipNodeSubtree(uut,
+                        region->childNodeIds[index],
+                        frameId,
+                        reason,
+                        true);
     }
 }
 
@@ -2216,12 +2233,16 @@ void ExecutionGraphScheduler::handleLoopBodyFailure(UutExecution& uut,
 void ExecutionGraphScheduler::skipNodeSubtree(UutExecution& uut,
                                               const NodeId& rootNodeId,
                                               const FrameId& frameId,
-                                              const QString& reason)
+                                              const QString& reason,
+                                              bool preserveAlwaysRun)
 {
     const auto completedAt = QDateTime::currentDateTimeUtc();
     for (auto it = m_plan.nodes.constBegin(); it != m_plan.nodes.constEnd(); ++it) {
         const auto& skippedNode = it.value();
         if (!isNodeOrDescendantOf(skippedNode.id, rootNodeId)) {
+            continue;
+        }
+        if (preserveAlwaysRun && shouldPreserveForAlwaysRun(skippedNode)) {
             continue;
         }
 
@@ -2248,6 +2269,26 @@ void ExecutionGraphScheduler::skipNodeSubtree(UutExecution& uut,
                          reason,
                          skippedActivation.attempts.last().loopIteration);
     }
+}
+
+bool ExecutionGraphScheduler::shouldPreserveForAlwaysRun(const ExecNode& node) const
+{
+    if (node.alwaysRun) {
+        return true;
+    }
+
+    if (node.kind != ExecNodeKind::TestItem) {
+        return false;
+    }
+
+    for (auto it = m_plan.nodes.constBegin(); it != m_plan.nodes.constEnd(); ++it) {
+        const auto& candidate = it.value();
+        if (candidate.id != node.id && candidate.alwaysRun &&
+            isNodeOrDescendantOf(candidate.id, node.id)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool ExecutionGraphScheduler::isNodeOrDescendantOf(const NodeId& nodeId,

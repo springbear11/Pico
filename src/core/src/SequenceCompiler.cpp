@@ -296,9 +296,10 @@ void validatePredicateConfiguration(const QJsonObject& step,
 }
 
 void validateBuiltInStepRequirements(const QJsonArray& steps,
-                                     const QString& path,
-                                     bool parentEnabled,
-                                     QVector<CompileError>& errors)
+                                      const QString& path,
+                                      bool parentEnabled,
+                                      bool cleanupGroup,
+                                      QVector<CompileError>& errors)
 {
     for (int index = 0; index < steps.size(); ++index) {
         if (!steps[index].isObject()) {
@@ -315,6 +316,14 @@ void validateBuiltInStepRequirements(const QJsonArray& steps,
         const auto kindKey = step.contains(QStringLiteral("kind"))
             ? QStringLiteral("kind") : QStringLiteral("type");
         const auto kind = normalized(step.value(kindKey).toString());
+        if (kind == QStringLiteral("cleanup") && !cleanupGroup) {
+            errors.push_back({
+                childPath(stepPath, kindKey),
+                QStringLiteral("Cleanup is a group phase, not a step kind outside that group"),
+                QStringLiteral(
+                    "Change kind to action; use alwaysRun for a recovery action, "
+                    "or move the step into the Cleanup group")});
+        }
         if (kind == QStringLiteral("limit") ||
             kind == QStringLiteral("numericlimit") ||
             kind == QStringLiteral("break") ||
@@ -339,7 +348,7 @@ void validateBuiltInStepRequirements(const QJsonArray& steps,
         if (children.isArray()) {
             validateBuiltInStepRequirements(
                 children.toArray(), childPath(stepPath, QStringLiteral("steps")),
-                enabled, errors);
+                enabled, cleanupGroup, errors);
         }
     }
 }
@@ -358,12 +367,17 @@ void validateBuiltInStepRequirements(const QJsonObject& sequence,
         }
         const auto group = array[index].toObject();
         const bool enabled = group.value(QStringLiteral("enabled")).toBool(true);
+        const auto groupKindKey = group.contains(QStringLiteral("kind"))
+            ? QStringLiteral("kind") : QStringLiteral("type");
+        const bool cleanupGroup = normalized(
+            group.value(groupKindKey).toString()) == QStringLiteral("cleanup");
         const auto steps = group.value(QStringLiteral("steps"));
         if (steps.isArray()) {
             validateBuiltInStepRequirements(
                 steps.toArray(),
                 QStringLiteral("groups[%1].steps").arg(index),
                 enabled,
+                cleanupGroup,
                 errors);
         }
     }

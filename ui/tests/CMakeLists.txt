@@ -41,6 +41,8 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/FieldDeviceDialog.h
     ../src/FlowTargetSelector.cpp
     ../src/FlowTargetSelector.h
+    ../src/InputWheelGuard.cpp
+    ../src/InputWheelGuard.h
     ../src/LoadingSpinner.cpp
     ../src/LoadingSpinner.h
     ../src/LoginDialog.cpp

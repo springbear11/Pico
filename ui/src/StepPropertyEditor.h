@@ -16,6 +16,7 @@ class QLabel;
 class QLineEdit;
 class QMenu;
 class QPlainTextEdit;
+class QResizeEvent;
 class QSpinBox;
 class QTabWidget;
 class QTableWidget;
@@ -50,6 +51,9 @@ signals:
     void inspectionFieldRequested(const QString& fieldPath,
                                   const QString& displayName);
 
+protected:
+    void resizeEvent(QResizeEvent* event) override;
+
 private:
     void buildGeneralPage();
     void buildDataPage();
@@ -60,6 +64,7 @@ private:
     void updateLimitRows();
     void updateLoopRows();
     void updateAdvancedJsonVisibility();
+    void applyResponsiveFormLayout();
     void rebuildFunctionChoices(const QString& selectedFunction = {});
     void rebuildDeviceChoices();
     void rebuildPluginInputEditors();
@@ -111,6 +116,7 @@ private:
     bool m_loading = false;
     bool m_editable = true;
     bool m_draftDirty = false;
+    bool m_compactFormLayout = false;
     QString m_inspectionField;
     QVector<PluginManifest> m_plugins;
     QHash<QString, QString> m_pluginByDeviceId;

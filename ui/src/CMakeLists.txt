@@ -87,6 +87,8 @@ qt_add_executable(PicoATEUi WIN32
     FieldDeviceDialog.h
     FlowTargetSelector.cpp
     FlowTargetSelector.h
+    InputWheelGuard.cpp
+    InputWheelGuard.h
     LoadingSpinner.cpp
     LoadingSpinner.h
     LoginDialog.cpp

@@ -37,7 +37,7 @@ Core 和 UI 对 JSON 的职责不同：
 
 | Step 类型 | 专有字段 |
 |-----------|----------|
-| `action` / `cleanup` | `moduleId`、`function`、`inputs`、`parameters`；`periodic` 仅属于 `action`。 |
+| `action` | `moduleId`、`function`、`inputs`、`parameters`、`periodic`。 |
 | `wait` | `ms` |
 | `limit` / `break` | `inputs.actual` 和 `parameters` 中的比较规则 |
 | `counter` / `aggregate` | 自己的 `inputs`、`parameters` |
@@ -232,7 +232,7 @@ gaps. Cleanup groups are connected from the last non-empty normal group by a
 | `name` | string | no | `id` | Display name. |
 | `kind` | string | no | `noop` | See step kinds below；Core 兼容旧字段 `type`，UI 只写 `kind`。 |
 | `enabled` | bool | no | `true` | Disabled steps are not compiled into the plan. |
-| `alwaysRun` | bool | no | `false` | Cleanup groups and cleanup steps are always-run automatically. |
+| `alwaysRun` | bool | no | `false` | Setup/Main 中的节点在失败停止后仍执行；其自动顺序入边按前驱终态（`Finally`）放行。TestItem 发生局部失败时，后续普通兄弟节点会跳过，但 `alwaysRun` 兄弟节点仍执行。Cleanup 组内所有节点自动启用该语义，并继续服从 CleanupRegion 的 best-effort/strict 规则。 |
 | `resultRecording` | bool | no | `true` | `true` writes this Step/TestItem row to CSV/XLSX; `false` hides only its own table row. TXT logs and overall pass/fail are unaffected. Child steps keep their own setting. |
 | `checkpointBefore` | bool | no | `false` | Copied to `ExecNode::checkpointBefore`. |
 | `checkpointAfter` | bool | no | `false` | Copied to `ExecNode::checkpointAfter`. |
@@ -260,13 +260,19 @@ Supported step kinds:
 | `wait` | `ExecNodeKind::Wait` |
 | `action` | `ExecNodeKind::Action`；Core 兼容旧值 `mockAction`。 |
 | `barrier` | `ExecNodeKind::Barrier` |
-| `cleanup` | `ExecNodeKind::Cleanup` |
 | `loop` | `ExecNodeKind::Loop` scheduler control node；Core 兼容旧值 `forLoop`。 |
 | `testItem` | `ExecNodeKind::TestItem` aggregate control node；Core 兼容旧值 `composite`。 |
 | `limit` | `ExecNodeKind::Limit` 通用比较节点；Core 兼容旧值 `numericLimit`。 |
 | `operatorPrompt` | `ExecNodeKind::OperatorPrompt` 人机交互节点；Core 兼容旧值 `prompt`。 |
 | `statement` | 独立 `Statement` 节点；当前执行返回 `StatementNotImplemented` |
 | `sequenceCall` | 独立 `SequenceCall` 节点；当前执行返回 `SequenceCallNotImplemented` |
+
+`cleanup` 只表示顶层 Group 的执行阶段，不再是新脚本可选择的 Step Kind。关闭设备仍写成
+`kind: "action"`，并放入 Cleanup Group；该分组会自动获得 always-run 和 best-effort
+收尾语义。Core 继续读取旧 Cleanup Group 内的 `kind: "cleanup"`：带 `moduleId` 的节点
+归一化为 Action，不带 `moduleId` 的占位节点归一化为 Noop。Setup/Main/Custom（包括其
+TestItem、Loop 子树）中的 `kind: "cleanup"` 会在编译期报错；MAIN 内恢复动作应使用
+`kind: "action"` 加 `alwaysRun: true`。
 
 Example with checkpoint flags:
 
@@ -698,14 +704,15 @@ calculated after every child reaches a terminal state:
 
 TestItem 是否局部 fail-fast 由 Station 的 `stopOnFailure` 统一决定：
 
-- `true`：子 Step 在 Retry 结束后仍为 `Failed/Error/Timeout`，后续兄弟步骤及其
-  嵌套子树标记为 `Skipped`；父项汇总失败后停止外层主流程并进入 Cleanup。
+- `true`：子 Step 在 Retry 结束后仍为 `Failed/Error/Timeout`，后续普通兄弟步骤及其
+  嵌套子树标记为 `Skipped`；显式 `alwaysRun` 的恢复兄弟节点仍会执行。父项汇总失败后
+  停止外层主流程并进入 Cleanup。
 - `false`：失败子 Step 保留真实结果，但继续执行同一 TestItem 的后续步骤；父项按
   `Error > Timeout > Failed > Passed` 汇总，外层后续测试项继续执行。
 
-Cleanup 分组允许使用 TestItem 收纳多个关闭动作。父 TestItem 和每个启用的 Cleanup
+Cleanup 分组允许使用 TestItem 收纳多个关闭动作。父 TestItem 和每个启用的 Action/Noop
 子步骤都必须真实执行并进入报告，不能只显示父项 Passed。Cleanup TestItem 继续遵守
-子步骤顺序，并使用 `alwaysRun` 的 Cleanup 激活语义。
+子步骤顺序，并自动使用 `alwaysRun` 的 Cleanup 激活语义。
 
 “失败继续”不代表忽略数据依赖。后续步骤引用失败节点输出时会得到明确的运行时
 变量解析 `Error`，不会永久停在 Waiting 状态；不依赖该输出的后续步骤仍继续。

@@ -15,6 +15,7 @@ class QAction;
 class QEvent;
 class QLabel;
 class QProgressBar;
+class QResizeEvent;
 class QTableView;
 class QTimer;
 class QTreeView;
@@ -40,10 +41,12 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     void buildUi();
+    void applyResponsiveLayout(bool force = false);
     void updateCommands();
     void updateState(UiRunState state);
     void updateCompileSummary();
@@ -112,6 +115,7 @@ private:
     QString m_pendingSerialNumber;
     bool m_currentRunCounted = false;
     bool m_fieldDeviceDialogOpen = false;
+    int m_responsiveLayoutMode = -1;
 };
 
 std::unique_ptr<ProductionWindow> createProductionWindow(

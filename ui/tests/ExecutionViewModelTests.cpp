@@ -1108,6 +1108,11 @@ void ExecutionViewModelTests::pluginCatalogParsesGcanManifestAndCreatesSteps()
     QCOMPARE(read->outputs[2].key, QStringLiteral("dlc"));
     QCOMPARE(close->stepKind, QStringLiteral("cleanup"));
 
+    const auto closeStep = PluginCatalog::createStep(
+        result.manifest, *close, QStringLiteral("can-close"));
+    QCOMPARE(closeStep.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("action"));
+
     const auto writeStep = PluginCatalog::createStep(
         result.manifest, *write, QStringLiteral("001"));
     QCOMPARE(writeStep.value(QStringLiteral("id")).toString(), QStringLiteral("001"));

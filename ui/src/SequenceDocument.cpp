@@ -270,6 +270,13 @@ QJsonObject canonicalizeStepForUi(QJsonObject step)
     QString kind;
     if (step.value(QStringLiteral("kind")).isString()) {
         kind = canonicalStepKind(step.value(QStringLiteral("kind")).toString());
+        if (kind == QStringLiteral("cleanup")) {
+            // Cleanup is a group phase. Preserve old documents by mapping the
+            // legacy step alias to the handler it used at runtime.
+            kind = step.value(QStringLiteral("moduleId")).toString().trimmed().isEmpty()
+                ? QStringLiteral("noop")
+                : QStringLiteral("action");
+        }
         if (!kind.isEmpty()) {
             step.insert(QStringLiteral("kind"), kind);
         }

@@ -723,6 +723,10 @@ private slots:
     void sequenceCompilerRejectsCrossParentResourceRegion();
     void sequenceCompilerRejectsIncompleteResourceRegion();
     void executionSessionStopRunsCleanupOnly();
+    void alwaysRunRecoveryRunsAfterStopUutAndAllowsCleanup();
+    void cleanupKindOutsideCleanupGroupIsRejected();
+    void testItemAlwaysRunRecoveryWaitsForJudgmentAndAllowsCleanup();
+    void alwaysRunDescendantKeepsTestItemCarrierRunnableAfterStopUut();
     void stopTokenEscalatesAtomically();
     void executionSessionConsumesCrossThreadStopToken();
     void executionSessionWaitDoesNotBlockOtherUuts();
@@ -4479,6 +4483,296 @@ void CoreTests::executionSessionStopRunsCleanupOnly()
     QCOMPARE(report.sessionSteps.first().outcome, NodeOutcome::Passed);
 }
 
+void CoreTests::alwaysRunRecoveryRunsAfterStopUutAndAllowsCleanup()
+{
+    const QByteArray json = R"json({
+      "id": "always-run-recovery",
+      "name": "Always Run Recovery",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [{
+          "id": "fail",
+          "name": "Fail",
+          "kind": "limit",
+          "inputs": {"actual": 0},
+          "parameters": {"comparison": "equal", "expected": 1},
+          "errorPolicy": {"onFail": "StopUut"}
+        }, {
+          "id": "ordinary-after-failure",
+          "name": "Ordinary After Failure",
+          "kind": "noop"
+        }, {
+          "id": "recovery",
+          "name": "Recovery",
+          "kind": "noop",
+          "alwaysRun": true
+        }]
+      }, {
+        "id": "cleanup",
+        "kind": "cleanup",
+        "steps": [{
+          "id": "cleanup-step",
+          "name": "Cleanup Step",
+          "kind": "noop"
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QStringLiteral("compile failed")
+        : compiled.errors.first().message));
+
+    const auto recoveryEdge = std::find_if(
+        compiled.plan.edges.cbegin(), compiled.plan.edges.cend(),
+        [](const ExecEdge& edge) {
+            return edge.from == QStringLiteral("ordinary-after-failure") &&
+                   edge.to == QStringLiteral("recovery");
+        });
+    QVERIFY(recoveryEdge != compiled.plan.edges.cend());
+    QCOMPARE(recoveryEdge->trigger, EdgeTrigger::Finally);
+
+    const auto verifyRun = [](const ExecutionPlan& plan) {
+        ExecutionSession session(plan);
+        session.addUut(QStringLiteral("uut-1"));
+        const auto result = session.run();
+
+        QVERIFY(result.completed);
+        QVERIFY(result.hasError);
+        QCOMPARE(result.state, ExecutionState::CompletedWithError);
+        const auto& uut = session.uuts().first();
+        QCOMPARE(uut.outcomeOf(QStringLiteral("fail")), NodeOutcome::Failed);
+        QCOMPARE(uut.outcomeOf(QStringLiteral("ordinary-after-failure")),
+                 NodeOutcome::Skipped);
+        QCOMPARE(uut.outcomeOf(QStringLiteral("recovery")), NodeOutcome::Passed);
+        QCOMPARE(session.snapshot().sessionExecution.outcomeOf(
+                     QStringLiteral("cleanup-step")),
+                 NodeOutcome::Passed);
+    };
+
+    verifyRun(compiled.plan);
+
+    auto legacyPlan = compiled.plan;
+    for (auto& edge : legacyPlan.edges) {
+        if (edge.from == QStringLiteral("ordinary-after-failure") &&
+            edge.to == QStringLiteral("recovery")) {
+            edge.trigger = EdgeTrigger::OnSuccess;
+        }
+    }
+    verifyRun(legacyPlan);
+}
+
+void CoreTests::cleanupKindOutsideCleanupGroupIsRejected()
+{
+    const QByteArray json = R"json({
+      "id":"invalid-main-cleanup-kind",
+      "name":"Invalid Main Cleanup Kind",
+      "groups":[{
+        "id":"main",
+        "kind":"main",
+        "steps":[{
+          "id":"item",
+          "kind":"testItem",
+          "steps":[{
+            "id":"close-modbus",
+            "kind":"cleanup",
+            "moduleId":"device",
+            "function":"close",
+            "inputs":{"deviceId":"MODBUS1"}
+          }]
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY(!compiled.ok());
+    QVERIFY(std::any_of(
+        compiled.errors.cbegin(), compiled.errors.cend(),
+        [](const CompileError& error) {
+            return error.path == QStringLiteral(
+                       "groups[0].steps[0].steps[0].kind") &&
+                   error.message.contains(QStringLiteral("Cleanup"));
+        }));
+
+    PlanBuilder builder;
+    const auto built = builder.build(compiled.sequence);
+    QVERIFY(!built.ok());
+    QVERIFY(std::any_of(
+        built.errors.cbegin(), built.errors.cend(),
+        [](const PlanBuildError& error) {
+            return error.message.contains(
+                QStringLiteral("only valid in the Cleanup group"));
+        }));
+}
+
+void CoreTests::testItemAlwaysRunRecoveryWaitsForJudgmentAndAllowsCleanup()
+{
+    const QByteArray json = R"json({
+      "id":"judgment-recovery-cleanup",
+      "name":"Judgment Recovery Cleanup",
+      "groups":[{
+        "id":"main",
+        "kind":"main",
+        "steps":[{
+          "id":"repair",
+          "kind":"testItem",
+          "errorPolicy":{"onFail":"StopUut"},
+          "steps":[{
+            "id":"judge",
+            "kind":"operatorPrompt",
+            "prompt":{
+              "mode":"judgment",
+              "title":"Result",
+              "message":"Is the product OK?",
+              "passText":"PASS",
+              "failText":"FAIL",
+              "timeoutMs":1000
+            },
+            "errorPolicy":{"onFail":"StopUut"}
+          },{
+            "id":"close-local",
+            "kind":"noop",
+            "alwaysRun":true
+          }]
+        }]
+      },{
+        "id":"cleanup",
+        "kind":"cleanup",
+        "steps":[{
+          "id":"close-global",
+          "kind":"cleanup"
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QStringLiteral("compile failed")
+        : compiled.errors.first().path + QStringLiteral(": ") +
+              compiled.errors.first().message));
+
+    const auto* recovery = compiled.plan.node(QStringLiteral("repair.close-local"));
+    QVERIFY(recovery != nullptr);
+    QCOMPARE(recovery->kind, ExecNodeKind::Noop);
+    QCOMPARE(executionPhaseOf(*recovery), ExecutionPhase::Main);
+    QVERIFY(recovery->alwaysRun);
+
+    const auto* cleanup = compiled.plan.node(QStringLiteral("close-global"));
+    QVERIFY(cleanup != nullptr);
+    QCOMPARE(cleanup->kind, ExecNodeKind::Noop);
+    QCOMPARE(executionPhaseOf(*cleanup), ExecutionPhase::Cleanup);
+    QVERIFY(cleanup->alwaysRun);
+
+    auto control = std::make_shared<ExecutionControl>();
+    control->operatorPrompts().setResponderAvailable(true);
+    OperatorPromptResponderSink events(control, OperatorPromptResponse::Failed);
+    ExecutionSession session(compiled.plan, {}, &events, control);
+    session.addUut(QStringLiteral("uut-1"));
+    const auto run = session.run();
+
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+    QCOMPARE(run.state, ExecutionState::CompletedWithError);
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.outcomeOf(QStringLiteral("repair.judge")), NodeOutcome::Failed);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("repair.close-local")), NodeOutcome::Passed);
+    QCOMPARE(session.snapshot().sessionExecution.outcomeOf(
+                 QStringLiteral("close-global")),
+             NodeOutcome::Passed);
+
+    const auto records = events.records();
+    const auto eventIndex = [&records](RuntimeEventKind kind,
+                                       const QString& nodeId) {
+        for (int index = 0; index < records.size(); ++index) {
+            if (records[index].kind == kind && records[index].nodeId == nodeId) {
+                return index;
+            }
+        }
+        return -1;
+    };
+    const int promptClosed = eventIndex(
+        RuntimeEventKind::OperatorPromptClosed, QStringLiteral("repair.judge"));
+    const int recoveryStarted = eventIndex(
+        RuntimeEventKind::AttemptStarted, QStringLiteral("repair.close-local"));
+    const int cleanupStarted = eventIndex(
+        RuntimeEventKind::AttemptStarted, QStringLiteral("close-global"));
+    QVERIFY(promptClosed >= 0);
+    QVERIFY(recoveryStarted > promptClosed);
+    QVERIFY(cleanupStarted > recoveryStarted);
+}
+
+void CoreTests::alwaysRunDescendantKeepsTestItemCarrierRunnableAfterStopUut()
+{
+    const QByteArray json = R"json({
+      "id":"nested-always-run-carrier",
+      "name":"Nested Always Run Carrier",
+      "groups":[{
+        "id":"main",
+        "kind":"main",
+        "steps":[{
+          "id":"fail-before-item",
+          "kind":"limit",
+          "inputs":{"actual":0},
+          "parameters":{"comparison":"equal","expected":1},
+          "errorPolicy":{"onFail":"StopUut"}
+        },{
+          "id":"recovery-item",
+          "kind":"testItem",
+          "steps":[{
+            "id":"close-device",
+            "kind":"noop",
+            "alwaysRun":true
+          },{
+            "id":"ordinary-work",
+            "kind":"noop"
+          }]
+        }]
+      },{
+        "id":"cleanup",
+        "kind":"cleanup",
+        "steps":[{
+          "id":"global-cleanup",
+          "kind":"noop"
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QStringLiteral("compile failed")
+        : compiled.errors.first().path + QStringLiteral(": ") +
+              compiled.errors.first().message));
+
+    ExecutionSession session(compiled.plan);
+    session.addUut(QStringLiteral("uut-1"));
+    const auto run = session.run();
+
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+    QCOMPARE(run.state, ExecutionState::CompletedWithError);
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.outcomeOf(QStringLiteral("fail-before-item")),
+             NodeOutcome::Failed);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("recovery-item.close-device")),
+             NodeOutcome::Passed);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("recovery-item.ordinary-work")),
+             NodeOutcome::Skipped);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("recovery-item")),
+             NodeOutcome::Passed);
+    QCOMPARE(session.snapshot().sessionExecution.outcomeOf(
+                 QStringLiteral("global-cleanup")),
+             NodeOutcome::Passed);
+}
+
 void CoreTests::stopTokenEscalatesAtomically()
 {
     StopToken token;
@@ -5437,6 +5731,8 @@ void CoreTests::planBuilderBuildsSetupMainCleanupPlan()
 
     const auto* cleanupNode = result.plan.node("power-off");
     QVERIFY(cleanupNode != nullptr);
+    QCOMPARE(cleanupNode->kind, ExecNodeKind::Noop);
+    QCOMPARE(executionPhaseOf(*cleanupNode), ExecutionPhase::Cleanup);
     QVERIFY(cleanupNode->alwaysRun);
 
     const auto finallyIt = std::find_if(result.plan.edges.cbegin(),
@@ -7537,7 +7833,7 @@ void CoreTests::executionSessionReportCapturesRetryAttempts()
 
     const auto* powerOff = findStep(report.sessionSteps, "power-off");
     QVERIFY(powerOff != nullptr);
-    QCOMPARE(powerOff->kind, ExecNodeKind::Cleanup);
+    QCOMPARE(powerOff->kind, ExecNodeKind::Noop);
     QCOMPARE(powerOff->outcome, NodeOutcome::Passed);
     QVERIFY(!powerOff->wasError);
 }

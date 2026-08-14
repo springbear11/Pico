@@ -20,6 +20,7 @@ class QLineEdit;
 class QLabel;
 class QMenu;
 class QProgressBar;
+class QResizeEvent;
 class QSortFilterProxyModel;
 class QSpinBox;
 class QTableView;
@@ -76,6 +77,7 @@ signals:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
@@ -185,6 +187,7 @@ private:
     void restoreUiSettings();
     void saveUiSettings() const;
     void resetUiLayout();
+    void applyResponsiveLayout(bool force = false);
     void addRecentSequence(const QString& filePath);
     void addRecentStation(const QString& filePath);
     void refreshRecentFileMenus();
@@ -333,6 +336,7 @@ private:
     bool m_historyLoaded = false;
     bool m_autoRouteBySn = false;
     bool m_newProjectTemplate = false;
+    int m_responsiveLayoutMode = -1;
     int m_adminTotalNodes = 0;
     int m_adminPassedUnits = 0;
     int m_adminFailedUnits = 0;

@@ -16,6 +16,7 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QResizeEvent;
 class QSpinBox;
 class QTabWidget;
 
@@ -47,6 +48,9 @@ signals:
     void deviceApplied(int row);
     void pendingChangesChanged(bool pending);
 
+protected:
+    void resizeEvent(QResizeEvent* event) override;
+
 private:
     struct OptionEditor {
         PluginParameterDefinition definition;
@@ -56,6 +60,7 @@ private:
 
     void buildStationPage();
     void buildDevicePage();
+    void applyResponsiveFormLayout();
     void reload();
     void loadStation();
     void loadDevice();
@@ -85,6 +90,8 @@ private:
     QPointer<StationDocument> m_document;
     QLabel* m_title = nullptr;
     QTabWidget* m_tabs = nullptr;
+    QFormLayout* m_stationForm = nullptr;
+    QFormLayout* m_deviceForm = nullptr;
     QLineEdit* m_stationIdEdit = nullptr;
     QLineEdit* m_stationModelEdit = nullptr;
     QLineEdit* m_customerIdEdit = nullptr;
@@ -118,6 +125,7 @@ private:
     bool m_loading = false;
     bool m_pendingChanges = false;
     bool m_resourceDiscoveryBusy = false;
+    bool m_compactFormLayout = false;
     QVector<PluginManifest> m_plugins;
 };
 

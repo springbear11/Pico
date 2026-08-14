@@ -4,6 +4,7 @@
 #include "ExecutionViewModel.h"
 #include "FieldDeviceDialog.h"
 #include "FlowTargetSelector.h"
+#include "InputWheelGuard.h"
 #include "LoginDialog.h"
 #include "LoadingSpinner.h"
 #include "MainWindow.h"
@@ -65,6 +66,7 @@
 #include <QPainter>
 #include <QSettings>
 #include <QScreen>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -81,6 +83,8 @@
 #include <QToolBar>
 #include <QTreeView>
 #include <QUndoStack>
+#include <QVBoxLayout>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <array>
@@ -337,6 +341,8 @@ private slots:
     void initTestCase();
     void cleanupTestCase();
     void picoStyleDrawsFilledCheckedIndicators();
+    void inputWheelGuardPreventsAccidentalValueChanges();
+    void responsiveLayoutKeepsSmallScreenPanelsUsable();
     void closeAfterEditedRun_data();
     void closeAfterEditedRun();
     void stationEditorFeedsCompileSnapshot_data();
@@ -815,6 +821,104 @@ void MainWindowLifecycleTests::picoStyleDrawsFilledCheckedIndicators()
     }
     QCOMPARE(style.pixelMetric(QStyle::PM_IndicatorWidth), 18);
     QCOMPARE(style.pixelMetric(QStyle::PM_IndicatorHeight), 18);
+}
+
+void MainWindowLifecycleTests::inputWheelGuardPreventsAccidentalValueChanges()
+{
+    InputWheelGuard guard;
+    qApp->installEventFilter(&guard);
+
+    QScrollArea area;
+    area.setAttribute(Qt::WA_DontShowOnScreen);
+    area.setWidgetResizable(true);
+    area.resize(280, 140);
+    auto* content = new QWidget;
+    content->setMinimumHeight(700);
+    auto* layout = new QVBoxLayout(content);
+    auto* combo = new QComboBox(content);
+    combo->addItems({QStringLiteral("A"), QStringLiteral("B"),
+                     QStringLiteral("C")});
+    combo->setCurrentIndex(1);
+    auto* spin = new QSpinBox(content);
+    spin->setRange(0, 10);
+    spin->setValue(5);
+    layout->addWidget(combo);
+    layout->addWidget(spin);
+    layout->addStretch(1);
+    area.setWidget(content);
+    area.show();
+    QCoreApplication::processEvents();
+
+    auto sendWheel = [](QWidget* target) {
+        const QPointF localPosition(target->rect().center());
+        const QPointF globalPosition(
+            target->mapToGlobal(localPosition.toPoint()));
+        QWheelEvent event(localPosition,
+                          globalPosition,
+                          {},
+                          QPoint(0, -120),
+                          Qt::NoButton,
+                          Qt::NoModifier,
+                          Qt::NoScrollPhase,
+                          false);
+        QCoreApplication::sendEvent(target, &event);
+    };
+
+    auto* scrollBar = area.verticalScrollBar();
+    QVERIFY(scrollBar->maximum() > 0);
+    scrollBar->setValue(0);
+    sendWheel(combo);
+    QCOMPARE(combo->currentIndex(), 1);
+    QVERIFY(scrollBar->value() > 0);
+
+    scrollBar->setValue(0);
+    sendWheel(spin);
+    QCOMPARE(spin->value(), 5);
+    QVERIFY(scrollBar->value() > 0);
+
+    qApp->removeEventFilter(&guard);
+}
+
+void MainWindowLifecycleTests::responsiveLayoutKeepsSmallScreenPanelsUsable()
+{
+    QSettings().clear();
+    MainWindow window;
+    window.resize(1024, 640);
+    window.show();
+    QTest::qWait(30);
+
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
+    auto* flowSplitter = window.findChild<QSplitter*>(
+        QStringLiteral("sequenceWorkSplitter"));
+    auto* stationSplitter = window.findChild<QSplitter*>(
+        QStringLiteral("stationWorkSplitter"));
+    auto* propertyEditor = window.findChild<StepPropertyEditor*>();
+    auto* stationEditor = window.findChild<StationPropertyEditor*>();
+    QVERIFY(tabs);
+    QVERIFY(flowSplitter);
+    QVERIFY(stationSplitter);
+    QVERIFY(propertyEditor);
+    QVERIFY(stationEditor);
+
+    tabs->setCurrentIndex(1);
+    QCoreApplication::processEvents();
+    const auto flowSizes = flowSplitter->sizes();
+    QCOMPARE(flowSizes.size(), 3);
+    QVERIFY(flowSizes.at(0) >= 180);
+    QVERIFY(flowSizes.at(1) >= 280);
+    QVERIFY(flowSizes.at(2) >= 240);
+    QCOMPARE(propertyEditor->minimumWidth(), 240);
+    QCOMPARE(stationEditor->minimumWidth(), 230);
+
+    tabs->setCurrentIndex(2);
+    QCoreApplication::processEvents();
+    const auto stationSizes = stationSplitter->sizes();
+    QCOMPARE(stationSizes.size(), 3);
+    QVERIFY(stationSizes.at(0) >= 180);
+    QVERIFY(stationSizes.at(1) >= 300);
+    QVERIFY(stationSizes.at(2) >= 230);
+    QVERIFY(window.close());
+    QSettings().clear();
 }
 
 void MainWindowLifecycleTests::flowDropTargetPrefersTestItemInterior()
@@ -4624,8 +4728,8 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
         QStringLiteral("stationScanDialogSwitch"));
     auto* pdfReport = window.findChild<QAbstractButton*>(
         QStringLiteral("stationPdfReportSwitch"));
-    auto* snLength = window.findChild<QSpinBox*>(
-        QStringLiteral("stationSnLengthSpin"));
+    auto* snLength = window.findChild<QLineEdit*>(
+        QStringLiteral("stationSnLengthEdit"));
     auto* snPattern = window.findChild<QLineEdit*>(
         QStringLiteral("stationSnPatternEdit"));
     auto* snAllowedRegex = window.findChild<QLineEdit*>(
@@ -4683,9 +4787,9 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     }
     const auto paneSizes = workArea->sizes();
     QCOMPARE(paneSizes.size(), 3);
-    QVERIFY(paneSizes[0] >= 210);
-    QVERIFY(paneSizes[1] >= 360);
-    QVERIFY(paneSizes[2] >= 240);
+    QVERIFY(paneSizes[0] >= 180);
+    QVERIFY(paneSizes[1] >= 300);
+    QVERIFY(paneSizes[2] >= 230);
     const int occupiedWidth = paneSizes[0] + paneSizes[1] + paneSizes[2]
         + workArea->handleWidth() * 2;
     QVERIFY(qAbs(occupiedWidth - workArea->width()) <= 2);
@@ -4700,7 +4804,10 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
              true);
     QVERIFY(stopOnFailure->isChecked());
     QVERIFY(scanEnabled->isChecked());
-    QCOMPARE(snLength->value(), 0);
+    QCOMPARE(snLength->text(), QString{});
+    QVERIFY(snLength->validator());
+    snLength->setText(QStringLiteral("257"));
+    QVERIFY(!snLength->hasAcceptableInput());
     QCOMPARE(model->text(), QStringLiteral("Legacy Model"));
     QCOMPARE(customerId->text(), QStringLiteral("OLD-CUSTOMER"));
     QCOMPARE(jigNo->text(), QStringLiteral("JIG-01"));
@@ -4709,7 +4816,7 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     stopOnFailure->setChecked(false);
     scanEnabled->setChecked(false);
     pdfReport->setChecked(true);
-    snLength->setValue(10);
+    snLength->setText(QStringLiteral("10"));
     snPattern->setText(QStringLiteral("BTSN*"));
     snAllowedRegex->setText(QStringLiteral("^[A-Z0-9]+$"));
     model->setText(QStringLiteral("PICO-M3"));

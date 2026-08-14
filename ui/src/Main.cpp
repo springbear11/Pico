@@ -1,5 +1,6 @@
 #include "ApplicationDiagnostics.h"
 #include "AdminStartupSplash.h"
+#include "InputWheelGuard.h"
 #include "LoginDialog.h"
 #include "MainWindow.h"
 #include "PicoATEStyle.h"
@@ -21,6 +22,8 @@
 int main(int argc, char* argv[])
 {
     QApplication application(argc, argv);
+    PicoATE::Ui::InputWheelGuard inputWheelGuard(&application);
+    application.installEventFilter(&inputWheelGuard);
     application.setStyle(new PicoATE::Ui::PicoATEStyle);
     PicoATE::Ui::applyPicoATEApplicationTheme(application);
     QCoreApplication::setApplicationName(QStringLiteral("PicoATE UI"));

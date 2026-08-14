@@ -33,6 +33,7 @@
 #include <QMessageBox>
 #include <QPixmap>
 #include <QProgressBar>
+#include <QResizeEvent>
 #include <QSizePolicy>
 #include <QSplitter>
 #include <QStatusBar>
@@ -163,7 +164,7 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
 {
     setObjectName(QStringLiteral("productionWindow"));
     setWindowTitle(tr("PicoATE TEST"));
-    setMinimumSize(960, 620);
+    setMinimumSize(840, 560);
 #if defined(PICOATE_UI_TEST_PROJECT_DIR)
     m_viewModel = new ExecutionViewModel(
         std::make_unique<CoreExecutionService>(
@@ -188,6 +189,7 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
             ? SnValidationRules{}
             : m_selection.snValidationRules);
     buildUi();
+    QTimer::singleShot(0, this, [this] { applyResponsiveLayout(); });
 
     connect(m_viewModel, &ExecutionViewModel::stateChanged,
             this, &ProductionWindow::updateState);
@@ -234,6 +236,66 @@ void ProductionWindow::closeEvent(QCloseEvent* event)
     m_operatorPromptPresenter->closeAll();
     m_viewModel->shutdown();
     event->accept();
+}
+
+void ProductionWindow::resizeEvent(QResizeEvent* event)
+{
+    QMainWindow::resizeEvent(event);
+    applyResponsiveLayout();
+}
+
+void ProductionWindow::applyResponsiveLayout(bool force)
+{
+    if (!centralWidget()) {
+        return;
+    }
+
+    const bool compact = width() < 1200 || height() < 720;
+    const int mode = compact ? 1 : 0;
+    if (!force && m_responsiveLayoutMode == mode) {
+        return;
+    }
+    m_responsiveLayoutMode = mode;
+
+    if (auto* layout = qobject_cast<QVBoxLayout*>(centralWidget()->layout())) {
+        layout->setContentsMargins(compact ? 10 : 16,
+                                   compact ? 8 : 14,
+                                   compact ? 10 : 16,
+                                   compact ? 8 : 12);
+        layout->setSpacing(compact ? 7 : 10);
+    }
+
+    if (auto* sidebar = findChild<QWidget*>(
+            QStringLiteral("productionSidebar"))) {
+        sidebar->setMinimumWidth(compact ? 185 : 215);
+        sidebar->setMaximumWidth(compact ? 230 : 270);
+        if (auto* sidebarLayout = qobject_cast<QVBoxLayout*>(sidebar->layout())) {
+            const int margin = compact ? 12 : 18;
+            sidebarLayout->setContentsMargins(margin, margin, margin, margin);
+            sidebarLayout->setSpacing(compact ? 8 : 14);
+        }
+    }
+    if (auto* splitter = findChild<QSplitter*>(
+            QStringLiteral("productionContentSplitter"))) {
+        splitter->setSizes(compact ? QList<int>{195, 805}
+                                   : QList<int>{235, 900});
+    }
+    if (auto* splitter = findChild<QSplitter*>(
+            QStringLiteral("productionDataSplitter"))) {
+        splitter->setSizes(compact ? QList<int>{520, 120}
+                                   : QList<int>{520, 170});
+    }
+    if (m_sequenceLabel) {
+        m_sequenceLabel->setMinimumHeight(compact ? 34 : 40);
+        m_sequenceLabel->setMaximumHeight(compact ? 38 : 44);
+    }
+    if (m_yieldChart) {
+        m_yieldChart->setMinimumHeight(compact ? 54 : 64);
+        m_yieldChart->setMaximumHeight(compact ? 74 : 100);
+    }
+    if (m_overallResult) {
+        m_overallResult->setMinimumHeight(compact ? 76 : 112);
+    }
 }
 
 bool ProductionWindow::eventFilter(QObject* watched, QEvent* event)
@@ -354,7 +416,7 @@ void ProductionWindow::buildUi()
 
     auto* sidebar = new QFrame(contentSplitter);
     sidebar->setObjectName(QStringLiteral("productionSidebar"));
-    sidebar->setMinimumWidth(215);
+    sidebar->setMinimumWidth(185);
     sidebar->setMaximumWidth(270);
     sidebar->installEventFilter(this);
     auto* sidebarLayout = new QVBoxLayout(sidebar);

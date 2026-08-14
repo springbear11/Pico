@@ -68,6 +68,7 @@
 #include <QPolygonF>
 #include <QPixmap>
 #include <QRegularExpression>
+#include <QResizeEvent>
 #include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -765,6 +766,7 @@ MainWindow::MainWindow(QWidget* parent)
     serviceAdminStartupAnimation();
     restoreUiSettings();
     serviceAdminStartupAnimation();
+    QTimer::singleShot(0, this, [this] { applyResponsiveLayout(); });
 
     connect(m_viewModel,
             &ExecutionViewModel::sequencePathChanged,
@@ -1477,6 +1479,82 @@ void MainWindow::closeEvent(QCloseEvent* event)
         event->accept();
     } else {
         event->ignore();
+    }
+}
+
+void MainWindow::resizeEvent(QResizeEvent* event)
+{
+    QMainWindow::resizeEvent(event);
+    applyResponsiveLayout();
+}
+
+void MainWindow::applyResponsiveLayout(bool force)
+{
+    if (!m_workspaceTabs) {
+        return;
+    }
+
+    const bool compact = width() < 1400 || height() < 760;
+    const int mode = compact ? 1 : 0;
+    const int previousMode = m_responsiveLayoutMode;
+    if (!force && previousMode == mode) {
+        return;
+    }
+    m_responsiveLayoutMode = mode;
+
+    // On a first launch at normal size, the build-time defaults are already
+    // correct. Restored splitter positions are kept until the screen class
+    // actually changes.
+    if (!force && !compact && previousMode < 0) {
+        return;
+    }
+
+    if (auto* layout = qobject_cast<QVBoxLayout*>(centralWidget()->layout())) {
+        const int margin = compact ? 8 : 12;
+        layout->setContentsMargins(margin, margin, margin, margin);
+        layout->setSpacing(compact ? 7 : 10);
+    }
+
+    const auto setSplitterSizes = [this](const char* objectName,
+                                         const QList<int>& normalSizes,
+                                         const QList<int>& compactSizes) {
+        if (auto* splitter = findChild<QSplitter*>(
+                QString::fromLatin1(objectName))) {
+            splitter->setSizes(m_responsiveLayoutMode == 1
+                                   ? compactSizes
+                                   : normalSizes);
+        }
+    };
+    setSplitterSizes("sequenceWorkSplitter",
+                     {220, 560, 380}, {180, 520, 280});
+    setSplitterSizes("sequenceVerticalSplitter",
+                     {520, 140}, {560, 100});
+    setSplitterSizes("stationWorkSplitter",
+                     {260, 610, 390}, {180, 540, 260});
+    setSplitterSizes("stationVerticalSplitter",
+                     {520, 140}, {560, 100});
+    setSplitterSizes("runSplitter",
+                     {230, 900}, {190, 900});
+
+    if (m_adminSequenceLabel) {
+        m_adminSequenceLabel->setMinimumHeight(compact ? 32 : 36);
+    }
+    if (auto* sidebar = findChild<QWidget*>(
+            QStringLiteral("adminRunSidebar"))) {
+        sidebar->setMinimumWidth(compact ? 185 : 205);
+        sidebar->setMaximumWidth(compact ? 245 : 265);
+        if (auto* sidebarLayout = qobject_cast<QVBoxLayout*>(sidebar->layout())) {
+            const int margin = compact ? 12 : 18;
+            sidebarLayout->setContentsMargins(margin, margin, margin, margin);
+            sidebarLayout->setSpacing(compact ? 8 : 12);
+        }
+    }
+    if (m_adminOverallResult) {
+        m_adminOverallResult->setMinimumHeight(compact ? 78 : 104);
+    }
+    if (m_adminYieldChart) {
+        m_adminYieldChart->setMinimumHeight(compact ? 56 : 64);
+        m_adminYieldChart->setMaximumHeight(compact ? 76 : 100);
     }
 }
 
@@ -4595,8 +4673,8 @@ void MainWindow::buildLayout()
             5000);
     };
     functionPanelLayout->addWidget(m_pluginFunctionView, 1);
-    functionPanel->setMinimumWidth(230);
-    functionPanel->setMaximumWidth(390);
+    functionPanel->setMinimumWidth(180);
+    functionPanel->setMaximumWidth(360);
     connect(m_flowTargetSelector, &FlowTargetSelector::targetChanged,
             this, [this](const QString& targetId) {
                 m_pluginFunctionModel->setSelectedDeviceId(targetId);
@@ -4645,7 +4723,7 @@ void MainWindow::buildLayout()
     auto treeSizePolicy = m_sequenceTreeView->sizePolicy();
     treeSizePolicy.setHorizontalPolicy(QSizePolicy::Ignored);
     m_sequenceTreeView->setSizePolicy(treeSizePolicy);
-    m_sequenceTreeView->setMinimumWidth(320);
+    m_sequenceTreeView->setMinimumWidth(280);
     polishReadableTreeView(m_sequenceTreeView);
     installProportionalHeader(m_sequenceTreeView, {5, 2, 2, 1, 1, 2, 2});
     m_sequenceTreeView->setColumnHidden(SequenceTreeModel::BreakpointColumn, true);
@@ -4673,8 +4751,8 @@ void MainWindow::buildLayout()
         tr("Find Step, ID, function, or device"));
     m_flowFieldSearch->setClearButtonEnabled(true);
     m_flowFieldSearch->setFixedHeight(32);
-    m_flowFieldSearch->setMaximumWidth(360);
-    m_flowFieldSearch->setMinimumWidth(240);
+    m_flowFieldSearch->setMaximumWidth(320);
+    m_flowFieldSearch->setMinimumWidth(180);
     m_flowFieldSearch->setStyleSheet(QStringLiteral(
         "QLineEdit#flowFieldSearch {"
         " background: #f7f8f9;"
@@ -4810,7 +4888,7 @@ void MainWindow::buildLayout()
     stationSettingsScroll->setHorizontalScrollBarPolicy(
         Qt::ScrollBarAlwaysOff);
     stationSettingsScroll->setWidget(m_stationSettingsEditor);
-    stationSettingsScroll->setMinimumWidth(210);
+    stationSettingsScroll->setMinimumWidth(180);
 
     auto* devicePane = new QWidget(stationWorkArea);
     devicePane->setObjectName(QStringLiteral("stationDevicePane"));
@@ -4840,7 +4918,7 @@ void MainWindow::buildLayout()
     m_stationDeviceView->setItemDelegateForColumn(
         StationDeviceModel::EnabledColumn,
         new OnOffItemDelegate(m_stationDeviceView));
-    m_stationDeviceView->setMinimumWidth(360);
+    m_stationDeviceView->setMinimumWidth(300);
     deviceLayout->addWidget(m_stationDeviceView, 1);
 
     auto* propertyPane = new QWidget(stationWorkArea);
@@ -4893,7 +4971,7 @@ void MainWindow::buildLayout()
 
     auto* sidebar = new QFrame(splitter);
     sidebar->setObjectName(QStringLiteral("adminRunSidebar"));
-    sidebar->setMinimumWidth(205);
+    sidebar->setMinimumWidth(185);
     sidebar->setMaximumWidth(265);
     sidebar->installEventFilter(this);
     auto* sidebarLayout = new QVBoxLayout(sidebar);
@@ -6108,6 +6186,8 @@ void MainWindow::restoreUiSettings()
     m_uutCount->setValue(settings.value(QStringLiteral("UutCount"), 1).toInt());
     m_connectionTimeoutMs->setValue(
         settings.value(QStringLiteral("ConnectionTimeoutMs"), 5000).toInt());
+    m_responsiveLayoutMode = settings.value(
+        QStringLiteral("ResponsiveLayoutMode"), -1).toInt();
     settings.endGroup();
 }
 
@@ -6138,6 +6218,10 @@ void MainWindow::saveUiSettings() const
     settings.setValue(QStringLiteral("UutCount"), m_uutCount->value());
     settings.setValue(QStringLiteral("ConnectionTimeoutMs"),
                       m_connectionTimeoutMs->value());
+    settings.setValue(QStringLiteral("ResponsiveLayoutMode"),
+                      m_responsiveLayoutMode >= 0
+                          ? m_responsiveLayoutMode
+                          : (width() < 1400 || height() < 760 ? 1 : 0));
     settings.endGroup();
     settings.sync();
 }
@@ -6153,21 +6237,8 @@ void MainWindow::resetUiLayout()
     if (auto* details = findChild<QTabWidget*>(QStringLiteral("runDetailsTabs"))) {
         details->setCurrentIndex(0);
     }
-    if (auto* splitter = findChild<QSplitter*>(QStringLiteral("sequenceVerticalSplitter"))) {
-        splitter->setSizes({520, 140});
-    }
-    if (auto* splitter = findChild<QSplitter*>(QStringLiteral("sequenceWorkSplitter"))) {
-        splitter->setSizes({220, 560, 380});
-    }
-    if (auto* splitter = findChild<QSplitter*>(QStringLiteral("stationVerticalSplitter"))) {
-        splitter->setSizes({520, 140});
-    }
-    if (auto* splitter = findChild<QSplitter*>(QStringLiteral("stationWorkSplitter"))) {
-        splitter->setSizes({260, 610, 390});
-    }
-    if (auto* splitter = findChild<QSplitter*>(QStringLiteral("runSplitter"))) {
-        splitter->setSizes({700, 460});
-    }
+    m_responsiveLayoutMode = -1;
+    applyResponsiveLayout(true);
     statusBar()->showMessage(tr("Default layout restored"), 3000);
 }
 

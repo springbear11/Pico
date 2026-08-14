@@ -4,9 +4,11 @@
 #include <QWidget>
 
 class QAbstractButton;
+class QFormLayout;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QResizeEvent;
 class QSpinBox;
 
 namespace PicoATE::Ui {
@@ -30,15 +32,20 @@ public:
 signals:
     void pendingChangesChanged(bool pending);
 
+protected:
+    void resizeEvent(QResizeEvent* event) override;
+
 private slots:
     void reload();
 
 private:
+    void applyResponsiveFormLayout();
     void showError(const QString& message);
     void markPendingChanges();
     void setPendingChanges(bool pending);
 
     QPointer<StationDocument> m_document;
+    QFormLayout* m_form = nullptr;
     QLineEdit* m_stationIdEdit = nullptr;
     QLineEdit* m_stationModelEdit = nullptr;
     QLineEdit* m_customerIdEdit = nullptr;
@@ -52,7 +59,7 @@ private:
     QAbstractButton* m_pdfReportSwitch = nullptr;
     QLineEdit* m_reportOutputEdit = nullptr;
     QPushButton* m_browseReportOutputButton = nullptr;
-    QSpinBox* m_snLengthSpin = nullptr;
+    QLineEdit* m_snLengthEdit = nullptr;
     QLineEdit* m_snPatternEdit = nullptr;
     QLineEdit* m_snAllowedRegexEdit = nullptr;
     QLineEdit* m_jigNoEdit = nullptr;
@@ -63,6 +70,7 @@ private:
     bool m_editable = true;
     bool m_loading = false;
     bool m_pendingChanges = false;
+    bool m_compactFormLayout = false;
 };
 
 } // namespace PicoATE::Ui
