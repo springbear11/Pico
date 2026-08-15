@@ -12,7 +12,6 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QResizeEvent>
-#include <QSpinBox>
 #include <QVBoxLayout>
 
 #include <initializer_list>
@@ -105,7 +104,7 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     m_snLengthEdit->setValidator(new QIntValidator(1, 256, m_snLengthEdit));
     m_snLengthEdit->setMaxLength(3);
     m_snLengthEdit->setPlaceholderText(tr("Any"));
-    m_snLengthEdit->setAlignment(Qt::AlignCenter);
+    m_snLengthEdit->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_snLengthEdit->setToolTip(tr("Exact SN length. Leave empty for Any."));
     form->addRow(tr("SN Length"), m_snLengthEdit);
 
@@ -124,13 +123,15 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
         tr("Optional regular expression applied to the complete SN."));
     form->addRow(tr("Allowed Characters"), m_snAllowedRegexEdit);
 
-    m_loopTestCountSpin = new QSpinBox(this);
-    m_loopTestCountSpin->setObjectName(QStringLiteral("stationLoopTestCountSpin"));
-    m_loopTestCountSpin->setRange(1, 100000);
-    m_loopTestCountSpin->setSuffix(tr(" runs"));
-    m_loopTestCountSpin->setToolTip(
+    m_loopTestCountEdit = new QLineEdit(this);
+    m_loopTestCountEdit->setObjectName(QStringLiteral("stationLoopTestCountEdit"));
+    m_loopTestCountEdit->setValidator(
+        new QIntValidator(1, 100000, m_loopTestCountEdit));
+    m_loopTestCountEdit->setMaxLength(6);
+    m_loopTestCountEdit->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_loopTestCountEdit->setToolTip(
         tr("Run the complete sequence this many times after one Run command"));
-    form->addRow(tr("Loop Count"), m_loopTestCountSpin);
+    form->addRow(tr("Loop Count"), m_loopTestCountEdit);
     serviceAdminStartupAnimation();
 
     m_loopTestSwitch = new OnOffSwitch(this);
@@ -201,11 +202,11 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     connect(m_stopOnFailureSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_scanDialogSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_loopTestSwitch, &QAbstractButton::toggled, this, [this] {
-        m_loopTestCountSpin->setEnabled(
+        m_loopTestCountEdit->setEnabled(
             m_editable && m_loopTestSwitch->isChecked());
         markPendingChanges();
     });
-    connect(m_loopTestCountSpin, &QSpinBox::valueChanged, this, markPending);
+    connect(m_loopTestCountEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_txtLogSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_csvReportSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_xlsxReportSwitch, &QAbstractButton::toggled, this, markPending);
@@ -268,7 +269,7 @@ void StationSettingsEditor::setEditable(bool editable)
                         static_cast<QWidget*>(m_stopOnFailureSwitch),
                         static_cast<QWidget*>(m_scanDialogSwitch),
                         static_cast<QWidget*>(m_loopTestSwitch),
-                        static_cast<QWidget*>(m_loopTestCountSpin),
+                        static_cast<QWidget*>(m_loopTestCountEdit),
                         static_cast<QWidget*>(m_txtLogSwitch),
                         static_cast<QWidget*>(m_csvReportSwitch),
                         static_cast<QWidget*>(m_xlsxReportSwitch),
@@ -311,6 +312,14 @@ bool StationSettingsEditor::commitPendingChanges()
         m_snLengthEdit->selectAll();
         return false;
     }
+    const auto loopCountText = m_loopTestCountEdit->text().trimmed();
+    if (m_loopTestSwitch->isChecked() &&
+        !m_loopTestCountEdit->hasAcceptableInput()) {
+        showError(tr("Loop Count must be an integer from 1 to 100000"));
+        m_loopTestCountEdit->setFocus();
+        m_loopTestCountEdit->selectAll();
+        return false;
+    }
     auto root = m_document->rootObject();
     auto metadata = root.value(QStringLiteral("metadata")).toObject();
     setMetadataValue(metadata, QStringLiteral("jigNo"), m_jigNoEdit->text(),
@@ -327,7 +336,10 @@ bool StationSettingsEditor::commitPendingChanges()
     root.insert(QStringLiteral("stopOnFailure"), m_stopOnFailureSwitch->isChecked());
     root.insert(QStringLiteral("scanDialogEnabled"), m_scanDialogSwitch->isChecked());
     root.insert(QStringLiteral("loopTestEnabled"), m_loopTestSwitch->isChecked());
-    root.insert(QStringLiteral("loopTestCount"), m_loopTestCountSpin->value());
+    root.insert(QStringLiteral("loopTestCount"),
+                m_loopTestCountEdit->hasAcceptableInput()
+                    ? loopCountText.toInt()
+                    : 1);
     root.insert(QStringLiteral("pluginRegistry"),
                 QStringLiteral("plugins/PluginRegistry.json"));
     root.insert(QStringLiteral("txtLogEnabled"), m_txtLogSwitch->isChecked());
@@ -385,7 +397,7 @@ bool StationSettingsEditor::focusField(const QString& path)
     } else if (path == QStringLiteral("loopTestEnabled")) {
         field = m_loopTestSwitch;
     } else if (path == QStringLiteral("loopTestCount")) {
-        field = m_loopTestCountSpin;
+        field = m_loopTestCountEdit;
     } else if (path == QStringLiteral("txtLogEnabled")) {
         field = m_txtLogSwitch;
     } else if (path == QStringLiteral("csvReportEnabled")) {
@@ -442,8 +454,8 @@ void StationSettingsEditor::reload()
         root.value(QStringLiteral("scanDialogEnabled")).toBool(true));
     m_loopTestSwitch->setChecked(
         root.value(QStringLiteral("loopTestEnabled")).toBool(false));
-    m_loopTestCountSpin->setValue(qBound(
-        1, root.value(QStringLiteral("loopTestCount")).toInt(1), 100000));
+    m_loopTestCountEdit->setText(QString::number(qBound(
+        1, root.value(QStringLiteral("loopTestCount")).toInt(1), 100000)));
     m_txtLogSwitch->setChecked(
         root.value(QStringLiteral("txtLogEnabled")).toBool(false));
     m_csvReportSwitch->setChecked(
@@ -476,7 +488,7 @@ void StationSettingsEditor::reload()
                         static_cast<QWidget*>(m_stopOnFailureSwitch),
                         static_cast<QWidget*>(m_scanDialogSwitch),
                         static_cast<QWidget*>(m_loopTestSwitch),
-                        static_cast<QWidget*>(m_loopTestCountSpin),
+                        static_cast<QWidget*>(m_loopTestCountEdit),
                         static_cast<QWidget*>(m_txtLogSwitch),
                         static_cast<QWidget*>(m_csvReportSwitch),
                         static_cast<QWidget*>(m_xlsxReportSwitch),
@@ -491,7 +503,7 @@ void StationSettingsEditor::reload()
                         static_cast<QWidget*>(m_testerEdit)}) {
         field->setEnabled(m_editable && valid);
     }
-    m_loopTestCountSpin->setEnabled(
+    m_loopTestCountEdit->setEnabled(
         m_editable && valid && m_loopTestSwitch->isChecked());
     m_errorLabel->hide();
     m_loading = false;

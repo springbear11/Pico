@@ -4726,8 +4726,12 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
         QStringLiteral("stationStopOnFailureSwitch"));
     auto* scanEnabled = window.findChild<QAbstractButton*>(
         QStringLiteral("stationScanDialogSwitch"));
+    auto* loopEnabled = window.findChild<QAbstractButton*>(
+        QStringLiteral("stationLoopTestSwitch"));
     auto* pdfReport = window.findChild<QAbstractButton*>(
         QStringLiteral("stationPdfReportSwitch"));
+    auto* loopCount = window.findChild<QLineEdit*>(
+        QStringLiteral("stationLoopTestCountEdit"));
     auto* snLength = window.findChild<QLineEdit*>(
         QStringLiteral("stationSnLengthEdit"));
     auto* snPattern = window.findChild<QLineEdit*>(
@@ -4752,7 +4756,9 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     auto* document = window.findChild<StationDocument*>();
     QVERIFY(stopOnFailure);
     QVERIFY(scanEnabled);
+    QVERIFY(loopEnabled);
     QVERIFY(pdfReport);
+    QVERIFY(loopCount);
     QVERIFY(snLength);
     QVERIFY(snPattern);
     QVERIFY(snAllowedRegex);
@@ -4808,6 +4814,10 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QVERIFY(snLength->validator());
     snLength->setText(QStringLiteral("257"));
     QVERIFY(!snLength->hasAcceptableInput());
+    QCOMPARE(loopCount->text(), QStringLiteral("1"));
+    QVERIFY(loopCount->validator());
+    loopCount->setText(QStringLiteral("100001"));
+    QVERIFY(!loopCount->hasAcceptableInput());
     QCOMPARE(model->text(), QStringLiteral("Legacy Model"));
     QCOMPARE(customerId->text(), QStringLiteral("OLD-CUSTOMER"));
     QCOMPARE(jigNo->text(), QStringLiteral("JIG-01"));
@@ -4815,8 +4825,10 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QCOMPARE(tester->text(), QStringLiteral("Tester A"));
     stopOnFailure->setChecked(false);
     scanEnabled->setChecked(false);
+    loopEnabled->setChecked(true);
     pdfReport->setChecked(true);
     snLength->setText(QStringLiteral("10"));
+    loopCount->setText(QStringLiteral("12"));
     snPattern->setText(QStringLiteral("BTSN*"));
     snAllowedRegex->setText(QStringLiteral("^[A-Z0-9]+$"));
     model->setText(QStringLiteral("PICO-M3"));
@@ -4830,6 +4842,10 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
              false);
     QCOMPARE(document->rootObject().value(QStringLiteral("scanDialogEnabled")).toBool(),
              false);
+    QCOMPARE(document->rootObject().value(QStringLiteral("loopTestEnabled")).toBool(),
+             true);
+    QCOMPARE(document->rootObject().value(QStringLiteral("loopTestCount")).toInt(),
+             12);
     QCOMPARE(document->rootObject().value(QStringLiteral("pdfReportEnabled")).toBool(),
              true);
     QCOMPARE(document->rootObject().value(QStringLiteral("snLength")).toInt(), 10);

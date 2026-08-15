@@ -9,7 +9,6 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QResizeEvent;
-class QSpinBox;
 
 namespace PicoATE::Ui {
 
@@ -52,7 +51,7 @@ private:
     QAbstractButton* m_stopOnFailureSwitch = nullptr;
     QAbstractButton* m_scanDialogSwitch = nullptr;
     QAbstractButton* m_loopTestSwitch = nullptr;
-    QSpinBox* m_loopTestCountSpin = nullptr;
+    QLineEdit* m_loopTestCountEdit = nullptr;
     QAbstractButton* m_txtLogSwitch = nullptr;
     QAbstractButton* m_csvReportSwitch = nullptr;
     QAbstractButton* m_xlsxReportSwitch = nullptr;
