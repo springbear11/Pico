@@ -7,6 +7,7 @@
 #include "PicoATE/Core/ExecutionResultStore.h"
 #include "PicoATE/Core/LoopController.h"
 #include "PicoATE/Core/NodeRunner.h"
+#include "PicoATE/Core/OperatorPromptRuntimeCoordinator.h"
 #include "PicoATE/Core/PeriodicTaskController.h"
 #include "PicoATE/Core/ResourceManager.h"
 #include "PicoATE/Core/ResourceRegionController.h"
@@ -196,10 +197,6 @@ private:
                              const ExecNode& node,
                              const NodeAttempt& attempt,
                              const QString& message = {});
-    NodeId operatorPromptCloseTarget(const ExecNode& node) const;
-    void trackOperatorPrompt(const UutExecution& uut,
-                             const ExecNode& node,
-                             const NodeResult& result);
     void closeOperatorPromptsForNode(const UutExecution& uut,
                                      const ExecNode& completedNode,
                                      const NodeResult& result);
@@ -210,14 +207,6 @@ private:
                                      const NodeId& closedByNodeId = {},
                                      NodeOutcome outcome = NodeOutcome::Passed,
                                      const QString& message = {});
-    struct ActiveOperatorPrompt {
-        QString instanceId;
-        UutId uutId;
-        NodeId sourceNodeId;
-        NodeId closeTargetNodeId;
-        QString dialogKey;
-    };
-
     struct PendingWait {
         RequestId requestId;
         UutId uutId;
@@ -235,22 +224,6 @@ private:
         ActivationId activationId;
     };
 
-    struct PendingOperatorPrompt {
-        RequestId requestId;
-        QString instanceId;
-        UutId uutId;
-        FrameId frameId;
-        NodeId nodeId;
-        AttemptId attemptId;
-        ResourceLeaseId leaseId;
-        OperatorPromptMode mode = OperatorPromptMode::Confirm;
-        OperatorPromptResponse acceptedResponse = OperatorPromptResponse::Confirmed;
-        OperatorPromptResponse rejectedResponse = OperatorPromptResponse::None;
-        QVariantMap promptDetails;
-        bool timeoutEnabled = false;
-        std::chrono::steady_clock::time_point deadline;
-    };
-
     const ExecutionPlan& m_plan;
     ResourceManager& m_resources;
     ResourceRegionController m_resourceRegions;
@@ -262,11 +235,10 @@ private:
     ExecutionControl* m_executionControl = nullptr;
     StopToken* m_stopToken = nullptr;
     RuntimeEventEmitter* m_events = nullptr;
-    QVector<ActiveOperatorPrompt> m_activeOperatorPrompts;
+    OperatorPromptRuntimeCoordinator m_operatorPromptRuntime;
     TimerService m_timers;
     QHash<RequestId, PendingWait> m_pendingWaits;
     QHash<RequestId, PendingRetry> m_pendingRetries;
-    QHash<RequestId, PendingOperatorPrompt> m_pendingOperatorPrompts;
     QHash<QString, ErrorAction> m_testItemFailureEscalations;
     QHash<QString, ErrorAction> m_loopFailureEscalations;
     PeriodicTaskController m_periodicTasks;

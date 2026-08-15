@@ -25,6 +25,7 @@ add_library(PicoATECore SHARED
     src/NativeHostManifest.cpp
     src/NodeRunner.cpp
     src/OperatorPrompt.cpp
+    src/OperatorPromptRuntimeCoordinator.cpp
     src/PeriodicTaskController.cpp
     src/PlanBuilder.cpp
     src/PlanCache.cpp

@@ -18,6 +18,7 @@
 #include "PicoATE/Core/ModuleRuntime.h"
 #include "PicoATE/Core/ModuleTransportJson.h"
 #include "PicoATE/Core/NativeHostManifest.h"
+#include "PicoATE/Core/OperatorPromptRuntimeCoordinator.h"
 #include "PicoATE/Core/PlanBuilder.h"
 #include "PicoATE/Core/PlanCache.h"
 #include "PicoATE/Core/ProductRouting.h"
@@ -763,6 +764,8 @@ private slots:
     void sequenceCompilerCompilesJsonToExecutablePlan();
     void sequenceCompilerBindsTypedVariablesPerUut();
     void sequenceCompilerRejectsInvalidSequenceVariables();
+    void operatorPromptRuntimeCompletesInputResponse();
+    void operatorPromptRuntimeTracksNoticeClosures();
     void operatorPromptsConfirmAndCloseOnCompletedStep();
     void operatorPromptJudgmentMapsPassAndFail();
     void operatorPromptInputFeedsLaterStep();
@@ -9962,6 +9965,119 @@ void CoreTests::limitStepFailsReferencedParsedValueOutsideRange()
     QCOMPARE(limited->result.measurements.first().value.toDouble(), 5.3);
     QCOMPARE(limited->result.measurements.first().lowerLimit, 4.8);
     QCOMPARE(limited->result.measurements.first().upperLimit, 5.2);
+}
+
+void CoreTests::operatorPromptRuntimeCompletesInputResponse()
+{
+    ExecutionPlan plan;
+    plan.id = QStringLiteral("operator-prompt-runtime-input");
+    ExecNode prompt;
+    prompt.id = QStringLiteral("read-voltage");
+    prompt.kind = ExecNodeKind::OperatorPrompt;
+    prompt.payload.insert(QStringLiteral("mode"), QStringLiteral("input"));
+    prompt.payload.insert(QStringLiteral("inputType"), QStringLiteral("integer"));
+    prompt.payload.insert(QStringLiteral("timeoutMs"), 60000);
+    QVERIFY(plan.addNode(prompt));
+
+    OperatorPromptController responses;
+    responses.setResponderAvailable(true);
+    QVERIFY(responses.registerPrompt(QStringLiteral("prompt-1")));
+    OperatorPromptRuntimeCoordinator runtime(plan, &responses);
+
+    NodeAttempt attempt;
+    attempt.id = QStringLiteral("attempt-1");
+    attempt.requestId = QStringLiteral("request-1");
+    attempt.state = AttemptState::Running;
+    NodeResult waiting;
+    waiting.nodeId = prompt.id;
+    waiting.outcome = NodeOutcome::Unknown;
+    waiting.startedAt = QDateTime::currentDateTimeUtc();
+    waiting.outputs.insert(
+        QStringLiteral("promptInstanceId"), QStringLiteral("prompt-1"));
+    waiting.outputs.insert(QStringLiteral("mode"), QStringLiteral("input"));
+    waiting.outputs.insert(QStringLiteral("timeoutMs"), 60000);
+    runtime.registerPending(QStringLiteral("UUT-1"),
+                            QStringLiteral("root"),
+                            prompt,
+                            attempt,
+                            waiting,
+                            QStringLiteral("lease-1"));
+
+    QVERIFY(runtime.hasPendingRequests());
+    QVERIFY(runtime.hasPendingRequestForUut(QStringLiteral("UUT-1")));
+    QVERIFY(!runtime.takeReady(QStringLiteral("UUT-1"),
+                               QStringLiteral("root")).has_value());
+    QVERIFY(responses.respond(
+        QStringLiteral("prompt-1"),
+        OperatorPromptResponse::Submitted,
+        {{QStringLiteral("text"), QStringLiteral("42")}}));
+
+    const auto resolution = runtime.takeReady(
+        QStringLiteral("UUT-1"), QStringLiteral("root"));
+    QVERIFY(resolution.has_value());
+    QCOMPARE(resolution->pending.requestId, attempt.requestId);
+    QCOMPARE(resolution->pending.leaseId, QStringLiteral("lease-1"));
+    QCOMPARE(resolution->waitStatus, OperatorPromptWaitStatus::Accepted);
+    QCOMPARE(resolution->result.outcome, NodeOutcome::Passed);
+    QCOMPARE(resolution->result.outputs.value(
+                 QStringLiteral("value")).toLongLong(),
+             qint64(42));
+    QCOMPARE(resolution->result.outputs.value(
+                 QStringLiteral("response")).toString(),
+             QStringLiteral("submitted"));
+    QCOMPARE(resolution->closeReason, QStringLiteral("submitted"));
+    QVERIFY(!resolution->keepOpen);
+    QVERIFY(!runtime.hasPendingRequests());
+}
+
+void CoreTests::operatorPromptRuntimeTracksNoticeClosures()
+{
+    ExecutionPlan plan;
+    plan.id = QStringLiteral("operator-prompt-runtime-closures");
+    ExecNode notice;
+    notice.id = QStringLiteral("show-instruction");
+    notice.kind = ExecNodeKind::OperatorPrompt;
+    notice.payload.insert(QStringLiteral("mode"), QStringLiteral("notice"));
+    ExecNode unrelated;
+    unrelated.id = QStringLiteral("unrelated");
+    unrelated.kind = ExecNodeKind::Action;
+    ExecNode target;
+    target.id = QStringLiteral("check-button");
+    target.kind = ExecNodeKind::Action;
+    QVERIFY(plan.addNode(notice));
+    QVERIFY(plan.addNode(unrelated));
+    QVERIFY(plan.addNode(target));
+    plan.addEdge({QStringLiteral("notice-target"),
+                  notice.id,
+                  target.id,
+                  EdgeKind::Control,
+                  EdgeTrigger::OnSuccess,
+                  {},
+                  0});
+
+    OperatorPromptController responses;
+    OperatorPromptRuntimeCoordinator runtime(plan, &responses);
+    NodeResult shown;
+    shown.nodeId = notice.id;
+    shown.outcome = NodeOutcome::Passed;
+    shown.outputs.insert(
+        QStringLiteral("promptInstanceId"), QStringLiteral("notice-1"));
+    shown.outputs.insert(QStringLiteral("mode"), QStringLiteral("notice"));
+    runtime.trackNotice(QStringLiteral("UUT-1"), notice, shown);
+
+    NodeResult completed;
+    completed.outcome = NodeOutcome::Passed;
+    QVERIFY(runtime.takeClosuresForNode(
+                QStringLiteral("UUT-1"), unrelated, completed).isEmpty());
+    const auto closures = runtime.takeClosuresForNode(
+        QStringLiteral("UUT-1"), target, completed);
+    QCOMPARE(closures.size(), 1);
+    QCOMPARE(closures.first().instanceId, QStringLiteral("notice-1"));
+    QCOMPARE(closures.first().sourceNodeId, notice.id);
+    QCOMPARE(closures.first().closedByNodeId, target.id);
+    QCOMPARE(closures.first().reason, QStringLiteral("target-completed"));
+    QVERIFY(runtime.takeClosuresForNode(
+                QStringLiteral("UUT-1"), target, completed).isEmpty());
 }
 
 void CoreTests::operatorPromptsConfirmAndCloseOnCompletedStep()
