@@ -190,6 +190,7 @@ ExecutionGraphScheduler::ExecutionGraphScheduler(const ExecutionPlan& plan,
     , m_resources(resources)
     , m_resourceRegions(plan, resources)
     , m_barrierRuntime(plan, barriers)
+    , m_cleanupRuntime(plan)
     , m_loops(loops)
     , m_errorPolicy(errorPolicy)
     , m_runner(runner)
@@ -360,12 +361,12 @@ int ExecutionGraphScheduler::activePeriodicTaskCount() const
 
 bool ExecutionGraphScheduler::sessionCleanupRequested() const
 {
-    return m_sessionCleanupRequested;
+    return m_cleanupRuntime.sessionCleanupRequested();
 }
 
 QString ExecutionGraphScheduler::sessionCleanupReason() const
 {
-    return m_sessionCleanupReason;
+    return m_cleanupRuntime.sessionCleanupReason();
 }
 
 SchedulerResult ExecutionGraphScheduler::run(UutExecution& uut, const FrameId& frameId)
@@ -581,8 +582,18 @@ void ExecutionGraphScheduler::applyBarrierReleases(const QVector<UutExecution*>&
 
 void ExecutionGraphScheduler::activateAllCleanup(UutExecution& uut)
 {
-    for (const auto& region : m_plan.cleanupRegions) {
-        activateCleanup(uut, region.id);
+    const auto requests = m_cleanupRuntime.activationRequests(uut);
+    for (const auto& request : requests) {
+        auto& activation = uut.ensureActivation(request.nodeId, "cleanup");
+        activation.state = ActivationState::Created;
+        if (const auto* node = m_plan.node(request.nodeId)) {
+            publishNodeEvent(RuntimeEventKind::CleanupActivated,
+                             uut,
+                             *node,
+                             activation.state,
+                             NodeOutcome::Unknown,
+                             request.message);
+        }
     }
 }
 
@@ -718,7 +729,8 @@ bool ExecutionGraphScheduler::dependenciesSatisfied(
             continue;
         }
 
-        if (bestEffortCleanupEdgeActive(uut, edge.from, node.id)) {
+        if (m_cleanupRuntime.bestEffortEdgeActive(
+                uut, edge.from, node.id)) {
             continue;
         }
 
@@ -1409,7 +1421,7 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
     if (result.outcome != NodeOutcome::Passed &&
         result.outcome != NodeOutcome::Skipped &&
         result.outcome != NodeOutcome::Unknown &&
-        bestEffortCleanupApplies(uut, node.id)) {
+        m_cleanupRuntime.bestEffortApplies(uut, node.id)) {
         finalDecision.action = ErrorAction::Continue;
         finalDecision.reason = QStringLiteral("best-effort cleanup continues after error");
     }
@@ -1447,7 +1459,8 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
                                   frameId);
         } else {
             if (finalDecision.action == ErrorAction::RunCleanup) {
-                requestSessionCleanup(uut, node, finalDecision.reason);
+                m_cleanupRuntime.requestSessionCleanup(
+                    uut.uutId, node.id, finalDecision.reason);
             } else if (finalDecision.action == ErrorAction::Abort) {
                 requestSessionAbort();
             }
@@ -1805,7 +1818,7 @@ bool ExecutionGraphScheduler::completePendingOperatorPrompt(
     if (result.outcome != NodeOutcome::Passed &&
         result.outcome != NodeOutcome::Skipped &&
         result.outcome != NodeOutcome::Unknown &&
-        bestEffortCleanupApplies(uut, node->id)) {
+        m_cleanupRuntime.bestEffortApplies(uut, node->id)) {
         finalDecision.action = ErrorAction::Continue;
         finalDecision.reason =
             QStringLiteral("best-effort cleanup continues after error");
@@ -1844,7 +1857,8 @@ bool ExecutionGraphScheduler::completePendingOperatorPrompt(
                 uut, *node, result, finalDecision.action, frameId);
         } else {
             if (finalDecision.action == ErrorAction::RunCleanup) {
-                requestSessionCleanup(uut, *node, finalDecision.reason);
+                m_cleanupRuntime.requestSessionCleanup(
+                    uut.uutId, node->id, finalDecision.reason);
             } else if (finalDecision.action == ErrorAction::Abort) {
                 requestSessionAbort();
             }
@@ -2174,7 +2188,7 @@ NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
             return pending;
         }
         const auto childEscalation = m_testItemFailureEscalations.take(escalationKey);
-        if (bestEffortCleanupApplies(uut, node.id)) {
+        if (m_cleanupRuntime.bestEffortApplies(uut, node.id)) {
             decision.action = ErrorAction::Continue;
             decision.reason = QStringLiteral("best-effort cleanup continues after error");
         } else if (failureEscalationPriority(childEscalation) >
@@ -2192,7 +2206,8 @@ NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
             handleLoopBodyFailure(uut, node, result, decision.action, frameId);
         } else {
             if (decision.action == ErrorAction::RunCleanup) {
-                requestSessionCleanup(uut, node, decision.reason);
+                m_cleanupRuntime.requestSessionCleanup(
+                    uut.uutId, node.id, decision.reason);
             } else if (decision.action == ErrorAction::Abort) {
                 requestSessionAbort();
             }
@@ -2293,7 +2308,7 @@ NodeResult ExecutionGraphScheduler::executeLoopNode(UutExecution& uut,
                 activation.attempts.size(),
                 inheritedErrorAction(node, result.outcome));
             const auto childEscalation = m_loopFailureEscalations.take(escalationKey);
-            if (bestEffortCleanupApplies(uut, node.id)) {
+            if (m_cleanupRuntime.bestEffortApplies(uut, node.id)) {
                 errorDecision.action = ErrorAction::Continue;
                 errorDecision.reason =
                     QStringLiteral("best-effort cleanup continues after error");
@@ -2320,7 +2335,8 @@ NodeResult ExecutionGraphScheduler::executeLoopNode(UutExecution& uut,
                                       frameId);
             } else {
                 if (errorDecision.action == ErrorAction::RunCleanup) {
-                    requestSessionCleanup(uut, node, errorDecision.reason);
+                    m_cleanupRuntime.requestSessionCleanup(
+                        uut.uutId, node.id, errorDecision.reason);
                 } else if (errorDecision.action == ErrorAction::Abort) {
                     requestSessionAbort();
                 }
@@ -2405,18 +2421,6 @@ std::optional<ErrorAction> ExecutionGraphScheduler::inheritedErrorAction(
         parentId = m_plan.structuralParentOf(*parentId);
     }
     return std::nullopt;
-}
-
-void ExecutionGraphScheduler::requestSessionCleanup(const UutExecution& uut,
-                                                     const ExecNode& node,
-                                                     const QString& reason)
-{
-    if (m_sessionCleanupRequested) {
-        return;
-    }
-    m_sessionCleanupRequested = true;
-    m_sessionCleanupReason = QStringLiteral("%1 requested cleanup after %2: %3")
-                                 .arg(uut.uutId, node.id, reason);
 }
 
 void ExecutionGraphScheduler::requestSessionAbort()
@@ -2557,30 +2561,6 @@ void ExecutionGraphScheduler::handleNodeFailureForBarriers(UutExecution& uut,
     }
 }
 
-bool ExecutionGraphScheduler::hasPathToNode(const NodeId& from, const NodeId& to) const
-{
-    QSet<NodeId> visited;
-    QVector<NodeId> stack;
-    stack.push_back(from);
-
-    while (!stack.isEmpty()) {
-        const auto current = stack.takeLast();
-        if (current == to) {
-            return true;
-        }
-        if (visited.contains(current)) {
-            continue;
-        }
-        visited.insert(current);
-
-        for (const auto& edge : m_plan.outgoingEdges(current)) {
-            stack.push_back(edge.to);
-        }
-    }
-
-    return false;
-}
-
 LoopIterationContext ExecutionGraphScheduler::loopIterationForAttempt(const UutExecution& uut,
                                                                       const ExecNode& node) const
 {
@@ -2608,137 +2588,29 @@ LoopIterationContext ExecutionGraphScheduler::loopIterationForAttempt(const UutE
     return context;
 }
 
-void ExecutionGraphScheduler::activateCleanup(UutExecution& uut,
-                                              const CleanupRegionId& cleanupRegionId)
-{
-    const auto region = m_plan.cleanupRegion(cleanupRegionId);
-    if (!region) {
-        return;
-    }
-
-    for (const auto& entryNode : region->entryNodes) {
-        auto& activation = uut.ensureActivation(entryNode, "cleanup");
-        if (!isTerminalActivation(activation.state)) {
-            activation.state = ActivationState::Created;
-            if (const auto* node = m_plan.node(entryNode)) {
-                publishNodeEvent(RuntimeEventKind::CleanupActivated,
-                                 uut,
-                                 *node,
-                                 activation.state,
-                                 NodeOutcome::Unknown,
-                                 QString("cleanup region activated: %1").arg(cleanupRegionId));
-            }
-        }
-    }
-}
-
-bool ExecutionGraphScheduler::cleanupRegionContainsNode(
-    const CleanupRegion& region,
-    const NodeId& nodeId) const
-{
-    const auto* node = m_plan.node(nodeId);
-    if (!node || executionPhaseOf(*node) != ExecutionPhase::Cleanup) {
-        return false;
-    }
-
-    NodeId controlNodeId = nodeId;
-    while (const auto parent = m_plan.structuralParentOf(controlNodeId)) {
-        controlNodeId = *parent;
-    }
-
-    const bool reachableFromEntry = std::any_of(
-        region.entryNodes.cbegin(), region.entryNodes.cend(),
-        [this, &controlNodeId](const NodeId& entry) {
-            return hasPathToNode(entry, controlNodeId);
-        });
-    if (!reachableFromEntry) {
-        return false;
-    }
-
-    return region.exitNodes.isEmpty() || std::any_of(
-        region.exitNodes.cbegin(), region.exitNodes.cend(),
-        [this, &controlNodeId](const NodeId& exit) {
-            return hasPathToNode(controlNodeId, exit);
-        });
-}
-
-bool ExecutionGraphScheduler::cleanupRegionIsActive(
-    const CleanupRegion& region,
-    const UutExecution& uut) const
-{
-    return std::any_of(
-        region.entryNodes.cbegin(), region.entryNodes.cend(),
-        [&uut](const NodeId& entry) {
-            return uut.activations.contains(entry);
-        });
-}
-
-bool ExecutionGraphScheduler::bestEffortCleanupApplies(
-    const UutExecution& uut,
-    const NodeId& nodeId) const
-{
-    return std::any_of(
-        m_plan.cleanupRegions.cbegin(), m_plan.cleanupRegions.cend(),
-        [this, &uut, &nodeId](const CleanupRegion& region) {
-            return region.bestEffort && cleanupRegionIsActive(region, uut) &&
-                   cleanupRegionContainsNode(region, nodeId);
-        });
-}
-
-bool ExecutionGraphScheduler::bestEffortCleanupEdgeActive(
-    const UutExecution& uut,
-    const NodeId& from,
-    const NodeId& to) const
-{
-    return std::any_of(
-        m_plan.cleanupRegions.cbegin(), m_plan.cleanupRegions.cend(),
-        [this, &uut, &from, &to](const CleanupRegion& region) {
-            return region.bestEffort && cleanupRegionIsActive(region, uut) &&
-                   cleanupRegionContainsNode(region, from) &&
-                   cleanupRegionContainsNode(region, to);
-        });
-}
-
 bool ExecutionGraphScheduler::finalizeBlockedCleanup(UutExecution& uut,
                                                      const FrameId& frameId)
 {
-    bool changed = false;
+    const auto blocked = m_cleanupRuntime.blockedNodes(uut);
     const auto completedAt = QDateTime::currentDateTimeUtc();
-    for (const auto& region : m_plan.cleanupRegions) {
-        if (!cleanupRegionIsActive(region, uut)) {
+    for (const auto& transition : blocked) {
+        const auto* node = m_plan.node(transition.nodeId);
+        if (!node) {
             continue;
         }
-        for (auto it = m_plan.nodes.constBegin(); it != m_plan.nodes.constEnd(); ++it) {
-            const auto& node = it.value();
-            if (!cleanupRegionContainsNode(region, node.id)) {
-                continue;
-            }
-            auto& activation = uut.ensureActivation(node.id, frameId);
-            if (isTerminalActivation(activation.state) ||
-                activation.state == ActivationState::Running ||
-                activation.state == ActivationState::WaitingForResource ||
-                activation.state == ActivationState::WaitingForTimer ||
-                activation.state == ActivationState::WaitingAtBarrier) {
-                continue;
-            }
-
-            appendSyntheticAttempt(
-                activation,
-                NodeOutcome::Skipped,
-                QStringLiteral("cleanup could not continue after a prior cleanup error"));
-            activation.state = ActivationState::Skipped;
-            activation.completedAt = completedAt;
-            publishNodeEvent(
-                RuntimeEventKind::NodeStateChanged,
-                uut,
-                node,
-                activation.state,
-                NodeOutcome::Skipped,
-                QStringLiteral("cleanup could not continue after a prior cleanup error"));
-            changed = true;
-        }
+        auto& activation = uut.ensureActivation(transition.nodeId, frameId);
+        appendSyntheticAttempt(
+            activation, NodeOutcome::Skipped, transition.message);
+        activation.state = ActivationState::Skipped;
+        activation.completedAt = completedAt;
+        publishNodeEvent(RuntimeEventKind::NodeStateChanged,
+                         uut,
+                         *node,
+                         activation.state,
+                         NodeOutcome::Skipped,
+                         transition.message);
     }
-    return changed;
+    return !blocked.isEmpty();
 }
 
 void ExecutionGraphScheduler::appendSyntheticAttempt(NodeActivation& activation,

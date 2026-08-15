@@ -2,6 +2,7 @@
 
 #include "PicoATE/Core/BarrierController.h"
 #include "PicoATE/Core/BarrierRuntimeCoordinator.h"
+#include "PicoATE/Core/CleanupRuntimeCoordinator.h"
 #include "PicoATE/Core/DataParserModule.h"
 #include "PicoATE/Core/DeviceSessionManager.h"
 #include "PicoATE/Core/DeviceDiscovery.h"
@@ -666,6 +667,8 @@ private slots:
     void barrierControllerReleasesOnlyThroughDecision();
     void barrierRuntimeCoordinatorQueuesCohortRelease();
     void barrierRuntimeCoordinatorDropsFailedReachableMember();
+    void cleanupRuntimeCoordinatorTracksRequestAndActivation();
+    void cleanupRuntimeCoordinatorFindsBestEffortBlockedNodes();
     void planCacheKeepsRunningPlanAlive();
     void productRoutingLoadsRelativeSequencesAndMatchesExactlyOneRoute();
     void productRoutingRejectsMissingAndAmbiguousMatches();
@@ -1674,6 +1677,117 @@ void CoreTests::barrierRuntimeCoordinatorDropsFailedReachableMember()
     QCOMPARE(arrival.decision.droppedUuts,
              QSet<UutId>{QStringLiteral("UUT-1")});
     QCOMPARE(coordinator.takePendingReleases().size(), 1);
+}
+
+void CoreTests::cleanupRuntimeCoordinatorTracksRequestAndActivation()
+{
+    ExecutionPlan plan;
+    plan.id = QStringLiteral("cleanup-runtime-activation");
+    ExecNode entry;
+    entry.id = QStringLiteral("power-off");
+    entry.kind = ExecNodeKind::Noop;
+    entry.phase = ExecutionPhase::Cleanup;
+    ExecNode exit;
+    exit.id = QStringLiteral("close-fixture");
+    exit.kind = ExecNodeKind::Noop;
+    exit.phase = ExecutionPhase::Cleanup;
+    QVERIFY(plan.addNode(entry));
+    QVERIFY(plan.addNode(exit));
+    plan.addEdge({QStringLiteral("cleanup-order"),
+                  entry.id,
+                  exit.id,
+                  EdgeKind::Control,
+                  EdgeTrigger::OnSuccess,
+                  {},
+                  0});
+    plan.cleanupRegions.push_back({QStringLiteral("main-cleanup"),
+                                   {entry.id},
+                                   {exit.id},
+                                   {CleanupReason::StepFailed},
+                                   true});
+
+    CleanupRuntimeCoordinator coordinator(plan);
+    UutExecution uut;
+    uut.uutId = QStringLiteral("SESSION");
+    const auto requests = coordinator.activationRequests(uut);
+    QCOMPARE(requests.size(), 1);
+    QCOMPARE(requests.first().regionId, QStringLiteral("main-cleanup"));
+    QCOMPARE(requests.first().nodeId, entry.id);
+    QVERIFY(requests.first().message.contains(QStringLiteral("main-cleanup")));
+
+    QVERIFY(coordinator.requestSessionCleanup(
+        QStringLiteral("UUT-2"),
+        QStringLiteral("critical-check"),
+        QStringLiteral("critical failure")));
+    QVERIFY(coordinator.sessionCleanupRequested());
+    QCOMPARE(coordinator.sessionCleanupReason(),
+             QStringLiteral(
+                 "UUT-2 requested cleanup after critical-check: critical failure"));
+    QVERIFY(!coordinator.requestSessionCleanup(
+        QStringLiteral("UUT-3"),
+        QStringLiteral("later-check"),
+        QStringLiteral("later failure")));
+    QCOMPARE(coordinator.sessionCleanupReason(),
+             QStringLiteral(
+                 "UUT-2 requested cleanup after critical-check: critical failure"));
+
+    uut.ensureActivation(entry.id, QStringLiteral("cleanup")).state =
+        ActivationState::Passed;
+    QVERIFY(coordinator.activationRequests(uut).isEmpty());
+}
+
+void CoreTests::cleanupRuntimeCoordinatorFindsBestEffortBlockedNodes()
+{
+    ExecutionPlan plan;
+    plan.id = QStringLiteral("cleanup-runtime-blocked");
+    ExecNode entry;
+    entry.id = QStringLiteral("set-output-off");
+    entry.kind = ExecNodeKind::Noop;
+    entry.phase = ExecutionPhase::Cleanup;
+    ExecNode blocked;
+    blocked.id = QStringLiteral("close-device");
+    blocked.kind = ExecNodeKind::Noop;
+    blocked.phase = ExecutionPhase::Cleanup;
+    ExecNode unrelated;
+    unrelated.id = QStringLiteral("unrelated-cleanup");
+    unrelated.kind = ExecNodeKind::Noop;
+    unrelated.phase = ExecutionPhase::Cleanup;
+    QVERIFY(plan.addNode(entry));
+    QVERIFY(plan.addNode(blocked));
+    QVERIFY(plan.addNode(unrelated));
+    plan.addEdge({QStringLiteral("cleanup-order"),
+                  entry.id,
+                  blocked.id,
+                  EdgeKind::Control,
+                  EdgeTrigger::OnSuccess,
+                  {},
+                  0});
+    plan.cleanupRegions.push_back({QStringLiteral("main-cleanup"),
+                                   {entry.id},
+                                   {blocked.id},
+                                   {CleanupReason::StepFailed},
+                                   true});
+
+    CleanupRuntimeCoordinator coordinator(plan);
+    UutExecution uut;
+    uut.uutId = QStringLiteral("SESSION");
+    uut.ensureActivation(entry.id, QStringLiteral("cleanup")).state =
+        ActivationState::Error;
+
+    QVERIFY(coordinator.bestEffortApplies(uut, entry.id));
+    QVERIFY(coordinator.bestEffortApplies(uut, blocked.id));
+    QVERIFY(!coordinator.bestEffortApplies(uut, unrelated.id));
+    QVERIFY(coordinator.bestEffortEdgeActive(uut, entry.id, blocked.id));
+
+    auto blockedNodes = coordinator.blockedNodes(uut);
+    QCOMPARE(blockedNodes.size(), 1);
+    QCOMPARE(blockedNodes.first().nodeId, blocked.id);
+    QVERIFY(blockedNodes.first().message.contains(
+        QStringLiteral("prior cleanup error")));
+
+    uut.ensureActivation(blocked.id, QStringLiteral("cleanup")).state =
+        ActivationState::WaitingAtBarrier;
+    QVERIFY(coordinator.blockedNodes(uut).isEmpty());
 }
 
 void CoreTests::planCacheKeepsRunningPlanAlive()

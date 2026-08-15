@@ -2,6 +2,7 @@
 
 #include "PicoATE/Core/BarrierController.h"
 #include "PicoATE/Core/BarrierRuntimeCoordinator.h"
+#include "PicoATE/Core/CleanupRuntimeCoordinator.h"
 #include "PicoATE/Core/ErrorPolicyEngine.h"
 #include "PicoATE/Core/ExecutionControl.h"
 #include "PicoATE/Core/ExecutionResultStore.h"
@@ -132,9 +133,6 @@ private:
     std::optional<ErrorAction> inheritedErrorAction(
         const ExecNode& node,
         NodeOutcome outcome) const;
-    void requestSessionCleanup(const UutExecution& uut,
-                               const ExecNode& node,
-                               const QString& reason);
     void requestSessionAbort();
     void handleBreakRequest(UutExecution& uut,
                             const ExecNode& node,
@@ -166,22 +164,11 @@ private:
     void closeOperatorPromptsForTestItemRetry(const UutExecution& uut,
                                               const NodeId& testItemNodeId);
     bool isNodeOrDescendantOf(const NodeId& nodeId, const NodeId& rootNodeId) const;
-    void activateCleanup(UutExecution& uut, const CleanupRegionId& cleanupRegionId);
-    bool cleanupRegionContainsNode(const CleanupRegion& region,
-                                   const NodeId& nodeId) const;
-    bool cleanupRegionIsActive(const CleanupRegion& region,
-                               const UutExecution& uut) const;
-    bool bestEffortCleanupApplies(const UutExecution& uut,
-                                  const NodeId& nodeId) const;
-    bool bestEffortCleanupEdgeActive(const UutExecution& uut,
-                                     const NodeId& from,
-                                     const NodeId& to) const;
     bool finalizeBlockedCleanup(UutExecution& uut, const FrameId& frameId);
     void handleNodeFailureForBarriers(UutExecution& uut,
                                       const ExecNode& failedNode,
                                       const NodeResult& result,
                                       const FrameId& frameId);
-    bool hasPathToNode(const NodeId& from, const NodeId& to) const;
     LoopIterationContext loopIterationForAttempt(const UutExecution& uut, const ExecNode& node) const;
     void appendSyntheticAttempt(NodeActivation& activation, NodeOutcome outcome, const QString& message = {});
     void publishNodeEvent(RuntimeEventKind kind,
@@ -228,6 +215,7 @@ private:
     ResourceManager& m_resources;
     ResourceRegionController m_resourceRegions;
     BarrierRuntimeCoordinator m_barrierRuntime;
+    CleanupRuntimeCoordinator m_cleanupRuntime;
     LoopController& m_loops;
     ErrorPolicyEngine& m_errorPolicy;
     NodeRunner& m_runner;
@@ -242,8 +230,6 @@ private:
     QHash<QString, ErrorAction> m_testItemFailureEscalations;
     QHash<QString, ErrorAction> m_loopFailureEscalations;
     PeriodicTaskController m_periodicTasks;
-    bool m_sessionCleanupRequested = false;
-    QString m_sessionCleanupReason;
 };
 
 } // namespace PicoATE::Core
