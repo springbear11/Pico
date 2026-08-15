@@ -2166,6 +2166,16 @@ void CoreTests::dataParserDecodesBinaryAndModbusValues()
     QCOMPARE(result.measurements.first().attributes
                  .value(QStringLiteral("parserOriginalDisplay")).toString(),
              QStringLiteral("[65,72,0,0]"));
+    auto selectionDisplay = result.measurements.first().attributes
+                                .value(QStringLiteral("parserSelectionDisplay"))
+                                .toMap();
+    QCOMPARE(selectionDisplay.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("byte"));
+    QCOMPARE(selectionDisplay.value(QStringLiteral("tokens")).toList(),
+             QVariantList({QStringLiteral("41"), QStringLiteral("48"),
+                           QStringLiteral("00"), QStringLiteral("00")}));
+    QCOMPARE(selectionDisplay.value(QStringLiteral("selectedIndices")).toList(),
+             QVariantList({0, 1, 2, 3}));
     QCOMPARE(result.outputs.value(QStringLiteral("rawHex")).toString(),
              QStringLiteral("41 48 00 00"));
 
@@ -2192,6 +2202,18 @@ void CoreTests::dataParserDecodesBinaryAndModbusValues()
     result = parser.execute(QStringLiteral("decodeBinary"), context);
     QCOMPARE(result.outcome, ModuleOutcome::Passed);
     QCOMPARE(result.outputs.value(QStringLiteral("value")).toULongLong(), quint64(3));
+    selectionDisplay = result.measurements.first().attributes
+                           .value(QStringLiteral("parserSelectionDisplay"))
+                           .toMap();
+    QCOMPARE(selectionDisplay.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("bit"));
+    QCOMPARE(selectionDisplay.value(QStringLiteral("tokens")).toList(),
+             QVariantList({QStringLiteral("1"), QStringLiteral("0"),
+                           QStringLiteral("1"), QStringLiteral("1"),
+                           QStringLiteral("0"), QStringLiteral("1"),
+                           QStringLiteral("1"), QStringLiteral("0")}));
+    QCOMPARE(selectionDisplay.value(QStringLiteral("selectedIndices")).toList(),
+             QVariantList({4, 5, 6}));
 
     context.inputs = {
         {QStringLiteral("source"), QVariantList{0x4148, 0x0000}},
@@ -2203,7 +2225,28 @@ void CoreTests::dataParserDecodesBinaryAndModbusValues()
     QCOMPARE(result.outcome, ModuleOutcome::Passed);
     QVERIFY(qAbs(result.outputs.value(QStringLiteral("value")).toDouble() - 12.5) < 0.0001);
 
-    context.inputs.insert(QStringLiteral("registerOffset"), 1);
+    context.inputs = {
+        {QStringLiteral("source"), QVariantList{0, 0}},
+        {QStringLiteral("registerOffset"), 1},
+        {QStringLiteral("dataType"), QStringLiteral("uint16")},
+        {QStringLiteral("layout"), QStringLiteral("normal")}
+    };
+    result = parser.execute(QStringLiteral("decodeRegisters"), context);
+    QCOMPARE(result.outcome, ModuleOutcome::Passed);
+    QCOMPARE(result.outputs.value(QStringLiteral("value")).toULongLong(), quint64(0));
+    selectionDisplay = result.measurements.first().attributes
+                           .value(QStringLiteral("parserSelectionDisplay"))
+                           .toMap();
+    QCOMPARE(selectionDisplay.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("register"));
+    QCOMPARE(selectionDisplay.value(QStringLiteral("tokens")).toList(),
+             QVariantList({QStringLiteral("00"), QStringLiteral("00"),
+                           QStringLiteral("00"), QStringLiteral("00")}));
+    QCOMPARE(selectionDisplay.value(QStringLiteral("selectedIndices")).toList(),
+             QVariantList({2, 3}));
+    QCOMPARE(selectionDisplay.value(QStringLiteral("groupSize")).toInt(), 2);
+
+    context.inputs.insert(QStringLiteral("dataType"), QStringLiteral("float32"));
     result = parser.execute(QStringLiteral("decodeRegisters"), context);
     QCOMPARE(result.outcome, ModuleOutcome::Error);
     QCOMPARE(result.errorCode, QStringLiteral("ParserRangeError"));
@@ -2268,6 +2311,18 @@ void CoreTests::dataParserDecodesRegisterText()
                 .startsWith(QStringLiteral("42 54 53 4E")));
     QCOMPARE(result.outputs.value(QStringLiteral("dataType")).toString(),
              QStringLiteral("asciiText"));
+    const auto textSelectionDisplay = result.measurements.first().attributes
+                                          .value(QStringLiteral("parserSelectionDisplay"))
+                                          .toMap();
+    QCOMPARE(textSelectionDisplay.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("register"));
+    QCOMPARE(textSelectionDisplay.value(QStringLiteral("byteOrder")).toString(),
+             QStringLiteral("highByteFirst"));
+    QCOMPARE(textSelectionDisplay.value(QStringLiteral("encoding")).toString(),
+             QStringLiteral("ascii"));
+    QVERIFY(textSelectionDisplay
+                .value(QStringLiteral("selectionDescription"))
+                .toString().contains(QStringLiteral("highByteFirst")));
 
     const auto jsonRegisterSource = QString::fromUtf8(
         QJsonDocument(QJsonArray::fromVariantList(toRegisters(padded)))
@@ -7022,6 +7077,9 @@ void CoreTests::sequenceCompilerRunsDataParserExampleFile()
     QCOMPARE(canValue->result.measurements.size(), 1);
     QVERIFY(qAbs(canValue->result.measurements.first().value.toDouble() - 12.5)
             < 0.0001);
+    QVERIFY(!canValue->result.measurements.first().attributes
+                 .value(QStringLiteral("parserSelectionDisplay"))
+                 .toMap().isEmpty());
 
     const auto serialNumber = session.results().latest(
         uutId, QStringLiteral("root"),
@@ -7038,6 +7096,9 @@ void CoreTests::sequenceCompilerRunsDataParserExampleFile()
              QStringLiteral("UUT-1"));
     QCOMPARE(registerText->result.outputs.value(
                  QStringLiteral("parsedLength")).toInt(), 5);
+    QVERIFY(!registerText->result.measurements.first().attributes
+                 .value(QStringLiteral("parserSelectionDisplay"))
+                 .toMap().isEmpty());
 
     for (const auto& stepId : {
              QStringLiteral("check-can-voltage"),

@@ -7,6 +7,7 @@
 #include "LoadingSpinner.h"
 #include "OnOffControl.h"
 #include "OperatorPromptPresenter.h"
+#include "ParserActualDelegate.h"
 #include "PluginCatalog.h"
 #include "PluginFunctionModel.h"
 #include "ProductRoutingDialog.h"
@@ -5072,6 +5073,9 @@ void MainWindow::buildLayout()
     m_resultView->setItemDelegateForColumn(
         UutStepModel::BreakpointVisualColumn,
         runTestBreakpointDelegate);
+    m_resultView->setItemDelegateForColumn(
+        UutStepModel::ActualColumn,
+        new ParserActualDelegate(m_resultView));
     installProportionalHeader(m_resultView, {2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1});
     auto* resultHeader = m_resultView->header();
     resultHeader->setMinimumSectionSize(28);

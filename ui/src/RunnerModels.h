@@ -71,6 +71,10 @@ public:
         StepItem
     };
 
+    enum DataRole {
+        ParserSelectionDisplayRole = Qt::UserRole + 100
+    };
+
     explicit UutStepModel(QObject* parent = nullptr);
 
     QModelIndex index(int row,

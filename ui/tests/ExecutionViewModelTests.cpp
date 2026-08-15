@@ -2020,7 +2020,47 @@ void ExecutionViewModelTests::runnerModelsExposeReportHierarchyAndDetails()
     QCOMPARE(resultModel.data(
                  parserStep.siblingAtColumn(UutStepModel::ActualColumn)).toString(),
              QStringLiteral(
-                 "Raw: SN:BTSN001\\r\\n | Parsed: serialNumber=BTSN001; voltage=812.5"));
+                  "Raw: SN:BTSN001\\r\\n | Parsed: serialNumber=BTSN001; voltage=812.5"));
+
+    PicoATE::Core::MeasurementResult registerValue;
+    registerValue.name = QStringLiteral("value");
+    registerValue.value = 0;
+    registerValue.attributes.insert(QStringLiteral("parserDisplay"), true);
+    registerValue.attributes.insert(QStringLiteral("parserOriginalDisplay"),
+                                    QStringLiteral("[0,0]"));
+    registerValue.attributes.insert(
+        QStringLiteral("parserSelectionDisplay"),
+        QVariantMap{
+            {QStringLiteral("format"), QStringLiteral("hexBytes")},
+            {QStringLiteral("kind"), QStringLiteral("register")},
+            {QStringLiteral("tokens"),
+             QVariantList{QStringLiteral("00"), QStringLiteral("00"),
+                          QStringLiteral("00"), QStringLiteral("00")}},
+            {QStringLiteral("selectedIndices"), QVariantList{2, 3}},
+            {QStringLiteral("groupSize"), 2},
+            {QStringLiteral("sourceTokenOffset"), 0},
+            {QStringLiteral("sourceTokenCount"), 4},
+            {QStringLiteral("selectionDescription"),
+             QStringLiteral("Register offset 1, count 1, type uint16, layout normal")}});
+    parserReport.uuts[0].steps[0].measurements = {registerValue};
+    resultModel.setReport(parserReport);
+    const auto registerUut = resultModel.index(0, UutStepModel::NameColumn);
+    const auto registerStep = resultModel.index(
+        0, UutStepModel::NameColumn, registerUut);
+    const auto registerActual = registerStep.siblingAtColumn(
+        UutStepModel::ActualColumn);
+    QCOMPARE(resultModel.data(registerActual).toString(),
+             QStringLiteral("Raw: [0,0] | Parsed: 0"));
+    const auto selection = resultModel
+                               .data(registerActual,
+                                     UutStepModel::ParserSelectionDisplayRole)
+                               .toMap();
+    QCOMPARE(selection.value(QStringLiteral("selectedIndices")).toList(),
+             QVariantList({2, 3}));
+    QCOMPARE(selection.value(QStringLiteral("parsedDisplay")).toString(),
+             QStringLiteral("0"));
+    QVERIFY(resultModel.data(registerActual, Qt::ToolTipRole)
+                .toString().contains(QStringLiteral("Register offset 1")));
     resultModel.setReport(report);
 
     auto waitReport = report;

@@ -103,6 +103,8 @@ qt_add_executable(PicoATEUi WIN32
     PicoATEStyle.h
     OperatorPromptPresenter.cpp
     OperatorPromptPresenter.h
+    ParserActualDelegate.cpp
+    ParserActualDelegate.h
     ProductionWindow.cpp
     ProductionWindow.h
     ProductRoutingDialog.cpp

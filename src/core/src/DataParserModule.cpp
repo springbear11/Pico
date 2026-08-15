@@ -1616,7 +1616,257 @@ ModuleResult regexCapture(const ModuleExecutionContext& context)
     return result;
 }
 
-void addParserDisplayMeasurements(const ModuleExecutionContext& context,
+template <typename TokenProvider, typename SelectionPredicate>
+QVariantMap tokenSelectionDisplay(int totalTokens,
+                                  int selectedFirst,
+                                  int selectedLast,
+                                  int groupSize,
+                                  const QString& format,
+                                  TokenProvider tokenAt,
+                                  SelectionPredicate isSelected)
+{
+    if (totalTokens <= 0 || selectedFirst < 0 || selectedLast < selectedFirst ||
+        selectedFirst >= totalTokens) {
+        return {};
+    }
+
+    selectedLast = std::min(selectedLast, totalTokens - 1);
+    const int maximumTokens = format == QStringLiteral("bits") ? 128 : 64;
+    const int windowSize = std::min(totalTokens, maximumTokens);
+    int windowStart = 0;
+    if (totalTokens > windowSize) {
+        const int selectionSpan = selectedLast - selectedFirst + 1;
+        windowStart = selectionSpan >= windowSize
+            ? selectedFirst
+            : selectedFirst - (windowSize - selectionSpan) / 2;
+        windowStart = std::clamp(windowStart, 0, totalTokens - windowSize);
+        if (groupSize > 1) {
+            windowStart -= windowStart % groupSize;
+            if (selectedLast >= windowStart + windowSize) {
+                windowStart = std::clamp(selectedLast - windowSize + 1,
+                                         0,
+                                         totalTokens - windowSize);
+                windowStart -= windowStart % groupSize;
+            }
+        }
+    }
+
+    const int windowEnd = std::min(totalTokens, windowStart + windowSize);
+    QVariantList tokens;
+    QVariantList selectedIndices;
+    tokens.reserve(windowEnd - windowStart);
+    for (int index = windowStart; index < windowEnd; ++index) {
+        tokens.push_back(tokenAt(index));
+        if (isSelected(index)) {
+            selectedIndices.push_back(index - windowStart);
+        }
+    }
+    if (selectedIndices.isEmpty()) {
+        return {};
+    }
+
+    QVariantMap display;
+    display.insert(QStringLiteral("schemaVersion"), 1);
+    display.insert(QStringLiteral("format"), format);
+    display.insert(QStringLiteral("tokens"), tokens);
+    display.insert(QStringLiteral("selectedIndices"), selectedIndices);
+    display.insert(QStringLiteral("groupSize"), groupSize);
+    display.insert(QStringLiteral("sourceTokenOffset"), windowStart);
+    display.insert(QStringLiteral("sourceTokenCount"), totalTokens);
+    return display;
+}
+
+QString byteToken(uchar value)
+{
+    return QStringLiteral("%1").arg(value, 2, 16, QLatin1Char('0')).toUpper();
+}
+
+QVariantMap registerSelectionDisplay(const QString& function,
+                                     const ModuleExecutionContext& context,
+                                     const ModuleResult& result)
+{
+    QString error;
+    QVector<quint16> registers;
+    if (!variantToRegisters(context.inputs.value(QStringLiteral("source")),
+                            registers,
+                            error) ||
+        registers.isEmpty()) {
+        return {};
+    }
+
+    const int registerOffset = result.outputs
+                                   .value(QStringLiteral("registerOffset"))
+                                   .toInt();
+    const int registerCount = result.outputs
+                                  .value(QStringLiteral("registerCount"))
+                                  .toInt();
+    if (registerOffset < 0 || registerCount <= 0 ||
+        registerOffset + registerCount > registers.size()) {
+        return {};
+    }
+
+    const int selectedFirst = registerOffset * 2;
+    const int selectedLast = (registerOffset + registerCount) * 2 - 1;
+    auto display = tokenSelectionDisplay(
+        registers.size() * 2,
+        selectedFirst,
+        selectedLast,
+        2,
+        QStringLiteral("hexBytes"),
+        [&registers](int tokenIndex) {
+            const auto value = registers[tokenIndex / 2];
+            return byteToken(tokenIndex % 2 == 0
+                                 ? static_cast<uchar>((value >> 8) & 0xFF)
+                                 : static_cast<uchar>(value & 0xFF));
+        },
+        [selectedFirst, selectedLast](int tokenIndex) {
+            return tokenIndex >= selectedFirst && tokenIndex <= selectedLast;
+        });
+    if (display.isEmpty()) {
+        return display;
+    }
+
+    display.insert(QStringLiteral("kind"), QStringLiteral("register"));
+    display.insert(QStringLiteral("offset"), registerOffset);
+    display.insert(QStringLiteral("count"), registerCount);
+    const bool textDecode = function == QStringLiteral("decoderegistertext") ||
+        result.outputs.contains(QStringLiteral("encoding"));
+    if (textDecode) {
+        display.insert(QStringLiteral("byteOrder"),
+                       result.outputs.value(QStringLiteral("byteOrder")));
+        display.insert(QStringLiteral("encoding"),
+                       result.outputs.value(QStringLiteral("encoding")));
+        display.insert(
+            QStringLiteral("selectionDescription"),
+            QStringLiteral("Register offset %1, count %2, %3, %4")
+                .arg(registerOffset)
+                .arg(registerCount)
+                .arg(result.outputs.value(QStringLiteral("byteOrder")).toString(),
+                     result.outputs.value(QStringLiteral("encoding")).toString()));
+    } else {
+        display.insert(QStringLiteral("layout"),
+                       result.outputs.value(QStringLiteral("layout")));
+        display.insert(QStringLiteral("dataType"),
+                       context.inputs.value(QStringLiteral("dataType"),
+                                            QStringLiteral("uint16")));
+        display.insert(
+            QStringLiteral("selectionDescription"),
+            QStringLiteral("Register offset %1, count %2, type %3, layout %4")
+                .arg(registerOffset)
+                .arg(registerCount)
+                .arg(display.value(QStringLiteral("dataType")).toString(),
+                     display.value(QStringLiteral("layout")).toString()));
+    }
+    return display;
+}
+
+QVariantMap binarySelectionDisplay(const ModuleExecutionContext& context,
+                                   const ModuleResult& result)
+{
+    QString error;
+    QByteArray source;
+    if (!variantToBytes(
+            context.inputs.value(QStringLiteral("source")),
+            context.inputs.value(QStringLiteral("sourceFormat"),
+                                 QStringLiteral("auto")).toString(),
+            context.inputs.value(QStringLiteral("encoding"),
+                                 QStringLiteral("utf8")).toString(),
+            source,
+            error) ||
+        source.isEmpty()) {
+        return {};
+    }
+
+    const int offset = result.outputs.value(QStringLiteral("offset")).toInt();
+    const int length = result.outputs.value(QStringLiteral("length")).toInt();
+    const auto unit = result.outputs.value(QStringLiteral("unit")).toString();
+    if (offset < 0 || length <= 0) {
+        return {};
+    }
+
+    QVariantMap display;
+    if (unit == QStringLiteral("bit") || unit == QStringLiteral("bits")) {
+        const auto bitOrder = normalized(
+            context.inputs.value(QStringLiteral("bitOrder"),
+                                 QStringLiteral("lsb0")).toString());
+        QSet<int> selectedBits;
+        for (int index = 0; index < length; ++index) {
+            const int sourceBit = offset + index;
+            const int sourceByte = sourceBit / 8;
+            const int bitInByte = bitOrder == QStringLiteral("lsb0")
+                ? sourceBit % 8
+                : 7 - (sourceBit % 8);
+            selectedBits.insert(sourceByte * 8 + (7 - bitInByte));
+        }
+        if (selectedBits.isEmpty()) {
+            return {};
+        }
+        const auto [minimum, maximum] = std::minmax_element(
+            selectedBits.cbegin(), selectedBits.cend());
+        display = tokenSelectionDisplay(
+            source.size() * 8,
+            *minimum,
+            *maximum,
+            8,
+            QStringLiteral("bits"),
+            [&source](int tokenIndex) {
+                const auto byte = static_cast<uchar>(source[tokenIndex / 8]);
+                return QString::number((byte >> (7 - tokenIndex % 8)) & 1U);
+            },
+            [&selectedBits](int tokenIndex) {
+                return selectedBits.contains(tokenIndex);
+            });
+        display.insert(QStringLiteral("kind"), QStringLiteral("bit"));
+        display.insert(QStringLiteral("bitOrder"), bitOrder);
+        display.insert(
+            QStringLiteral("selectionDescription"),
+            QStringLiteral("Bit offset %1, length %2, order %3")
+                .arg(offset)
+                .arg(length)
+                .arg(bitOrder.toUpper()));
+    } else {
+        const int selectedFirst = offset;
+        const int selectedLast = offset + length - 1;
+        display = tokenSelectionDisplay(
+            source.size(),
+            selectedFirst,
+            selectedLast,
+            0,
+            QStringLiteral("hexBytes"),
+            [&source](int tokenIndex) {
+                return byteToken(static_cast<uchar>(source[tokenIndex]));
+            },
+            [selectedFirst, selectedLast](int tokenIndex) {
+                return tokenIndex >= selectedFirst && tokenIndex <= selectedLast;
+            });
+        display.insert(QStringLiteral("kind"), QStringLiteral("byte"));
+        display.insert(
+            QStringLiteral("selectionDescription"),
+            QStringLiteral("Byte offset %1, length %2")
+                .arg(offset)
+                .arg(length));
+    }
+    display.insert(QStringLiteral("offset"), offset);
+    display.insert(QStringLiteral("length"), length);
+    return display;
+}
+
+QVariantMap parserSelectionDisplay(const QString& function,
+                                   const ModuleExecutionContext& context,
+                                   const ModuleResult& result)
+{
+    if (function == QStringLiteral("decoderegisters") ||
+        function == QStringLiteral("decoderegistertext")) {
+        return registerSelectionDisplay(function, context, result);
+    }
+    if (function == QStringLiteral("decodebinary")) {
+        return binarySelectionDisplay(context, result);
+    }
+    return {};
+}
+
+void addParserDisplayMeasurements(const QString& function,
+                                  const ModuleExecutionContext& context,
                                   ModuleResult& result)
 {
     if (result.outcome != ModuleOutcome::Passed || !result.measurements.isEmpty()) {
@@ -1625,7 +1875,9 @@ void addParserDisplayMeasurements(const ModuleExecutionContext& context,
 
     const auto originalDisplay = visibleVariant(
         context.inputs.value(QStringLiteral("source")), 512);
-    const auto appendMeasurement = [&result, &originalDisplay](
+    const auto selectionDisplay = parserSelectionDisplay(
+        function, context, result);
+    const auto appendMeasurement = [&result, &originalDisplay, &selectionDisplay](
                                        const QString& name,
                                        const QVariant& value,
                                        const QVariant& rawValue) {
@@ -1638,7 +1890,11 @@ void addParserDisplayMeasurements(const ModuleExecutionContext& context,
         measurement.attributes.insert(QStringLiteral("outputKey"), name);
         measurement.attributes.insert(QStringLiteral("parserDisplay"), true);
         measurement.attributes.insert(QStringLiteral("parserOriginalDisplay"),
-                                      originalDisplay);
+                                       originalDisplay);
+        if (!selectionDisplay.isEmpty()) {
+            measurement.attributes.insert(
+                QStringLiteral("parserSelectionDisplay"), selectionDisplay);
+        }
         result.measurements.push_back(std::move(measurement));
     };
 
@@ -1716,7 +1972,7 @@ ModuleResult DataParserModule::execute(const ModuleFunction& functionName,
                            QStringLiteral("unsupported parser function: %1")
                                .arg(functionName));
     }
-    addParserDisplayMeasurements(context, result);
+    addParserDisplayMeasurements(function, context, result);
     return result;
 }
 

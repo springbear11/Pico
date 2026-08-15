@@ -434,32 +434,60 @@ QString joinedMeasurementText(
     return values.join(QStringLiteral("; "));
 }
 
+QString joinedParsedText(
+    const QVector<PicoATE::Core::MeasurementResult>& measurements)
+{
+    if (measurements.isEmpty()) {
+        return QStringLiteral("-");
+    }
+    if (!measurements.first().attributes
+             .value(QStringLiteral("parserDisplay")).toBool()) {
+        return joinedMeasurementText(measurements, measurementActualDisplay);
+    }
+
+    if (measurements.size() == 1) {
+        return measurementActualDisplay(measurements.first());
+    }
+    QStringList fields;
+    fields.reserve(measurements.size());
+    for (const auto& measurement : measurements) {
+        fields.push_back(QStringLiteral("%1=%2").arg(
+            measurement.name.isEmpty() ? QStringLiteral("value")
+                                       : measurement.name,
+            measurementActualDisplay(measurement)));
+    }
+    return fields.join(QStringLiteral("; "));
+}
+
+QVariantMap parserSelectionDisplay(
+    const QVector<PicoATE::Core::MeasurementResult>& measurements)
+{
+    if (measurements.isEmpty()) {
+        return {};
+    }
+    auto display = measurements.first().attributes
+                       .value(QStringLiteral("parserSelectionDisplay"))
+                       .toMap();
+    if (!display.isEmpty()) {
+        display.insert(QStringLiteral("parsedDisplay"),
+                       joinedParsedText(measurements));
+    }
+    return display;
+}
+
 QString joinedActualText(
     const QVector<PicoATE::Core::MeasurementResult>& measurements)
 {
     if (measurements.isEmpty() ||
         !measurements.first().attributes
              .value(QStringLiteral("parserDisplay")).toBool()) {
-        return joinedMeasurementText(measurements, measurementActualDisplay);
+        return joinedParsedText(measurements);
     }
 
     const auto original = measurements.first().attributes
                               .value(QStringLiteral("parserOriginalDisplay"))
                               .toString();
-    QString parsed;
-    if (measurements.size() == 1) {
-        parsed = measurementActualDisplay(measurements.first());
-    } else {
-        QStringList fields;
-        fields.reserve(measurements.size());
-        for (const auto& measurement : measurements) {
-            fields.push_back(QStringLiteral("%1=%2").arg(
-                measurement.name.isEmpty() ? QStringLiteral("value")
-                                           : measurement.name,
-                measurementActualDisplay(measurement)));
-        }
-        parsed = fields.join(QStringLiteral("; "));
-    }
+    const auto parsed = joinedParsedText(measurements);
     return QStringLiteral("Raw: %1 | Parsed: %2").arg(original, parsed);
 }
 
@@ -782,6 +810,18 @@ QVariant UutStepModel::data(const QModelIndex& index, int role) const
         return {};
     }
     const auto& step = *stepPointer;
+    if (role == ParserSelectionDisplayRole && index.column() == ActualColumn) {
+        return parserSelectionDisplay(step.measurements);
+    }
+    if (role == Qt::ToolTipRole && index.column() == ActualColumn) {
+        const auto display = parserSelectionDisplay(step.measurements);
+        const auto description = display
+                                     .value(QStringLiteral("selectionDescription"))
+                                     .toString();
+        if (!description.isEmpty()) {
+            return description;
+        }
+    }
     if (role == Qt::DecorationRole && index.column() == NameColumn) {
         return functionIconForStep(step);
     }

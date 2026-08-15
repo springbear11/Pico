@@ -9,6 +9,7 @@
 #include "LoadingSpinner.h"
 #include "MainWindow.h"
 #include "OperatorPromptPresenter.h"
+#include "ParserActualDelegate.h"
 #include "ProjectResourcePaths.h"
 #include "ReportExporter.h"
 #include "RunArtifactWriter.h"
@@ -341,6 +342,7 @@ private slots:
     void initTestCase();
     void cleanupTestCase();
     void picoStyleDrawsFilledCheckedIndicators();
+    void parserActualDelegateHighlightsSelectedTokens();
     void inputWheelGuardPreventsAccidentalValueChanges();
     void responsiveLayoutKeepsSmallScreenPanelsUsable();
     void closeAfterEditedRun_data();
@@ -821,6 +823,50 @@ void MainWindowLifecycleTests::picoStyleDrawsFilledCheckedIndicators()
     }
     QCOMPARE(style.pixelMetric(QStyle::PM_IndicatorWidth), 18);
     QCOMPARE(style.pixelMetric(QStyle::PM_IndicatorHeight), 18);
+}
+
+void MainWindowLifecycleTests::parserActualDelegateHighlightsSelectedTokens()
+{
+    QStandardItemModel model(1, 1);
+    const auto index = model.index(0, 0);
+    model.setData(index, QStringLiteral("Raw: [0,0] | Parsed: 0"));
+    model.setData(
+        index,
+        QVariantMap{
+            {QStringLiteral("format"), QStringLiteral("hexBytes")},
+            {QStringLiteral("tokens"),
+             QVariantList{QStringLiteral("00"), QStringLiteral("00"),
+                          QStringLiteral("00"), QStringLiteral("00")}},
+            {QStringLiteral("selectedIndices"), QVariantList{2, 3}},
+            {QStringLiteral("groupSize"), 2},
+            {QStringLiteral("sourceTokenOffset"), 0},
+            {QStringLiteral("sourceTokenCount"), 4},
+            {QStringLiteral("parsedDisplay"), QStringLiteral("0")}},
+        UutStepModel::ParserSelectionDisplayRole);
+
+    ParserActualDelegate delegate;
+    QImage image(520, 44, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+    QPainter painter(&image);
+    QStyleOptionViewItem option;
+    option.rect = image.rect();
+    option.font = qApp->font();
+    option.palette = qApp->palette();
+    option.state = QStyle::State_Enabled | QStyle::State_Active;
+    delegate.paint(&painter, option, index);
+    painter.end();
+
+    const QColor expected(QStringLiteral("#bfe5ff"));
+    int highlightedPixels = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            if (image.pixelColor(x, y) == expected) {
+                ++highlightedPixels;
+            }
+        }
+    }
+    QVERIFY2(highlightedPixels > 20,
+             "The selected register bytes were not painted with the highlight color");
 }
 
 void MainWindowLifecycleTests::inputWheelGuardPreventsAccidentalValueChanges()

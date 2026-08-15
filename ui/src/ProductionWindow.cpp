@@ -6,6 +6,7 @@
 #include "ExecutionViewModel.h"
 #include "FieldDeviceDialog.h"
 #include "OperatorPromptPresenter.h"
+#include "ParserActualDelegate.h"
 #include "ProductRoutingDialog.h"
 #include "PicoATE/Core/ProductRouting.h"
 #include "PicoATE/Core/StationConfig.h"
@@ -517,6 +518,9 @@ void ProductionWindow::buildUi()
     m_resultView = new QTreeView(resultsArea);
     m_resultView->setObjectName(QStringLiteral("productionResultView"));
     m_resultView->setModel(m_resultModel);
+    m_resultView->setItemDelegateForColumn(
+        UutStepModel::ActualColumn,
+        new ParserActualDelegate(m_resultView));
     m_resultView->setAlternatingRowColors(true);
     m_resultView->setUniformRowHeights(true);
     m_resultView->setIndentation(22);
