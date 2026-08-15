@@ -24,6 +24,7 @@
 #include "PicoATE/Core/PersistentQProcessTransport.h"
 #include "PicoATE/Core/QProcessTransport.h"
 #include "PicoATE/Core/ResourceManager.h"
+#include "PicoATE/Core/ResourceRegionController.h"
 #include "PicoATE/Core/RuntimeVariableResolver.h"
 #include "PicoATE/Core/SequenceCompiler.h"
 #include "PicoATE/Core/SequenceDef.h"
@@ -658,6 +659,8 @@ private slots:
     void stationRuntimeLoadsStationConfig();
     void resourceManagerSerializesWaiters();
     void resourceManagerTreatsDeviceAndChannelAsOneHierarchy();
+    void resourceRegionControllerManagesLeaseLifecycle();
+    void resourceRegionControllerReleaseAllIsolatesUuts();
     void barrierControllerReleasesOnlyThroughDecision();
     void planCacheKeepsRunningPlanAlive();
     void productRoutingLoadsRelativeSequencesAndMatchesExactlyOneRoute();
@@ -1404,6 +1407,112 @@ void CoreTests::resourceManagerTreatsDeviceAndChannelAsOneHierarchy()
 
     resources.release(deviceLease->leaseId);
     QVERIFY(resources.tryAcquire(channelRequest).has_value());
+}
+
+void CoreTests::resourceRegionControllerManagesLeaseLifecycle()
+{
+    ExecutionPlan plan;
+    plan.id = QStringLiteral("resource-region-controller");
+    ExecNode entry;
+    entry.id = QStringLiteral("entry");
+    ExecNode exit;
+    exit.id = QStringLiteral("exit");
+    QVERIFY(plan.addNode(entry));
+    QVERIFY(plan.addNode(exit));
+    plan.resourceRegions.push_back(
+        {QStringLiteral("CAN transaction"),
+         entry.id,
+         exit.id,
+         {{QStringLiteral("CAN1"), ResourceMode::Exclusive, 1, 0, 30000}}});
+
+    ResourceManager resources;
+    ResourceRegionController controller(plan, resources);
+
+    ResourceRequest blocker;
+    blocker.requestId = QStringLiteral("blocker");
+    blocker.uutId = QStringLiteral("other-uut");
+    blocker.frameId = QStringLiteral("root");
+    blocker.nodeId = QStringLiteral("other-node");
+    blocker.requirements = plan.resourceRegions.first().requirements;
+    const auto blockerLease = resources.tryAcquire(blocker);
+    QVERIFY(blockerLease.has_value());
+
+    auto decision = controller.acquireForNode(
+        QStringLiteral("UUT-1"), QStringLiteral("root"), entry.id);
+    QVERIFY(decision.status == ResourceRegionAcquireStatus::Waiting);
+    QCOMPARE(decision.regionId, QStringLiteral("CAN transaction"));
+    QCOMPARE(resources.waiterCount(), 1);
+
+    resources.release(blockerLease->leaseId);
+    decision = controller.acquireForNode(
+        QStringLiteral("UUT-1"), QStringLiteral("root"), entry.id);
+    QVERIFY(decision.status == ResourceRegionAcquireStatus::Acquired);
+    QCOMPARE(resources.activeLeaseCount(), 1);
+    QCOMPARE(resources.waiterCount(), 0);
+    QVERIFY(controller.activeResourceIds(QStringLiteral("UUT-1"),
+                                         QStringLiteral("root"))
+                .contains(QStringLiteral("CAN1")));
+
+    decision = controller.acquireForNode(
+        QStringLiteral("UUT-1"), QStringLiteral("root"), entry.id);
+    QVERIFY(decision.status == ResourceRegionAcquireStatus::AlreadyHeld);
+    QCOMPARE(resources.activeLeaseCount(), 1);
+
+    UutExecution uut;
+    uut.uutId = QStringLiteral("UUT-1");
+    uut.ensureActivation(exit.id, QStringLiteral("root")).state =
+        ActivationState::Running;
+    controller.releaseCompleted(uut, QStringLiteral("root"));
+    QCOMPARE(resources.activeLeaseCount(), 1);
+
+    uut.ensureActivation(exit.id, QStringLiteral("root")).state =
+        ActivationState::Passed;
+    controller.releaseCompleted(uut, QStringLiteral("root"));
+    QCOMPARE(resources.activeLeaseCount(), 0);
+    QVERIFY(controller.activeResourceIds(QStringLiteral("UUT-1"),
+                                         QStringLiteral("root"))
+                .isEmpty());
+}
+
+void CoreTests::resourceRegionControllerReleaseAllIsolatesUuts()
+{
+    ExecutionPlan plan;
+    plan.id = QStringLiteral("resource-region-release-all");
+    ExecNode entry;
+    entry.id = QStringLiteral("entry");
+    ExecNode exit;
+    exit.id = QStringLiteral("exit");
+    QVERIFY(plan.addNode(entry));
+    QVERIFY(plan.addNode(exit));
+    plan.resourceRegions.push_back(
+        {QStringLiteral("shared-device"),
+         entry.id,
+         exit.id,
+         {{QStringLiteral("DMM1"), ResourceMode::Exclusive, 1, 0, 30000}}});
+
+    ResourceManager resources;
+    ResourceRegionController controller(plan, resources);
+    const auto first = controller.acquireForNode(
+        QStringLiteral("UUT-1"), QStringLiteral("root"), entry.id);
+    QVERIFY(first.status == ResourceRegionAcquireStatus::Acquired);
+    const auto second = controller.acquireForNode(
+        QStringLiteral("UUT-2"), QStringLiteral("root"), entry.id);
+    QVERIFY(second.status == ResourceRegionAcquireStatus::Waiting);
+    QCOMPARE(resources.activeLeaseCount(), 1);
+    QCOMPARE(resources.waiterCount(), 1);
+
+    controller.releaseAll(QStringLiteral("UUT-2"), QStringLiteral("root"));
+    QCOMPARE(resources.activeLeaseCount(), 1);
+    QCOMPARE(resources.waiterCount(), 0);
+    QVERIFY(controller.activeResourceIds(QStringLiteral("UUT-1"),
+                                         QStringLiteral("root"))
+                .contains(QStringLiteral("DMM1")));
+
+    controller.releaseAll(QStringLiteral("UUT-1"), QStringLiteral("root"));
+    QCOMPARE(resources.activeLeaseCount(), 0);
+    QVERIFY(controller.activeResourceIds(QStringLiteral("UUT-1"),
+                                         QStringLiteral("root"))
+                .isEmpty());
 }
 
 void CoreTests::barrierControllerReleasesOnlyThroughDecision()

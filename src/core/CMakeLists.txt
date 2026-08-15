@@ -31,6 +31,7 @@ add_library(PicoATECore SHARED
     src/PersistentQProcessTransport.cpp
     src/QProcessTransport.cpp
     src/ResourceManager.cpp
+    src/ResourceRegionController.cpp
     src/RuntimeEvent.cpp
     src/RuntimeVariableResolver.cpp
     src/SequenceCompiler.cpp

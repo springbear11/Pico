@@ -8,6 +8,7 @@
 #include "PicoATE/Core/NodeRunner.h"
 #include "PicoATE/Core/PeriodicTaskController.h"
 #include "PicoATE/Core/ResourceManager.h"
+#include "PicoATE/Core/ResourceRegionController.h"
 #include "PicoATE/Core/RuntimeEvent.h"
 #include "PicoATE/Core/StopToken.h"
 #include "PicoATE/Core/TimerService.h"
@@ -210,17 +211,6 @@ private:
                                      const NodeId& closedByNodeId = {},
                                      NodeOutcome outcome = NodeOutcome::Passed,
                                      const QString& message = {});
-    bool acquireResourceRegionForNode(UutExecution& uut,
-                                      const ExecNode& node,
-                                      const FrameId& frameId);
-    void releaseCompletedResourceRegions(const UutExecution& uut,
-                                         const FrameId& frameId);
-    QSet<ResourceId> activeRegionResourceIds(const UutId& uutId,
-                                             const FrameId& frameId) const;
-    QString resourceRegionLeaseKey(const UutId& uutId,
-                                   const FrameId& frameId,
-                                   const ResourceRegionId& regionId) const;
-
     struct ActiveOperatorPrompt {
         QString instanceId;
         UutId uutId;
@@ -264,6 +254,7 @@ private:
 
     const ExecutionPlan& m_plan;
     ResourceManager& m_resources;
+    ResourceRegionController m_resourceRegions;
     BarrierController& m_barriers;
     LoopController& m_loops;
     ErrorPolicyEngine& m_errorPolicy;
@@ -286,13 +277,6 @@ private:
     PeriodicTaskController m_periodicTasks;
     bool m_sessionCleanupRequested = false;
     QString m_sessionCleanupReason;
-    struct ActiveResourceRegion {
-        ResourceRegionId regionId;
-        UutId uutId;
-        FrameId frameId;
-        ResourceLease lease;
-    };
-    QHash<QString, ActiveResourceRegion> m_activeResourceRegions;
 };
 
 } // namespace PicoATE::Core
