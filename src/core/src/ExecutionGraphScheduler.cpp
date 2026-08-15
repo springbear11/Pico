@@ -189,7 +189,7 @@ ExecutionGraphScheduler::ExecutionGraphScheduler(const ExecutionPlan& plan,
     : m_plan(plan)
     , m_resources(resources)
     , m_resourceRegions(plan, resources)
-    , m_barriers(barriers)
+    , m_barrierRuntime(plan, barriers)
     , m_loops(loops)
     , m_errorPolicy(errorPolicy)
     , m_runner(runner)
@@ -544,26 +544,21 @@ std::optional<NodeId> ExecutionGraphScheduler::nextReadyNodeId(
 
 void ExecutionGraphScheduler::setCohortUuts(const QSet<UutId>& uutIds)
 {
-    m_cohortUuts = uutIds;
+    m_barrierRuntime.setCohortUuts(uutIds);
 }
 
 void ExecutionGraphScheduler::releaseBarrierNodes(const BarrierReleaseDecision& decision)
 {
-    m_releasedBarriers.insert(decision.barrierId, decision);
+    m_barrierRuntime.queueRelease(decision);
 }
 
 void ExecutionGraphScheduler::applyBarrierReleases(const QVector<UutExecution*>& uuts)
 {
-    QVector<BarrierInstanceId> applied;
-    for (auto it = m_releasedBarriers.constBegin(); it != m_releasedBarriers.constEnd(); ++it) {
-        const auto nodeIt = m_nodeByBarrier.constFind(it.key());
-        if (nodeIt == m_nodeByBarrier.constEnd()) {
-            continue;
-        }
-
-        const auto& nodeId = nodeIt.value();
+    const auto releases = m_barrierRuntime.takePendingReleases();
+    for (const auto& release : releases) {
+        const auto& nodeId = release.barrierNodeId;
         for (auto* uut : uuts) {
-            if (!uut || !it.value().releasedUuts.contains(uut->uutId)) {
+            if (!uut || !release.decision.releasedUuts.contains(uut->uutId)) {
                 continue;
             }
 
@@ -583,11 +578,6 @@ void ExecutionGraphScheduler::applyBarrierReleases(const QVector<UutExecution*>&
                                  "barrier released");
             }
         }
-        applied.push_back(it.key());
-    }
-
-    for (const auto& barrierId : applied) {
-        m_releasedBarriers.remove(barrierId);
     }
 }
 
@@ -2720,16 +2710,8 @@ NodeResult ExecutionGraphScheduler::executeBarrierNode(UutExecution& uut,
                                                        const FrameId& frameId)
 {
     auto& activation = uut.ensureActivation(node.id, frameId);
-    const auto barrierId = barrierInstanceForNode(node, uut.uutId);
-
-    BarrierArrival arrival;
-    arrival.barrierId = barrierId;
-    arrival.uutId = uut.uutId;
-    arrival.frameId = frameId;
-    arrival.barrierNodeId = node.id;
-    arrival.arrivalOutcome = NodeOutcome::Passed;
-
-    const auto decision = m_barriers.memberArrived(arrival);
+    const auto transition =
+        m_barrierRuntime.memberArrived(node, uut.uutId, frameId);
     activation.state = ActivationState::WaitingAtBarrier;
     publishNodeEvent(RuntimeEventKind::BarrierWaiting,
                      uut,
@@ -2742,8 +2724,7 @@ NodeResult ExecutionGraphScheduler::executeBarrierNode(UutExecution& uut,
     result.nodeId = node.id;
     result.startedAt = QDateTime::currentDateTimeUtc();
 
-    if (decision.released()) {
-        releaseBarrierNodes(decision);
+    if (transition.decision.released()) {
         appendSyntheticAttempt(activation, NodeOutcome::Passed, "barrier released");
         activation.state = ActivationState::Passed;
         activation.completedAt = QDateTime::currentDateTimeUtc();
@@ -2767,27 +2748,15 @@ void ExecutionGraphScheduler::handleNodeFailureForBarriers(UutExecution& uut,
                                                            const NodeResult& result,
                                                            const FrameId& frameId)
 {
-    if (failedNode.kind == ExecNodeKind::Barrier) {
-        return;
-    }
-
-    for (auto it = m_plan.nodes.constBegin(); it != m_plan.nodes.constEnd(); ++it) {
-        const auto& barrierNode = it.value();
-        if (barrierNode.kind != ExecNodeKind::Barrier) {
+    const auto transitions =
+        m_barrierRuntime.memberFailedBeforeReachableBarriers(
+            failedNode, uut.uutId, result.outcome);
+    for (const auto& transition : transitions) {
+        const auto* barrierNode = m_plan.node(transition.barrierNodeId);
+        if (!barrierNode) {
             continue;
         }
-        if (!hasPathToNode(failedNode.id, barrierNode.id)) {
-            continue;
-        }
-
-        const auto barrierId = barrierInstanceForNode(barrierNode, uut.uutId);
-        auto decision = m_barriers.memberFailedBeforeArrival(
-            uut.uutId, barrierId, result.outcome);
-        if (decision.released()) {
-            releaseBarrierNodes(decision);
-        }
-
-        auto& barrierActivation = uut.ensureActivation(barrierNode.id, frameId);
+        auto& barrierActivation = uut.ensureActivation(barrierNode->id, frameId);
         if (!isTerminalActivation(barrierActivation.state)) {
             appendSyntheticAttempt(
                 barrierActivation,
@@ -2797,7 +2766,7 @@ void ExecutionGraphScheduler::handleNodeFailureForBarriers(UutExecution& uut,
             barrierActivation.completedAt = QDateTime::currentDateTimeUtc();
             publishNodeEvent(RuntimeEventKind::NodeStateChanged,
                              uut,
-                             barrierNode,
+                             *barrierNode,
                              barrierActivation.state,
                              NodeOutcome::Skipped,
                              QString("skipped because %1 failed before barrier").arg(failedNode.id));
@@ -2987,84 +2956,6 @@ bool ExecutionGraphScheduler::finalizeBlockedCleanup(UutExecution& uut,
         }
     }
     return changed;
-}
-
-BarrierNodePayload ExecutionGraphScheduler::barrierPayloadFromNode(const ExecNode& node) const
-{
-    BarrierNodePayload payload;
-    payload.barrierName = node.payload.value("barrierName", node.id).toString();
-    payload.cohortId = node.payload.value("cohortId", "default").toString();
-    payload.expectedUutCount = node.payload.value("expectedUutCount", -1).toInt();
-
-    const auto arrivalPolicy = node.payload.value("arrivalPolicy", "WaitAll").toString();
-    if (arrivalPolicy.compare("DropFailed", Qt::CaseInsensitive) == 0) {
-        payload.arrivalPolicy = BarrierArrivalPolicy::DropFailed;
-    } else if (arrivalPolicy.compare("Quorum", Qt::CaseInsensitive) == 0) {
-        payload.arrivalPolicy = BarrierArrivalPolicy::Quorum;
-    } else if (arrivalPolicy.compare("BestEffort", Qt::CaseInsensitive) == 0) {
-        payload.arrivalPolicy = BarrierArrivalPolicy::BestEffort;
-    } else {
-        payload.arrivalPolicy = BarrierArrivalPolicy::WaitAll;
-    }
-
-    const auto releasePolicy = node.payload.value("releasePolicy", "Lockstep").toString();
-    if (releasePolicy.compare("Latch", Qt::CaseInsensitive) == 0) {
-        payload.releasePolicy = BarrierReleasePolicy::Latch;
-    } else if (releasePolicy.compare("Cohort", Qt::CaseInsensitive) == 0) {
-        payload.releasePolicy = BarrierReleasePolicy::Cohort;
-    } else if (releasePolicy.compare("RollingWindow", Qt::CaseInsensitive) == 0) {
-        payload.releasePolicy = BarrierReleasePolicy::RollingWindow;
-    } else {
-        payload.releasePolicy = BarrierReleasePolicy::Lockstep;
-    }
-
-    const auto failurePolicy = node.payload.value("failurePolicy", "FailBarrier").toString();
-    if (failurePolicy.compare("RemoveFailedMember", Qt::CaseInsensitive) == 0) {
-        payload.failurePolicy = BarrierFailurePolicy::RemoveFailedMember;
-    } else if (failurePolicy.compare("HoldFailedMember", Qt::CaseInsensitive) == 0) {
-        payload.failurePolicy = BarrierFailurePolicy::HoldFailedMember;
-    } else if (failurePolicy.compare("ContinueWithWarning", Qt::CaseInsensitive) == 0) {
-        payload.failurePolicy = BarrierFailurePolicy::ContinueWithWarning;
-    } else if (failurePolicy.compare("AbortCohort", Qt::CaseInsensitive) == 0) {
-        payload.failurePolicy = BarrierFailurePolicy::AbortCohort;
-    } else {
-        payload.failurePolicy = BarrierFailurePolicy::FailBarrier;
-    }
-
-    const auto timeoutPolicy = node.payload.value("timeoutPolicy", "FailArrivedAndWaiting").toString();
-    if (timeoutPolicy.compare("ReleaseArrived", Qt::CaseInsensitive) == 0) {
-        payload.timeoutPolicy = BarrierTimeoutPolicy::ReleaseArrived;
-    } else if (timeoutPolicy.compare("ReleaseIfQuorumReached", Qt::CaseInsensitive) == 0) {
-        payload.timeoutPolicy = BarrierTimeoutPolicy::ReleaseIfQuorumReached;
-    } else if (timeoutPolicy.compare("AbortCohort", Qt::CaseInsensitive) == 0) {
-        payload.timeoutPolicy = BarrierTimeoutPolicy::AbortCohort;
-    } else if (timeoutPolicy.compare("RequestOperatorDecision", Qt::CaseInsensitive) == 0) {
-        payload.timeoutPolicy = BarrierTimeoutPolicy::RequestOperatorDecision;
-    } else {
-        payload.timeoutPolicy = BarrierTimeoutPolicy::FailArrivedAndWaiting;
-    }
-
-    return payload;
-}
-
-BarrierInstanceId ExecutionGraphScheduler::barrierInstanceForNode(const ExecNode& node,
-                                                                  const UutId& uutId)
-{
-    auto it = m_barrierByNode.constFind(node.id);
-    if (it != m_barrierByNode.constEnd()) {
-        return it.value();
-    }
-
-    auto payload = barrierPayloadFromNode(node);
-    auto expected = m_cohortUuts;
-    if (expected.isEmpty()) {
-        expected.insert(uutId);
-    }
-
-    const auto barrierId = m_barriers.createBarrier(payload, expected);
-    m_barrierByNode.insert(node.id, barrierId);
-    m_nodeByBarrier.insert(barrierId, node.id);
-    return barrierId;
 }
 
 void ExecutionGraphScheduler::appendSyntheticAttempt(NodeActivation& activation,

@@ -1,6 +1,7 @@
 #include <QtTest/QtTest>
 
 #include "PicoATE/Core/BarrierController.h"
+#include "PicoATE/Core/BarrierRuntimeCoordinator.h"
 #include "PicoATE/Core/DataParserModule.h"
 #include "PicoATE/Core/DeviceSessionManager.h"
 #include "PicoATE/Core/DeviceDiscovery.h"
@@ -662,6 +663,8 @@ private slots:
     void resourceRegionControllerManagesLeaseLifecycle();
     void resourceRegionControllerReleaseAllIsolatesUuts();
     void barrierControllerReleasesOnlyThroughDecision();
+    void barrierRuntimeCoordinatorQueuesCohortRelease();
+    void barrierRuntimeCoordinatorDropsFailedReachableMember();
     void planCacheKeepsRunningPlanAlive();
     void productRoutingLoadsRelativeSequencesAndMatchesExactlyOneRoute();
     void productRoutingRejectsMissingAndAmbiguousMatches();
@@ -1541,6 +1544,133 @@ void CoreTests::barrierControllerReleasesOnlyThroughDecision()
     decision = barriers.memberArrived(second);
     QVERIFY(decision.released());
     QCOMPARE(decision.releasedUuts.size(), 2);
+}
+
+void CoreTests::barrierRuntimeCoordinatorQueuesCohortRelease()
+{
+    ExecutionPlan plan;
+    plan.id = QStringLiteral("barrier-runtime-release");
+    ExecNode barrier;
+    barrier.id = QStringLiteral("batch-ready");
+    barrier.kind = ExecNodeKind::Barrier;
+    barrier.payload.insert(QStringLiteral("barrierName"),
+                           QStringLiteral("Batch Ready"));
+    barrier.payload.insert(QStringLiteral("cohortId"),
+                           QStringLiteral("batch-1"));
+    barrier.payload.insert(QStringLiteral("arrivalPolicy"),
+                           QStringLiteral("DropFailed"));
+    barrier.payload.insert(QStringLiteral("releasePolicy"),
+                           QStringLiteral("RollingWindow"));
+    barrier.payload.insert(QStringLiteral("failurePolicy"),
+                           QStringLiteral("RemoveFailedMember"));
+    barrier.payload.insert(QStringLiteral("timeoutPolicy"),
+                           QStringLiteral("RequestOperatorDecision"));
+    QVERIFY(plan.addNode(barrier));
+
+    BarrierController barriers;
+    BarrierRuntimeCoordinator coordinator(plan, barriers);
+    coordinator.setCohortUuts(
+        {QStringLiteral("UUT-1"), QStringLiteral("UUT-2")});
+
+    const auto first = coordinator.memberArrived(
+        barrier, QStringLiteral("UUT-1"), QStringLiteral("root"));
+    QVERIFY(!first.decision.released());
+    QVERIFY(coordinator.takePendingReleases().isEmpty());
+
+    const auto snapshot = barriers.snapshot();
+    QCOMPARE(snapshot.size(), 1);
+    QCOMPARE(snapshot.first().expected.size(), 2);
+    QVERIFY(snapshot.first().policy.arrivalPolicy ==
+            BarrierArrivalPolicy::DropFailed);
+    QVERIFY(snapshot.first().policy.releasePolicy ==
+            BarrierReleasePolicy::RollingWindow);
+    QVERIFY(snapshot.first().policy.failurePolicy ==
+            BarrierFailurePolicy::RemoveFailedMember);
+    QVERIFY(snapshot.first().policy.timeoutPolicy ==
+            BarrierTimeoutPolicy::RequestOperatorDecision);
+
+    const auto second = coordinator.memberArrived(
+        barrier, QStringLiteral("UUT-2"), QStringLiteral("root"));
+    QCOMPARE(second.decision.barrierId, first.decision.barrierId);
+    QVERIFY(second.decision.released());
+    QCOMPARE(second.decision.releasedUuts.size(), 2);
+
+    const auto releases = coordinator.takePendingReleases();
+    QCOMPARE(releases.size(), 1);
+    QCOMPARE(releases.first().barrierNodeId, barrier.id);
+    QCOMPARE(releases.first().decision.barrierId, second.decision.barrierId);
+    QCOMPARE(releases.first().decision.releasedUuts.size(), 2);
+    QVERIFY(coordinator.takePendingReleases().isEmpty());
+}
+
+void CoreTests::barrierRuntimeCoordinatorDropsFailedReachableMember()
+{
+    ExecutionPlan plan;
+    plan.id = QStringLiteral("barrier-runtime-failure");
+    ExecNode precheck;
+    precheck.id = QStringLiteral("precheck");
+    precheck.kind = ExecNodeKind::Action;
+    ExecNode unrelated;
+    unrelated.id = QStringLiteral("unrelated");
+    unrelated.kind = ExecNodeKind::Action;
+    ExecNode barrier;
+    barrier.id = QStringLiteral("batch-ready");
+    barrier.kind = ExecNodeKind::Barrier;
+    barrier.payload.insert(QStringLiteral("arrivalPolicy"),
+                           QStringLiteral("DropFailed"));
+    barrier.payload.insert(QStringLiteral("failurePolicy"),
+                           QStringLiteral("RemoveFailedMember"));
+    ExecNode after;
+    after.id = QStringLiteral("after-barrier");
+    after.kind = ExecNodeKind::Action;
+    QVERIFY(plan.addNode(precheck));
+    QVERIFY(plan.addNode(unrelated));
+    QVERIFY(plan.addNode(barrier));
+    QVERIFY(plan.addNode(after));
+    plan.addEdge({QStringLiteral("precheck-barrier"),
+                  precheck.id,
+                  barrier.id,
+                  EdgeKind::Control,
+                  EdgeTrigger::OnSuccess,
+                  {},
+                  0});
+    plan.addEdge({QStringLiteral("barrier-after"),
+                  barrier.id,
+                  after.id,
+                  EdgeKind::Control,
+                  EdgeTrigger::OnSuccess,
+                  {},
+                  0});
+
+    BarrierController barriers;
+    BarrierRuntimeCoordinator coordinator(plan, barriers);
+    coordinator.setCohortUuts(
+        {QStringLiteral("UUT-1"), QStringLiteral("UUT-2")});
+
+    QVERIFY(coordinator.memberFailedBeforeReachableBarriers(
+                unrelated, QStringLiteral("UUT-1"), NodeOutcome::Failed)
+                .isEmpty());
+    QVERIFY(barriers.snapshot().isEmpty());
+
+    const auto failures = coordinator.memberFailedBeforeReachableBarriers(
+        precheck, QStringLiteral("UUT-1"), NodeOutcome::Failed);
+    QCOMPARE(failures.size(), 1);
+    QCOMPARE(failures.first().barrierNodeId, barrier.id);
+    QVERIFY(!failures.first().decision.released());
+    const auto state = barriers.state(failures.first().decision.barrierId);
+    QVERIFY(state.has_value());
+    QVERIFY(state->failed.contains(QStringLiteral("UUT-1")));
+    QVERIFY(state->dropped.contains(QStringLiteral("UUT-1")));
+
+    const auto arrival = coordinator.memberArrived(
+        barrier, QStringLiteral("UUT-2"), QStringLiteral("root"));
+    QCOMPARE(arrival.decision.barrierId, failures.first().decision.barrierId);
+    QVERIFY(arrival.decision.released());
+    QCOMPARE(arrival.decision.releasedUuts,
+             QSet<UutId>{QStringLiteral("UUT-2")});
+    QCOMPARE(arrival.decision.droppedUuts,
+             QSet<UutId>{QStringLiteral("UUT-1")});
+    QCOMPARE(coordinator.takePendingReleases().size(), 1);
 }
 
 void CoreTests::planCacheKeepsRunningPlanAlive()
@@ -3822,7 +3952,8 @@ void CoreTests::executionSessionReleasesBarrierAcrossUuts()
                   {},
                   0});
 
-    ExecutionSession session(plan);
+    CollectingRuntimeEventSink events;
+    ExecutionSession session(plan, {}, &events);
     session.addUut("uut-1");
     session.addUut("uut-2");
 
@@ -3835,6 +3966,30 @@ void CoreTests::executionSessionReleasesBarrierAcrossUuts()
     for (const auto& uut : uuts) {
         QCOMPARE(uut.outcomeOf("batch-ready"), NodeOutcome::Passed);
         QCOMPARE(uut.outcomeOf("after-barrier"), NodeOutcome::Passed);
+    }
+
+    const auto records = events.records();
+    for (const auto& uutId : {UutId("uut-1"), UutId("uut-2")}) {
+        int waitingIndex = -1;
+        int releasedIndex = -1;
+        int waitingCount = 0;
+        int releasedCount = 0;
+        for (int index = 0; index < records.size(); ++index) {
+            const auto& event = records[index];
+            if (event.uutId != uutId || event.nodeId != "batch-ready") {
+                continue;
+            }
+            if (event.kind == RuntimeEventKind::BarrierWaiting) {
+                waitingIndex = index;
+                ++waitingCount;
+            } else if (event.kind == RuntimeEventKind::BarrierReleased) {
+                releasedIndex = index;
+                ++releasedCount;
+            }
+        }
+        QCOMPARE(waitingCount, 1);
+        QCOMPARE(releasedCount, 1);
+        QVERIFY(releasedIndex > waitingIndex);
     }
 }
 

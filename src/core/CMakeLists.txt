@@ -1,6 +1,7 @@
 add_library(PicoATECore SHARED
     include/PicoATE/Core/CoreExport.h
     src/BarrierController.cpp
+    src/BarrierRuntimeCoordinator.cpp
     src/DllBridgeInvoker.cpp
     src/DeviceDiscovery.cpp
     src/DeviceSessionManager.cpp

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PicoATE/Core/BarrierController.h"
+#include "PicoATE/Core/BarrierRuntimeCoordinator.h"
 #include "PicoATE/Core/ErrorPolicyEngine.h"
 #include "PicoATE/Core/ExecutionControl.h"
 #include "PicoATE/Core/ExecutionResultStore.h"
@@ -181,8 +182,6 @@ private:
                                       const FrameId& frameId);
     bool hasPathToNode(const NodeId& from, const NodeId& to) const;
     LoopIterationContext loopIterationForAttempt(const UutExecution& uut, const ExecNode& node) const;
-    BarrierNodePayload barrierPayloadFromNode(const ExecNode& node) const;
-    BarrierInstanceId barrierInstanceForNode(const ExecNode& node, const UutId& uutId);
     void appendSyntheticAttempt(NodeActivation& activation, NodeOutcome outcome, const QString& message = {});
     void publishNodeEvent(RuntimeEventKind kind,
                           const UutExecution& uut,
@@ -255,7 +254,7 @@ private:
     const ExecutionPlan& m_plan;
     ResourceManager& m_resources;
     ResourceRegionController m_resourceRegions;
-    BarrierController& m_barriers;
+    BarrierRuntimeCoordinator m_barrierRuntime;
     LoopController& m_loops;
     ErrorPolicyEngine& m_errorPolicy;
     NodeRunner& m_runner;
@@ -263,10 +262,6 @@ private:
     ExecutionControl* m_executionControl = nullptr;
     StopToken* m_stopToken = nullptr;
     RuntimeEventEmitter* m_events = nullptr;
-    QSet<UutId> m_cohortUuts;
-    QHash<BarrierInstanceId, BarrierReleaseDecision> m_releasedBarriers;
-    QHash<NodeId, BarrierInstanceId> m_barrierByNode;
-    QHash<BarrierInstanceId, NodeId> m_nodeByBarrier;
     QVector<ActiveOperatorPrompt> m_activeOperatorPrompts;
     TimerService m_timers;
     QHash<RequestId, PendingWait> m_pendingWaits;
