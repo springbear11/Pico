@@ -537,6 +537,15 @@ RunArtifactResult RunArtifactWriter::finalize(
                 result.filePaths.push_back(source);
             } else {
                 result.filePaths.push_back(destination);
+                const auto suffix = QFileInfo(destination).suffix().toLower();
+                if (suffix == QStringLiteral("csv") ||
+                    suffix == QStringLiteral("xlsx")) {
+                    const auto protectedResult =
+                        ReportExporter::makeReadOnly(destination);
+                    if (!protectedResult.success) {
+                        appendError(result, protectedResult.errorMessage);
+                    }
+                }
             }
         }
     }

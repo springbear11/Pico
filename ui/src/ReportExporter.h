@@ -26,6 +26,7 @@ public:
     static ReportExportResult savePdf(
         const QString& filePath,
         const PicoATE::Core::ExecutionReport& report);
+    static ReportExportResult makeReadOnly(const QString& filePath);
     static QByteArray csvHeader();
 };
 

@@ -6,6 +6,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFontMetrics>
 #include <QImage>
 #include <QPageLayout>
@@ -118,9 +119,15 @@ QString parserSelectionPlainText(
 QString reportActualDisplay(
     const PicoATE::Core::MeasurementResult& measurement)
 {
-    const auto actual = !measurement.value.isValid() || measurement.value.isNull()
+    return !measurement.value.isValid() || measurement.value.isNull()
         ? QString{}
         : measurementActualDisplay(measurement);
+}
+
+QString parserLogActualDisplay(
+    const PicoATE::Core::MeasurementResult& measurement)
+{
+    const auto actual = reportActualDisplay(measurement);
     const auto selectedSource = parserSelectionPlainText(measurement);
     return selectedSource.isEmpty()
         ? actual
@@ -853,7 +860,7 @@ void appendStepText(QByteArray& text,
             continue;
         }
         text += QStringLiteral("%1PARSER:%2\r\n")
-                    .arg(indentation, reportActualDisplay(measurement))
+                    .arg(indentation, parserLogActualDisplay(measurement))
                     .toUtf8();
     }
     text += QStringLiteral("%1RESULT:%2\r\n")
@@ -1153,6 +1160,21 @@ ReportExportResult ReportExporter::savePdf(
     }
     if (!output.commit()) {
         return {false, output.errorString()};
+    }
+    return {true, {}};
+}
+
+ReportExportResult ReportExporter::makeReadOnly(const QString& filePath)
+{
+    if (!QFileInfo::exists(filePath)) {
+        return {false, QStringLiteral("Report file does not exist: %1").arg(filePath)};
+    }
+
+    auto permissions = QFile::permissions(filePath);
+    permissions &= ~(QFileDevice::WriteOwner | QFileDevice::WriteUser |
+                     QFileDevice::WriteGroup | QFileDevice::WriteOther);
+    if (!QFile::setPermissions(filePath, permissions)) {
+        return {false, QStringLiteral("Cannot mark report read-only: %1").arg(filePath)};
     }
     return {true, {}};
 }

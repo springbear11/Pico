@@ -3441,9 +3441,13 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(parserXlsxFile.open(QIODevice::ReadOnly));
     QVERIFY(QString::fromUtf8(parserTextFile.readAll())
                 .contains(QStringLiteral("PARSER:%1").arg(parserActual)));
-    QVERIFY(QString::fromUtf8(parserCsvFile.readAll()).contains(parserActual));
-    QVERIFY(parserXlsxFile.readAll().contains(QStringLiteral(
-        "Raw: 00 00 | \u301000 00\u3011 -&gt; Parsed: 0").toUtf8()));
+    const auto parserCsv = QString::fromUtf8(parserCsvFile.readAll());
+    const auto parserXlsx = parserXlsxFile.readAll();
+    QVERIFY(!parserCsv.contains(QStringLiteral("Raw:")));
+    QVERIFY(!parserCsv.contains(QChar(0x3010)));
+    QVERIFY(parserCsv.contains(QStringLiteral("\"0\",\"PASS\"")));
+    QVERIFY(!parserXlsx.contains(QByteArrayLiteral("Raw:")));
+    QVERIFY(!parserXlsx.contains(QStringLiteral("\u3010").toUtf8()));
 
     const auto errorXlsxPath = directory.filePath(
         QStringLiteral("resolution-error.xlsx"));
@@ -3598,6 +3602,11 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
     QVERIFY(QFileInfo::exists(passText));
     QVERIFY(QFileInfo::exists(passCsv));
     QVERIFY(QFileInfo::exists(passXlsx));
+    const auto writePermissions = QFileDevice::WriteOwner |
+        QFileDevice::WriteUser | QFileDevice::WriteGroup |
+        QFileDevice::WriteOther;
+    QVERIFY(!(QFile::permissions(passCsv) & writePermissions));
+    QVERIFY(!(QFile::permissions(passXlsx) & writePermissions));
     QFile savedCsv(passCsv);
     QVERIFY(savedCsv.open(QIODevice::ReadOnly));
     QVERIFY(QString::fromUtf8(savedCsv.readAll()).contains(

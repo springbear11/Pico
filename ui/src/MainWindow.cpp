@@ -6132,11 +6132,14 @@ void MainWindow::exportSelectedHistory(HistoryExportFormat format)
     if (path.isEmpty()) {
         return;
     }
-    const auto result = pdf
+    auto result = pdf
         ? ReportExporter::savePdf(path, loaded.report)
         : (xlsx ? ReportExporter::saveXlsx(path, loaded.report)
                 : (csv ? ReportExporter::saveCsv(path, loaded.report)
                        : ReportExporter::saveText(path, loaded.report)));
+    if (result.success && (csv || xlsx)) {
+        result = ReportExporter::makeReadOnly(path);
+    }
     statusBar()->showMessage(result.success
                                  ? tr("Report exported")
                                  : tr("Export failed: %1").arg(result.errorMessage));
