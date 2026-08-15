@@ -2176,6 +2176,8 @@ void CoreTests::dataParserDecodesBinaryAndModbusValues()
                            QStringLiteral("00"), QStringLiteral("00")}));
     QCOMPARE(selectionDisplay.value(QStringLiteral("selectedIndices")).toList(),
              QVariantList({0, 1, 2, 3}));
+    QCOMPARE(selectionDisplay.value(QStringLiteral("plainText")).toString(),
+             QStringLiteral("\u301041 48 00 00\u3011"));
     QCOMPARE(result.outputs.value(QStringLiteral("rawHex")).toString(),
              QStringLiteral("41 48 00 00"));
 
@@ -2214,6 +2216,8 @@ void CoreTests::dataParserDecodesBinaryAndModbusValues()
                            QStringLiteral("1"), QStringLiteral("0")}));
     QCOMPARE(selectionDisplay.value(QStringLiteral("selectedIndices")).toList(),
              QVariantList({4, 5, 6}));
+    QCOMPARE(selectionDisplay.value(QStringLiteral("plainText")).toString(),
+             QStringLiteral("1011\u3010011\u30110"));
 
     context.inputs = {
         {QStringLiteral("source"), QVariantList{0x4148, 0x0000}},
@@ -2245,6 +2249,8 @@ void CoreTests::dataParserDecodesBinaryAndModbusValues()
     QCOMPARE(selectionDisplay.value(QStringLiteral("selectedIndices")).toList(),
              QVariantList({2, 3}));
     QCOMPARE(selectionDisplay.value(QStringLiteral("groupSize")).toInt(), 2);
+    QCOMPARE(selectionDisplay.value(QStringLiteral("plainText")).toString(),
+             QStringLiteral("00 00 | \u301000 00\u3011"));
 
     context.inputs.insert(QStringLiteral("dataType"), QStringLiteral("float32"));
     result = parser.execute(QStringLiteral("decodeRegisters"), context);
@@ -2262,6 +2268,11 @@ void CoreTests::dataParserDecodesBinaryAndModbusValues()
         return record.message.contains(QStringLiteral(
                    "PARSE_REGISTERS INPUT_REGISTERS=")) &&
                record.message.contains(QStringLiteral("OUTPUT=12.5"));
+    }));
+    QVERIFY(std::any_of(parserLogs.cbegin(), parserLogs.cend(),
+                        [](const ModuleLogRecord& record) {
+        return record.message == QStringLiteral(
+                   "PARSER_SELECTION RAW=00 00 | \u301000 00\u3011 PARSED=0");
     }));
 }
 

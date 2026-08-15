@@ -3398,6 +3398,53 @@ void ExecutionViewModelTests::reportExporterWritesTextAndCsv()
     QVERIFY(xlsx.contains("FF16794A"));
     QVERIFY(xlsx.contains("FFB42318"));
 
+    auto parserReport = sampleReport();
+    auto& parserStep = parserReport.uuts.first().steps.first();
+    parserStep.displayName = QStringLiteral("Decode Registers");
+    auto& parserMeasurement = parserStep.measurements.first();
+    parserMeasurement.name = QStringLiteral("value");
+    parserMeasurement.value = 0;
+    parserMeasurement.rawValue = 0;
+    parserMeasurement.unit.clear();
+    parserMeasurement.hasLowerLimit = false;
+    parserMeasurement.hasUpperLimit = false;
+    parserMeasurement.attributes.clear();
+    parserMeasurement.attributes.insert(QStringLiteral("parserDisplay"), true);
+    parserMeasurement.attributes.insert(
+        QStringLiteral("parserSelectionDisplay"),
+        QVariantMap{
+            {QStringLiteral("format"), QStringLiteral("hexBytes")},
+            {QStringLiteral("tokens"),
+             QVariantList{QStringLiteral("00"), QStringLiteral("00"),
+                          QStringLiteral("00"), QStringLiteral("00")}},
+            {QStringLiteral("selectedIndices"), QVariantList{2, 3}},
+            {QStringLiteral("groupSize"), 2},
+            {QStringLiteral("sourceTokenOffset"), 0},
+            {QStringLiteral("sourceTokenCount"), 4}});
+    parserStep.attempts.last().measurements = parserStep.measurements;
+    const auto parserTextPath = directory.filePath(
+        QStringLiteral("parser-report.txt"));
+    const auto parserCsvPath = directory.filePath(
+        QStringLiteral("parser-report.csv"));
+    const auto parserXlsxPath = directory.filePath(
+        QStringLiteral("parser-report.xlsx"));
+    QVERIFY(ReportExporter::saveText(parserTextPath, parserReport).success);
+    QVERIFY(ReportExporter::saveCsv(parserCsvPath, parserReport).success);
+    QVERIFY(ReportExporter::saveXlsx(parserXlsxPath, parserReport).success);
+    const auto parserActual = QStringLiteral(
+        "Raw: 00 00 | \u301000 00\u3011 -> Parsed: 0");
+    QFile parserTextFile(parserTextPath);
+    QFile parserCsvFile(parserCsvPath);
+    QFile parserXlsxFile(parserXlsxPath);
+    QVERIFY(parserTextFile.open(QIODevice::ReadOnly));
+    QVERIFY(parserCsvFile.open(QIODevice::ReadOnly));
+    QVERIFY(parserXlsxFile.open(QIODevice::ReadOnly));
+    QVERIFY(QString::fromUtf8(parserTextFile.readAll())
+                .contains(QStringLiteral("PARSER:%1").arg(parserActual)));
+    QVERIFY(QString::fromUtf8(parserCsvFile.readAll()).contains(parserActual));
+    QVERIFY(parserXlsxFile.readAll().contains(QStringLiteral(
+        "Raw: 00 00 | \u301000 00\u3011 -&gt; Parsed: 0").toUtf8()));
+
     const auto errorXlsxPath = directory.filePath(
         QStringLiteral("resolution-error.xlsx"));
     QVERIFY(ReportExporter::saveXlsx(
@@ -3527,6 +3574,8 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
         {startedAt, QStringLiteral("======================== CAN_CHECK_TESTITEM_START ========================")},
         {startedAt.addMSecs(1), QStringLiteral("    ------------------------ READ_STEP_START ------------------------")},
         {startedAt.addMSecs(5), QStringLiteral("LOG:RX 01 02 03")},
+        {startedAt.addMSecs(6), QStringLiteral(
+             "PARSER_SELECTION RAW=00 00 | \u301000 00\u3011 PARSED=0")},
         {startedAt.addMSecs(8), QStringLiteral("    ------------------------ READ_STEP_END ------------------------")},
         {startedAt.addMSecs(9), QStringLiteral("    ------------------------ LIMIT_STEP_START ------------------------")},
         {startedAt.addMSecs(10), QStringLiteral("    ------------------------ LIMIT_STEP_END ------------------------")},
@@ -3570,6 +3619,8 @@ void ExecutionViewModelTests::runArtifactWriterStreamsAndClassifiesFiles()
     QVERIFY(savedLog.contains(QStringLiteral(
         "[08:09:10.111] ======================== CAN_CHECK_TESTITEM_START ========================")));
     QVERIFY(savedLog.contains(QStringLiteral("LOG:RX 01 02 03")));
+    QVERIFY(savedLog.contains(QStringLiteral(
+        "PARSER_SELECTION RAW=00 00 | \u301000 00\u3011 PARSED=0")));
     QVERIFY(savedLog.contains(QStringLiteral(
         "------------------------ READ_STEP_END ------------------------\r\n"
         "[08:09:10.120]     ------------------------ LIMIT_STEP_START ------------------------")));

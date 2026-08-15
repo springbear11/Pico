@@ -13,6 +13,7 @@
 #include <QPainter>
 #include <QPdfWriter>
 #include <QSaveFile>
+#include <QSet>
 
 #include <algorithm>
 #include <cmath>
@@ -48,12 +49,84 @@ QString reportLimitDisplay(
     return value == QStringLiteral("-") ? QString{} : value;
 }
 
+QString parserSelectionPlainText(
+    const PicoATE::Core::MeasurementResult& measurement)
+{
+    const auto display = measurement.attributes
+                             .value(QStringLiteral("parserSelectionDisplay"))
+                             .toMap();
+    if (display.isEmpty()) {
+        return {};
+    }
+    const auto stored = display.value(QStringLiteral("plainText")).toString();
+    if (!stored.isEmpty()) {
+        return stored;
+    }
+
+    const auto tokens = display.value(QStringLiteral("tokens")).toList();
+    QSet<int> selectedIndices;
+    for (const auto& selected :
+         display.value(QStringLiteral("selectedIndices")).toList()) {
+        selectedIndices.insert(selected.toInt());
+    }
+    if (tokens.isEmpty() || selectedIndices.isEmpty()) {
+        return {};
+    }
+
+    const auto format = display.value(QStringLiteral("format")).toString();
+    const int groupSize = display.value(QStringLiteral("groupSize")).toInt();
+    const int sourceOffset = display
+                                 .value(QStringLiteral("sourceTokenOffset"))
+                                 .toInt();
+    const int sourceCount = display
+                                .value(QStringLiteral("sourceTokenCount"))
+                                .toInt();
+    QString plainText;
+    if (sourceOffset > 0) {
+        plainText += QStringLiteral("... ");
+    }
+    for (int index = 0; index < tokens.size(); ++index) {
+        if (index > 0) {
+            const int absoluteIndex = sourceOffset + index;
+            if (groupSize > 0 && absoluteIndex % groupSize == 0) {
+                plainText += format == QStringLiteral("bits")
+                    ? QStringLiteral(" ")
+                    : QStringLiteral(" | ");
+            } else if (format != QStringLiteral("bits")) {
+                plainText += QLatin1Char(' ');
+            }
+        }
+        const bool selected = selectedIndices.contains(index);
+        const bool previousSelected = index > 0 &&
+            selectedIndices.contains(index - 1);
+        const bool nextSelected = index + 1 < tokens.size() &&
+            selectedIndices.contains(index + 1);
+        if (selected && !previousSelected) {
+            plainText += QStringLiteral("\u3010");
+        }
+        plainText += tokens[index].toString();
+        if (selected && !nextSelected) {
+            plainText += QStringLiteral("\u3011");
+        }
+    }
+    if (sourceOffset + tokens.size() < sourceCount) {
+        plainText += QStringLiteral(" ...");
+    }
+    return plainText;
+}
+
 QString reportActualDisplay(
     const PicoATE::Core::MeasurementResult& measurement)
 {
-    return !measurement.value.isValid() || measurement.value.isNull()
+    const auto actual = !measurement.value.isValid() || measurement.value.isNull()
         ? QString{}
         : measurementActualDisplay(measurement);
+    const auto selectedSource = parserSelectionPlainText(measurement);
+    return selectedSource.isEmpty()
+        ? actual
+        : QStringLiteral("Raw: %1 -> Parsed: %2")
+              .arg(selectedSource,
+                   actual.isEmpty() ? QStringLiteral("-") : actual);
 }
 
 QString csvCell(QString value)
@@ -769,6 +842,19 @@ void appendStepText(QByteArray& text,
                 .toUtf8();
     for (const auto& child : step.children) {
         appendStepText(text, child, depth + 1);
+    }
+    const auto& measurements = !step.measurements.isEmpty()
+        ? step.measurements
+        : (step.attempts.isEmpty()
+               ? QVector<PicoATE::Core::MeasurementResult>{}
+               : step.attempts.constLast().measurements);
+    for (const auto& measurement : measurements) {
+        if (parserSelectionPlainText(measurement).isEmpty()) {
+            continue;
+        }
+        text += QStringLiteral("%1PARSER:%2\r\n")
+                    .arg(indentation, reportActualDisplay(measurement))
+                    .toUtf8();
     }
     text += QStringLiteral("%1RESULT:%2\r\n")
                 .arg(indentation, outcomeToken(step.outcome))

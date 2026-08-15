@@ -1665,6 +1665,42 @@ QVariantMap tokenSelectionDisplay(int totalTokens,
         return {};
     }
 
+    QSet<int> selectedLocalIndices;
+    for (const auto& selectedIndex : selectedIndices) {
+        selectedLocalIndices.insert(selectedIndex.toInt());
+    }
+    QString plainText;
+    if (windowStart > 0) {
+        plainText += QStringLiteral("... ");
+    }
+    for (int index = 0; index < tokens.size(); ++index) {
+        if (index > 0) {
+            const int absoluteIndex = windowStart + index;
+            if (groupSize > 0 && absoluteIndex % groupSize == 0) {
+                plainText += format == QStringLiteral("bits")
+                    ? QStringLiteral(" ")
+                    : QStringLiteral(" | ");
+            } else if (format != QStringLiteral("bits")) {
+                plainText += QLatin1Char(' ');
+            }
+        }
+        const bool selected = selectedLocalIndices.contains(index);
+        const bool previousSelected = index > 0 &&
+            selectedLocalIndices.contains(index - 1);
+        const bool nextSelected = index + 1 < tokens.size() &&
+            selectedLocalIndices.contains(index + 1);
+        if (selected && !previousSelected) {
+            plainText += QStringLiteral("\u3010");
+        }
+        plainText += tokens[index].toString();
+        if (selected && !nextSelected) {
+            plainText += QStringLiteral("\u3011");
+        }
+    }
+    if (windowEnd < totalTokens) {
+        plainText += QStringLiteral(" ...");
+    }
+
     QVariantMap display;
     display.insert(QStringLiteral("schemaVersion"), 1);
     display.insert(QStringLiteral("format"), format);
@@ -1673,6 +1709,7 @@ QVariantMap tokenSelectionDisplay(int totalTokens,
     display.insert(QStringLiteral("groupSize"), groupSize);
     display.insert(QStringLiteral("sourceTokenOffset"), windowStart);
     display.insert(QStringLiteral("sourceTokenCount"), totalTokens);
+    display.insert(QStringLiteral("plainText"), plainText);
     return display;
 }
 
@@ -1877,6 +1914,19 @@ void addParserDisplayMeasurements(const QString& function,
         context.inputs.value(QStringLiteral("source")), 512);
     const auto selectionDisplay = parserSelectionDisplay(
         function, context, result);
+    const auto publishSelectionLog = [&context, &selectionDisplay](
+                                         const QVariant& parsedValue) {
+        const auto plainText = selectionDisplay
+                                   .value(QStringLiteral("plainText"))
+                                   .toString();
+        if (plainText.isEmpty()) {
+            return;
+        }
+        publishLog(
+            context,
+            QStringLiteral("PARSER_SELECTION RAW=%1 PARSED=%2")
+                .arg(plainText, visibleVariant(parsedValue, 512)));
+    };
     const auto appendMeasurement = [&result, &originalDisplay, &selectionDisplay](
                                        const QString& name,
                                        const QVariant& value,
@@ -1918,6 +1968,7 @@ void addParserDisplayMeasurements(const QString& function,
                 appendMeasurement(field.key(), field.value(), QVariant{});
             }
         }
+        publishSelectionLog(namedFields);
         return;
     }
 
@@ -1940,6 +1991,7 @@ void addParserDisplayMeasurements(const QString& function,
         measurementName,
         value,
         result.outputs.value(QStringLiteral("rawValue")));
+    publishSelectionLog(value);
 }
 
 } // namespace
