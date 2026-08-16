@@ -112,7 +112,9 @@ private:
     PicoATE::Core::NodeId m_lastAutoFollowNodeId;
     qint64 m_totalCompletedDurationMs = 0;
     QString m_activeUutId;
+    QString m_activeSerialNumber;
     QString m_pendingSerialNumber;
+    bool m_runPreparationPending = false;
     bool m_currentRunCounted = false;
     bool m_fieldDeviceDialogOpen = false;
     int m_responsiveLayoutMode = -1;

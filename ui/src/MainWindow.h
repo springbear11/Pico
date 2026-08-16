@@ -312,6 +312,8 @@ private:
     QString m_productRoutingPath;
     QString m_newProjectRootPath;
     QString m_pendingRoutedSerialNumber;
+    QString m_activeAdminUutId;
+    QString m_activeAdminSerialNumber;
     QVector<QJsonObject> m_sequenceClipboard;
     SequenceItemPath m_selectedSequencePath;
     QString m_selectedSequenceNodePath;

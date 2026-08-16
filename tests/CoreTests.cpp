@@ -6569,10 +6569,16 @@ void CoreTests::sequenceCompilerBindsTypedVariablesPerUut()
     QCOMPARE(compiled.sequence.variables.size(), 3);
     QCOMPARE(compiled.plan.variables.size(), 3);
 
+    QVariantMap snAOverrides;
+    snAOverrides.insert(QStringLiteral("sn"), QStringLiteral("SN-A"));
+    snAOverrides.insert(QStringLiteral("serialNumber"), QStringLiteral("SN-A"));
+    QVariantMap snBOverrides;
+    snBOverrides.insert(QStringLiteral("sn"), QStringLiteral("SN-B"));
+    snBOverrides.insert(QStringLiteral("serialNumber"), QStringLiteral("SN-B"));
     const auto uut1 = bindSequenceVariablesForUut(
-        compiled.plan.variables, 0, QStringLiteral("SN-A"));
+        compiled.plan.variables, 0, QStringLiteral("SN-A"), snAOverrides);
     const auto uut2 = bindSequenceVariablesForUut(
-        compiled.plan.variables, 1, QStringLiteral("SN-B"));
+        compiled.plan.variables, 1, QStringLiteral("SN-B"), snBOverrides);
     QVERIFY(uut1.ok());
     QVERIFY(uut2.ok());
     QCOMPARE(uut1.variables.value("CAN_ID").toULongLong(), qulonglong(0x101));
@@ -6582,6 +6588,18 @@ void CoreTests::sequenceCompilerBindsTypedVariablesPerUut()
     QCOMPARE(uut2.variables.value("uut").toMap().value("index").toInt(), 1);
     QCOMPARE(uut2.variables.value("uut").toMap().value("slot").toInt(), 2);
     QCOMPARE(uut2.variables.value("sn").toString(), QString("SN-B"));
+
+    QVariantMap noSerialOverrides;
+    noSerialOverrides.insert(QStringLiteral("sn"), QString{});
+    noSerialOverrides.insert(QStringLiteral("serialNumber"), QString{});
+    const auto noSerialNumber = bindSequenceVariablesForUut(
+        compiled.plan.variables, 0, QStringLiteral("UUT-RUNTIME-1"),
+        noSerialOverrides);
+    QVERIFY(noSerialNumber.ok());
+    QVERIFY(noSerialNumber.variables.value("sn").toString().isEmpty());
+    QVERIFY(noSerialNumber.variables.value("serialNumber").toString().isEmpty());
+    QCOMPARE(noSerialNumber.variables.value("uut").toMap().value("id").toString(),
+             QStringLiteral("UUT-RUNTIME-1"));
 
     const auto missing = bindSequenceVariablesForUut(
         compiled.plan.variables, 2, QStringLiteral("SN-C"));
@@ -6593,6 +6611,8 @@ void CoreTests::sequenceCompilerBindsTypedVariablesPerUut()
 
     QVariantMap overrides;
     overrides.insert(QStringLiteral("CAN_ID"), 0x555);
+    overrides.insert(QStringLiteral("sn"), QStringLiteral("SN-A"));
+    overrides.insert(QStringLiteral("serialNumber"), QStringLiteral("SN-A"));
     const auto overridden = bindSequenceVariablesForUut(
         compiled.plan.variables, 0, QStringLiteral("SN-A"), overrides);
     QVERIFY(overridden.ok());
@@ -6614,6 +6634,19 @@ void CoreTests::sequenceCompilerBindsTypedVariablesPerUut()
              qulonglong(0x101));
     QCOMPARE(secondResult->result.outputs.value("inputValue").toULongLong(),
              qulonglong(0x102));
+
+    ExecutionSession noSerialSession(compiled.plan);
+    auto& runtimeOnlyUut = noSerialSession.addUut(
+        QStringLiteral("UUT-RUNTIME-1"));
+    runtimeOnlyUut.variables = noSerialNumber.variables;
+    QVERIFY(noSerialSession.registerModule(std::make_shared<EchoModule>()));
+    const auto noSerialRun = noSerialSession.run();
+    QVERIFY(noSerialRun.completed);
+    const auto noSerialReport = noSerialSession.report();
+    QCOMPARE(noSerialReport.uuts.size(), 1);
+    QCOMPARE(noSerialReport.uuts.first().uutId,
+             QStringLiteral("UUT-RUNTIME-1"));
+    QVERIFY(noSerialReport.uuts.first().serialNumber.isEmpty());
 }
 
 void CoreTests::sequenceCompilerRejectsInvalidSequenceVariables()

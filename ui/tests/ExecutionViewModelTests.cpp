@@ -436,6 +436,7 @@ private slots:
     void reportExporterWritesTextAndCsv();
     void runArtifactWriterStreamsAndClassifiesFiles();
     void runArtifactWriterSeparatesMultipleUuts();
+    void runArtifactWriterKeepsMissingSerialNumberEmpty();
     void testItemReportAndRuntimeEventsPreserveHierarchy();
     void sequenceDocumentPreservesUnknownFieldsAndSnapshots();
     void sequenceDocumentCanonicalizesUiAuthoredFields();
@@ -532,7 +533,7 @@ void ExecutionViewModelTests::compileAndRunExecuteOffTheUiThread()
     QCOMPARE(activeUuts.size(), 2);
     QCOMPARE(activeUuts.first().uutId, QStringLiteral("DUT-1"));
     QCOMPARE(activeUuts.last().variables.value(QStringLiteral("serialNumber")).toString(),
-             QStringLiteral("DUT-2"));
+             QString{});
     QCOMPARE(control->runCalls.load(), 1);
     QVERIFY(control->runThread.load() != QThread::currentThread());
     QCOMPARE(viewModel.report().planId, QStringLiteral("fake-plan"));
@@ -813,10 +814,9 @@ void ExecutionViewModelTests::coreServiceCompilesAndRunsSimpleSequence()
     QVERIFY(!runResult.report.hasError);
     QCOMPARE(runResult.report.uuts.size(), 2);
     QCOMPARE(runResult.report.uuts.first().uutId, QStringLiteral("DUT-1"));
-    QCOMPARE(runResult.report.uuts.first().serialNumber, QStringLiteral("DUT-1"));
-    QCOMPARE(runResult.report.uuts.last().serialNumber, QStringLiteral("DUT-2"));
-    QCOMPARE(runResult.report.metadata.serialNumber,
-             QStringLiteral("DUT-1, DUT-2"));
+    QVERIFY(runResult.report.uuts.first().serialNumber.isEmpty());
+    QVERIFY(runResult.report.uuts.last().serialNumber.isEmpty());
+    QVERIFY(runResult.report.metadata.serialNumber.isEmpty());
     QVERIFY(runResult.report.metadata.model.isEmpty());
     QVERIFY(runResult.report.metadata.customerId.isEmpty());
     QCOMPARE(runResult.report.metadata.sequenceName,
@@ -867,6 +867,8 @@ void ExecutionViewModelTests::coreServiceRunsExplicitScannedUut()
     request.requestId = 82;
     RunRequest::UutInput input;
     input.uutId = QStringLiteral("SN-20260710-001");
+    input.variables.insert(QStringLiteral("sn"), input.uutId);
+    input.variables.insert(QStringLiteral("serialNumber"), input.uutId);
     input.variables.insert(QStringLiteral("order"), QStringLiteral("ORDER-42"));
     request.uuts.push_back(input);
     const auto runResult = service.run(
@@ -3851,6 +3853,46 @@ void ExecutionViewModelTests::runArtifactWriterSeparatesMultipleUuts()
         QStringLiteral("FAIL/SN-A_SLOT-1_201012123.csv"))));
     QVERIFY(QFileInfo::exists(QDir(dateDirectory).filePath(
         QStringLiteral("FAIL/SN-B_SLOT-2_201012123.csv"))));
+}
+
+void ExecutionViewModelTests::runArtifactWriterKeepsMissingSerialNumberEmpty()
+{
+    using namespace PicoATE::Core;
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    RunArtifactSettings settings;
+    settings.txtLogEnabled = true;
+    settings.outputDirectory = directory.path();
+
+    RunArtifactContext context;
+    context.sequenceName = QStringLiteral("manual_admin_sequence.json");
+    const QDateTime startedAt(
+        QDate(2026, 8, 16), QTime(10, 20, 30, 456));
+    const QString runtimeUutId = QStringLiteral("UUT-20260816-102030-456");
+
+    RunArtifactWriter writer;
+    const auto begun = writer.beginForUuts(
+        settings, context, {{runtimeUutId, QString{}}}, startedAt);
+    QVERIFY2(begun.success, qPrintable(begun.errorMessage));
+    QCOMPARE(writer.baseNames(),
+             QStringList({QStringLiteral("20260816_102030456")}));
+
+    auto report = sampleReport();
+    report.metadata.serialNumber.clear();
+    report.uuts.first().uutId = runtimeUutId;
+    report.uuts.first().serialNumber.clear();
+    const auto archived = writer.finalize(report);
+    QVERIFY2(archived.success, qPrintable(archived.errorMessage));
+
+    const auto logPath = directory.filePath(
+        QStringLiteral("20260816/PASS/20260816_102030456.txt"));
+    QFile logFile(logPath);
+    QVERIFY2(logFile.open(QIODevice::ReadOnly), qPrintable(logPath));
+    const auto logText = QString::fromUtf8(logFile.readAll());
+    QVERIFY(logText.contains(QStringLiteral("Serial Number   : --")));
+    QVERIFY(!logText.contains(runtimeUutId));
 }
 
 void ExecutionViewModelTests::testItemReportAndRuntimeEventsPreserveHierarchy()

@@ -723,9 +723,6 @@ ExecutionReport ExecutionSession::report() const
             uutReport.serialNumber = uutVariables.value(
                 QStringLiteral("serialNumber")).toString().trimmed();
         }
-        if (uutReport.serialNumber.isEmpty()) {
-            uutReport.serialNumber = uut.uutId;
-        }
         uutReport.completed = uutComplete(uut);
         uutReport.steps.reserve(nodeIds.size());
 

@@ -312,8 +312,8 @@ QVector<RunRequest::UutInput> ExecutionViewModel::activeRunUuts() const
     for (int index = 1; index <= count; ++index) {
         RunRequest::UutInput input;
         input.uutId = QStringLiteral("%1-%2").arg(prefix).arg(index);
-        input.variables.insert(QStringLiteral("sn"), input.uutId);
-        input.variables.insert(QStringLiteral("serialNumber"), input.uutId);
+        input.variables.insert(QStringLiteral("sn"), QString{});
+        input.variables.insert(QStringLiteral("serialNumber"), QString{});
         uuts.push_back(std::move(input));
     }
     return uuts;

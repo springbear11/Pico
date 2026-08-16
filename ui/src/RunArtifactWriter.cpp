@@ -133,9 +133,6 @@ PicoATE::Core::ExecutionReport reportForUut(
     if (result.metadata.serialNumber.isEmpty()) {
         result.metadata.serialNumber = serialNumberFallback.trimmed();
     }
-    if (result.metadata.serialNumber.isEmpty()) {
-        result.metadata.serialNumber = uut.uutId;
-    }
     if (useUutTiming) {
         if (uut.startedAt.isValid()) {
             result.metadata.startedAt = uut.startedAt;
@@ -338,10 +335,6 @@ RunArtifactResult RunArtifactWriter::beginForUuts(
         channel->uutId = uut.uutId;
         channel->context = context;
         channel->context.serialNumber = uut.serialNumber;
-        if (channel->context.serialNumber.isEmpty() &&
-            requestedUuts.size() > 1) {
-            channel->context.serialNumber = uut.uutId;
-        }
 
         auto filePrefix = safeFileName(channel->context.serialNumber);
         const auto uutPrefix = safeFileName(uut.uutId);

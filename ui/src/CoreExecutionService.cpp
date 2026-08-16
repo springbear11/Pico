@@ -268,6 +268,8 @@ RunServiceResult CoreExecutionService::run(
         for (int index = 1; index <= request.uutCount; ++index) {
             RunRequest::UutInput input;
             input.uutId = QStringLiteral("%1-%2").arg(prefix).arg(index);
+            input.variables.insert(QStringLiteral("sn"), QString{});
+            input.variables.insert(QStringLiteral("serialNumber"), QString{});
             uutInputs.push_back(std::move(input));
         }
     }

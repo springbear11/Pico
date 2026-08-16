@@ -2776,9 +2776,7 @@ void MainWindow::runSequence()
         !resolvePendingStationChanges()) {
         return;
     }
-    const auto uutId = QStringLiteral("UUT-%1")
-        .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss-zzz")));
-    runScannedUut(uutId);
+    startAdminRunWithSerial({});
 }
 
 void MainWindow::runScannedUut(const QString& serialNumber)
@@ -2869,18 +2867,22 @@ void MainWindow::startAdminRunWithSerial(const QString& serialNumber)
         return;
     }
     const auto sn = serialNumber.trimmed();
-    if (sn.isEmpty()) {
-        return;
-    }
+    m_activeAdminSerialNumber = sn;
+    m_activeAdminUutId = sn.isEmpty()
+        ? QStringLiteral("UUT-%1").arg(
+              QDateTime::currentDateTime().toString(
+                  QStringLiteral("yyyyMMdd-HHmmss-zzz")))
+        : sn;
     m_viewModel->setBreakpoints(m_sequenceTreeModel->breakpointSpecs());
     m_sequenceTreeModel->setCurrentDebugNodePath({});
-    m_adminSerialLabel->setText(sn);
+    m_adminSerialLabel->setText(sn.isEmpty() ? tr("--") : sn);
     QVariantMap variables;
     variables.insert(QStringLiteral("sn"), sn);
     variables.insert(QStringLiteral("serialNumber"), sn);
     ApplicationDiagnostics::recordAction(
-        QStringLiteral("RUN_REQUESTED"), QStringLiteral("uut=%1").arg(sn));
-    m_viewModel->runUut(sn, variables);
+        QStringLiteral("RUN_REQUESTED"),
+        QStringLiteral("uut=%1").arg(m_activeAdminUutId));
+    m_viewModel->runUut(m_activeAdminUutId, variables);
     showRunPage();
 }
 
@@ -2908,7 +2910,7 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
         m_sequenceDocument ? m_sequenceDocument->filePath() : QString{},
         m_stationDocument ? m_stationDocument->rootObject() : QJsonObject{},
         m_stationDocument ? m_stationDocument->filePath() : QString{},
-        m_adminSerialLabel->text().trimmed());
+        m_activeAdminSerialNumber);
     QVector<RunArtifactUutContext> artifactUuts;
     for (const auto& input : m_viewModel->activeRunUuts()) {
         auto serialNumber = input.variables.value(
@@ -2935,7 +2937,7 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
     preview.hasError = false;
     preview.state = PicoATE::Core::ExecutionState::Idle;
     if (!preview.uuts.isEmpty()) {
-        preview.uuts.first().uutId = m_adminSerialLabel->text().trimmed();
+        preview.uuts.first().uutId = m_activeAdminUutId;
         preview.uuts.first().hasError = false;
     }
     displayReport(preview);

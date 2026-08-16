@@ -746,7 +746,7 @@ void ProductionWindow::updateState(UiRunState state)
         m_elapsedTimer->start();
     }
     if (state == UiRunState::Ready) {
-        if (!m_pendingSerialNumber.isEmpty()) {
+        if (m_runPreparationPending) {
             startResolvedRun();
         } else {
             showScanDialogWhenReady();
@@ -804,8 +804,9 @@ void ProductionWindow::updateCompileSummary()
         }
         const bool routedCompile =
             m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn &&
-            !m_pendingSerialNumber.isEmpty();
+            m_runPreparationPending;
         m_pendingSerialNumber.clear();
+        m_runPreparationPending = false;
         if (routedCompile) {
             QStringList details;
             for (const auto& diagnostic : m_viewModel->diagnostics()) {
@@ -830,7 +831,7 @@ void ProductionWindow::updateCompileSummary()
     m_totalNodes = qMax(1, summary.nodeCount);
     resetPreviewForUut({});
     showScanDialogWhenReady();
-    if (!m_pendingSerialNumber.isEmpty() && m_viewModel->canRun()) {
+    if (m_runPreparationPending && m_viewModel->canRun()) {
         startResolvedRun();
     }
 }
@@ -971,6 +972,7 @@ void ProductionWindow::beginRun(const QString& serialNumber)
         return;
     }
     m_pendingSerialNumber = serialNumber.trimmed();
+    m_runPreparationPending = true;
     statusBar()->showMessage(tr("Preparing station devices..."));
     startResolvedRun();
 }
@@ -1009,6 +1011,7 @@ void ProductionWindow::beginAutoRoutedRun(const QString& serialNumber)
     }
 
     m_pendingSerialNumber = sn;
+    m_runPreparationPending = true;
     m_selection.projectName = route.projectName;
     m_selection.projectPath = route.projectPath;
     m_selection.sequencePath = route.sequencePath;
@@ -1048,16 +1051,22 @@ void ProductionWindow::showRoutingError(const QString& message)
 
 void ProductionWindow::startResolvedRun()
 {
-    if (!m_viewModel->canRun() || m_pendingSerialNumber.isEmpty()) {
+    if (!m_viewModel->canRun() || !m_runPreparationPending) {
         return;
     }
     const auto sn = std::exchange(m_pendingSerialNumber, {});
-    m_activeUutId = sn;
-    m_serialLabel->setText(sn);
+    m_runPreparationPending = false;
+    m_activeSerialNumber = sn;
+    m_activeUutId = sn.isEmpty()
+        ? QStringLiteral("UUT-%1").arg(
+              QDateTime::currentDateTime().toString(
+                  QStringLiteral("yyyyMMdd-HHmmss-zzz")))
+        : sn;
+    m_serialLabel->setText(sn.isEmpty() ? tr("--") : sn);
     QVariantMap variables;
     variables.insert(QStringLiteral("sn"), sn);
     variables.insert(QStringLiteral("serialNumber"), sn);
-    m_viewModel->runUut(sn, variables);
+    m_viewModel->runUut(m_activeUutId, variables);
 }
 
 void ProductionWindow::openFieldDeviceConfiguration()
@@ -1114,7 +1123,7 @@ void ProductionWindow::beginRunIteration(int iteration, int totalIterations)
         m_selection.sequencePath,
         stationObject,
         m_selection.stationPath,
-        m_activeUutId);
+        m_activeSerialNumber);
     QVector<RunArtifactUutContext> artifactUuts;
     for (const auto& input : m_viewModel->activeRunUuts()) {
         auto serialNumber = input.variables.value(
@@ -1146,9 +1155,7 @@ void ProductionWindow::beginRunIteration(int iteration, int totalIterations)
 
 void ProductionWindow::beginManualRun()
 {
-    const auto uutId = QStringLiteral("UUT-%1")
-        .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss-zzz")));
-    beginRun(uutId);
+    beginRun({});
 }
 
 void ProductionWindow::resetPreviewForUut(const QString& uutId)
@@ -1178,7 +1185,7 @@ void ProductionWindow::showScanDialogWhenReady()
     const bool autoRouting =
         m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn;
     const bool ready = autoRouting
-        ? m_viewModel->canChangeSources() && m_pendingSerialNumber.isEmpty()
+        ? m_viewModel->canChangeSources() && !m_runPreparationPending
         : m_viewModel->canRun();
     if (!m_selection.scanDialogEnabled || !ready) {
         return;
