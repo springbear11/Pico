@@ -37,6 +37,7 @@ enum class OnFailureAction {
     Continue,
     StopUut,
     Retry,
+    JumpTo,
     RunCleanup,
     Abort
 };
@@ -85,6 +86,9 @@ struct ErrorPolicyDef {
     OnFailureAction onFail = OnFailureAction::Inherit;
     OnFailureAction onError = OnFailureAction::Inherit;
     OnFailureAction onTimeout = OnFailureAction::Inherit;
+    NodeId onFailTarget;
+    NodeId onErrorTarget;
+    NodeId onTimeoutTarget;
     CleanupRegionId cleanupRegionId;
     bool stopUutOnFailure = true;
 
@@ -99,9 +103,9 @@ struct BarrierPolicyDef {
     double quorumRatio = 1.0;
     int arrivalTimeoutMs = 60000;
     int releaseTimeoutMs = 5000;
-    BarrierArrivalPolicy arrivalPolicy = BarrierArrivalPolicy::WaitAll;
+    BarrierArrivalPolicy arrivalPolicy = BarrierArrivalPolicy::DropFailed;
     BarrierReleasePolicy releasePolicy = BarrierReleasePolicy::Lockstep;
-    BarrierFailurePolicy failurePolicy = BarrierFailurePolicy::FailBarrier;
+    BarrierFailurePolicy failurePolicy = BarrierFailurePolicy::RemoveFailedMember;
     BarrierTimeoutPolicy timeoutPolicy = BarrierTimeoutPolicy::FailArrivedAndWaiting;
     bool releaseHeldResourcesOnWait = true;
 

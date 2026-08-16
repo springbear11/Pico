@@ -59,7 +59,11 @@ BarrierReleaseDecision BarrierController::memberFailedBeforeArrival(
     auto& state = it.value();
     state.failed.insert(uutId);
 
-    if (outcome == NodeOutcome::Failed &&
+    const bool memberCannotArrive = outcome == NodeOutcome::Failed ||
+        outcome == NodeOutcome::Error ||
+        outcome == NodeOutcome::Timeout ||
+        outcome == NodeOutcome::Cancelled;
+    if (memberCannotArrive &&
         (state.policy.failurePolicy == BarrierFailurePolicy::RemoveFailedMember ||
          state.policy.arrivalPolicy == BarrierArrivalPolicy::DropFailed)) {
         state.dropped.insert(uutId);

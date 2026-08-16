@@ -338,18 +338,7 @@ void PluginFunctionModel::rebuild()
         {tr("Aggregate"), basicStep(
              tr("Aggregate"), QStringLiteral("aggregate"),
              {{QStringLiteral("inputs"), QJsonObject{{QStringLiteral("value"), QString()}}}})},
-        {tr("Barrier"), basicStep(
-             tr("Barrier"), QStringLiteral("barrier"),
-             {{QStringLiteral("barrier"),
-               QJsonObject{{QStringLiteral("cohortId"), QStringLiteral("default")},
-                           {QStringLiteral("expectedUutCount"), -1},
-                           {QStringLiteral("arrivalPolicy"), QStringLiteral("WaitAll")},
-                           {QStringLiteral("releasePolicy"), QStringLiteral("Lockstep")},
-                           {QStringLiteral("failurePolicy"), QStringLiteral("FailBarrier")},
-                           {QStringLiteral("timeoutPolicy"), QStringLiteral("FailArrivedAndWaiting")},
-                           {QStringLiteral("arrivalTimeoutMs"), 60000},
-                           {QStringLiteral("releaseTimeoutMs"), 5000},
-                           {QStringLiteral("releaseHeldResourcesOnWait"), true}}}})},
+        {tr("Barrier"), basicStep(tr("Barrier"), QStringLiteral("barrier"))},
         {tr("No Operation"), basicStep(tr("No Operation"), QStringLiteral("noop"))}
     };
     const QStringList basicIconKeys = {

@@ -36,4 +36,8 @@ QVector<FollowingStepReferenceCandidate> buildFollowingStepReferenceCandidates(
     const QJsonObject& sequence,
     const SequenceItemPath& currentPath);
 
+QVector<FollowingStepReferenceCandidate> buildFollowingSiblingStepReferenceCandidates(
+    const QJsonObject& sequence,
+    const SequenceItemPath& currentPath);
+
 } // namespace PicoATE::Ui

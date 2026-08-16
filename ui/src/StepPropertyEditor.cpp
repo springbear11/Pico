@@ -976,6 +976,14 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
             &QCheckBox::toggled,
             this,
             [this] { if (!m_loading) updateKindRows(); });
+    for (auto* policyCombo : {m_onFailPolicyCombo,
+                              m_onErrorPolicyCombo,
+                              m_onTimeoutPolicyCombo}) {
+        connect(policyCombo,
+                &QComboBox::currentIndexChanged,
+                this,
+                [this] { updateFailureJumpVisibility(); });
+    }
     const auto rebuildCallEditors = [this] {
         rebuildFunctionChoices();
         rebuildDeviceChoices();
@@ -1438,8 +1446,16 @@ bool StepPropertyEditor::focusField(const QString& fieldPath)
         tabIndex = 2;
     } else if (field == "errorPolicy") {
         tabIndex = 1;
-        m_advancedJsonToggle->setChecked(true);
-        widget = m_errorPolicyEdit;
+        if (nested == QStringLiteral("onFail")) widget = m_onFailPolicyCombo;
+        else if (nested == QStringLiteral("onError")) widget = m_onErrorPolicyCombo;
+        else if (nested == QStringLiteral("onTimeout")) widget = m_onTimeoutPolicyCombo;
+        else if (nested == QStringLiteral("onFailTarget")) widget = m_onFailTargetCombo;
+        else if (nested == QStringLiteral("onErrorTarget")) widget = m_onErrorTargetCombo;
+        else if (nested == QStringLiteral("onTimeoutTarget")) widget = m_onTimeoutTargetCombo;
+        else {
+            m_advancedJsonToggle->setChecked(true);
+            widget = m_errorPolicyEdit;
+        }
     } else if (field == "resources") {
         widget = m_resourcesEdit;
         tabIndex = 2;
@@ -1866,12 +1882,16 @@ void StepPropertyEditor::buildDataPage()
     serviceAdminStartupAnimation();
 
     m_barrierNameEdit = new QLineEdit(content);
-    addInspectableRow(m_dataForm, tr("Barrier name"), m_barrierNameEdit,
+    m_barrierNameEdit->setObjectName(QStringLiteral("propertyBarrierNameEdit"));
+    m_barrierNameEdit->setPlaceholderText(tr("Defaults to the step ID"));
+    addInspectableRow(m_dataForm, tr("Barrier name (optional)"), m_barrierNameEdit,
                       QStringLiteral("barrier.barrierName"));
     m_cohortIdEdit = new QLineEdit(content);
     addInspectableRow(m_dataForm, tr("Cohort ID"), m_cohortIdEdit,
                       QStringLiteral("barrier.cohortId"));
     m_expectedUutSpin = new QSpinBox(content);
+    m_expectedUutSpin->setObjectName(
+        QStringLiteral("propertyBarrierExpectedUutSpin"));
     m_expectedUutSpin->setRange(-1, 100000);
     addInspectableRow(m_dataForm, tr("Expected UUTs"), m_expectedUutSpin,
                       QStringLiteral("barrier.expectedUutCount"));
@@ -1898,6 +1918,8 @@ void StepPropertyEditor::buildDataPage()
                       m_releaseTimeoutSpin,
                       QStringLiteral("barrier.releaseTimeoutMs"));
     m_arrivalPolicyCombo = new QComboBox(content);
+    m_arrivalPolicyCombo->setObjectName(
+        QStringLiteral("propertyBarrierArrivalPolicyCombo"));
     addItems(m_arrivalPolicyCombo, {"WaitAll", "DropFailed", "CountFailed", "Quorum", "BestEffort", "ManualDecision"});
     addInspectableRow(m_dataForm, tr("Arrival policy"),
                       m_arrivalPolicyCombo,
@@ -1908,6 +1930,8 @@ void StepPropertyEditor::buildDataPage()
                       m_releasePolicyCombo,
                       QStringLiteral("barrier.releasePolicy"));
     m_failurePolicyCombo = new QComboBox(content);
+    m_failurePolicyCombo->setObjectName(
+        QStringLiteral("propertyBarrierFailurePolicyCombo"));
     addItems(m_failurePolicyCombo, {"FailBarrier", "RemoveFailedMember", "HoldFailedMember", "ContinueWithWarning", "AbortCohort"});
     addInspectableRow(m_dataForm, tr("Failure policy"),
                       m_failurePolicyCombo,
@@ -2066,6 +2090,7 @@ void StepPropertyEditor::buildPolicyPage()
                        QStringLiteral("Inherit"));
         combo->addItem(QObject::tr("Continue"), QStringLiteral("Continue"));
         combo->addItem(QObject::tr("Stop current UUT"), QStringLiteral("StopUut"));
+        combo->addItem(QObject::tr("Jump to later step"), QStringLiteral("JumpTo"));
         combo->addItem(QObject::tr("Run Cleanup"), QStringLiteral("RunCleanup"));
         combo->addItem(QObject::tr("Abort Session"), QStringLiteral("Abort"));
         combo->setToolTip(QObject::tr(
@@ -2078,15 +2103,37 @@ void StepPropertyEditor::buildPolicyPage()
         QStringLiteral("propertyOnErrorPolicyCombo"));
     m_onTimeoutPolicyCombo = createOutcomePolicyCombo(
         QStringLiteral("propertyOnTimeoutPolicyCombo"));
+    const auto createJumpTargetCombo = [content](const QString& objectName) {
+        auto* combo = new QComboBox(content);
+        combo->setObjectName(objectName);
+        combo->setToolTip(QObject::tr(
+            "The failed step stays failed. Intermediate sibling steps are recorded as Skipped."));
+        return combo;
+    };
+    m_onFailTargetCombo = createJumpTargetCombo(
+        QStringLiteral("propertyOnFailTargetCombo"));
+    m_onErrorTargetCombo = createJumpTargetCombo(
+        QStringLiteral("propertyOnErrorTargetCombo"));
+    m_onTimeoutTargetCombo = createJumpTargetCombo(
+        QStringLiteral("propertyOnTimeoutTargetCombo"));
     addInspectableRow(m_policyForm, QStringLiteral("onFail"),
                       m_onFailPolicyCombo,
                       QStringLiteral("errorPolicy.onFail"));
+    addInspectableRow(m_policyForm, tr("onFail target"),
+                      m_onFailTargetCombo,
+                      QStringLiteral("errorPolicy.onFailTarget"));
     addInspectableRow(m_policyForm, QStringLiteral("onError"),
                       m_onErrorPolicyCombo,
                       QStringLiteral("errorPolicy.onError"));
+    addInspectableRow(m_policyForm, tr("onError target"),
+                      m_onErrorTargetCombo,
+                      QStringLiteral("errorPolicy.onErrorTarget"));
     addInspectableRow(m_policyForm, QStringLiteral("onTimeout"),
                       m_onTimeoutPolicyCombo,
                       QStringLiteral("errorPolicy.onTimeout"));
+    addInspectableRow(m_policyForm, tr("onTimeout target"),
+                      m_onTimeoutTargetCombo,
+                      QStringLiteral("errorPolicy.onTimeoutTarget"));
 
     auto* scroll = new QScrollArea(m_tabs);
     scroll->setWidgetResizable(true);
@@ -2164,9 +2211,22 @@ void StepPropertyEditor::loadCurrentObject()
                   loadOutcomePolicy(QStringLiteral("onError")));
     setComboValue(m_onTimeoutPolicyCombo,
                   loadOutcomePolicy(QStringLiteral("onTimeout")));
+    rebuildFailureJumpChoices(
+        m_onFailTargetCombo,
+        errorPolicy.value(QStringLiteral("onFailTarget")).toString());
+    rebuildFailureJumpChoices(
+        m_onErrorTargetCombo,
+        errorPolicy.value(QStringLiteral("onErrorTarget")).toString());
+    rebuildFailureJumpChoices(
+        m_onTimeoutTargetCombo,
+        errorPolicy.value(QStringLiteral("onTimeoutTarget")).toString());
+    updateFailureJumpVisibility();
     errorPolicy.remove(QStringLiteral("onFail"));
     errorPolicy.remove(QStringLiteral("onError"));
     errorPolicy.remove(QStringLiteral("onTimeout"));
+    errorPolicy.remove(QStringLiteral("onFailTarget"));
+    errorPolicy.remove(QStringLiteral("onErrorTarget"));
+    errorPolicy.remove(QStringLiteral("onTimeoutTarget"));
     m_errorPolicyEdit->setPlainText(objectText(errorPolicy));
     m_advancedJsonToggle->setChecked(false);
     m_limitActualEdit->setText(
@@ -2263,9 +2323,9 @@ void StepPropertyEditor::loadCurrentObject()
     m_quorumRatioSpin->setValue(barrier.value("quorumRatio").toDouble(1.0));
     m_arrivalTimeoutSpin->setValue(barrier.value("arrivalTimeoutMs").toInt(60000));
     m_releaseTimeoutSpin->setValue(barrier.value("releaseTimeoutMs").toInt(5000));
-    setComboValue(m_arrivalPolicyCombo, barrier.value("arrivalPolicy").toString("WaitAll"));
+    setComboValue(m_arrivalPolicyCombo, barrier.value("arrivalPolicy").toString("DropFailed"));
     setComboValue(m_releasePolicyCombo, barrier.value("releasePolicy").toString("Lockstep"));
-    setComboValue(m_failurePolicyCombo, barrier.value("failurePolicy").toString("FailBarrier"));
+    setComboValue(m_failurePolicyCombo, barrier.value("failurePolicy").toString("RemoveFailedMember"));
     setComboValue(m_barrierTimeoutPolicyCombo, barrier.value("timeoutPolicy").toString("FailArrivedAndWaiting"));
     m_releaseResourcesCheck->setChecked(barrier.value("releaseHeldResourcesOnWait").toBool(true));
 
@@ -2372,14 +2432,15 @@ void StepPropertyEditor::updateKindRows()
     setFormRowVisible(m_dataForm, m_promptFailureCodeEdit, judgmentPrompt);
     setFormRowVisible(m_dataForm, m_promptTimeoutSpin, operatorPrompt);
     setFormRowVisible(m_dataForm, m_loopTypeCombo, loop);
-    const std::array<QWidget*, 12> barrierFields = {
-        m_barrierNameEdit, m_cohortIdEdit, m_expectedUutSpin,
+    setFormRowVisible(m_dataForm, m_barrierNameEdit, barrier);
+    const std::array<QWidget*, 11> advancedBarrierFields = {
+        m_cohortIdEdit, m_expectedUutSpin,
         m_quorumCountSpin, m_quorumRatioSpin, m_arrivalTimeoutSpin,
         m_releaseTimeoutSpin, m_arrivalPolicyCombo, m_releasePolicyCombo,
         m_failurePolicyCombo, m_barrierTimeoutPolicyCombo,
         m_releaseResourcesCheck};
-    for (auto* field : barrierFields) {
-        setFormRowVisible(m_dataForm, field, barrier);
+    for (auto* field : advancedBarrierFields) {
+        setFormRowVisible(m_dataForm, field, false);
     }
     setFormRowVisible(m_policyForm, m_periodicEnabledCheck, action);
     setFormRowVisible(m_policyForm, m_periodicIntervalSpin, periodic);
@@ -3795,6 +3856,60 @@ void StepPropertyEditor::rebuildPromptExpressionMenu(
     }
 }
 
+void StepPropertyEditor::rebuildFailureJumpChoices(
+    QComboBox* combo,
+    const QString& selectedPath)
+{
+    if (!combo) {
+        return;
+    }
+
+    const QSignalBlocker blocker(combo);
+    const auto requested = selectedPath.trimmed();
+    combo->clear();
+    combo->addItem(tr("Select a later sibling step..."), QString{});
+    const auto candidates = m_document && !m_previewing
+        ? buildFollowingSiblingStepReferenceCandidates(
+              m_document->rootObject(), m_path)
+        : QVector<FollowingStepReferenceCandidate>{};
+    for (const auto& candidate : candidates) {
+        const auto label = candidate.stepName.trimmed().isEmpty()
+            ? candidate.stepPath
+            : QStringLiteral("%1 - %2").arg(candidate.stepPath, candidate.stepName);
+        combo->addItem(label, candidate.stepPath);
+    }
+
+    int selectedIndex = requested.isEmpty() ? 0 : combo->findData(requested);
+    if (selectedIndex < 0) {
+        combo->addItem(
+            tr("%1 (not an available later sibling)").arg(requested),
+            requested);
+        selectedIndex = combo->count() - 1;
+        combo->setItemData(
+            selectedIndex,
+            tr("This target will fail compilation until it becomes a later sibling step"),
+            Qt::ToolTipRole);
+    }
+    combo->setCurrentIndex(selectedIndex);
+}
+
+void StepPropertyEditor::updateFailureJumpVisibility()
+{
+    if (!m_policyForm) {
+        return;
+    }
+    const auto update = [this](QComboBox* policy, QComboBox* target) {
+        setFormRowVisible(
+            m_policyForm,
+            target,
+            !m_isGroup && policy &&
+                policy->currentData().toString() == QStringLiteral("JumpTo"));
+    };
+    update(m_onFailPolicyCombo, m_onFailTargetCombo);
+    update(m_onErrorPolicyCombo, m_onErrorTargetCombo);
+    update(m_onTimeoutPolicyCombo, m_onTimeoutTargetCombo);
+}
+
 void StepPropertyEditor::rebuildPromptCloseStepChoices(const QString& selectedPath)
 {
     if (!m_promptCloseOnStepCombo) {
@@ -4490,19 +4605,44 @@ bool StepPropertyEditor::commitPendingChanges()
         if (inputs.isEmpty()) updated.remove("inputs"); else updated.insert("inputs", inputs);
         if (parameters.isEmpty()) updated.remove("parameters"); else updated.insert("parameters", parameters);
         if (resources.isEmpty()) updated.remove("resources"); else updated.insert("resources", resources);
-        const auto storeOutcomePolicy = [&errorPolicy](
+        const auto storeOutcomePolicy = [this, &errorPolicy](
                                             const QString& key,
-                                            const QComboBox* combo) {
+                                            QComboBox* combo,
+                                            const QString& targetKey,
+                                            QComboBox* targetCombo) {
             const auto value = combo->currentData().toString();
             if (value == QStringLiteral("Inherit")) {
                 errorPolicy.remove(key);
             } else {
                 errorPolicy.insert(key, value);
             }
+            if (value != QStringLiteral("JumpTo")) {
+                errorPolicy.remove(targetKey);
+                return true;
+            }
+            const auto target = targetCombo->currentData().toString().trimmed();
+            if (target.isEmpty()) {
+                showError(tr("Select a later step for %1").arg(key));
+                flashValidationError(targetCombo);
+                return false;
+            }
+            errorPolicy.insert(targetKey, target);
+            return true;
         };
-        storeOutcomePolicy(QStringLiteral("onFail"), m_onFailPolicyCombo);
-        storeOutcomePolicy(QStringLiteral("onError"), m_onErrorPolicyCombo);
-        storeOutcomePolicy(QStringLiteral("onTimeout"), m_onTimeoutPolicyCombo);
+        if (!storeOutcomePolicy(QStringLiteral("onFail"),
+                                m_onFailPolicyCombo,
+                                QStringLiteral("onFailTarget"),
+                                m_onFailTargetCombo) ||
+            !storeOutcomePolicy(QStringLiteral("onError"),
+                                m_onErrorPolicyCombo,
+                                QStringLiteral("onErrorTarget"),
+                                m_onErrorTargetCombo) ||
+            !storeOutcomePolicy(QStringLiteral("onTimeout"),
+                                m_onTimeoutPolicyCombo,
+                                QStringLiteral("onTimeoutTarget"),
+                                m_onTimeoutTargetCombo)) {
+            return false;
+        }
         if (errorPolicy.isEmpty()) updated.remove("errorPolicy");
         else updated.insert("errorPolicy", errorPolicy);
 
@@ -4564,19 +4704,17 @@ bool StepPropertyEditor::commitPendingChanges()
         }
         if (kind == "barrier") {
             auto barrier = updated.value("barrier").toObject();
-            barrier.insert("barrierName", m_barrierNameEdit->text().trimmed());
-            barrier.insert("cohortId", m_cohortIdEdit->text().trimmed());
-            barrier.insert("expectedUutCount", m_expectedUutSpin->value());
-            barrier.insert("quorumCount", m_quorumCountSpin->value());
-            barrier.insert("quorumRatio", m_quorumRatioSpin->value());
-            barrier.insert("arrivalTimeoutMs", m_arrivalTimeoutSpin->value());
-            barrier.insert("releaseTimeoutMs", m_releaseTimeoutSpin->value());
-            barrier.insert("arrivalPolicy", m_arrivalPolicyCombo->currentData().toString());
-            barrier.insert("releasePolicy", m_releasePolicyCombo->currentData().toString());
-            barrier.insert("failurePolicy", m_failurePolicyCombo->currentData().toString());
-            barrier.insert("timeoutPolicy", m_barrierTimeoutPolicyCombo->currentData().toString());
-            barrier.insert("releaseHeldResourcesOnWait", m_releaseResourcesCheck->isChecked());
-            updated.insert("barrier", barrier);
+            const auto barrierName = m_barrierNameEdit->text().trimmed();
+            if (barrierName.isEmpty()) {
+                barrier.remove(QStringLiteral("barrierName"));
+            } else {
+                barrier.insert(QStringLiteral("barrierName"), barrierName);
+            }
+            if (barrier.isEmpty()) {
+                updated.remove(QStringLiteral("barrier"));
+            } else {
+                updated.insert(QStringLiteral("barrier"), barrier);
+            }
         } else {
             updated.remove(QStringLiteral("barrier"));
         }

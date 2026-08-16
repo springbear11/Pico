@@ -106,6 +106,7 @@ enum class ErrorAction {
     Continue,
     StopUut,
     Retry,
+    JumpTo,
     RunCleanup,
     Abort
 };
@@ -190,6 +191,9 @@ struct NodeErrorPolicy {
     ErrorAction onFail = ErrorAction::Inherit;
     ErrorAction onError = ErrorAction::Inherit;
     ErrorAction onTimeout = ErrorAction::Inherit;
+    NodeId onFailTarget;
+    NodeId onErrorTarget;
+    NodeId onTimeoutTarget;
     CleanupRegionId cleanupRegionId;
     bool stopUutOnFailure = true;
 };

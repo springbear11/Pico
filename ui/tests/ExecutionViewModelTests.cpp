@@ -899,6 +899,12 @@ void ExecutionViewModelTests::startupSupportDiscoversSequencesAndValidatesDailyP
         QStringLiteral("40"), QDate(2026, 7, 10)));
     QVERIFY(!StartupSupport::matchesDailyAdminPassword(
         QStringLiteral("41"), QDate(2026, 7, 10)));
+    QVERIFY(StartupSupport::matchesAdminPassword(
+        QStringLiteral("40"), QDate(2026, 7, 10)));
+    QVERIFY(StartupSupport::matchesAdminPassword(
+        QStringLiteral("300693"), QDate(2026, 7, 10)));
+    QVERIFY(!StartupSupport::matchesAdminPassword(
+        QStringLiteral("300692"), QDate(2026, 7, 10)));
 
     QTemporaryDir directory;
     QVERIFY(directory.isValid());

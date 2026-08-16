@@ -49,6 +49,9 @@ NodeErrorPolicy ErrorPolicyDef::toRuntimePolicy() const
     policy.onFail = toErrorAction(onFail);
     policy.onError = toErrorAction(onError);
     policy.onTimeout = toErrorAction(onTimeout);
+    policy.onFailTarget = onFailTarget;
+    policy.onErrorTarget = onErrorTarget;
+    policy.onTimeoutTarget = onTimeoutTarget;
     policy.cleanupRegionId = cleanupRegionId;
     policy.stopUutOnFailure = stopUutOnFailure;
     return policy;
@@ -346,6 +349,8 @@ ErrorAction toErrorAction(OnFailureAction action)
         return ErrorAction::StopUut;
     case OnFailureAction::Retry:
         return ErrorAction::Retry;
+    case OnFailureAction::JumpTo:
+        return ErrorAction::JumpTo;
     case OnFailureAction::RunCleanup:
         return ErrorAction::RunCleanup;
     case OnFailureAction::Abort:

@@ -13,6 +13,8 @@ QString errorActionName(ErrorAction action)
         return "StopUut";
     case ErrorAction::Retry:
         return "Retry";
+    case ErrorAction::JumpTo:
+        return "JumpTo";
     case ErrorAction::RunCleanup:
         return "RunCleanup";
     case ErrorAction::Abort:
@@ -50,14 +52,17 @@ ErrorDecision ErrorPolicyEngine::decide(const ExecNode& node,
 
     CleanupReason cleanupReason = CleanupReason::StepFailed;
     ErrorAction configuredAction = node.errorPolicy.onFail;
+    NodeId configuredJumpTarget = node.errorPolicy.onFailTarget;
     QString policyReason = QStringLiteral("configured onFail policy");
     if (result.outcome == NodeOutcome::Timeout) {
         cleanupReason = CleanupReason::Timeout;
         configuredAction = node.errorPolicy.onTimeout;
+        configuredJumpTarget = node.errorPolicy.onTimeoutTarget;
         policyReason = QStringLiteral("configured onTimeout policy");
     } else if (result.outcome == NodeOutcome::Error) {
         cleanupReason = CleanupReason::ModuleError;
         configuredAction = node.errorPolicy.onError;
+        configuredJumpTarget = node.errorPolicy.onErrorTarget;
         policyReason = QStringLiteral("configured onError policy");
     }
 
@@ -104,6 +109,22 @@ ErrorDecision ErrorPolicyEngine::decide(const ExecNode& node,
                 node.errorPolicy.cleanupRegionId,
                 cleanupReason,
                 QStringLiteral("run cleanup by policy")};
+    }
+
+    if (configuredAction == ErrorAction::JumpTo) {
+        if (configuredJumpTarget.trimmed().isEmpty()) {
+            return {ErrorAction::StopUut,
+                    {},
+                    cleanupReason,
+                    QStringLiteral("JumpTo target is missing")};
+        }
+        ErrorDecision decision{
+            ErrorAction::JumpTo,
+            {},
+            cleanupReason,
+            QStringLiteral("jump to %1 by policy").arg(configuredJumpTarget)};
+        decision.jumpTargetNodeId = configuredJumpTarget;
+        return decision;
     }
 
     if (configuredAction == ErrorAction::Continue) {

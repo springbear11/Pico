@@ -968,32 +968,82 @@ TestItem 子树。`maxAttempts` 包含第一次执行，例如 `2` 表示首次�
 
 | Field | Type | Required | Default |
 |-------|------|----------|---------|
-| `onFail` | string | no | `StopUut` |
-| `onError` | string | no | `StopUut` |
-| `onTimeout` | string | no | `StopUut` |
+| `onFail` | string | no | `Inherit` |
+| `onError` | string | no | `Inherit` |
+| `onTimeout` | string | no | `Inherit` |
+| `onFailTarget` | string | conditionally | empty |
+| `onErrorTarget` | string | conditionally | empty |
+| `onTimeoutTarget` | string | conditionally | empty |
 | `cleanupRegionId` | string | no | empty |
 | `stopUutOnFailure` | bool | no | `true` |
 
 Error actions:
 
 ```text
+Inherit
 Continue
 StopUut
 Retry
+JumpTo
 RunCleanup
 Abort
 ```
 
-当前 UI 的普通属性页不再要求工程师逐 Step 配置这三个动作。字段仍作为旧脚本兼容和
-Advanced JSON 能力保留。运行优先级为：
+`Inherit` 表示继承父 TestItem 或 Station 的统一策略。Flow Editor 可以分别配置
+`onFail`、`onError` 和 `onTimeout`；选择 `JumpTo` 后，还必须从下拉框选择对应的
+`onFailTarget`、`onErrorTarget` 或 `onTimeoutTarget`。
+
+例如，步骤 `001` 最终 Failed 后跳过 `002`，直接从 `003` 继续：
+
+```json
+{
+  "id": "001",
+  "kind": "action",
+  "retry": { "maxAttempts": 3, "delayMs": 100 },
+  "errorPolicy": {
+    "onFail": "JumpTo",
+    "onFailTarget": "003"
+  }
+}
+```
+
+运行优先级为：
 
 1. 当前 Step 或 TestItem 的 Retry；
-2. Station `stopOnFailure` 统一停止/继续策略；
-3. 未加载 Station 配置时，使用本对象的 `errorPolicy`。
+2. Retry 用尽后执行当前对象显式配置的 `errorPolicy`；
+3. 当前对象为 `Inherit` 时，依次继承父 TestItem 和 Station `stopOnFailure`。
+
+`JumpTo` 的当前安全边界：
+
+- 只允许跳到同一父级、同一执行阶段中的后续兄弟步骤；
+- 可以从顶层 TestItem 跳到后续顶层 TestItem，也可以在同一 TestItem 内从子步骤跳到后续子步骤；
+- 被跨过的步骤和它们的子树会记录为 `Skipped`，失败源仍保留真实的 Failed/Error/Timeout，因此整次 UUT 结果仍为失败；
+- 禁止跳回自身或前序步骤，禁止跨 TestItem 层级、跨 Setup/Main/Cleanup，也禁止进入或离开 Loop body；
+- 非法或已失效的目标会在编译期报错；运行期仍有兜底校验，失败时按 `StopUut` 收口。
 
 用户 Stop、Abort、Cancelled 不会被 Station 的“失败继续”转换成 Continue。
 
 ## Barrier Object
+
+Barrier 的日常用法已经收敛为零配置。工程师从 Basic Functions 拖入 Barrier 后，只需按需填写一个名称，也可以完全不填：
+
+```json
+{
+  "id": "010",
+  "name": "Wait for other UUTs",
+  "kind": "barrier"
+}
+```
+
+默认运行语义如下：
+
+- 参与成员直接取本次 `ExecutionSession` 中的实际 UUT 集合，不要求工程师填写数量；
+- Barrier 前已经 Failed、Error、Timeout 或 Cancelled 的 UUT 会从等待集合中移除；
+- 其余 UUT 全部到达后统一放行；
+- 单 UUT 运行时立即放行，因此同一份脚本可同时用于单 UUT 和多 UUT；
+- 旧脚本中已经存在的高级字段继续保留和解析，Flow 属性页不会因编辑名称而覆盖它们。
+
+下表中的 `barrierName` 是当前 Flow 界面开放的可选字段。其余字段属于兼容或后续策略扩展字段，当前不作为日常产线配置项；字段可被保留，不代表每一种策略都已具备完整、独立的运行语义。
 
 | Field | Type | Required | Default |
 |-------|------|----------|---------|
@@ -1004,9 +1054,9 @@ Advanced JSON 能力保留。运行优先级为：
 | `quorumRatio` | number | no | `1.0` |
 | `arrivalTimeoutMs` | number | no | `60000` |
 | `releaseTimeoutMs` | number | no | `5000` |
-| `arrivalPolicy` | string | no | `WaitAll` |
+| `arrivalPolicy` | string | no | `DropFailed` |
 | `releasePolicy` | string | no | `Lockstep` |
-| `failurePolicy` | string | no | `FailBarrier` |
+| `failurePolicy` | string | no | `RemoveFailedMember` |
 | `timeoutPolicy` | string | no | `FailArrivedAndWaiting` |
 | `releaseHeldResourcesOnWait` | bool | no | `true` |
 

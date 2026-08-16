@@ -389,7 +389,9 @@ void collectErrorPolicyWarnings(const QJsonObject& object,
 {
     warnUnknownFields(object,
                       path,
-                      {"onFail", "onError", "onTimeout", "cleanupRegionId", "stopUutOnFailure"},
+                      {"onFail", "onError", "onTimeout",
+                       "onFailTarget", "onErrorTarget", "onTimeoutTarget",
+                       "cleanupRegionId", "stopUutOnFailure"},
                       warnings);
 }
 
@@ -756,6 +758,9 @@ OnFailureAction parseFailureActionString(const QString& text, bool& ok)
     }
     if (value == "retry") {
         return OnFailureAction::Retry;
+    }
+    if (value == "jumpto" || value == "jump") {
+        return OnFailureAction::JumpTo;
     }
     if (value == "runcleanup" || value == "cleanup") {
         return OnFailureAction::RunCleanup;
@@ -1724,23 +1729,26 @@ ErrorPolicyDef SequenceCompiler::parseErrorPolicy(const QJsonObject& object,
         readString(object, "onFail", path, errors, "Inherit"), actionOk);
     if (!actionOk) {
         addError(errors, path + ".onFail", "Unsupported error action",
-                 "Use Inherit, Continue, StopUut, Retry, RunCleanup, or Abort");
+                 "Use Inherit, Continue, StopUut, Retry, JumpTo, RunCleanup, or Abort");
     }
 
     policy.onError = parseFailureActionString(
         readString(object, "onError", path, errors, "Inherit"), actionOk);
     if (!actionOk) {
         addError(errors, path + ".onError", "Unsupported error action",
-                 "Use Inherit, Continue, StopUut, Retry, RunCleanup, or Abort");
+                 "Use Inherit, Continue, StopUut, Retry, JumpTo, RunCleanup, or Abort");
     }
 
     policy.onTimeout = parseFailureActionString(
         readString(object, "onTimeout", path, errors, "Inherit"), actionOk);
     if (!actionOk) {
         addError(errors, path + ".onTimeout", "Unsupported error action",
-                 "Use Inherit, Continue, StopUut, Retry, RunCleanup, or Abort");
+                 "Use Inherit, Continue, StopUut, Retry, JumpTo, RunCleanup, or Abort");
     }
 
+    policy.onFailTarget = readString(object, "onFailTarget", path, errors);
+    policy.onErrorTarget = readString(object, "onErrorTarget", path, errors);
+    policy.onTimeoutTarget = readString(object, "onTimeoutTarget", path, errors);
     policy.cleanupRegionId = readString(object, "cleanupRegionId", path, errors);
     policy.stopUutOnFailure = readBool(object, "stopUutOnFailure", path, errors, true);
     return policy;
@@ -1761,7 +1769,7 @@ BarrierPolicyDef SequenceCompiler::parseBarrierPolicy(const QJsonObject& object,
     barrier.releaseTimeoutMs = readInt(object, "releaseTimeoutMs", path, errors, 5000);
 
     bool policyOk = false;
-    barrier.arrivalPolicy = parseArrivalPolicyString(readString(object, "arrivalPolicy", path, errors, "WaitAll"), policyOk);
+    barrier.arrivalPolicy = parseArrivalPolicyString(readString(object, "arrivalPolicy", path, errors, "DropFailed"), policyOk);
     if (!policyOk) {
         addError(errors,
                  path + ".arrivalPolicy",
@@ -1777,7 +1785,7 @@ BarrierPolicyDef SequenceCompiler::parseBarrierPolicy(const QJsonObject& object,
                  "Use Lockstep, Latch, Cohort, or RollingWindow");
     }
 
-    barrier.failurePolicy = parseFailurePolicyString(readString(object, "failurePolicy", path, errors, "FailBarrier"), policyOk);
+    barrier.failurePolicy = parseFailurePolicyString(readString(object, "failurePolicy", path, errors, "RemoveFailedMember"), policyOk);
     if (!policyOk) {
         addError(errors,
                  path + ".failurePolicy",

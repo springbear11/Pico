@@ -19,6 +19,7 @@ struct ErrorDecision {
     CleanupRegionId cleanupRegionId;
     CleanupReason cleanupReason = CleanupReason::StepFailed;
     QString reason;
+    NodeId jumpTargetNodeId;
 };
 
 class ErrorPolicyEngine {

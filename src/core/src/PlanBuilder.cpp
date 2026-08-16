@@ -1104,6 +1104,83 @@ bool PlanBuilder::validatePlanReferences(const ExecutionPlan& plan, PlanBuildRes
 
     for (auto it = plan.nodes.constBegin(); it != plan.nodes.constEnd(); ++it) {
         const auto& node = it.value();
+        const auto validateFailureJump = [&](ErrorAction action,
+                                             QString requestedTarget,
+                                             const QString& targetField) {
+            if (action != ErrorAction::JumpTo) {
+                return;
+            }
+
+            requestedTarget = requestedTarget.trimmed();
+            if (requestedTarget.startsWith(QStringLiteral("step:"),
+                                           Qt::CaseInsensitive)) {
+                requestedTarget = requestedTarget.mid(5).trimmed();
+            }
+            if (requestedTarget.isEmpty()) {
+                result.errors.push_back({
+                    QString("%1 uses JumpTo without %2")
+                        .arg(node.id, targetField),
+                    QString("Select an enabled sibling step after %1")
+                        .arg(node.id)});
+                return;
+            }
+
+            const auto target = resolveStepReferenceNode(
+                plan, node.id, requestedTarget);
+            if (!target) {
+                result.errors.push_back({
+                    QString("%1 references a missing or disabled JumpTo target: %2")
+                        .arg(node.id, requestedTarget),
+                    QString("Select an enabled sibling step after %1")
+                        .arg(node.id)});
+                return;
+            }
+
+            const auto* targetNode = plan.node(*target);
+            if (!targetNode) {
+                return;
+            }
+            if (executionPhaseOf(node) == ExecutionPhase::Cleanup ||
+                executionPhaseOf(*targetNode) != executionPhaseOf(node)) {
+                result.errors.push_back({
+                    QString("JumpTo must stay in the same non-Cleanup phase: %1 -> %2")
+                        .arg(node.id, *target),
+                    QStringLiteral("Use RunCleanup to enter Cleanup")});
+                return;
+            }
+            if (plan.loopRegionForBodyNode(node.id) ||
+                plan.loopRegionForBodyNode(*target)) {
+                result.errors.push_back({
+                    QString("JumpTo cannot enter or leave a Loop body: %1 -> %2")
+                        .arg(node.id, *target),
+                    QStringLiteral("Put the policy on the Loop controller or keep normal Loop control flow")});
+                return;
+            }
+            if (plan.structuralParentOf(node.id) !=
+                plan.structuralParentOf(*target)) {
+                result.errors.push_back({
+                    QString("JumpTo target must be a sibling of the failed step: %1 -> %2")
+                        .arg(node.id, *target),
+                    QStringLiteral("Select a later step at the same Flow hierarchy level")});
+                return;
+            }
+            if (!sourceRunsBeforeConsumer(plan, node.id, *target)) {
+                result.errors.push_back({
+                    QString("JumpTo target must be later than the failed step: %1 -> %2")
+                        .arg(node.id, *target),
+                    QStringLiteral("Select a later sibling; backward and self jumps are not allowed")});
+            }
+        };
+        validateFailureJump(node.errorPolicy.onFail,
+                            node.errorPolicy.onFailTarget,
+                            QStringLiteral("onFailTarget"));
+        validateFailureJump(node.errorPolicy.onError,
+                            node.errorPolicy.onErrorTarget,
+                            QStringLiteral("onErrorTarget"));
+        validateFailureJump(node.errorPolicy.onTimeout,
+                            node.errorPolicy.onTimeoutTarget,
+                            QStringLiteral("onTimeoutTarget"));
+
         if (node.kind != ExecNodeKind::OperatorPrompt ||
             node.payload.value(QStringLiteral("mode")).toString() != QStringLiteral("notice")) {
             continue;

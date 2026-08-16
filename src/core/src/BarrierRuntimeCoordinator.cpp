@@ -103,7 +103,7 @@ BarrierNodePayload BarrierRuntimeCoordinator::payloadFromNode(
         QStringLiteral("expectedUutCount"), -1).toInt();
 
     const auto arrivalPolicy = node.payload.value(
-        QStringLiteral("arrivalPolicy"), QStringLiteral("WaitAll")).toString();
+        QStringLiteral("arrivalPolicy"), QStringLiteral("DropFailed")).toString();
     if (arrivalPolicy.compare(QStringLiteral("DropFailed"),
                               Qt::CaseInsensitive) == 0) {
         payload.arrivalPolicy = BarrierArrivalPolicy::DropFailed;
@@ -134,7 +134,7 @@ BarrierNodePayload BarrierRuntimeCoordinator::payloadFromNode(
 
     const auto failurePolicy = node.payload.value(
         QStringLiteral("failurePolicy"),
-        QStringLiteral("FailBarrier")).toString();
+        QStringLiteral("RemoveFailedMember")).toString();
     if (failurePolicy.compare(QStringLiteral("RemoveFailedMember"),
                               Qt::CaseInsensitive) == 0) {
         payload.failurePolicy = BarrierFailurePolicy::RemoveFailedMember;

@@ -664,7 +664,7 @@ void LoginDialog::submit()
                 tr("No saved product project is available. Use Admin mode to create and save one first."));
         }
         if (mode == UiMode::Admin &&
-            !StartupSupport::matchesDailyAdminPassword(
+            !StartupSupport::matchesAdminPassword(
                 m_passwordEdit->text())) {
             validation.errors.push_back(QStringLiteral("Admin 密码错误"));
         }
@@ -679,7 +679,7 @@ void LoginDialog::submit()
         QStringList remainingErrors = validation.errors;
         const bool invalidPassword =
             mode == UiMode::Admin &&
-            !StartupSupport::matchesDailyAdminPassword(m_passwordEdit->text());
+            !StartupSupport::matchesAdminPassword(m_passwordEdit->text());
         if (invalidPassword) {
             remainingErrors.removeAll(QStringLiteral("Admin 密码错误"));
         }

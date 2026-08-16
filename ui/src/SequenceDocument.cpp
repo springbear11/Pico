@@ -328,6 +328,20 @@ QJsonObject canonicalizeStepForUi(QJsonObject step)
                 policy.remove(field);
             }
         }
+        const auto canonicalizeJumpTarget = [&policy](const QString& actionField,
+                                                       const QString& targetField) {
+            removeEmptyString(policy, targetField);
+            if (normalizedSchemaToken(policy.value(actionField).toString()) !=
+                QStringLiteral("jumpto")) {
+                policy.remove(targetField);
+            }
+        };
+        canonicalizeJumpTarget(QStringLiteral("onFail"),
+                               QStringLiteral("onFailTarget"));
+        canonicalizeJumpTarget(QStringLiteral("onError"),
+                               QStringLiteral("onErrorTarget"));
+        canonicalizeJumpTarget(QStringLiteral("onTimeout"),
+                               QStringLiteral("onTimeoutTarget"));
         removeEmptyString(policy, QStringLiteral("cleanupRegionId"));
         if (policy.isEmpty()) step.remove(QStringLiteral("errorPolicy"));
         else step.insert(QStringLiteral("errorPolicy"), policy);

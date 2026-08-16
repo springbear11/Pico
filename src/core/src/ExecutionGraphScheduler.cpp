@@ -27,6 +27,7 @@ int failureEscalationPriority(ErrorAction action)
     case ErrorAction::Inherit:
     case ErrorAction::Continue:
     case ErrorAction::Retry:
+    case ErrorAction::JumpTo:
         return 0;
     }
     return 0;
@@ -487,6 +488,7 @@ SchedulerStepResult ExecutionGraphScheduler::pumpOnce(
     const auto currentState = uut.stateOf(nodeId);
     discardObsoletePendingWaits(uut);
     m_resourceRegions.releaseCompleted(uut, frameId);
+    clearCompletedFailureJump(uut);
     step.progressed = previousState != currentState || result.outcome != NodeOutcome::Unknown;
     step.blocked = !step.progressed;
     step.hasError = !m_plan.isInsideTestItem(nodeId) &&
@@ -527,6 +529,7 @@ SchedulerStepResult ExecutionGraphScheduler::pumpPendingRequestOnce(
         completeReadyRetry(uut, frameId, *completion, phase);
     }
     m_resourceRegions.releaseCompleted(uut, frameId);
+    clearCompletedFailureJump(uut);
     return step;
 }
 
@@ -576,6 +579,7 @@ void ExecutionGraphScheduler::applyBarrierReleases(const QVector<UutExecution*>&
                                  NodeOutcome::Passed,
                                  "barrier released");
             }
+            clearCompletedFailureJump(*uut);
         }
     }
 }
@@ -642,6 +646,31 @@ QVector<NodeId> ExecutionGraphScheduler::findReadyNodes(
     const UutExecution& uut,
     std::optional<ExecutionPhase> phase) const
 {
+    const auto pendingJump = m_pendingFailureJumps.constFind(uut.uutId);
+    if (pendingJump != m_pendingFailureJumps.constEnd()) {
+        const auto* target = m_plan.node(pendingJump->targetNodeId);
+        if (target && (!phase || executionPhaseOf(*target) == *phase)) {
+            const auto state = uut.stateOf(target->id);
+            const bool stateMayRun = !isTerminalActivation(state) &&
+                state != ActivationState::Running &&
+                state != ActivationState::WaitingForTimer &&
+                state != ActivationState::WaitingAtBarrier;
+            const auto bodyRegion = m_plan.loopRegionForBodyNode(target->id);
+            const auto testItemBody = m_plan.testItemRegionForChild(target->id);
+            const auto loopRegion = m_plan.loopRegionForController(target->id);
+            const auto testItemRegion = m_plan.testItemRegionForController(target->id);
+            const bool structurallyReady =
+                (!bodyRegion || m_loops.bodyNodeMayRun(*bodyRegion, uut, target->id)) &&
+                (!testItemBody || testItemChildMayRun(*testItemBody, uut)) &&
+                (!loopRegion || m_loops.controllerReady(*loopRegion, uut)) &&
+                (!testItemRegion || testItemControllerReady(*testItemRegion, uut));
+            if (stateMayRun && structurallyReady &&
+                dependenciesSatisfied(uut, *target, phase)) {
+                return {target->id};
+            }
+        }
+    }
+
     QVector<NodeId> ready;
     for (auto it = m_plan.nodes.constBegin(); it != m_plan.nodes.constEnd(); ++it) {
         const auto& node = it.value();
@@ -693,6 +722,10 @@ bool ExecutionGraphScheduler::dependenciesSatisfied(
     const ExecNode& node,
     std::optional<ExecutionPhase> phase) const
 {
+    if (isPendingFailureJumpTarget(uut, node.id)) {
+        return true;
+    }
+
     auto activationIt = uut.activations.constFind(node.id);
     if (node.alwaysRun &&
         activationIt != uut.activations.constEnd() &&
@@ -1445,7 +1478,20 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
     if (result.outcome != NodeOutcome::Passed &&
         result.outcome != NodeOutcome::Skipped &&
         result.outcome != NodeOutcome::Unknown) {
-        if (isTestItemChild) {
+        const bool failureJumpScheduled =
+            finalDecision.action == ErrorAction::JumpTo &&
+            scheduleFailureJump(uut, node, finalDecision, frameId);
+        if (finalDecision.action == ErrorAction::JumpTo &&
+            !failureJumpScheduled) {
+            finalDecision.action = ErrorAction::StopUut;
+            finalDecision.reason = QStringLiteral(
+                "invalid runtime JumpTo target; stopping current UUT");
+        }
+        if (failureJumpScheduled) {
+            if (!isTestItemChild && !isLoopChild) {
+                handleNodeFailureForBarriers(uut, node, result, frameId);
+            }
+        } else if (isTestItemChild) {
             handleTestItemChildFailure(uut,
                                        node,
                                        result,
@@ -1849,7 +1895,20 @@ bool ExecutionGraphScheduler::completePendingOperatorPrompt(
         const bool isTestItemChild =
             m_plan.testItemRegionForChild(node->id).has_value();
         const bool isLoopChild = isLoopBodyNode(node->id);
-        if (isTestItemChild) {
+        const bool failureJumpScheduled =
+            finalDecision.action == ErrorAction::JumpTo &&
+            scheduleFailureJump(uut, *node, finalDecision, frameId);
+        if (finalDecision.action == ErrorAction::JumpTo &&
+            !failureJumpScheduled) {
+            finalDecision.action = ErrorAction::StopUut;
+            finalDecision.reason = QStringLiteral(
+                "invalid runtime JumpTo target; stopping current UUT");
+        }
+        if (failureJumpScheduled) {
+            if (!isTestItemChild && !isLoopChild) {
+                handleNodeFailureForBarriers(uut, *node, result, frameId);
+            }
+        } else if (isTestItemChild) {
             handleTestItemChildFailure(
                 uut, *node, result, finalDecision.action, frameId);
         } else if (isLoopChild) {
@@ -1922,6 +1981,134 @@ void ExecutionGraphScheduler::handleLoopBodyFailure(UutExecution& uut,
                             .arg(childNode.id, nodeOutcomeName(result.outcome));
     for (int index = failedIndex + 1; index < region->childNodeIds.size(); ++index) {
         skipNodeSubtree(uut, region->childNodeIds[index], frameId, reason);
+    }
+}
+
+bool ExecutionGraphScheduler::scheduleFailureJump(
+    UutExecution& uut,
+    const ExecNode& failedNode,
+    const ErrorDecision& decision,
+    const FrameId& frameId)
+{
+    auto requestedTarget = decision.jumpTargetNodeId.trimmed();
+    if (requestedTarget.startsWith(QStringLiteral("step:"),
+                                   Qt::CaseInsensitive)) {
+        requestedTarget = requestedTarget.mid(5).trimmed();
+    }
+    const auto target = resolveStepReferenceNode(
+        m_plan, failedNode.id, requestedTarget);
+    if (!target || *target == failedNode.id ||
+        isTerminalActivation(uut.stateOf(*target))) {
+        return false;
+    }
+
+    const auto* targetNode = m_plan.node(*target);
+    if (!targetNode || executionPhaseOf(*targetNode) != executionPhaseOf(failedNode) ||
+        executionPhaseOf(failedNode) == ExecutionPhase::Cleanup ||
+        m_plan.structuralParentOf(failedNode.id) !=
+            m_plan.structuralParentOf(*target) ||
+        m_plan.loopRegionForBodyNode(failedNode.id) ||
+        m_plan.loopRegionForBodyNode(*target)) {
+        return false;
+    }
+
+    const auto siblings = directSiblingNodeIds(failedNode);
+    const int sourceIndex = siblings.indexOf(failedNode.id);
+    const int targetIndex = siblings.indexOf(*target);
+    if (sourceIndex < 0 || targetIndex <= sourceIndex) {
+        return false;
+    }
+
+    const auto reason = QStringLiteral("skipped by failure jump %1 -> %2")
+                            .arg(failedNode.id, *target);
+    for (int index = sourceIndex + 1; index < targetIndex; ++index) {
+        skipNodeSubtree(uut, siblings[index], frameId, reason);
+    }
+
+    m_pendingFailureJumps.insert(
+        uut.uutId, PendingFailureJump{frameId, failedNode.id, *target});
+    return true;
+}
+
+QVector<NodeId> ExecutionGraphScheduler::directSiblingNodeIds(
+    const ExecNode& node) const
+{
+    const auto parent = m_plan.structuralParentOf(node.id);
+    if (parent) {
+        if (const auto testItem = m_plan.testItemRegionForController(*parent)) {
+            return testItem->childNodeIds;
+        }
+        if (const auto loop = m_plan.loopRegionForController(*parent)) {
+            return loop->childNodeIds;
+        }
+        return {};
+    }
+
+    QVector<NodeId> candidates;
+    for (auto it = m_plan.nodes.constBegin(); it != m_plan.nodes.constEnd(); ++it) {
+        if (!m_plan.structuralParentOf(it.key()) &&
+            executionPhaseOf(it.value()) == executionPhaseOf(node)) {
+            candidates.push_back(it.key());
+        }
+    }
+    std::sort(candidates.begin(), candidates.end());
+
+    const QSet<NodeId> candidateSet(candidates.cbegin(), candidates.cend());
+    QHash<NodeId, int> indegree;
+    for (const auto& candidate : candidates) {
+        indegree.insert(candidate, 0);
+    }
+    for (const auto& edge : m_plan.edges) {
+        if (candidateSet.contains(edge.from) && candidateSet.contains(edge.to)) {
+            indegree[edge.to] += 1;
+        }
+    }
+
+    QVector<NodeId> ready;
+    for (const auto& candidate : candidates) {
+        if (indegree.value(candidate) == 0) {
+            ready.push_back(candidate);
+        }
+    }
+    QVector<NodeId> ordered;
+    while (!ready.isEmpty()) {
+        std::sort(ready.begin(), ready.end());
+        const auto current = ready.takeFirst();
+        ordered.push_back(current);
+        for (const auto& edge : m_plan.outgoingEdges(current)) {
+            if (!candidateSet.contains(edge.to)) {
+                continue;
+            }
+            indegree[edge.to] -= 1;
+            if (indegree.value(edge.to) == 0) {
+                ready.push_back(edge.to);
+            }
+        }
+    }
+    for (const auto& candidate : candidates) {
+        if (!ordered.contains(candidate)) {
+            ordered.push_back(candidate);
+        }
+    }
+    return ordered;
+}
+
+bool ExecutionGraphScheduler::isPendingFailureJumpTarget(
+    const UutExecution& uut,
+    const NodeId& nodeId) const
+{
+    const auto pending = m_pendingFailureJumps.constFind(uut.uutId);
+    return pending != m_pendingFailureJumps.constEnd() &&
+           pending->targetNodeId == nodeId;
+}
+
+void ExecutionGraphScheduler::clearCompletedFailureJump(
+    const UutExecution& uut)
+{
+    const auto pending = m_pendingFailureJumps.constFind(uut.uutId);
+    if (pending != m_pendingFailureJumps.constEnd() &&
+        isTerminalActivation(uut.stateOf(pending->targetNodeId))) {
+        m_pendingFailureJumps.remove(uut.uutId);
     }
 }
 
@@ -2197,10 +2384,23 @@ NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
             decision.reason = QStringLiteral("TestItem child requested %1")
                                   .arg(errorActionName(childEscalation));
         }
+        const bool failureJumpScheduled =
+            decision.action == ErrorAction::JumpTo &&
+            scheduleFailureJump(uut, node, decision, frameId);
+        if (decision.action == ErrorAction::JumpTo &&
+            !failureJumpScheduled) {
+            decision.action = ErrorAction::StopUut;
+            decision.reason = QStringLiteral(
+                "invalid runtime JumpTo target; stopping current UUT");
+        }
         const auto parentId = m_plan.structuralParentOf(node.id);
         const bool isDirectLoopChild = parentId &&
             m_plan.loopRegionForController(*parentId).has_value();
-        if (m_plan.testItemRegionForChild(node.id)) {
+        if (failureJumpScheduled) {
+            if (!m_plan.testItemRegionForChild(node.id) && !isDirectLoopChild) {
+                handleNodeFailureForBarriers(uut, node, result, frameId);
+            }
+        } else if (m_plan.testItemRegionForChild(node.id)) {
             handleTestItemChildFailure(uut, node, result, decision.action, frameId);
         } else if (isDirectLoopChild) {
             handleLoopBodyFailure(uut, node, result, decision.action, frameId);
@@ -2318,10 +2518,23 @@ NodeResult ExecutionGraphScheduler::executeLoopNode(UutExecution& uut,
                 errorDecision.reason = QStringLiteral("Loop child requested %1")
                                            .arg(errorActionName(childEscalation));
             }
+            const bool failureJumpScheduled =
+                errorDecision.action == ErrorAction::JumpTo &&
+                scheduleFailureJump(uut, node, errorDecision, frameId);
+            if (errorDecision.action == ErrorAction::JumpTo &&
+                !failureJumpScheduled) {
+                errorDecision.action = ErrorAction::StopUut;
+                errorDecision.reason = QStringLiteral(
+                    "invalid runtime JumpTo target; stopping current UUT");
+            }
             const auto parentId = m_plan.structuralParentOf(node.id);
             const bool isDirectLoopChild = parentId &&
                 m_plan.loopRegionForController(*parentId).has_value();
-            if (m_plan.testItemRegionForChild(node.id)) {
+            if (failureJumpScheduled) {
+                if (!m_plan.testItemRegionForChild(node.id) && !isDirectLoopChild) {
+                    handleNodeFailureForBarriers(uut, node, result, frameId);
+                }
+            } else if (m_plan.testItemRegionForChild(node.id)) {
                 handleTestItemChildFailure(uut,
                                            node,
                                            result,
@@ -2410,8 +2623,9 @@ std::optional<ErrorAction> ExecutionGraphScheduler::inheritedErrorAction(
         }
         if (parent->kind == ExecNodeKind::TestItem) {
             const auto action = actionForOutcome(parent->errorPolicy);
-            if (action == ErrorAction::Retry) {
-                // Retry belongs to the TestItem as a whole, not to each child.
+            if (action == ErrorAction::Retry || action == ErrorAction::JumpTo) {
+                // Retry and JumpTo belong to the TestItem as a whole, not to
+                // each child that contributes to its aggregate result.
                 return ErrorAction::Continue;
             }
             if (action != ErrorAction::Inherit) {

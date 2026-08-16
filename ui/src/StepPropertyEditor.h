@@ -93,6 +93,9 @@ private:
     void rebuildPromptExpressionMenu(QMenu* menu, QPlainTextEdit* editor);
     void rebuildPromptCloseStepChoices(const QString& selectedPath);
     QString selectedPromptCloseStep() const;
+    void rebuildFailureJumpChoices(QComboBox* combo,
+                                   const QString& selectedPath);
+    void updateFailureJumpVisibility();
     void rebuildPromptImageChoices(const QString& selectedImage);
     QString selectedPromptImage() const;
     const PluginFunctionDefinition* currentPluginFunction() const;
@@ -222,6 +225,9 @@ private:
     QComboBox* m_onFailPolicyCombo = nullptr;
     QComboBox* m_onErrorPolicyCombo = nullptr;
     QComboBox* m_onTimeoutPolicyCombo = nullptr;
+    QComboBox* m_onFailTargetCombo = nullptr;
+    QComboBox* m_onErrorTargetCombo = nullptr;
+    QComboBox* m_onTimeoutTargetCombo = nullptr;
     QSpinBox* m_maxAttemptsSpin = nullptr;
     QSpinBox* m_retryDelaySpin = nullptr;
     QLineEdit* m_retryWhenEdit = nullptr;

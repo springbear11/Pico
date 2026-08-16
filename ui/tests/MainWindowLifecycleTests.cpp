@@ -426,6 +426,7 @@ private slots:
     void whileLoopPropertyEditorUsesTypedFields();
     void valueToolsPropertyEditorUsesExpressionList();
     void periodicActionPropertyEditorUsesTypedPolicyFields();
+    void barrierPropertyEditorUsesMinimalConfiguration();
     void stepFailurePolicyEditorUsesThreeOutcomeCombos();
 
 private:
@@ -4146,7 +4147,7 @@ void MainWindowLifecycleTests::loginDialogDiscoversSequenceAndValidatesAdminPass
     QCOMPARE(password->echoMode(), QLineEdit::Password);
     QVERIFY(!password->property("invalid").toBool());
 
-    password->setText(QString::number(StartupSupport::dailyAdminPassword()));
+    password->setText(QStringLiteral("300693"));
     login->click();
     QVERIFY(!login->isEnabled());
     QVERIFY(!spinner->isHidden());
@@ -4190,7 +4191,7 @@ void MainWindowLifecycleTests::loginDialogOffersNewProjectTemplateWhenProjectsAr
     QCOMPARE(dialog.result(), 0);
 
     admin->click();
-    password->setText(QString::number(StartupSupport::dailyAdminPassword()));
+    password->setText(QStringLiteral("300693"));
     login->click();
     QTRY_COMPARE(dialog.result(), int(QDialog::Accepted));
     const auto selection = dialog.selection();
@@ -6881,6 +6882,56 @@ void MainWindowLifecycleTests::periodicActionPropertyEditorUsesTypedPolicyFields
     QCOMPARE(counter.value(QStringLiteral("wrapAt")).toInt(), 255);
 }
 
+void MainWindowLifecycleTests::barrierPropertyEditorUsesMinimalConfiguration()
+{
+    const auto path = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+        + QStringLiteral("/examples/simple_sequence.json");
+    SequenceDocument document;
+    QVERIFY(document.load(path));
+    StepPropertyEditor editor(&document);
+    const SequenceItemPath stepPath{1, {0}};
+    editor.setCurrentItem(stepPath);
+
+    auto* kind = editor.findChild<QComboBox*>(
+        QStringLiteral("propertyKindCombo"));
+    auto* name = editor.findChild<QLineEdit*>(
+        QStringLiteral("propertyBarrierNameEdit"));
+    auto* expectedUuts = editor.findChild<QSpinBox*>(
+        QStringLiteral("propertyBarrierExpectedUutSpin"));
+    auto* arrivalPolicy = editor.findChild<QComboBox*>(
+        QStringLiteral("propertyBarrierArrivalPolicyCombo"));
+    auto* failurePolicy = editor.findChild<QComboBox*>(
+        QStringLiteral("propertyBarrierFailurePolicyCombo"));
+    QVERIFY(kind);
+    QVERIFY(name);
+    QVERIFY(expectedUuts);
+    QVERIFY(arrivalPolicy);
+    QVERIFY(failurePolicy);
+
+    kind->setCurrentIndex(kind->findData(QStringLiteral("barrier")));
+    QCoreApplication::processEvents();
+    QVERIFY(!name->isHidden());
+    QVERIFY(expectedUuts->isHidden());
+    QVERIFY(arrivalPolicy->isHidden());
+    QVERIFY(failurePolicy->isHidden());
+
+    name->clear();
+    QVERIFY(editor.commitPendingChanges());
+    auto step = document.objectAt(stepPath);
+    QCOMPARE(step.value(QStringLiteral("kind")).toString(),
+             QStringLiteral("barrier"));
+    QVERIFY(!step.contains(QStringLiteral("barrier")));
+
+    editor.setCurrentItem(stepPath);
+    name->setText(QStringLiteral("batch-ready"));
+    QVERIFY(editor.commitPendingChanges());
+    step = document.objectAt(stepPath);
+    const auto barrier = step.value(QStringLiteral("barrier")).toObject();
+    QCOMPARE(barrier.size(), 1);
+    QCOMPARE(barrier.value(QStringLiteral("barrierName")).toString(),
+             QStringLiteral("batch-ready"));
+}
+
 void MainWindowLifecycleTests::stepFailurePolicyEditorUsesThreeOutcomeCombos()
 {
     const auto path = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
@@ -6897,6 +6948,8 @@ void MainWindowLifecycleTests::stepFailurePolicyEditorUsesThreeOutcomeCombos()
         QStringLiteral("propertyOnErrorPolicyCombo"));
     auto* onTimeout = editor.findChild<QComboBox*>(
         QStringLiteral("propertyOnTimeoutPolicyCombo"));
+    auto* onFailTarget = editor.findChild<QComboBox*>(
+        QStringLiteral("propertyOnFailTargetCombo"));
     auto* advanced = editor.findChild<QPlainTextEdit*>(
         QStringLiteral("propertyLegacyErrorPolicyEdit"));
     auto* retryWhen = editor.findChild<QLineEdit*>(
@@ -6904,6 +6957,7 @@ void MainWindowLifecycleTests::stepFailurePolicyEditorUsesThreeOutcomeCombos()
     QVERIFY(onFail);
     QVERIFY(onError);
     QVERIFY(onTimeout);
+    QVERIFY(onFailTarget);
     QVERIFY(advanced);
     QVERIFY(retryWhen);
     QVERIFY(retryWhen->isHidden());
@@ -6916,9 +6970,15 @@ void MainWindowLifecycleTests::stepFailurePolicyEditorUsesThreeOutcomeCombos()
     QVERIFY(onFail->findData(QStringLiteral("Abort")) >= 0);
     QVERIFY(onError->findData(QStringLiteral("Abort")) >= 0);
     QVERIFY(onTimeout->findData(QStringLiteral("Abort")) >= 0);
+    QVERIFY(onFail->findData(QStringLiteral("JumpTo")) >= 0);
+    QVERIFY(onFailTarget->isHidden());
     QVERIFY(advanced->toPlainText().trimmed().isEmpty());
 
-    onFail->setCurrentIndex(onFail->findData(QStringLiteral("RunCleanup")));
+    onFail->setCurrentIndex(onFail->findData(QStringLiteral("JumpTo")));
+    QVERIFY(!onFailTarget->isHidden());
+    const int measureTarget = onFailTarget->findData(QStringLiteral("measure"));
+    QVERIFY(measureTarget >= 0);
+    onFailTarget->setCurrentIndex(measureTarget);
     onError->setCurrentIndex(onError->findData(QStringLiteral("Abort")));
     onTimeout->setCurrentIndex(onTimeout->findData(QStringLiteral("Continue")));
     advanced->setPlainText(QStringLiteral(
@@ -6928,7 +6988,9 @@ void MainWindowLifecycleTests::stepFailurePolicyEditorUsesThreeOutcomeCombos()
     auto policy = document.objectAt(stepPath)
                       .value(QStringLiteral("errorPolicy")).toObject();
     QCOMPARE(policy.value(QStringLiteral("onFail")).toString(),
-             QStringLiteral("RunCleanup"));
+             QStringLiteral("JumpTo"));
+    QCOMPARE(policy.value(QStringLiteral("onFailTarget")).toString(),
+             QStringLiteral("measure"));
     QCOMPARE(policy.value(QStringLiteral("onError")).toString(),
              QStringLiteral("Abort"));
     QCOMPARE(policy.value(QStringLiteral("onTimeout")).toString(),
@@ -6937,7 +6999,8 @@ void MainWindowLifecycleTests::stepFailurePolicyEditorUsesThreeOutcomeCombos()
              QStringLiteral("main-cleanup"));
 
     editor.setCurrentItem(stepPath);
-    QCOMPARE(onFail->currentData().toString(), QStringLiteral("RunCleanup"));
+    QCOMPARE(onFail->currentData().toString(), QStringLiteral("JumpTo"));
+    QCOMPARE(onFailTarget->currentData().toString(), QStringLiteral("measure"));
     QCOMPARE(onError->currentData().toString(), QStringLiteral("Abort"));
     QCOMPARE(onTimeout->currentData().toString(), QStringLiteral("Continue"));
     QVERIFY(!advanced->toPlainText().contains(QStringLiteral("onFail")));
@@ -6952,6 +7015,7 @@ void MainWindowLifecycleTests::stepFailurePolicyEditorUsesThreeOutcomeCombos()
     QVERIFY(!policy.contains(QStringLiteral("onFail")));
     QVERIFY(!policy.contains(QStringLiteral("onError")));
     QVERIFY(!policy.contains(QStringLiteral("onTimeout")));
+    QVERIFY(!policy.contains(QStringLiteral("onFailTarget")));
     QCOMPARE(policy.value(QStringLiteral("cleanupRegionId")).toString(),
              QStringLiteral("main-cleanup"));
 }

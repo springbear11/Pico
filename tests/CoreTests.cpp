@@ -665,6 +665,7 @@ private slots:
     void resourceRegionControllerManagesLeaseLifecycle();
     void resourceRegionControllerReleaseAllIsolatesUuts();
     void barrierControllerReleasesOnlyThroughDecision();
+    void sequenceCompilerUsesSafeMinimalBarrierDefaults();
     void barrierRuntimeCoordinatorQueuesCohortRelease();
     void barrierRuntimeCoordinatorDropsFailedReachableMember();
     void cleanupRuntimeCoordinatorTracksRequestAndActivation();
@@ -833,6 +834,9 @@ private slots:
     void loopTestItemChildrenKeepSerialOrderAcrossIterations();
     void continuePolicyAdvancesAfterOrdinaryStepFailure();
     void continuePolicyAdvancesAfterTestItemFailure();
+    void failureJumpSkipsIntermediateSiblingAfterRetries();
+    void failureJumpSkipsIntermediateTestItemSubtree();
+    void compilerRejectsUnsafeFailureJumpTargets();
     void statementAndSequenceCallKeepDistinctRuntimeKinds();
     void reportOrdersTestItemChildrenByTopology();
     void testItemIgnoresSkippedChildrenWhenAggregating();
@@ -1529,6 +1533,8 @@ void CoreTests::barrierControllerReleasesOnlyThroughDecision()
     BarrierController barriers;
 
     BarrierNodePayload payload;
+    QCOMPARE(payload.arrivalPolicy, BarrierArrivalPolicy::DropFailed);
+    QCOMPARE(payload.failurePolicy, BarrierFailurePolicy::RemoveFailedMember);
     payload.barrierName = "batch-ready";
     payload.cohortId = "batch-1";
     payload.arrivalPolicy = BarrierArrivalPolicy::WaitAll;
@@ -1550,6 +1556,34 @@ void CoreTests::barrierControllerReleasesOnlyThroughDecision()
     decision = barriers.memberArrived(second);
     QVERIFY(decision.released());
     QCOMPARE(decision.releasedUuts.size(), 2);
+}
+
+void CoreTests::sequenceCompilerUsesSafeMinimalBarrierDefaults()
+{
+    const auto json = R"json({
+      "id":"minimal-barrier",
+      "name":"Minimal Barrier",
+      "groups":[{
+        "id":"main",
+        "kind":"main",
+        "steps":[{"id":"sync","name":"Synchronize","kind":"barrier"}]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+                                           ? QString()
+                                           : compiled.errors.first().message));
+    const auto* barrier = compiled.plan.node(QStringLiteral("sync"));
+    QVERIFY(barrier);
+    QCOMPARE(barrier->payload.value(QStringLiteral("arrivalPolicy")).toString(),
+             QStringLiteral("DropFailed"));
+    QCOMPARE(barrier->payload.value(QStringLiteral("releasePolicy")).toString(),
+             QStringLiteral("Lockstep"));
+    QCOMPARE(barrier->payload.value(QStringLiteral("failurePolicy")).toString(),
+             QStringLiteral("RemoveFailedMember"));
 }
 
 void CoreTests::barrierRuntimeCoordinatorQueuesCohortRelease()
@@ -4194,8 +4228,6 @@ void CoreTests::executionSessionDropsFailedUutBeforeBarrier()
     barrier.kind = ExecNodeKind::Barrier;
     barrier.payload.insert("barrierName", "batch-ready");
     barrier.payload.insert("cohortId", "batch-1");
-    barrier.payload.insert("arrivalPolicy", "DropFailed");
-    barrier.payload.insert("failurePolicy", "RemoveFailedMember");
     QVERIFY(plan.addNode(barrier));
 
     ExecNode after;
@@ -6005,13 +6037,22 @@ void CoreTests::errorPolicyDefMapsFailureActions()
     QCOMPARE(runtimeDefaults.onError, ErrorAction::Inherit);
     QCOMPARE(runtimeDefaults.onTimeout, ErrorAction::Inherit);
 
+    ErrorPolicyDef jumpPolicy;
+    jumpPolicy.onFail = OnFailureAction::JumpTo;
+    jumpPolicy.onFailTarget = QStringLiteral("003");
+    const auto runtimeJump = jumpPolicy.toRuntimePolicy();
+    QCOMPARE(runtimeJump.onFail, ErrorAction::JumpTo);
+    QCOMPARE(runtimeJump.onFailTarget, QStringLiteral("003"));
+
     QCOMPARE(toErrorAction(OnFailureAction::Inherit), ErrorAction::Inherit);
     QCOMPARE(toErrorAction(OnFailureAction::Continue), ErrorAction::Continue);
     QCOMPARE(toErrorAction(OnFailureAction::StopUut), ErrorAction::StopUut);
     QCOMPARE(toErrorAction(OnFailureAction::Retry), ErrorAction::Retry);
+    QCOMPARE(toErrorAction(OnFailureAction::JumpTo), ErrorAction::JumpTo);
     QCOMPARE(toErrorAction(OnFailureAction::RunCleanup), ErrorAction::RunCleanup);
     QCOMPARE(toErrorAction(OnFailureAction::Abort), ErrorAction::Abort);
     QCOMPARE(errorActionName(ErrorAction::Inherit), QString("Inherit"));
+    QCOMPARE(errorActionName(ErrorAction::JumpTo), QString("JumpTo"));
     QCOMPARE(errorActionName(ErrorAction::RunCleanup), QString("RunCleanup"));
 }
 
@@ -6045,6 +6086,12 @@ void CoreTests::errorPolicyEngineUsesOutcomeSpecificActions()
     decision = engine.decide(node, timeout, 1);
     QCOMPARE(decision.action, ErrorAction::RunCleanup);
     QCOMPARE(decision.cleanupReason, CleanupReason::Timeout);
+
+    node.errorPolicy.onFail = ErrorAction::JumpTo;
+    node.errorPolicy.onFailTarget = QStringLiteral("003");
+    decision = engine.decide(node, failed, 1);
+    QCOMPARE(decision.action, ErrorAction::JumpTo);
+    QCOMPARE(decision.jumpTargetNodeId, QStringLiteral("003"));
 }
 
 void CoreTests::stationFailureHandlingResolvesAllInheritedOutcomes()
@@ -9403,6 +9450,153 @@ void CoreTests::continuePolicyAdvancesAfterTestItemFailure()
     QCOMPARE(session.uuts().first().outcomeOf("failed-item"), NodeOutcome::Failed);
     QCOMPARE(session.uuts().first().outcomeOf("failed-item.remaining-child"), NodeOutcome::Passed);
     QCOMPARE(session.uuts().first().outcomeOf("after-item"), NodeOutcome::Passed);
+}
+
+void CoreTests::failureJumpSkipsIntermediateSiblingAfterRetries()
+{
+    const auto json = R"json({
+      "id": "failure-jump-after-retry",
+      "name": "Failure Jump After Retry",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [
+          {
+            "id": "001",
+            "name": "Fail twice",
+            "kind": "action",
+            "parameters": { "outcome": "Failed" },
+            "retry": { "maxAttempts": 2 },
+            "errorPolicy": { "onFail": "JumpTo", "onFailTarget": "003" }
+          },
+          { "id": "002", "name": "Must be skipped", "kind": "action" },
+          { "id": "003", "name": "Jump target", "kind": "action" },
+          { "id": "004", "name": "Normal successor", "kind": "action" }
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compile.ok(),
+             qPrintable(compile.errors.isEmpty()
+                            ? QStringLiteral("Compilation failed")
+                            : compile.errors.first().message));
+    const auto* failedNode = compile.plan.node(QStringLiteral("001"));
+    QVERIFY(failedNode != nullptr);
+    QCOMPARE(failedNode->errorPolicy.onFail, ErrorAction::JumpTo);
+    QCOMPARE(failedNode->errorPolicy.onFailTarget, QStringLiteral("003"));
+
+    ExecutionSession session(compile.plan);
+    session.addUut(QStringLiteral("UUT-1"));
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.outcomeOf(QStringLiteral("001")), NodeOutcome::Failed);
+    QCOMPARE(uut.activations.value(QStringLiteral("001")).attempts.size(), 2);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("002")), NodeOutcome::Skipped);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("003")), NodeOutcome::Passed);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("004")), NodeOutcome::Passed);
+}
+
+void CoreTests::failureJumpSkipsIntermediateTestItemSubtree()
+{
+    const auto json = R"json({
+      "id": "failure-jump-test-items",
+      "name": "Failure Jump TestItems",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [
+          {
+            "id": "001",
+            "name": "Failed item",
+            "kind": "testItem",
+            "errorPolicy": { "onFail": "JumpTo", "onFailTarget": "003" },
+            "steps": [
+              { "id": "01", "kind": "action", "parameters": { "outcome": "Failed" } }
+            ]
+          },
+          {
+            "id": "002",
+            "name": "Skipped item",
+            "kind": "testItem",
+            "steps": [{ "id": "01", "kind": "action" }]
+          },
+          {
+            "id": "003",
+            "name": "Target item",
+            "kind": "testItem",
+            "steps": [{ "id": "01", "kind": "action" }]
+          }
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compile.ok(),
+             qPrintable(compile.errors.isEmpty()
+                            ? QStringLiteral("Compilation failed")
+                            : compile.errors.first().message));
+    ExecutionSession session(compile.plan);
+    session.addUut(QStringLiteral("UUT-1"));
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.outcomeOf(QStringLiteral("001")), NodeOutcome::Failed);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("002")), NodeOutcome::Skipped);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("002.01")), NodeOutcome::Skipped);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("003")), NodeOutcome::Passed);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("003.01")), NodeOutcome::Passed);
+}
+
+void CoreTests::compilerRejectsUnsafeFailureJumpTargets()
+{
+    const auto compile = [](const QByteArray& json) {
+        SequenceCompiler compiler;
+        return compiler.compileJson(QJsonDocument::fromJson(json).object());
+    };
+    const auto hasJumpDiagnostic = [](const CompileResult& result) {
+        return std::any_of(
+            result.errors.cbegin(), result.errors.cend(), [](const CompileError& error) {
+                return error.message.contains(QStringLiteral("JumpTo"),
+                                              Qt::CaseInsensitive);
+            });
+    };
+
+    const auto missing = compile(R"json({
+      "id":"missing-jump-target","name":"Missing Jump Target","groups":[{"id":"main","kind":"main","steps":[
+        {"id":"001","kind":"action","errorPolicy":{"onFail":"JumpTo"}},
+        {"id":"002","kind":"action"}
+      ]}]
+    })json");
+    QVERIFY(!missing.ok());
+    QVERIFY(hasJumpDiagnostic(missing));
+
+    const auto backward = compile(R"json({
+      "id":"backward-jump","name":"Backward Jump","groups":[{"id":"main","kind":"main","steps":[
+        {"id":"001","kind":"action"},
+        {"id":"002","kind":"action","errorPolicy":{"onFail":"JumpTo","onFailTarget":"001"}}
+      ]}]
+    })json");
+    QVERIFY(!backward.ok());
+    QVERIFY(hasJumpDiagnostic(backward));
+
+    const auto crossParent = compile(R"json({
+      "id":"cross-parent-jump","name":"Cross Parent Jump","groups":[{"id":"main","kind":"main","steps":[
+        {"id":"001","kind":"testItem","steps":[
+          {"id":"01","kind":"action","errorPolicy":{"onFail":"JumpTo","onFailTarget":"003"}}
+        ]},
+        {"id":"003","kind":"action"}
+      ]}]
+    })json");
+    QVERIFY(!crossParent.ok());
+    QVERIFY(hasJumpDiagnostic(crossParent));
 }
 
 void CoreTests::statementAndSequenceCallKeepDistinctRuntimeKinds()

@@ -42,6 +42,9 @@ public:
     static bool matchesDailyAdminPassword(
         const QString& input,
         const QDate& date = QDate::currentDate());
+    static bool matchesAdminPassword(
+        const QString& input,
+        const QDate& date = QDate::currentDate());
 
     static QStringList discoverSequenceFiles(const QString& rootDirectory);
     static QString stationPathForSequence(const QString& sequencePath);

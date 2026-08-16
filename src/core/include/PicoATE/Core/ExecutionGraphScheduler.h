@@ -152,6 +152,14 @@ private:
                                const NodeResult& result,
                                ErrorAction action,
                                const FrameId& frameId);
+    bool scheduleFailureJump(UutExecution& uut,
+                             const ExecNode& failedNode,
+                             const ErrorDecision& decision,
+                             const FrameId& frameId);
+    QVector<NodeId> directSiblingNodeIds(const ExecNode& node) const;
+    bool isPendingFailureJumpTarget(const UutExecution& uut,
+                                    const NodeId& nodeId) const;
+    void clearCompletedFailureJump(const UutExecution& uut);
     void skipNodeSubtree(UutExecution& uut,
                          const NodeId& rootNodeId,
                          const FrameId& frameId,
@@ -211,6 +219,12 @@ private:
         ActivationId activationId;
     };
 
+    struct PendingFailureJump {
+        FrameId frameId;
+        NodeId sourceNodeId;
+        NodeId targetNodeId;
+    };
+
     const ExecutionPlan& m_plan;
     ResourceManager& m_resources;
     ResourceRegionController m_resourceRegions;
@@ -227,6 +241,7 @@ private:
     TimerService m_timers;
     QHash<RequestId, PendingWait> m_pendingWaits;
     QHash<RequestId, PendingRetry> m_pendingRetries;
+    QHash<UutId, PendingFailureJump> m_pendingFailureJumps;
     QHash<QString, ErrorAction> m_testItemFailureEscalations;
     QHash<QString, ErrorAction> m_loopFailureEscalations;
     PeriodicTaskController m_periodicTasks;

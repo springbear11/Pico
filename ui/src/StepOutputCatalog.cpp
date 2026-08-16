@@ -484,4 +484,50 @@ QVector<FollowingStepReferenceCandidate> buildFollowingStepReferenceCandidates(
     return candidates;
 }
 
+QVector<FollowingStepReferenceCandidate>
+buildFollowingSiblingStepReferenceCandidates(
+    const QJsonObject& sequence,
+    const SequenceItemPath& currentPath)
+{
+    QVector<FollowingStepReferenceCandidate> candidates;
+    if (!currentPath.isValid() || currentPath.stepIndices.isEmpty()) {
+        return candidates;
+    }
+
+    QVector<OrderedStepReference> references;
+    const auto groups = sequence.value(QStringLiteral("groups")).toArray();
+    if (currentPath.groupIndex < 0 || currentPath.groupIndex >= groups.size() ||
+        !groups[currentPath.groupIndex].isObject()) {
+        return candidates;
+    }
+    const auto group = groups[currentPath.groupIndex].toObject();
+    collectOrderedStepReferences(
+        group.value(QStringLiteral("steps")).toArray(),
+        currentPath.groupIndex,
+        {},
+        {},
+        group.value(QStringLiteral("enabled")).toBool(true),
+        references);
+
+    const auto current = std::find_if(
+        references.cbegin(), references.cend(), [&](const OrderedStepReference& reference) {
+            return reference.itemPath == currentPath;
+        });
+    if (current == references.cend()) {
+        return candidates;
+    }
+
+    auto parentIndices = currentPath.stepIndices;
+    parentIndices.removeLast();
+    for (auto it = current + 1; it != references.cend(); ++it) {
+        auto candidateParent = it->itemPath.stepIndices;
+        candidateParent.removeLast();
+        if (it->itemPath.groupIndex == currentPath.groupIndex &&
+            candidateParent == parentIndices) {
+            candidates.push_back(it->candidate);
+        }
+    }
+    return candidates;
+}
+
 } // namespace PicoATE::Ui
