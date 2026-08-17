@@ -947,13 +947,6 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
                     return;
                 }
                 const auto kind = m_kindCombo->currentData().toString();
-                const auto sourceKind = m_sourceObject.value("kind").toString(
-                    m_sourceObject.value("type").toString());
-                if (kind == QStringLiteral("testItem") &&
-                    sourceKind != QStringLiteral("testItem") &&
-                    m_maxAttemptsSpin->value() == 1) {
-                    m_maxAttemptsSpin->setValue(3);
-                }
                 updateKindRows();
                 if (kind == QStringLiteral("operatorPrompt")) {
                     rebuildPromptImageChoices(selectedPromptImage());
@@ -2330,9 +2323,8 @@ void StepPropertyEditor::loadCurrentObject()
     m_releaseResourcesCheck->setChecked(barrier.value("releaseHeldResourcesOnWait").toBool(true));
 
     const auto retry = m_sourceObject.value("retry").toObject();
-    const int defaultMaxAttempts = editorKind == QStringLiteral("testItem") ? 3 : 1;
     m_maxAttemptsSpin->setValue(
-        retry.value("maxAttempts").toInt(defaultMaxAttempts));
+        retry.value("maxAttempts").toInt(1));
     m_retryDelaySpin->setValue(retry.value("delayMs").toInt(0));
     m_retryWhenEdit->setText(retry.value("retryWhen").toString());
     const auto timeout = m_sourceObject.value("timeout").toObject();

@@ -117,6 +117,8 @@ private:
     void setSelectedSequenceStepsEnabled(bool enabled);
     QVector<SequenceItemPath> selectedSequenceStepPaths() const;
     void moveSequenceStep(int offset);
+    void expandSequencePhases();
+    void collapseSequencePhasesToFirstLevel();
     void applyUndoRedo(bool redo);
     void compileSequence();
     void runSequence();
@@ -230,6 +232,8 @@ private:
     QAction* m_disableStepsAction = nullptr;
     QAction* m_moveStepUpAction = nullptr;
     QAction* m_moveStepDownAction = nullptr;
+    QAction* m_expandSequencePhasesAction = nullptr;
+    QAction* m_collapseSequencePhasesAction = nullptr;
     QAction* m_openStationAction = nullptr;
     QAction* m_saveStationAction = nullptr;
     QAction* m_saveStationAsAction = nullptr;

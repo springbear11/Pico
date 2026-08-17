@@ -2645,6 +2645,81 @@ void MainWindow::moveSequenceStep(int offset)
     }
 }
 
+void MainWindow::expandSequencePhases()
+{
+    if (!m_sequenceTreeView || !m_sequenceTreeModel) {
+        return;
+    }
+
+    auto* scrollBar = m_sequenceTreeView->verticalScrollBar();
+    const int scrollValue = scrollBar->value();
+    const std::function<void(const QModelIndex&)> expandSubtree =
+        [this, &expandSubtree](const QModelIndex& parent) {
+            m_sequenceTreeView->setExpanded(parent, true);
+            const int rows = m_sequenceTreeModel->rowCount(parent);
+            for (int row = 0; row < rows; ++row) {
+                expandSubtree(m_sequenceTreeModel->index(
+                    row, SequenceTreeModel::NameColumn, parent));
+            }
+        };
+
+    for (int row = 0; row < m_sequenceTreeModel->rowCount(); ++row) {
+        const auto phase = m_sequenceTreeModel->index(
+            row, SequenceTreeModel::NameColumn);
+        const auto kind = phase.siblingAtColumn(SequenceTreeModel::KindColumn)
+                              .data().toString().trimmed().toLower();
+        if (kind == QStringLiteral("setup") ||
+            kind == QStringLiteral("main") ||
+            kind == QStringLiteral("cleanup")) {
+            expandSubtree(phase);
+        }
+    }
+
+    scrollBar->setValue(qBound(scrollBar->minimum(), scrollValue,
+                               scrollBar->maximum()));
+}
+
+void MainWindow::collapseSequencePhasesToFirstLevel()
+{
+    if (!m_sequenceTreeView || !m_sequenceTreeModel) {
+        return;
+    }
+
+    auto* scrollBar = m_sequenceTreeView->verticalScrollBar();
+    const int scrollValue = scrollBar->value();
+    const std::function<void(const QModelIndex&)> collapseSubtree =
+        [this, &collapseSubtree](const QModelIndex& parent) {
+            const int rows = m_sequenceTreeModel->rowCount(parent);
+            for (int row = 0; row < rows; ++row) {
+                collapseSubtree(m_sequenceTreeModel->index(
+                    row, SequenceTreeModel::NameColumn, parent));
+            }
+            m_sequenceTreeView->setExpanded(parent, false);
+        };
+
+    for (int row = 0; row < m_sequenceTreeModel->rowCount(); ++row) {
+        const auto phase = m_sequenceTreeModel->index(
+            row, SequenceTreeModel::NameColumn);
+        const auto kind = phase.siblingAtColumn(SequenceTreeModel::KindColumn)
+                              .data().toString().trimmed().toLower();
+        if (kind != QStringLiteral("setup") &&
+            kind != QStringLiteral("main") &&
+            kind != QStringLiteral("cleanup")) {
+            continue;
+        }
+
+        const int children = m_sequenceTreeModel->rowCount(phase);
+        for (int childRow = 0; childRow < children; ++childRow) {
+            collapseSubtree(m_sequenceTreeModel->index(
+                childRow, SequenceTreeModel::NameColumn, phase));
+        }
+        m_sequenceTreeView->setExpanded(phase, true);
+    }
+
+    scrollBar->setValue(qBound(scrollBar->minimum(), scrollValue,
+                               scrollBar->maximum()));
+}
+
 QString nextPendingRunTestNodePath(const UutStepModel* model,
                                    const PicoATE::Core::UutId& uutId,
                                    const PicoATE::Core::NodeId& currentNodeId)
@@ -4310,6 +4385,24 @@ void MainWindow::buildActions()
         toolbarIcon("arrow-down"), tr("Move Down"), this);
     connect(m_moveStepDownAction, &QAction::triggered, this, [this] { moveSequenceStep(1); });
 
+    m_expandSequencePhasesAction = new QAction(
+        toolbarIcon("chevrons-up-down"), tr("Expand Flow"), this);
+    m_expandSequencePhasesAction->setObjectName(
+        QStringLiteral("expandSequencePhasesAction"));
+    m_expandSequencePhasesAction->setToolTip(
+        tr("Expand all items under Setup, Main, and Cleanup"));
+    connect(m_expandSequencePhasesAction, &QAction::triggered,
+            this, &MainWindow::expandSequencePhases);
+
+    m_collapseSequencePhasesAction = new QAction(
+        toolbarIcon("chevrons-down-up"), tr("Collapse Flow"), this);
+    m_collapseSequencePhasesAction->setObjectName(
+        QStringLiteral("collapseSequencePhasesAction"));
+    m_collapseSequencePhasesAction->setToolTip(
+        tr("Show only the first level under Setup, Main, and Cleanup"));
+    connect(m_collapseSequencePhasesAction, &QAction::triggered,
+            this, &MainWindow::collapseSequencePhasesToFirstLevel);
+
     m_openStationAction = new QAction(
         toolbarIcon("folder-cog"),
         tr("Open Station"),
@@ -4637,6 +4730,9 @@ void MainWindow::buildLayout()
     sequenceToolbar->addSeparator();
     sequenceToolbar->addAction(m_moveStepUpAction);
     sequenceToolbar->addAction(m_moveStepDownAction);
+    sequenceToolbar->addSeparator();
+    sequenceToolbar->addAction(m_expandSequencePhasesAction);
+    sequenceToolbar->addAction(m_collapseSequencePhasesAction);
     sequenceToolbar->addSeparator();
     sequenceToolbar->addAction(m_scanPluginsAction);
     sequenceEditorLayout->addWidget(sequenceToolbar);
@@ -5500,6 +5596,8 @@ void MainWindow::updateCommandState()
     }
     m_moveStepUpAction->setEnabled(canChangeSources && canMoveUp);
     m_moveStepDownAction->setEnabled(canChangeSources && canMoveDown);
+    m_expandSequencePhasesAction->setEnabled(hasDocument);
+    m_collapseSequencePhasesAction->setEnabled(hasDocument);
     if (m_sequenceTreeView) {
         m_sequenceTreeView->setEnabled(canChangeSources);
     }

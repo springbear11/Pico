@@ -303,7 +303,7 @@ void PluginFunctionModel::rebuild()
         {tr("Test Item"), basicStep(
              tr("Test Item"), QStringLiteral("testItem"),
              {{QStringLiteral("retry"),
-               QJsonObject{{QStringLiteral("maxAttempts"), 3},
+               QJsonObject{{QStringLiteral("maxAttempts"), 1},
                            {QStringLiteral("delayMs"), 0}}},
               {QStringLiteral("steps"), QJsonArray{}}})},
         {tr("For Loop"), basicStep(

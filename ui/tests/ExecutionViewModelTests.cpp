@@ -1582,7 +1582,7 @@ void ExecutionViewModelTests::pluginFunctionModelBuildsHierarchyAndDropsGenerate
     QCOMPARE(functionModel.stepTemplate(testItemFunction)
                  .value(QStringLiteral("retry")).toObject()
                  .value(QStringLiteral("maxAttempts")).toInt(),
-             3);
+             1);
     const auto whileLoopFunction = functionModel.index(5, 0, basicSection);
     QCOMPARE(whileLoopFunction.data().toString(), QStringLiteral("While Loop"));
     const auto whileLoopTemplate = functionModel.stepTemplate(whileLoopFunction);

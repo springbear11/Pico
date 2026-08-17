@@ -412,6 +412,7 @@ private slots:
     void flowFieldInspectionAppearsImmediatelyAndFillsPanel();
     void proportionalHeaderDistributesAvailableWidthByWeight();
     void flowEnableTogglePreservesTreePosition();
+    void flowToolbarExpandsAndCollapsesAtPhaseFirstLevel();
     void flowDropTargetPrefersTestItemInterior();
     void operatorPromptDialogCannotBeDismissedByKeyboardOrWindowControls();
     void operatorPromptDialogValidatesInputMode();
@@ -796,6 +797,93 @@ void MainWindowLifecycleTests::flowEnableTogglePreservesTreePosition()
     QVERIFY(qAbs(tree->verticalScrollBar()->value() - scrollBefore) <= 1);
     QVERIFY(!tree->isExpanded(testItem));
     QVERIFY(tree->visualRect(target).intersects(tree->viewport()->rect()));
+}
+
+void MainWindowLifecycleTests::flowToolbarExpandsAndCollapsesAtPhaseFirstLevel()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(
+        QStringLiteral("nested-flow.json"));
+    QFile sequence(sequencePath);
+    QVERIFY(sequence.open(QIODevice::WriteOnly));
+    sequence.write(R"({
+      "id":"nested-flow","name":"Nested Flow","groups":[
+        {"id":"setup","kind":"setup","steps":[
+          {"id":"001","kind":"testItem","name":"Setup Item","steps":[
+            {"id":"01","kind":"noop","name":"Setup Child"}
+          ]}
+        ]},
+        {"id":"main","kind":"main","steps":[
+          {"id":"002","kind":"testItem","name":"Main Item","steps":[
+            {"id":"01","kind":"testItem","name":"Nested Item","steps":[
+              {"id":"01","kind":"noop","name":"Nested Child"}
+            ]},
+            {"id":"02","kind":"noop","name":"Main Child"}
+          ]},
+          {"id":"003","kind":"noop","name":"Main Leaf"}
+        ]},
+        {"id":"cleanup","kind":"cleanup","steps":[
+          {"id":"004","kind":"testItem","name":"Cleanup Item","steps":[
+            {"id":"01","kind":"noop","name":"Cleanup Child"}
+          ]}
+        ]}
+      ]
+    })");
+    sequence.close();
+
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(sequencePath));
+    window.show();
+    QTest::qWait(20);
+
+    auto* tree = window.findChild<QTreeView*>(QStringLiteral("sequenceTreeView"));
+    auto* model = window.findChild<SequenceTreeModel*>();
+    auto* expand = window.findChild<QAction*>(
+        QStringLiteral("expandSequencePhasesAction"));
+    auto* collapse = window.findChild<QAction*>(
+        QStringLiteral("collapseSequencePhasesAction"));
+    QVERIFY(tree && model && expand && collapse);
+    QVERIFY(!expand->icon().isNull());
+    QVERIFY(!collapse->icon().isNull());
+
+    expand->trigger();
+    for (const auto& kind : {QStringLiteral("setup"),
+                             QStringLiteral("main"),
+                             QStringLiteral("cleanup")}) {
+        const auto phase = sequenceGroupByKind(model, kind);
+        QVERIFY(phase.isValid());
+        QVERIFY(tree->isExpanded(phase));
+        const auto firstChild = model->index(
+            0, SequenceTreeModel::NameColumn, phase);
+        QVERIFY(firstChild.isValid());
+        if (model->rowCount(firstChild) > 0) {
+            QVERIFY(tree->isExpanded(firstChild));
+        }
+    }
+
+    const auto main = sequenceGroupByKind(model, QStringLiteral("main"));
+    const auto mainItem = model->index(
+        0, SequenceTreeModel::NameColumn, main);
+    const auto nestedItem = model->index(
+        0, SequenceTreeModel::NameColumn, mainItem);
+    QVERIFY(tree->isExpanded(nestedItem));
+
+    collapse->trigger();
+    for (const auto& kind : {QStringLiteral("setup"),
+                             QStringLiteral("main"),
+                             QStringLiteral("cleanup")}) {
+        const auto phase = sequenceGroupByKind(model, kind);
+        QVERIFY(tree->isExpanded(phase));
+        const auto firstChild = model->index(
+            0, SequenceTreeModel::NameColumn, phase);
+        QVERIFY(firstChild.isValid());
+        QVERIFY(!tree->isExpanded(firstChild));
+        QVERIFY(!tree->isRowHidden(firstChild.row(), phase));
+    }
+    QVERIFY(!tree->isExpanded(nestedItem));
+    QVERIFY(tree->visualRect(mainItem).isValid());
+    QVERIFY(tree->visualRect(nestedItem).isEmpty());
 }
 
 void MainWindowLifecycleTests::picoStyleDrawsFilledCheckedIndicators()
@@ -6688,7 +6776,7 @@ void MainWindowLifecycleTests::whileLoopPropertyEditorUsesTypedFields()
     const int testItemIndex = kind->findData(QStringLiteral("testItem"));
     QVERIFY(testItemIndex >= 0);
     kind->setCurrentIndex(testItemIndex);
-    QCOMPARE(maxAttempts->value(), 3);
+    QCOMPARE(maxAttempts->value(), 1);
     QVERIFY(editor.commitPendingChanges());
 
     const auto converted = document.objectAt(loopPath);
@@ -6705,9 +6793,7 @@ void MainWindowLifecycleTests::whileLoopPropertyEditorUsesTypedFields()
     QVERIFY(!converted.contains(QStringLiteral("checkpointBefore")));
     QVERIFY(!converted.contains(QStringLiteral("checkpointAfter")));
     QVERIFY(!converted.contains(QStringLiteral("timeout")));
-    const auto retry = converted.value(QStringLiteral("retry")).toObject();
-    QCOMPARE(retry.size(), 1);
-    QCOMPARE(retry.value(QStringLiteral("maxAttempts")).toInt(), 3);
+    QVERIFY(!converted.contains(QStringLiteral("retry")));
     QCOMPARE(converted.value(QStringLiteral("steps")).toArray().size(), 5);
 }
 

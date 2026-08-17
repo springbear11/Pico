@@ -26,6 +26,8 @@
         <file alias="circle-x.svg">assets/lucide/circle-x.svg</file>
         <file alias="arrow-up.svg">assets/lucide/arrow-up.svg</file>
         <file alias="arrow-down.svg">assets/lucide/arrow-down.svg</file>
+        <file alias="chevrons-up-down.svg">assets/lucide/chevrons-up-down.svg</file>
+        <file alias="chevrons-down-up.svg">assets/lucide/chevrons-down-up.svg</file>
         <file alias="package-search.svg">assets/lucide/package-search.svg</file>
         <file alias="copy-plus.svg">assets/lucide/copy-plus.svg</file>
         <file alias="list-restart.svg">assets/lucide/list-restart.svg</file>
