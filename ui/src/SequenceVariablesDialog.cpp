@@ -40,6 +40,19 @@ QComboBox* comboFor(QTableWidget* table, int row, int column)
     return qobject_cast<QComboBox*>(table->cellWidget(row, column));
 }
 
+void fitComboColumn(QTableWidget* table,
+                    QComboBox* combo,
+                    int column,
+                    int minimumWidth)
+{
+    combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    const int requiredWidth = qMax(minimumWidth,
+                                   combo->sizeHint().width() + 8);
+    if (table->columnWidth(column) < requiredWidth) {
+        table->setColumnWidth(column, requiredWidth);
+    }
+}
+
 QJsonValue typedValue(const QString& text,
                       const QString& type,
                       bool& ok)
@@ -138,8 +151,8 @@ SequenceVariablesDialog::SequenceVariablesDialog(QJsonArray variables,
     header->setSectionResizeMode(QHeaderView::Interactive);
     header->setStretchLastSection(true);
     m_table->setColumnWidth(NameColumn, 145);
-    m_table->setColumnWidth(TypeColumn, 100);
-    m_table->setColumnWidth(ScopeColumn, 105);
+    m_table->setColumnWidth(TypeColumn, 124);
+    m_table->setColumnWidth(ScopeColumn, 132);
     for (int column = SharedValueColumn; column <= Uut4Column; ++column) {
         m_table->setColumnWidth(column, 105);
     }
@@ -220,6 +233,7 @@ void SequenceVariablesDialog::appendVariable(const QJsonObject& variable)
                                    .toString(QStringLiteral("string"));
     type->setCurrentIndex(qMax(0, type->findData(requestedType)));
     m_table->setCellWidget(row, TypeColumn, type);
+    fitComboColumn(m_table, type, TypeColumn, 124);
 
     auto* scope = new QComboBox(m_table);
     scope->setObjectName(QStringLiteral("sequenceVariableScope"));
@@ -229,6 +243,7 @@ void SequenceVariablesDialog::appendVariable(const QJsonObject& variable)
                                     .toString(QStringLiteral("shared"));
     scope->setCurrentIndex(qMax(0, scope->findData(requestedScope)));
     m_table->setCellWidget(row, ScopeColumn, scope);
+    fitComboColumn(m_table, scope, ScopeColumn, 132);
 
     m_table->setItem(row, SharedValueColumn,
                      new QTableWidgetItem(displayValue(variable.value(QStringLiteral("value")))));

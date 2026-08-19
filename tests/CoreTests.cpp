@@ -209,6 +209,77 @@ MeasurementResult makeMeasurement(const QString& name,
     return measurement;
 }
 
+ExecutionPlan stopAlwaysRunPlan()
+{
+    ExecutionPlan plan;
+    plan.id = QStringLiteral("plan:stop-always-run");
+
+    ExecNode wait;
+    wait.id = QStringLiteral("blocking-wait");
+    wait.displayName = QStringLiteral("Blocking Wait");
+    wait.kind = ExecNodeKind::Wait;
+    wait.phase = ExecutionPhase::Main;
+    wait.payload.insert(QStringLiteral("ms"), 5000);
+    plan.addNode(wait);
+
+    ExecNode recovery;
+    recovery.id = QStringLiteral("recovery");
+    recovery.displayName = QStringLiteral("Recovery");
+    recovery.kind = ExecNodeKind::Action;
+    recovery.phase = ExecutionPhase::Main;
+    recovery.alwaysRun = true;
+    recovery.payload.insert(QStringLiteral("moduleId"),
+                            QStringLiteral("test.multi-uut-lifecycle"));
+    recovery.payload.insert(QStringLiteral("function"),
+                            QStringLiteral("recover"));
+    plan.addNode(recovery);
+
+    ExecNode tail;
+    tail.id = QStringLiteral("ordinary-tail");
+    tail.displayName = QStringLiteral("Ordinary Tail");
+    tail.kind = ExecNodeKind::Action;
+    tail.phase = ExecutionPhase::Main;
+    tail.payload.insert(QStringLiteral("moduleId"),
+                        QStringLiteral("test.multi-uut-lifecycle"));
+    tail.payload.insert(QStringLiteral("function"),
+                        QStringLiteral("ordinary-tail"));
+    plan.addNode(tail);
+
+    ExecNode cleanup;
+    cleanup.id = QStringLiteral("cleanup");
+    cleanup.displayName = QStringLiteral("Cleanup");
+    cleanup.kind = ExecNodeKind::Action;
+    cleanup.phase = ExecutionPhase::Cleanup;
+    cleanup.alwaysRun = true;
+    cleanup.payload.insert(QStringLiteral("moduleId"),
+                           QStringLiteral("test.multi-uut-lifecycle"));
+    cleanup.payload.insert(QStringLiteral("function"),
+                           QStringLiteral("cleanup"));
+    plan.addNode(cleanup);
+
+    plan.addEdge({QStringLiteral("wait-to-recovery"),
+                  wait.id,
+                  recovery.id,
+                  EdgeKind::Control,
+                  EdgeTrigger::Finally,
+                  {},
+                  0});
+    plan.addEdge({QStringLiteral("recovery-to-tail"),
+                  recovery.id,
+                  tail.id,
+                  EdgeKind::Control,
+                  EdgeTrigger::OnSuccess,
+                  {},
+                  0});
+
+    CleanupRegion region;
+    region.id = QStringLiteral("stop-cleanup");
+    region.entryNodes = {cleanup.id};
+    region.triggers = {CleanupReason::UserStop, CleanupReason::UserAbort};
+    plan.cleanupRegions.push_back(region);
+    return plan;
+}
+
 class EchoModule final : public IModule {
 public:
     ModuleId moduleId() const override
@@ -734,6 +805,8 @@ private slots:
     void sequenceCompilerRejectsCrossParentResourceRegion();
     void sequenceCompilerRejectsIncompleteResourceRegion();
     void executionSessionStopRunsCleanupOnly();
+    void executionSessionGracefulStopRunsAlwaysRunBeforeCleanup();
+    void executionSessionAbortSkipsMainAlwaysRun();
     void alwaysRunRecoveryRunsAfterStopUutAndAllowsCleanup();
     void cleanupKindOutsideCleanupGroupIsRejected();
     void testItemAlwaysRunRecoveryWaitsForJudgmentAndAllowsCleanup();
@@ -4960,6 +5033,67 @@ void CoreTests::executionSessionStopRunsCleanupOnly()
     QVERIFY(report.sessionHasError);
     QCOMPARE(report.state, ExecutionState::CompletedWithError);
     QCOMPARE(report.sessionSteps.first().outcome, NodeOutcome::Passed);
+}
+
+void CoreTests::executionSessionGracefulStopRunsAlwaysRunBeforeCleanup()
+{
+    auto stopToken = std::make_shared<StopToken>();
+    ExecutionSession session(stopAlwaysRunPlan(), stopToken);
+    auto module = std::make_shared<MultiUutLifecycleModule>();
+    QVERIFY(session.registerModule(module));
+    session.addUut(QStringLiteral("UUT-1"));
+
+    ExecutionSessionResult result;
+    std::thread runner([&] { result = session.run(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    stopToken->requestStop(StopMode::Graceful);
+    runner.join();
+
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(result.state, ExecutionState::CompletedWithError);
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.outcomeOf(QStringLiteral("blocking-wait")),
+             NodeOutcome::Skipped);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("recovery")), NodeOutcome::Passed);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("ordinary-tail")),
+             NodeOutcome::Skipped);
+    QCOMPARE(session.snapshot().sessionExecution.outcomeOf(
+                 QStringLiteral("cleanup")),
+             NodeOutcome::Passed);
+    QCOMPARE(module->calls,
+             QVector<QString>({QStringLiteral("recover:UUT-1"),
+                               QStringLiteral("cleanup:")}));
+}
+
+void CoreTests::executionSessionAbortSkipsMainAlwaysRun()
+{
+    auto stopToken = std::make_shared<StopToken>();
+    ExecutionSession session(stopAlwaysRunPlan(), stopToken);
+    auto module = std::make_shared<MultiUutLifecycleModule>();
+    QVERIFY(session.registerModule(module));
+    session.addUut(QStringLiteral("UUT-1"));
+
+    ExecutionSessionResult result;
+    std::thread runner([&] { result = session.run(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    stopToken->requestStop(StopMode::Abort);
+    runner.join();
+
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(result.state, ExecutionState::Aborted);
+    const auto& uut = session.uuts().first();
+    QCOMPARE(uut.outcomeOf(QStringLiteral("blocking-wait")),
+             NodeOutcome::Skipped);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("recovery")),
+             NodeOutcome::Skipped);
+    QCOMPARE(uut.outcomeOf(QStringLiteral("ordinary-tail")),
+             NodeOutcome::Skipped);
+    QCOMPARE(session.snapshot().sessionExecution.outcomeOf(
+                 QStringLiteral("cleanup")),
+             NodeOutcome::Passed);
+    QCOMPARE(module->calls, QVector<QString>({QStringLiteral("cleanup:")}));
 }
 
 void CoreTests::alwaysRunRecoveryRunsAfterStopUutAndAllowsCleanup()

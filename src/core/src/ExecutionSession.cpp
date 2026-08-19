@@ -455,7 +455,7 @@ ExecutionSessionResult ExecutionSession::run()
     }
 
     while (!phaseComplete(m_sessionExecution, ExecutionPhase::Setup)) {
-        prepareStopIfRequested();
+        prepareStopIfRequested(ExecutionPhase::Setup);
         if (!m_stopToken->isStopRequested()) {
             const auto periodicStep = m_scheduler->pumpPeriodicTaskOnce();
             appendSessionStep(periodicStep);
@@ -476,12 +476,12 @@ ExecutionSessionResult ExecutionSession::run()
             continue;
         }
         pauseAtSafePointIfRequested();
-        prepareStopIfRequested();
+        prepareStopIfRequested(ExecutionPhase::Setup);
         pauseAtBreakpointIfNeeded(
             m_sessionExecution,
             QStringLiteral("session-setup"),
             ExecutionPhase::Setup);
-        prepareStopIfRequested();
+        prepareStopIfRequested(ExecutionPhase::Setup);
         const auto step = m_scheduler->pumpOnce(
             m_sessionExecution, QStringLiteral("session-setup"), ExecutionPhase::Setup);
         appendSessionStep(step);
@@ -497,7 +497,7 @@ ExecutionSessionResult ExecutionSession::run()
     }
 
     // A stop can be requested before run() or while an empty Setup phase is crossed.
-    prepareStopIfRequested();
+    prepareStopIfRequested(ExecutionPhase::Setup);
 
     const bool setupComplete = phaseComplete(m_sessionExecution, ExecutionPhase::Setup);
     const bool setupHasError = phaseHasError(m_sessionExecution, ExecutionPhase::Setup);
@@ -514,7 +514,7 @@ ExecutionSessionResult ExecutionSession::run()
 
     const bool runMain = setupComplete && !setupHasError && !m_stopToken->isStopRequested();
     while (runMain) {
-        prepareStopIfRequested();
+        prepareStopIfRequested(ExecutionPhase::Main);
         const auto periodicStep = m_stopToken->isStopRequested()
             ? SchedulerStepResult{}
             : m_scheduler->pumpPeriodicTaskOnce();
@@ -545,7 +545,7 @@ ExecutionSessionResult ExecutionSession::run()
             }
         }
         pauseAtSafePointIfRequested();
-        prepareStopIfRequested();
+        prepareStopIfRequested(ExecutionPhase::Main);
         bool progressed = periodicStep.progressed;
         for (auto& uut : m_uuts) {
             if (uutComplete(uut)) {
@@ -555,14 +555,14 @@ ExecutionSessionResult ExecutionSession::run()
                 break;
             }
             pauseAtSafePointIfRequested();
-            prepareStopIfRequested();
+            prepareStopIfRequested(ExecutionPhase::Main);
             if (!m_stopToken->isStopRequested()) {
                 const auto periodicUutStep = m_scheduler->pumpPeriodicTaskOnce();
                 appendSessionStep(periodicUutStep);
                 progressed = progressed || periodicUutStep.progressed;
             }
             pauseAtBreakpointIfNeeded(uut);
-            prepareStopIfRequested();
+            prepareStopIfRequested(ExecutionPhase::Main);
             auto step = m_scheduler->pumpOnce(
                 uut, QStringLiteral("root"), ExecutionPhase::Main);
             appendUutStep(uut.uutId, step);
@@ -602,7 +602,7 @@ ExecutionSessionResult ExecutionSession::run()
         m_scheduler->activateAllCleanup(m_sessionExecution);
 
         while (!phaseComplete(m_sessionExecution, ExecutionPhase::Cleanup)) {
-            prepareStopIfRequested();
+            prepareStopIfRequested(ExecutionPhase::Cleanup);
             if (m_executionControl->state() == ExecutionControlState::PauseRequested &&
                 m_scheduler->hasPendingRequestForUut(m_sessionExecution.uutId)) {
                 const auto step = m_scheduler->pumpPendingRequestOnce(
@@ -619,7 +619,7 @@ ExecutionSessionResult ExecutionSession::run()
                 m_sessionExecution,
                 QStringLiteral("session-cleanup"),
                 ExecutionPhase::Cleanup);
-            prepareStopIfRequested();
+            prepareStopIfRequested(ExecutionPhase::Cleanup);
             const auto step = m_scheduler->pumpOnce(
                 m_sessionExecution,
                 QStringLiteral("session-cleanup"),
@@ -869,13 +869,23 @@ QVector<UutExecution*> ExecutionSession::uutPointers()
     return pointers;
 }
 
-void ExecutionSession::prepareStopIfRequested()
+void ExecutionSession::prepareStopIfRequested(ExecutionPhase activePhase)
 {
-    if (!m_stopToken->isStopRequested() || m_stopPrepared) {
+    if (!m_stopToken->isStopRequested()) {
         return;
     }
 
-    m_state = m_stopToken->requestedMode() == StopMode::Abort
+    const auto stopMode = m_stopToken->requestedMode();
+    if (m_stopPrepared &&
+        (m_preparedStopMode == StopMode::Abort ||
+         stopMode == m_preparedStopMode)) {
+        return;
+    }
+
+    const bool firstPreparation = !m_stopPrepared;
+    const bool aborting = stopMode == StopMode::Abort;
+
+    m_state = aborting
         ? ExecutionState::Aborted
         : ExecutionState::Stopping;
     publishSessionState(m_state == ExecutionState::Aborted
@@ -886,17 +896,20 @@ void ExecutionSession::prepareStopIfRequested()
         QStringLiteral("session-setup"),
         ExecutionPhase::Setup,
         QStringLiteral("skipped after session stop"),
-        true);
+        aborting || activePhase != ExecutionPhase::Setup);
     for (auto& uut : m_uuts) {
         m_scheduler->skipPendingNonAlwaysRun(
             uut,
             QStringLiteral("root"),
             ExecutionPhase::Main,
             QStringLiteral("skipped after session stop"),
-            true);
+            aborting || activePhase != ExecutionPhase::Main);
     }
-    m_scheduler->activateAllCleanup(m_sessionExecution);
+    if (firstPreparation) {
+        m_scheduler->activateAllCleanup(m_sessionExecution);
+    }
     m_stopPrepared = true;
+    m_preparedStopMode = stopMode;
 }
 
 void ExecutionSession::pauseAtSafePointIfRequested()

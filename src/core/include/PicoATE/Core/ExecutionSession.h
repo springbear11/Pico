@@ -68,7 +68,7 @@ private:
     bool allUutsComplete() const;
     bool uutComplete(const UutExecution& uut) const;
     QVector<UutExecution*> uutPointers();
-    void prepareStopIfRequested();
+    void prepareStopIfRequested(ExecutionPhase activePhase);
     void pauseAtSafePointIfRequested();
     void pauseAtBreakpointIfNeeded(
         UutExecution& execution,
@@ -101,6 +101,7 @@ private:
     std::shared_ptr<StopToken> m_stopToken;
     std::shared_ptr<ExecutionControl> m_executionControl;
     bool m_stopPrepared = false;
+    StopMode m_preparedStopMode = StopMode::Graceful;
     QSet<UutId> m_publishedCompletedUuts;
     QSet<QString> m_breakpointResumeGuards;
     DebugStepMode m_activeDebugStepMode = DebugStepMode::None;

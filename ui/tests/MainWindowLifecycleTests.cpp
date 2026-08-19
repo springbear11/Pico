@@ -2171,6 +2171,8 @@ void MainWindowLifecycleTests::sequenceVariablesToolbarEditsPerUutValuesAndFeeds
         auto* scope = qobject_cast<QComboBox*>(table->cellWidget(0, 2));
         QVERIFY(type);
         QVERIFY(scope);
+        QVERIFY(type->width() >= type->sizeHint().width());
+        QVERIFY(scope->width() >= scope->sizeHint().width());
         type->setCurrentIndex(type->findData(QStringLiteral("hex")));
         scope->setCurrentIndex(scope->findData(QStringLiteral("perUut")));
         table->item(0, 4)->setText(QStringLiteral("0x101"));
