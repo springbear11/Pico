@@ -112,6 +112,10 @@ public:
                       const QJsonValue& value);
     bool replaceItemObject(const SequenceItemPath& path,
                            QJsonObject object);
+    bool replaceMainTopLevelStepById(const QString& id,
+                                     QJsonObject step,
+                                     SequenceItemPath* insertedPath = nullptr,
+                                     QString* errorMessage = nullptr);
     QString pendingResourceRegionId() const;
     bool placeNextResourceRegionBoundary(const SequenceItemPath& path,
                                          const QString& resourceId,

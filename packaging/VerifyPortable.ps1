@@ -38,6 +38,7 @@ $requiredFiles = @(
     'PicoATE.UI.exe',
     'PicoATECore.dll',
     'PicoATE.NativeHost.exe',
+    'PicoATE.RegisterImporter.exe',
     'Qt6Core.dll',
     'Qt6Gui.dll',
     'Qt6Widgets.dll',

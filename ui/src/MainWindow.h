@@ -20,6 +20,7 @@ class QLineEdit;
 class QLabel;
 class QMenu;
 class QProgressBar;
+class QProcess;
 class QResizeEvent;
 class QSortFilterProxyModel;
 class QSpinBox;
@@ -106,6 +107,7 @@ private:
     bool saveStation();
     bool saveStationAs();
     void editSequenceVariables();
+    void importRegisterConfiguration();
     void addSequenceStep();
     void deleteSequenceStep();
     void copySequenceSteps();
@@ -227,6 +229,7 @@ private:
     QAction* m_pasteStepAction = nullptr;
     QAction* m_findFlowFieldAction = nullptr;
     QAction* m_sequenceVariablesAction = nullptr;
+    QAction* m_importRegisterConfigAction = nullptr;
     QAction* m_wrapTestItemAction = nullptr;
     QAction* m_enableStepsAction = nullptr;
     QAction* m_disableStepsAction = nullptr;
@@ -258,6 +261,7 @@ private:
     QAction* m_scanPluginsAction = nullptr;
     QAction* m_resetLayoutAction = nullptr;
     QThread* m_pluginScanThread = nullptr;
+    QProcess* m_registerImportProcess = nullptr;
     QMenu* m_recentSequenceMenu = nullptr;
     QMenu* m_recentStationMenu = nullptr;
     QLineEdit* m_sequencePath = nullptr;

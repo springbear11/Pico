@@ -467,11 +467,13 @@ void appendStepCsv(QByteArray& csv,
 struct PdfDetailRow {
     QStringList cells;
     PicoATE::Core::NodeOutcome outcome = PicoATE::Core::NodeOutcome::Unknown;
+    int depth = 0;
 };
 
 void appendStepPdf(QVector<PdfDetailRow>& rows,
                    const PicoATE::Core::StepReport& step,
-                   int& sequenceNumber)
+                   int& sequenceNumber,
+                   int depth)
 {
     const auto& measurements = !step.measurements.isEmpty()
         ? step.measurements
@@ -480,16 +482,19 @@ void appendStepPdf(QVector<PdfDetailRow>& rows,
                : step.attempts.constLast().measurements);
     if (step.resultRecording) {
         if (measurements.isEmpty()) {
-            rows.push_back({reportCells(step, nullptr, sequenceNumber++), step.outcome});
+            rows.push_back({reportCells(step, nullptr, sequenceNumber++),
+                            step.outcome,
+                            depth});
         } else {
             for (const auto& measurement : measurements) {
                 rows.push_back({reportCells(step, &measurement, sequenceNumber++),
-                                step.outcome});
+                                step.outcome,
+                                depth});
             }
         }
     }
     for (const auto& child : step.children) {
-        appendStepPdf(rows, child, sequenceNumber);
+        appendStepPdf(rows, child, sequenceNumber, depth + 1);
     }
 }
 
@@ -500,17 +505,17 @@ QVector<PdfDetailRow> pdfDetailRows(
     int sequenceNumber = 1;
     for (const auto& step : report.sessionSteps) {
         if (step.phase == PicoATE::Core::ExecutionPhase::Setup) {
-            appendStepPdf(rows, step, sequenceNumber);
+            appendStepPdf(rows, step, sequenceNumber, 0);
         }
     }
     for (const auto& uut : report.uuts) {
         for (const auto& step : uut.steps) {
-            appendStepPdf(rows, step, sequenceNumber);
+            appendStepPdf(rows, step, sequenceNumber, 0);
         }
     }
     for (const auto& step : report.sessionSteps) {
         if (step.phase == PicoATE::Core::ExecutionPhase::Cleanup) {
-            appendStepPdf(rows, step, sequenceNumber);
+            appendStepPdf(rows, step, sequenceNumber, 0);
         }
     }
     return rows;
@@ -522,6 +527,124 @@ QFont reportPdfFont(double pointSize, bool bold = false)
     font.setPointSizeF(pointSize);
     font.setWeight(bold ? QFont::DemiBold : QFont::Normal);
     return font;
+}
+
+QString normalizedPdfText(QString value)
+{
+    value.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    value.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    return value.simplified();
+}
+
+QStringList wrapPdfText(const QString& value,
+                        const QFont& font,
+                        int availableWidth)
+{
+    QString remaining = normalizedPdfText(value);
+    if (remaining.isEmpty()) {
+        return {QStringLiteral("-")};
+    }
+
+    const QFontMetrics metrics(font);
+    const int width = qMax(1, availableWidth);
+    QStringList lines;
+    while (!remaining.isEmpty()) {
+        if (metrics.horizontalAdvance(remaining) <= width) {
+            lines.push_back(remaining);
+            break;
+        }
+
+        int low = 1;
+        int high = remaining.size();
+        while (low < high) {
+            const int middle = (low + high + 1) / 2;
+            if (metrics.horizontalAdvance(remaining.left(middle)) <= width) {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+
+        int consumed = qMax(1, low);
+        int wordBoundary = -1;
+        for (int index = consumed - 1; index > consumed / 2; --index) {
+            if (remaining[index].isSpace()) {
+                wordBoundary = index;
+                break;
+            }
+        }
+        if (wordBoundary > 0) {
+            consumed = wordBoundary;
+        }
+
+        auto line = remaining.left(consumed).trimmed();
+        if (line.isEmpty()) {
+            line = remaining.left(1);
+            consumed = 1;
+        }
+        lines.push_back(line);
+        remaining.remove(0, consumed);
+        remaining = remaining.trimmed();
+    }
+    return lines;
+}
+
+struct PdfFittedText {
+    QFont font;
+    QStringList lines;
+};
+
+PdfFittedText fitPdfText(const QString& value,
+                         qreal availableWidth,
+                         double maximumPointSize = 7.0,
+                         double minimumPointSize = 5.25,
+                         int maximumLines = 2,
+                         bool bold = false)
+{
+    const int width = qMax(1, qFloor(availableWidth));
+    PdfFittedText smallest;
+    for (double pointSize = maximumPointSize;
+         pointSize >= minimumPointSize - 0.01;
+         pointSize -= 0.25) {
+        PdfFittedText candidate;
+        candidate.font = reportPdfFont(pointSize, bold);
+        candidate.lines = wrapPdfText(value, candidate.font, width);
+        smallest = candidate;
+        if (candidate.lines.size() <= maximumLines) {
+            return candidate;
+        }
+    }
+
+    if (smallest.lines.size() > maximumLines) {
+        QStringList visible = smallest.lines.mid(0, maximumLines);
+        const auto remaining = smallest.lines.mid(maximumLines - 1).join(QLatin1Char(' '));
+        visible[maximumLines - 1] = QFontMetrics(smallest.font).elidedText(
+            remaining,
+            Qt::ElideRight,
+            width);
+        smallest.lines = std::move(visible);
+    }
+    return smallest;
+}
+
+void drawPdfFittedText(QPainter& painter,
+                       const QRectF& rect,
+                       const PdfFittedText& fitted,
+                       const QColor& color,
+                       Qt::Alignment horizontalAlignment)
+{
+    painter.setFont(fitted.font);
+    painter.setPen(color);
+    const QFontMetrics metrics(fitted.font);
+    const qreal lineHeight = metrics.height();
+    const qreal textHeight = lineHeight * fitted.lines.size();
+    qreal top = rect.center().y() - textHeight / 2.0;
+    for (const auto& line : fitted.lines) {
+        painter.drawText(QRectF(rect.left(), top, rect.width(), lineHeight),
+                         horizontalAlignment | Qt::AlignVCenter,
+                         line);
+        top += lineHeight;
+    }
 }
 
 void drawPdfText(QPainter& painter,
@@ -701,7 +824,7 @@ qreal drawPdfSummary(QPainter& painter,
 
 QVector<qreal> pdfColumnWidths(qreal width)
 {
-    const QVector<qreal> factors = {0.05, 0.26, 0.14, 0.12,
+    const QVector<qreal> factors = {0.05, 0.30, 0.10, 0.12,
                                     0.12, 0.16, 0.07, 0.08};
     QVector<qreal> widths;
     widths.reserve(factors.size());
@@ -709,6 +832,79 @@ QVector<qreal> pdfColumnWidths(qreal width)
         widths.push_back(width * factor);
     }
     return widths;
+}
+
+qreal pdfHierarchyIndent(const PdfDetailRow& row, qreal columnWidth)
+{
+    if (row.depth <= 0) {
+        return 0.0;
+    }
+    return qMin<qreal>(row.depth * 13.0, columnWidth * 0.35);
+}
+
+PdfFittedText pdfTableCellLayout(const PdfDetailRow& row,
+                                 int column,
+                                 qreal columnWidth)
+{
+    const auto value = column < row.cells.size() ? row.cells[column] : QString{};
+    const auto indentation = column == 1
+        ? pdfHierarchyIndent(row, columnWidth)
+        : 0.0;
+    return fitPdfText(value.trimmed().isEmpty() ? QStringLiteral("-") : value,
+                      columnWidth - 12.0 - indentation);
+}
+
+qreal pdfTableRowHeight(const PdfDetailRow& row,
+                        const QVector<qreal>& widths)
+{
+    constexpr qreal minimumHeight = 30.0;
+    constexpr qreal verticalPadding = 8.0;
+    qreal requiredHeight = minimumHeight;
+    for (const int column : {1, 2, 3, 4, 5}) {
+        if (column >= widths.size()) {
+            continue;
+        }
+        const auto fitted = pdfTableCellLayout(row, column, widths[column]);
+        requiredHeight = qMax(
+            requiredHeight,
+            static_cast<qreal>(QFontMetrics(fitted.font).height() *
+                               fitted.lines.size()) + verticalPadding);
+    }
+    return qCeil(requiredHeight);
+}
+
+struct PdfPageSlice {
+    int firstRow = 0;
+    int rowCount = 0;
+};
+
+QVector<PdfPageSlice> paginatePdfRows(const QVector<qreal>& rowHeights,
+                                      qreal firstPageHeight,
+                                      qreal continuedPageHeight)
+{
+    QVector<PdfPageSlice> pages;
+    int row = 0;
+    bool firstPage = true;
+    do {
+        const auto availableHeight = qMax(
+            1.0,
+            firstPage ? firstPageHeight : continuedPageHeight);
+        PdfPageSlice page;
+        page.firstRow = row;
+        qreal usedHeight = 0.0;
+        while (row < rowHeights.size()) {
+            const auto rowHeight = rowHeights[row];
+            if (page.rowCount > 0 && usedHeight + rowHeight > availableHeight) {
+                break;
+            }
+            usedHeight += rowHeight;
+            ++page.rowCount;
+            ++row;
+        }
+        pages.push_back(page);
+        firstPage = false;
+    } while (row < rowHeights.size());
+    return pages;
 }
 
 void drawPdfTableHeader(QPainter& painter,
@@ -752,13 +948,13 @@ void drawPdfTableRow(QPainter& painter,
                      qreal y,
                      const QVector<qreal>& widths,
                      const PdfDetailRow& row,
+                     qreal height,
                      bool alternate)
 {
     const QColor ink(QStringLiteral("#172033"));
     const QColor muted(QStringLiteral("#667085"));
     const QColor border(QStringLiteral("#DDE3EA"));
     const QColor alternateColor(QStringLiteral("#F8FAFC"));
-    constexpr qreal height = 30.0;
     const auto totalWidth = std::accumulate(widths.cbegin(), widths.cend(), 0.0);
     painter.fillRect(QRectF(x, y, totalWidth, height),
                      alternate ? alternateColor : Qt::white);
@@ -782,7 +978,7 @@ void drawPdfTableRow(QPainter& painter,
             }
             const auto badgeWidth = qMin(widths[column] - 14.0, 76.0);
             const QRectF badge(left + (widths[column] - badgeWidth) / 2.0,
-                               y + 5.0,
+                               y + (height - 20.0) / 2.0,
                                badgeWidth,
                                20.0);
             painter.setPen(Qt::NoPen);
@@ -793,12 +989,28 @@ void drawPdfTableRow(QPainter& painter,
             const auto alignment = column == 1 || column == 2
                 ? Qt::AlignLeft | Qt::AlignVCenter
                 : Qt::AlignCenter;
-            drawPdfText(painter,
-                        QRectF(left, y, widths[column], height),
-                        value.trimmed().isEmpty() ? QStringLiteral("-") : value,
-                        7.0,
-                        value.trimmed().isEmpty() ? muted : ink,
-                        alignment);
+            if (column >= 1 && column <= 5) {
+                const auto indentation = column == 1
+                    ? pdfHierarchyIndent(row, widths[column])
+                    : 0.0;
+                const auto fitted = pdfTableCellLayout(row, column, widths[column]);
+                drawPdfFittedText(
+                    painter,
+                    QRectF(left + 6.0 + indentation,
+                           y,
+                           widths[column] - 12.0 - indentation,
+                           height),
+                    fitted,
+                    value.trimmed().isEmpty() ? muted : ink,
+                    alignment & (Qt::AlignLeft | Qt::AlignHCenter | Qt::AlignRight));
+            } else {
+                drawPdfText(painter,
+                            QRectF(left, y, widths[column], height),
+                            value.trimmed().isEmpty() ? QStringLiteral("-") : value,
+                            7.0,
+                            value.trimmed().isEmpty() ? muted : ink,
+                            alignment);
+            }
         }
         left += widths[column];
     }
@@ -1086,7 +1298,6 @@ ReportExportResult ReportExporter::savePdf(
         const auto pageSize = painter.viewport().size();
         constexpr qreal margin = 54.0;
         constexpr qreal tableHeaderHeight = 32.0;
-        constexpr qreal rowHeight = 30.0;
         constexpr qreal bottom = 54.0;
         const auto tableWidth = pageSize.width() - margin * 2.0;
         const auto widths = pdfColumnWidths(tableWidth);
@@ -1100,18 +1311,17 @@ ReportExportResult ReportExporter::savePdf(
         const auto firstTableY = firstSummaryBottom + 36.0;
         const auto continuedTableY = firstHeaderBottom + 34.0;
         const auto usableBottom = pageSize.height() - bottom;
-        const auto capacity = [&](qreal tableY) {
-            return qMax(0, qFloor((usableBottom - tableY - tableHeaderHeight) /
-                                  rowHeight));
-        };
-        const auto firstCapacity = capacity(firstTableY);
-        const auto continuedCapacity = qMax(1, capacity(continuedTableY));
-        const auto remaining = qMax(0, details.size() - firstCapacity);
-        const auto pageCount = 1 +
-            (remaining == 0 ? 0 : (remaining + continuedCapacity - 1) /
-                                      continuedCapacity);
+        QVector<qreal> rowHeights;
+        rowHeights.reserve(details.size());
+        for (const auto& detail : details) {
+            rowHeights.push_back(pdfTableRowHeight(detail, widths));
+        }
+        const auto pages = paginatePdfRows(
+            rowHeights,
+            usableBottom - firstTableY - tableHeaderHeight,
+            usableBottom - continuedTableY - tableHeaderHeight);
+        const auto pageCount = pages.size();
 
-        int detailIndex = 0;
         for (int page = 1; page <= pageCount; ++page) {
             if (page > 1 && !writer.newPage()) {
                 painter.end();
@@ -1138,15 +1348,16 @@ ReportExportResult ReportExporter::savePdf(
             cursorY += 26.0;
             drawPdfTableHeader(painter, margin, cursorY, widths);
             cursorY += tableHeaderHeight;
-            const auto pageCapacity = page == 1 ? firstCapacity : continuedCapacity;
-            for (int row = 0;
-                 row < pageCapacity && detailIndex < details.size();
-                 ++row, ++detailIndex) {
+            const auto& rows = pages[page - 1];
+            for (int offset = 0; offset < rows.rowCount; ++offset) {
+                const int detailIndex = rows.firstRow + offset;
+                const auto rowHeight = rowHeights[detailIndex];
                 drawPdfTableRow(painter,
                                 margin,
                                 cursorY,
                                 widths,
                                 details[detailIndex],
+                                rowHeight,
                                 detailIndex % 2 != 0);
                 cursorY += rowHeight;
             }

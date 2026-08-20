@@ -16,6 +16,7 @@
         <file alias="redo-2.svg">assets/lucide/redo-2.svg</file>
         <file alias="list-plus.svg">assets/lucide/list-plus.svg</file>
         <file alias="variable.svg">assets/lucide/variable.svg</file>
+        <file alias="file-spreadsheet.svg">assets/lucide/file-spreadsheet.svg</file>
         <file alias="copy.svg">assets/lucide/copy.svg</file>
         <file alias="clipboard-paste.svg">assets/lucide/clipboard-paste.svg</file>
         <file alias="combine.svg">assets/lucide/combine.svg</file>

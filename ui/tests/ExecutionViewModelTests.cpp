@@ -445,6 +445,7 @@ private slots:
     void sequenceDocumentAddsMissingStandardGroups();
     void crossLoopSequenceUsesStandardLifecycleGroups();
     void sequenceDocumentReplacesItemAtomically();
+    void sequenceDocumentReplacesMainRegisterConfigAtomically();
     void sequenceDocumentUndoRedoTracksCleanState();
     void sequenceDocumentRelocatesAcrossShiftedParentPaths();
     void sequenceDocumentRelocatesMultipleSiblingsAcrossShiftedParent();
@@ -4859,6 +4860,78 @@ void ExecutionViewModelTests::sequenceDocumentReplacesItemAtomically()
     invalidPath.stepIndices = {9};
     QVERIFY(!document.replaceItemObject(invalidPath, replacement));
     QCOMPARE(document.revision(), revision + 1);
+}
+
+void ExecutionViewModelTests::sequenceDocumentReplacesMainRegisterConfigAtomically()
+{
+    SequenceDocument document;
+    const QJsonObject originalRegisterConfig{
+        {QStringLiteral("id"), QStringLiteral("register_config")},
+        {QStringLiteral("kind"), QStringLiteral("testItem")},
+        {QStringLiteral("name"), QStringLiteral("Old Register Config")},
+        {QStringLiteral("steps"), QJsonArray{}},
+    };
+    const QJsonObject keepStep{
+        {QStringLiteral("id"), QStringLiteral("001")},
+        {QStringLiteral("kind"), QStringLiteral("noop")},
+        {QStringLiteral("name"), QStringLiteral("Keep Me")},
+    };
+    const QJsonObject root{
+        {QStringLiteral("id"), QStringLiteral("register-document")},
+        {QStringLiteral("name"), QStringLiteral("Register Document")},
+        {QStringLiteral("variables"),
+         QJsonArray{QJsonObject{{QStringLiteral("name"), QStringLiteral("CAN_ID")},
+                                {QStringLiteral("type"), QStringLiteral("string")},
+                                {QStringLiteral("value"), QStringLiteral("0x123")}}}},
+        {QStringLiteral("groups"), QJsonArray{
+            QJsonObject{{QStringLiteral("id"), QStringLiteral("setup")},
+                        {QStringLiteral("kind"), QStringLiteral("setup")},
+                        {QStringLiteral("steps"), QJsonArray{}}},
+            QJsonObject{{QStringLiteral("id"), QStringLiteral("main")},
+                        {QStringLiteral("kind"), QStringLiteral("main")},
+                        {QStringLiteral("steps"),
+                         QJsonArray{keepStep, originalRegisterConfig}}},
+            QJsonObject{{QStringLiteral("id"), QStringLiteral("cleanup")},
+                        {QStringLiteral("kind"), QStringLiteral("cleanup")},
+                        {QStringLiteral("steps"), QJsonArray{}}},
+        }},
+    };
+    QVERIFY(document.initializeNew(root));
+    const auto before = document.rootObject();
+
+    QJsonObject replacement{
+        {QStringLiteral("id"), QStringLiteral("ignored-by-api")},
+        {QStringLiteral("kind"), QStringLiteral("testItem")},
+        {QStringLiteral("name"), QStringLiteral("New Register Config")},
+        {QStringLiteral("steps"), QJsonArray{QJsonObject{
+            {QStringLiteral("id"), QStringLiteral("01")},
+            {QStringLiteral("kind"), QStringLiteral("noop")},
+            {QStringLiteral("name"), QStringLiteral("Generated")},
+        }}},
+    };
+    SequenceItemPath insertedPath;
+    QString error;
+    QVERIFY2(document.replaceMainTopLevelStepById(
+                 QStringLiteral("register_config"), replacement,
+                 &insertedPath, &error),
+             qPrintable(error));
+    QCOMPARE(insertedPath.groupIndex, 1);
+    QCOMPARE(insertedPath.stepIndices, QVector<int>{0});
+    const auto mainSteps = document.rootObject()
+                               .value(QStringLiteral("groups")).toArray()[1]
+                               .toObject().value(QStringLiteral("steps")).toArray();
+    QCOMPARE(mainSteps.size(), 2);
+    QCOMPARE(mainSteps[0].toObject().value(QStringLiteral("id")).toString(),
+             QStringLiteral("register_config"));
+    QCOMPARE(mainSteps[0].toObject().value(QStringLiteral("name")).toString(),
+             QStringLiteral("New Register Config"));
+    QCOMPARE(mainSteps[1].toObject().value(QStringLiteral("id")).toString(),
+             QStringLiteral("001"));
+    QCOMPARE(document.sequenceVariables().size(), 1);
+
+    QVERIFY(document.undoStack()->canUndo());
+    document.undoStack()->undo();
+    QCOMPARE(document.rootObject(), before);
 }
 
 void ExecutionViewModelTests::sequenceDocumentUndoRedoTracksCleanState()

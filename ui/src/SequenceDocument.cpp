@@ -2123,6 +2123,96 @@ bool SequenceDocument::replaceItemObject(const SequenceItemPath& path,
     return commitRoot(std::move(root), tr("Apply Properties"), {path});
 }
 
+bool SequenceDocument::replaceMainTopLevelStepById(
+    const QString& id,
+    QJsonObject step,
+    SequenceItemPath* insertedPath,
+    QString* errorMessage)
+{
+    if (insertedPath) {
+        *insertedPath = {};
+    }
+    const auto fail = [errorMessage](const QString& message) {
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    };
+    const auto normalizedId = id.trimmed();
+    if (m_root.isEmpty() || normalizedId.isEmpty() || step.isEmpty()) {
+        return fail(tr("A loaded sequence, replacement ID, and TestItem are required"));
+    }
+
+    auto root = m_root;
+    auto groups = root.value(QStringLiteral("groups")).toArray();
+    int mainGroupIndex = -1;
+    for (int groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+        if (!groups[groupIndex].isObject()) {
+            continue;
+        }
+        const auto group = groups[groupIndex].toObject();
+        const auto kind = normalizedGroupKind(group);
+        if (kind == QStringLiteral("main")) {
+            if (mainGroupIndex >= 0) {
+                return fail(tr("The sequence contains more than one Main group"));
+            }
+            mainGroupIndex = groupIndex;
+            continue;
+        }
+        const auto otherSteps = group.value(QStringLiteral("steps")).toArray();
+        for (const auto& value : otherSteps) {
+            if (value.isObject() &&
+                value.toObject().value(QStringLiteral("id")).toString().trimmed() ==
+                    normalizedId) {
+                return fail(tr("ID '%1' is already used by a top-level Step outside Main")
+                                .arg(normalizedId));
+            }
+        }
+    }
+    if (mainGroupIndex < 0) {
+        return fail(tr("The sequence does not contain a Main group"));
+    }
+
+    step.insert(QStringLiteral("id"), normalizedId);
+    step = canonicalizeStepForUi(std::move(step));
+    if (step.value(QStringLiteral("kind")).toString() !=
+        QStringLiteral("testItem")) {
+        return fail(tr("The imported register configuration must be a TestItem"));
+    }
+
+    auto mainGroup = groups[mainGroupIndex].toObject();
+    const auto existingSteps = mainGroup.value(QStringLiteral("steps")).toArray();
+    QJsonArray replacementSteps;
+    replacementSteps.push_back(step);
+    for (const auto& value : existingSteps) {
+        if (value.isObject() &&
+            value.toObject().value(QStringLiteral("id")).toString().trimmed() ==
+                normalizedId) {
+            continue;
+        }
+        replacementSteps.push_back(value);
+    }
+    mainGroup.insert(QStringLiteral("steps"), replacementSteps);
+    groups[mainGroupIndex] = mainGroup;
+    root.insert(QStringLiteral("groups"), groups);
+
+    const SequenceItemPath path{mainGroupIndex, QVector<int>{0}};
+    if (root == m_root) {
+        if (insertedPath) {
+            *insertedPath = path;
+        }
+        return true;
+    }
+    if (!commitRoot(std::move(root),
+                    tr("Import Register Configuration"), {path})) {
+        return fail(tr("The generated register configuration is unchanged"));
+    }
+    if (insertedPath) {
+        *insertedPath = path;
+    }
+    return true;
+}
+
 QString SequenceDocument::pendingResourceRegionId() const
 {
     for (const auto& location : resourceRegionLocations(m_root)) {

@@ -305,29 +305,55 @@ PicoATE::Core::ExecutionReport pdfReportFixture(int detailCount = 12)
     uut.uutId = QStringLiteral("UUT-1");
     uut.completed = true;
     uut.outcome = NodeOutcome::Passed;
+    QVector<StepReport> generatedSteps;
     for (int index = 0; index < detailCount; ++index) {
         MeasurementResult measurement;
         measurement.name = QStringLiteral("Voltage");
-        measurement.value = 800.0 + index / 100.0;
+        measurement.value = index == 1
+            ? QVariant(QStringLiteral(
+                  "RAW=00 01 02 03 04 05 06 07 08 09; PARSED=BTSN2608130001"))
+            : QVariant(800.0 + index / 100.0);
         measurement.unit = QStringLiteral("V");
-        measurement.hasLowerLimit = true;
+        measurement.hasLowerLimit = index != 1;
         measurement.lowerLimit = 795.0;
-        measurement.hasUpperLimit = true;
+        measurement.hasUpperLimit = index != 1;
         measurement.upperLimit = 805.0;
         measurement.status = MeasurementStatus::Passed;
 
         StepReport step;
         step.stepId = QStringLiteral("step-%1").arg(index + 1);
         step.displayName = index == 0
-            ? QStringLiteral("Open CAN Device")
+            ? QStringLiteral(
+                  "Read and decode charging controller register payload from CAN channel")
             : QStringLiteral("Stable Sample %1").arg(index, 2, 10, QLatin1Char('0'));
         step.kind = ExecNodeKind::Action;
         step.state = ActivationState::Passed;
         step.outcome = NodeOutcome::Passed;
         step.durationMs = 1000 + index;
         step.measurements = {measurement};
-        uut.steps.push_back(std::move(step));
+        generatedSteps.push_back(std::move(step));
     }
+    if (generatedSteps.size() >= 3) {
+        StepReport nested;
+        nested.stepId = QStringLiteral("nested-checks");
+        nested.displayName = QStringLiteral("CAN Readback Verification");
+        nested.kind = ExecNodeKind::TestItem;
+        nested.state = ActivationState::Passed;
+        nested.outcome = NodeOutcome::Passed;
+        nested.resultRecording = false;
+        nested.children = {generatedSteps.takeFirst(), generatedSteps.takeFirst()};
+
+        StepReport parent;
+        parent.stepId = QStringLiteral("communication-checks");
+        parent.displayName = QStringLiteral("Charging Communication Checks");
+        parent.kind = ExecNodeKind::TestItem;
+        parent.state = ActivationState::Passed;
+        parent.outcome = NodeOutcome::Passed;
+        parent.resultRecording = false;
+        parent.children = {std::move(nested), generatedSteps.takeFirst()};
+        uut.steps.push_back(std::move(parent));
+    }
+    uut.steps += std::move(generatedSteps);
     report.uuts = {std::move(uut)};
     return report;
 }
@@ -4346,9 +4372,12 @@ void MainWindowLifecycleTests::newProjectTemplateSavesSequenceAndStationTogether
         QStringLiteral("StationSystem.json"));
     const auto imagesPath = QDir(projectPath).filePath(
         QStringLiteral("images"));
+    const auto registerPath = QDir(projectPath).filePath(
+        QStringLiteral("register"));
     QVERIFY(QFileInfo(sequencePath).isFile());
     QVERIFY(QFileInfo(stationPath).isFile());
     QVERIFY(QFileInfo(imagesPath).isDir());
+    QVERIFY(QFileInfo(registerPath).isDir());
     QCOMPARE(sequence->filePath(), QFileInfo(sequencePath).absoluteFilePath());
     QCOMPARE(station->filePath(), QFileInfo(stationPath).absoluteFilePath());
     QVERIFY(!sequence->isModified());

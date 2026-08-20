@@ -164,6 +164,16 @@ if(TARGET PicoATENativeHost)
     )
 endif()
 
+if(TARGET PicoATERegisterImporter)
+    add_dependencies(PicoATEUi PicoATERegisterImporter)
+    add_custom_command(TARGET PicoATEUi POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:PicoATERegisterImporter>"
+                "$<TARGET_FILE_DIR:PicoATEUi>"
+        COMMENT "Deploying PicoATE.RegisterImporter beside PicoATE.UI"
+    )
+endif()
+
 # The GCAN ECanVci64 vendor DLL was built with Visual Studio 2013 and loads
 # MSVCR120 from the host executable directory on clean production PCs.
 set(PICOATE_GCAN_VS2013_RUNTIME_DLL
@@ -234,6 +244,9 @@ add_custom_target(PicoATEUiPortable
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "$<TARGET_FILE:PicoATENativeHost>"
             "${PICOATE_UI_PORTABLE_DIR}/"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:PicoATERegisterImporter>"
+            "${PICOATE_UI_PORTABLE_DIR}/"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${PICOATE_ROOT_DIR}/templates/bin/$<CONFIG>"
             "${PICOATE_UI_PORTABLE_DIR}/plugins"
@@ -255,7 +268,7 @@ add_custom_target(PicoATEUiPortable
     COMMAND powershell -NoProfile -ExecutionPolicy Bypass
             -File "${PICOATE_ROOT_DIR}/packaging/GeneratePluginRegistry.ps1"
             -PortableDirectory "${PICOATE_UI_PORTABLE_DIR}"
-    DEPENDS PicoATEUi PicoATECore PicoATENativeHost
+    DEPENDS PicoATEUi PicoATECore PicoATENativeHost PicoATERegisterImporter
     COMMENT "Creating a self-contained PicoATE UI folder"
     VERBATIM
 )

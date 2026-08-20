@@ -27,3 +27,27 @@ endif()
 add_dependencies(PicoATECoreTests PicoATEMockHost PicoATEFakeInstrumentHost PicoATENativeHost PicoATETestDllModule PicoATECanExampleModule)
 
 add_test(NAME PicoATECoreTests COMMAND PicoATECoreTests)
+
+add_executable(PicoATERegisterConfigImporterTests
+    RegisterConfigImporterTests.cpp
+    RegisterConfigImporterTests.h
+)
+
+target_link_libraries(PicoATERegisterConfigImporterTests
+    PRIVATE
+        PicoATERegisterImport
+        PicoATECore
+        Qt6::Core
+        Qt6::CorePrivate
+        Qt6::Test
+)
+
+target_compile_features(PicoATERegisterConfigImporterTests PRIVATE cxx_std_20)
+
+set_target_properties(PicoATERegisterConfigImporterTests PROPERTIES
+    AUTOMOC ON
+    FOLDER "Tests/Tools"
+)
+
+add_test(NAME PicoATERegisterConfigImporterTests
+         COMMAND PicoATERegisterConfigImporterTests)

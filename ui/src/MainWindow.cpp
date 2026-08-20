@@ -44,6 +44,7 @@
 #include <QFont>
 #include <QFrame>
 #include <QFormLayout>
+#include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
 #include <QGridLayout>
 #include <QHeaderView>
@@ -65,6 +66,7 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QProgressBar>
+#include <QProcess>
 #include <QPointer>
 #include <QPolygonF>
 #include <QPixmap>
@@ -110,6 +112,7 @@ namespace {
 
 constexpr int MaxRecentFiles = 8;
 const QString StationDiagnosticPrefix = QStringLiteral("Station: ");
+const QString RegisterDirectoryName = QStringLiteral("register");
 
 bool containsSequencePath(const SequenceItemPath& parent,
                           const SequenceItemPath& candidate)
@@ -128,6 +131,216 @@ QIcon toolbarIcon(const char* name)
     return QIcon(QStringLiteral(":/icons/%1.svg")
                      .arg(QString::fromLatin1(name)));
 }
+
+QString registerImporterExecutablePath()
+{
+    const QFileInfo importer(
+        QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral("PicoATE.RegisterImporter.exe")));
+    return importer.exists() && importer.isFile()
+        ? importer.absoluteFilePath()
+        : QString{};
+}
+
+class RegisterWorkbookDialog final : public QDialog
+{
+public:
+    explicit RegisterWorkbookDialog(const QFileInfoList& workbooks,
+                                    const QString& preferredWorkbookPath,
+                                    QWidget* parent = nullptr)
+        : QDialog(parent)
+    {
+        setObjectName(QStringLiteral("registerWorkbookDialog"));
+        setWindowTitle(tr("Import Register Workbook"));
+        setModal(true);
+        setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
+        setAttribute(Qt::WA_TranslucentBackground);
+        setFixedSize(420, 238);
+
+        auto* outerLayout = new QVBoxLayout(this);
+        outerLayout->setContentsMargins(16, 16, 16, 16);
+        outerLayout->setSpacing(0);
+
+        auto* card = new QFrame(this);
+        card->setObjectName(QStringLiteral("registerWorkbookCard"));
+        auto* shadow = new QGraphicsDropShadowEffect(card);
+        shadow->setBlurRadius(30.0);
+        shadow->setOffset(0.0, 8.0);
+        shadow->setColor(QColor(32, 38, 45, 60));
+        card->setGraphicsEffect(shadow);
+        outerLayout->addWidget(card);
+
+        auto* cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(24, 22, 24, 24);
+        cardLayout->setSpacing(12);
+
+        auto* title = new QLabel(tr("Import Register Workbook"), card);
+        title->setObjectName(QStringLiteral("registerWorkbookTitle"));
+        title->setAlignment(Qt::AlignCenter);
+        cardLayout->addWidget(title);
+
+        auto* hint = new QLabel(
+            tr("Select a workbook from the project register folder"), card);
+        hint->setObjectName(QStringLiteral("registerWorkbookHint"));
+        hint->setAlignment(Qt::AlignCenter);
+        cardLayout->addWidget(hint);
+
+        m_workbookCombo = new QComboBox(card);
+        m_workbookCombo->setObjectName(
+            QStringLiteral("registerWorkbookCombo"));
+        m_workbookCombo->setMinimumHeight(40);
+        m_workbookCombo->setSizeAdjustPolicy(
+            QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        int preferredIndex = -1;
+        const auto preferredAbsolutePath = preferredWorkbookPath.trimmed().isEmpty()
+            ? QString{}
+            : QFileInfo(preferredWorkbookPath).absoluteFilePath();
+        const auto preferredFileName =
+            QFileInfo(preferredWorkbookPath).fileName();
+        for (const auto& workbook : workbooks) {
+            m_workbookCombo->addItem(workbook.fileName(),
+                                     workbook.absoluteFilePath());
+            const int comboIndex = m_workbookCombo->count() - 1;
+            if (preferredIndex < 0 &&
+                (!preferredAbsolutePath.isEmpty() &&
+                 workbook.absoluteFilePath().compare(
+                     preferredAbsolutePath, Qt::CaseInsensitive) == 0)) {
+                preferredIndex = comboIndex;
+            } else if (preferredIndex < 0 &&
+                       !preferredFileName.isEmpty() &&
+                       workbook.fileName().compare(
+                           preferredFileName, Qt::CaseInsensitive) == 0) {
+                preferredIndex = comboIndex;
+            }
+            const auto modelIndex = m_workbookCombo->model()->index(
+                comboIndex, 0);
+            m_workbookCombo->model()->setData(
+                modelIndex, Qt::AlignCenter, Qt::TextAlignmentRole);
+            m_workbookCombo->setItemData(
+                comboIndex,
+                QDir::toNativeSeparators(workbook.absoluteFilePath()),
+                Qt::ToolTipRole);
+        }
+        m_workbookCombo->setCurrentIndex(
+            preferredIndex >= 0 ? preferredIndex : 0);
+        cardLayout->addWidget(m_workbookCombo);
+        cardLayout->addStretch();
+
+        auto* buttonRow = new QHBoxLayout;
+        buttonRow->setContentsMargins(0, 0, 0, 0);
+        buttonRow->setSpacing(10);
+        buttonRow->addStretch();
+        auto* importButton = new QPushButton(tr("Import"), card);
+        importButton->setObjectName(
+            QStringLiteral("registerWorkbookImportButton"));
+        importButton->setDefault(true);
+        importButton->setFixedSize(112, 40);
+        buttonRow->addWidget(importButton);
+        auto* cancelButton = new QPushButton(tr("Cancel"), card);
+        cancelButton->setObjectName(
+            QStringLiteral("registerWorkbookCancelButton"));
+        cancelButton->setFixedSize(112, 40);
+        buttonRow->addWidget(cancelButton);
+        cardLayout->addLayout(buttonRow);
+
+        setStyleSheet(QStringLiteral(R"css(
+            QFrame#registerWorkbookCard {
+                background: #ffffff;
+                border: 1px solid #d7dbe0;
+                border-radius: 7px;
+            }
+            QLabel#registerWorkbookTitle {
+                color: #30343a;
+                background: transparent;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            QLabel#registerWorkbookHint {
+                color: #7b828a;
+                background: transparent;
+                font-size: 12px;
+            }
+            QComboBox#registerWorkbookCombo {
+                color: #30343a;
+                background: #f5f6f8;
+                border: 1px solid #c9cdd3;
+                border-radius: 5px;
+                padding: 0 34px 0 14px;
+                selection-background-color: #cfd5dc;
+            }
+            QComboBox#registerWorkbookCombo:hover {
+                background: #ffffff;
+                border-color: #9fa6ae;
+            }
+            QComboBox#registerWorkbookCombo:focus {
+                background: #ffffff;
+                border-color: #686e76;
+            }
+            QComboBox#registerWorkbookCombo::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 32px;
+                border: none;
+                background: transparent;
+            }
+            QComboBox#registerWorkbookCombo::down-arrow {
+                image: url(:/icons/arrow-down.svg);
+                width: 13px;
+                height: 13px;
+            }
+            QComboBox#registerWorkbookCombo QAbstractItemView {
+                color: #30343a;
+                background: #ffffff;
+                border: 1px solid #c9cdd3;
+                selection-color: #202328;
+                selection-background-color: #e2e5e9;
+                outline: none;
+            }
+            QPushButton#registerWorkbookCancelButton,
+            QPushButton#registerWorkbookImportButton {
+                border-radius: 5px;
+                font-weight: 700;
+            }
+            QPushButton#registerWorkbookCancelButton {
+                color: #3d4248;
+                background: #ffffff;
+                border: 1px solid #c9cdd3;
+            }
+            QPushButton#registerWorkbookCancelButton:hover {
+                background: #f2f3f5;
+                border-color: #9fa6ae;
+            }
+            QPushButton#registerWorkbookImportButton {
+                color: #ffffff;
+                background: #34383e;
+                border: 1px solid #34383e;
+            }
+            QPushButton#registerWorkbookImportButton:hover {
+                background: #24272b;
+                border-color: #24272b;
+            }
+            QPushButton#registerWorkbookImportButton:pressed {
+                background: #17191c;
+                border-color: #17191c;
+            }
+        )css"));
+
+        connect(cancelButton, &QPushButton::clicked,
+                this, &QDialog::reject);
+        connect(importButton, &QPushButton::clicked,
+                this, &QDialog::accept);
+    }
+
+    QString selectedWorkbookPath() const
+    {
+        return m_workbookCombo
+            ? m_workbookCombo->currentData().toString()
+            : QString{};
+    }
+
+private:
+    QComboBox* m_workbookCombo = nullptr;
+};
 
 bool writeJsonObjectFile(const QString& filePath,
                          const QJsonObject& object,
@@ -1650,6 +1863,12 @@ void MainWindow::beginShutdown()
     if (m_operatorPromptPresenter) {
         m_operatorPromptPresenter->closeAll();
     }
+    if (m_registerImportProcess) {
+        m_registerImportProcess->disconnect(this);
+        m_registerImportProcess->kill();
+        m_registerImportProcess->waitForFinished(1000);
+        m_registerImportProcess = nullptr;
+    }
 
     // Undo-stack and worker callbacks may otherwise re-enter this window while
     // its child objects are being destroyed.
@@ -1890,6 +2109,16 @@ bool MainWindow::saveNewProjectAs()
         QMessageBox::critical(
             this, tr("Save New Project As"),
             tr("Cannot create the project images folder: %1").arg(imagesPath));
+        return false;
+    }
+    const auto registerPath = QDir(projectPath).filePath(RegisterDirectoryName);
+    if (!QDir().mkpath(registerPath)) {
+        QFile::remove(sequencePath);
+        QFile::remove(stationPath);
+        QMessageBox::critical(
+            this, tr("Save New Project As"),
+            tr("Cannot create the project register folder: %1")
+                .arg(registerPath));
         return false;
     }
     if (!m_sequenceDocument->load(sequencePath) ||
@@ -2183,6 +2412,289 @@ void MainWindow::editSequenceVariables()
     }
     statusBar()->showMessage(tr("Sequence variable draft updated; press Ctrl+S to save"),
                              4000);
+}
+
+void MainWindow::importRegisterConfiguration()
+{
+    if (!m_sequenceDocument || m_sequenceDocument->isEmpty() ||
+        m_registerImportProcess) {
+        return;
+    }
+    if (!resolvePendingStepChanges()) {
+        return;
+    }
+
+    const auto sequencePath = m_sequenceDocument->filePath().trimmed();
+    if (sequencePath.isEmpty()) {
+        QMessageBox::information(
+            this,
+            tr("Save Project First"),
+            tr("Save the new project before importing its Register workbook."));
+        return;
+    }
+
+    QDir projectDirectory = QFileInfo(sequencePath).absoluteDir();
+    QString registerDirectory;
+    for (int depth = 0; depth < 3 && registerDirectory.isEmpty(); ++depth) {
+        const auto children = projectDirectory.entryInfoList(
+            QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+        for (const auto& child : children) {
+            if (child.fileName().compare(RegisterDirectoryName,
+                                         Qt::CaseInsensitive) == 0) {
+                registerDirectory = child.absoluteFilePath();
+                break;
+            }
+        }
+        if (!projectDirectory.cdUp()) {
+            break;
+        }
+    }
+    if (registerDirectory.isEmpty()) {
+        QMessageBox::warning(
+            this,
+            tr("Register Workbook Not Found"),
+            tr("Create a lowercase register folder beside the project files and place an .xlsx or .xlsm workbook in it."));
+        return;
+    }
+
+    QDir workbookDirectory(registerDirectory);
+    auto workbooks = workbookDirectory.entryInfoList(
+        {QStringLiteral("*.xlsx"), QStringLiteral("*.xlsm")},
+        QDir::Files | QDir::Readable,
+        QDir::Name | QDir::IgnoreCase);
+    workbooks.erase(
+        std::remove_if(workbooks.begin(), workbooks.end(),
+                       [](const QFileInfo& workbook) {
+                           return workbook.fileName().startsWith(
+                               QStringLiteral("~$"));
+                       }),
+        workbooks.end());
+    if (workbooks.isEmpty()) {
+        QMessageBox::warning(
+            this,
+            tr("Register Workbook Not Found"),
+            tr("No .xlsx or .xlsm workbook was found in:\n%1")
+                .arg(QDir::toNativeSeparators(registerDirectory)));
+        return;
+    }
+
+    QSettings registerImportSettings;
+    const auto rememberedWorkbookPath = registerImportSettings.value(
+        QStringLiteral("RegisterImport/LastWorkbookPath")).toString();
+    RegisterWorkbookDialog workbookDialog(
+        workbooks, rememberedWorkbookPath, this);
+    if (workbookDialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    const auto workbookPath = workbookDialog.selectedWorkbookPath();
+    if (workbookPath.isEmpty()) {
+        return;
+    }
+    registerImportSettings.setValue(
+        QStringLiteral("RegisterImport/LastWorkbookPath"), workbookPath);
+
+    QStringList modbusDeviceIds;
+    if (m_stationDocument && !m_stationDocument->isEmpty()) {
+        const auto devices = m_stationDocument->rootObject()
+                                 .value(QStringLiteral("devices")).toArray();
+        for (const auto& value : devices) {
+            const auto device = value.toObject();
+            if (!device.value(QStringLiteral("enabled")).toBool(true) ||
+                device.value(QStringLiteral("type")).toString()
+                        .compare(QStringLiteral("MODBUS"), Qt::CaseInsensitive) != 0) {
+                continue;
+            }
+            const auto id = stationDeviceId(device);
+            if (!id.isEmpty() && !modbusDeviceIds.contains(id)) {
+                modbusDeviceIds.push_back(id);
+            }
+        }
+    }
+    QString deviceId = QStringLiteral("MODBUS1");
+    if (modbusDeviceIds.size() == 1) {
+        deviceId = modbusDeviceIds.first();
+    } else if (modbusDeviceIds.size() > 1) {
+        bool accepted = false;
+        deviceId = QInputDialog::getItem(
+            this,
+            tr("Register Target Device"),
+            tr("Modbus device"),
+            modbusDeviceIds,
+            0,
+            false,
+            &accepted);
+        if (!accepted || deviceId.isEmpty()) {
+            return;
+        }
+    }
+
+    const auto importerPath = registerImporterExecutablePath();
+    if (importerPath.isEmpty()) {
+        QMessageBox::critical(
+            this,
+            tr("Register Importer Missing"),
+            tr("PicoATE.RegisterImporter.exe is not available beside PicoATE.UI.exe."));
+        return;
+    }
+
+    auto* process = new QProcess(this);
+    m_registerImportProcess = process;
+    process->setProgram(importerPath);
+    process->setArguments({QStringLiteral("--workbook"),
+                           workbookPath,
+                           QStringLiteral("--device-id"),
+                           deviceId});
+    process->setProcessChannelMode(QProcess::SeparateChannels);
+    process->setProperty("sequencePath", sequencePath);
+    process->setProperty("sequenceRevision",
+                         QVariant::fromValue(m_sequenceDocument->revision()));
+
+    const auto finish = [this, process](bool failedToStart) {
+        if (m_registerImportProcess != process) {
+            return;
+        }
+        m_registerImportProcess = nullptr;
+
+        const auto standardOutput = process->readAllStandardOutput();
+        const auto standardError = QString::fromUtf8(
+            process->readAllStandardError()).trimmed();
+        const auto processError = process->errorString();
+        const auto capturedPath = process->property("sequencePath").toString();
+        const auto capturedRevision =
+            process->property("sequenceRevision").toULongLong();
+        process->deleteLater();
+
+        if (failedToStart) {
+            QMessageBox::critical(
+                this,
+                tr("Register Import Failed"),
+                tr("Unable to start the register importer: %1").arg(processError));
+            updateCommandState();
+            return;
+        }
+
+        QJsonParseError parseError;
+        const auto responseDocument =
+            QJsonDocument::fromJson(standardOutput, &parseError);
+        if (parseError.error != QJsonParseError::NoError ||
+            !responseDocument.isObject()) {
+            QMessageBox::critical(
+                this,
+                tr("Register Import Failed"),
+                tr("The register importer returned an invalid response.%1")
+                    .arg(standardError.isEmpty()
+                             ? QString{}
+                             : QStringLiteral("\n\n") + standardError));
+            updateCommandState();
+            return;
+        }
+
+        const auto response = responseDocument.object();
+        if (!response.value(QStringLiteral("ok")).toBool()) {
+            QStringList messages;
+            for (const auto& value :
+                 response.value(QStringLiteral("errors")).toArray()) {
+                const auto diagnostic = value.toObject();
+                const auto path = diagnostic.value(QStringLiteral("path")).toString();
+                const auto message =
+                    diagnostic.value(QStringLiteral("message")).toString();
+                messages.push_back(path.isEmpty()
+                                       ? message
+                                       : QStringLiteral("%1: %2").arg(path, message));
+            }
+            if (!standardError.isEmpty()) {
+                messages.push_back(standardError);
+            }
+            QMessageBox::warning(
+                this,
+                tr("Register Import Failed"),
+                messages.isEmpty()
+                    ? tr("The register table could not be converted.")
+                    : messages.join(QLatin1Char('\n')));
+            updateCommandState();
+            return;
+        }
+
+        if (!m_sequenceDocument ||
+            QFileInfo(m_sequenceDocument->filePath()).absoluteFilePath() !=
+                QFileInfo(capturedPath).absoluteFilePath() ||
+            m_sequenceDocument->revision() != capturedRevision) {
+            QMessageBox::information(
+                this,
+                tr("Flow Changed"),
+                tr("The Flow changed while the workbook was being converted. Import again to avoid overwriting newer edits."));
+            updateCommandState();
+            return;
+        }
+
+        SequenceItemPath insertedPath;
+        QString errorMessage;
+        if (!m_sequenceDocument->replaceMainTopLevelStepById(
+                QStringLiteral("register_config"),
+                response.value(QStringLiteral("testItem")).toObject(),
+                &insertedPath,
+                &errorMessage)) {
+            QMessageBox::warning(
+                this,
+                tr("Register Import Failed"),
+                errorMessage.isEmpty()
+                    ? tr("The generated TestItem could not be inserted into Main.")
+                    : errorMessage);
+            updateCommandState();
+            return;
+        }
+
+        m_selectedSequencePath = insertedPath;
+        m_selectedSequenceNodePath.clear();
+        QTimer::singleShot(0, this, [this, insertedPath] {
+            if (!m_sequenceTreeView || !m_sequenceTreeModel) {
+                return;
+            }
+            const auto index = m_sequenceTreeModel->indexForPath(insertedPath);
+            if (!index.isValid()) {
+                return;
+            }
+            m_sequenceTreeView->setCurrentIndex(index);
+            m_sequenceTreeView->expand(index);
+            m_sequenceTreeView->scrollTo(index,
+                                         QAbstractItemView::PositionAtTop);
+        });
+
+        QStringList warningMessages;
+        for (const auto& value :
+             response.value(QStringLiteral("warnings")).toArray()) {
+            warningMessages.push_back(
+                value.toObject().value(QStringLiteral("message")).toString());
+        }
+        const auto summary =
+            tr("Imported %1 register parameter(s) from %2. Press Ctrl+S to save.")
+                .arg(response.value(QStringLiteral("parameterCount")).toInt())
+                .arg(QFileInfo(response.value(QStringLiteral("workbook")).toString())
+                         .fileName());
+        statusBar()->showMessage(summary, 12000);
+        if (!warningMessages.isEmpty()) {
+            QMessageBox::information(
+                this,
+                tr("Register Import Warnings"),
+                summary + QStringLiteral("\n\n") +
+                    warningMessages.join(QLatin1Char('\n')));
+        }
+        updateCommandState();
+    };
+
+    connect(process, &QProcess::finished, this,
+            [finish](int, QProcess::ExitStatus) { finish(false); });
+    connect(process, &QProcess::errorOccurred, this,
+            [finish](QProcess::ProcessError error) {
+                if (error == QProcess::FailedToStart) {
+                    finish(true);
+                }
+            });
+    if (m_importRegisterConfigAction) {
+        m_importRegisterConfigAction->setEnabled(false);
+    }
+    statusBar()->showMessage(tr("Importing register workbook..."));
+    process->start();
 }
 
 void MainWindow::addSequenceStep()
@@ -4355,6 +4867,19 @@ void MainWindow::buildActions()
     connect(m_sequenceVariablesAction, &QAction::triggered,
             this, &MainWindow::editSequenceVariables);
 
+    m_importRegisterConfigAction = new QAction(
+        toolbarIcon("file-spreadsheet"),
+        tr("Import Register Table"),
+        this);
+    m_importRegisterConfigAction->setObjectName(
+        QStringLiteral("importRegisterConfigAction"));
+    m_importRegisterConfigAction->setToolTip(
+        tr("Choose a project Register workbook and replace MAIN/register_config"));
+    m_importRegisterConfigAction->setVisible(
+        !registerImporterExecutablePath().isEmpty());
+    connect(m_importRegisterConfigAction, &QAction::triggered,
+            this, &MainWindow::importRegisterConfiguration);
+
     m_wrapTestItemAction = new QAction(
         toolbarIcon("combine"), tr("Wrap in TestItem"), this);
     m_wrapTestItemAction->setObjectName(QStringLiteral("wrapTestItemAction"));
@@ -4601,6 +5126,7 @@ void MainWindow::buildActions()
     editMenu->addSeparator();
     editMenu->addAction(m_addStepAction);
     editMenu->addAction(m_sequenceVariablesAction);
+    editMenu->addAction(m_importRegisterConfigAction);
     editMenu->addAction(m_copyStepAction);
     editMenu->addAction(m_pasteStepAction);
     editMenu->addAction(m_deleteStepAction);
@@ -4620,6 +5146,7 @@ void MainWindow::buildActions()
     runMenu->addAction(m_scanAction);
     toolsMenu->addAction(m_productRoutingAction);
     toolsMenu->addAction(m_scanPluginsAction);
+    toolsMenu->addAction(m_importRegisterConfigAction);
     viewMenu->addAction(m_resetLayoutAction);
 
     mainToolbar->addAction(m_openSequenceAction);
@@ -4721,6 +5248,7 @@ void MainWindow::buildLayout()
     sequenceToolbar->addSeparator();
     sequenceToolbar->addAction(m_addStepAction);
     sequenceToolbar->addAction(m_sequenceVariablesAction);
+    sequenceToolbar->addAction(m_importRegisterConfigAction);
     sequenceToolbar->addAction(m_copyStepAction);
     sequenceToolbar->addAction(m_pasteStepAction);
     sequenceToolbar->addAction(m_wrapTestItemAction);
@@ -5573,6 +6101,12 @@ void MainWindow::updateCommandState()
         canChangeSources && m_sequenceDocument->undoStack()->canRedo());
     m_addStepAction->setEnabled(canChangeSources && hasDocument && hasSelection);
     m_sequenceVariablesAction->setEnabled(canChangeSources && hasDocument);
+    const bool registerImporterAvailable =
+        !registerImporterExecutablePath().isEmpty();
+    m_importRegisterConfigAction->setVisible(registerImporterAvailable);
+    m_importRegisterConfigAction->setEnabled(
+        registerImporterAvailable && canChangeSources && hasDocument &&
+        !m_registerImportProcess);
     const bool hasSelectedSteps = !selectedStepPaths.isEmpty();
     m_deleteStepAction->setEnabled(canChangeSources && hasSelectedSteps);
     m_copyStepAction->setEnabled(canChangeSources && hasSelectedSteps);
