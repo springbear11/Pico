@@ -395,13 +395,31 @@ Plugin::Json pluginDescription()
                  {{"key", "address"}, {"name", "Start Address"}, {"type", "string"}, {"required", true}, {"minimum", 0}, {"maximum", 65535}},
                  {{"key", "values"}, {"name", "Coil Values (JSON Array)"}, {"type", "string"}, {"required", true}, {"description", "Example: [true, false, true]"}}
              })}, {"outputs", Json::array({{{"key", "count"}, {"name", "Written Coil Count"}, {"type", "integer"}}})}},
-            {{"id", "writeMultipleRegisters"}, {"name", "Write Multiple Registers"}, {"description", "FC10"},
+            {{"id", "writeMultipleRegisters"}, {"name", "Write Multiple Registers"},
+             {"description", "FC10; default dataFormat=registers, optionally encode text"},
              {"inputs", Json::array({
                  {{"key", "unitId"}, {"name", "Unit ID"}, {"type", "string"}, {"required", true}, {"minimum", 0}, {"maximum", 255}},
                  {{"key", "address"}, {"name", "Start Address"}, {"type", "string"}, {"required", true}, {"minimum", 0}, {"maximum", 65535}},
-                 {{"key", "values"}, {"name", "Register Values (JSON Array)"}, {"type", "string"}, {"required", true}, {"description", "Example: [1, 100, 65535]"}}
-             })},
-             {"outputs", Json::array({{{"key", "count"}, {"name", "Written Register Count"}, {"type", "integer"}}})}},
+                 {{"key", "dataFormat"}, {"name", "Data Format"}, {"type", "enum"}, {"default", "registers"}, {"options", Json::array({
+                     {{"label", "Registers"}, {"value", "registers"}},
+                     {{"label", "ASCII Text"}, {"value", "asciiText"}},
+                     {{"label", "UTF-8 Text"}, {"value", "utf8Text"}}
+                 })}},
+                 {{"key", "values"}, {"name", "Register Values (JSON Array)"}, {"type", "string"}, {"required", true}, {"description", "Required when dataFormat=registers. Example: [1, 100, 0xFFFF]"}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"registers"})}}}},
+                 {{"key", "text"}, {"name", "Text"}, {"type", "string"}, {"required", true}, {"description", "Required when dataFormat=asciiText or utf8Text. Variables such as ${var.serialNumber} are supported."}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"asciiText", "utf8Text"})}}}},
+                 {{"key", "registerCount"}, {"name", "Register Count"}, {"type", "integer"}, {"required", true}, {"minimum", 1}, {"maximum", 123}, {"description", "Required for text formats; number of FC10 registers to write."}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"asciiText", "utf8Text"})}}}},
+                 {{"key", "byteOrder"}, {"name", "Byte Order"}, {"type", "enum"}, {"default", "highByteFirst"}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"asciiText", "utf8Text"})}}}, {"options", Json::array({
+                      {{"label", "High Byte First"}, {"value", "highByteFirst"}},
+                      {{"label", "Low Byte First"}, {"value", "lowByteFirst"}}
+                  })}},
+                 {{"key", "padByte"}, {"name", "Padding Byte"}, {"type", "integer"}, {"default", 0}, {"minimum", 0}, {"maximum", 255}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"asciiText", "utf8Text"})}}}}
+             })}, {"outputs", Json::array({
+                 {{"key", "count"}, {"name", "Written Register Count"}, {"type", "integer"}},
+                 {{"key", "dataFormat"}, {"name", "Data Format"}, {"type", "string"}},
+                 {{"key", "text"}, {"name", "Written Text"}, {"type", "string"}},
+                 {{"key", "byteCount"}, {"name", "Text Byte Count"}, {"type", "integer"}},
+                 {{"key", "registers"}, {"name", "Encoded Registers"}, {"type", "string"}}
+             })}},
             {{"id", "close"}, {"name", "Close Modbus RTU"}, {"stepKind", "cleanup"}, {"timeoutMs", 3000}, {"inputs", Json::array()}, {"outputs", Json::array({{{"key", "connected"}, {"name", "Connected"}, {"type", "boolean"}}})}}
         })}
     };
