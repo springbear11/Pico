@@ -46,6 +46,7 @@ add_library(PicoATECore SHARED
     src/TimerService.cpp
     src/ValueToolsModule.cpp
     src/VariableResolver.cpp
+    src/WindowsSerialPortDiscovery.cpp
 )
 
 target_include_directories(PicoATECore
@@ -57,6 +58,10 @@ target_link_libraries(PicoATECore
     PUBLIC
         Qt6::Core
 )
+
+if(WIN32)
+    target_link_libraries(PicoATECore PRIVATE Advapi32)
+endif()
 
 target_compile_features(PicoATECore PUBLIC cxx_std_20)
 

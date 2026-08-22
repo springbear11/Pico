@@ -1,0 +1,294 @@
+{
+    "id":  "rigol-ds1104-verification",
+    "name":  "Rigol DS1104Z Oscilloscope Verification",
+    "version":  "1.0.0",
+    "groups":  [
+                   {
+                       "id":  "setup",
+                       "kind":  "setup",
+                       "name":  "Setup",
+                       "steps":  [
+                                      {
+                                          "id":  "open-scope",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "open",
+                                          "name":  "Open Oscilloscope",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1"
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  15000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "identity",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "identity",
+                                          "name":  "Read Identity",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1"
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  5000
+                                                      }
+                                      }
+                                  ]
+                   },
+                   {
+                       "id":  "main",
+                       "kind":  "main",
+                       "name":  "Main",
+                       "steps":  [
+                                      {
+                                          "id":  "clear-status",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "clear",
+                                          "name":  "Clear Status",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1"
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  5000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "reset",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "reset",
+                                          "name":  "Reset Oscilloscope",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1"
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  10000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "wait-reset",
+                                          "kind":  "wait",
+                                          "name":  "Wait Reset Settle",
+                                          "ms":  2000
+                                      },
+                                      {
+                                          "id":  "enable-ch1",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "enableChannel",
+                                          "name":  "Enable CH1",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1",
+                                                         "channel":  1,
+                                                         "enable":  1
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  5000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "ch1-coupling",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "setChannelCoupling",
+                                          "name":  "CH1 Coupling DC",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1",
+                                                         "channel":  1,
+                                                         "coupling":  1
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  5000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "ch1-probe",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "setProbe",
+                                          "name":  "CH1 Probe 10X",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1",
+                                                         "channel":  1,
+                                                         "attenuation":  10.0
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  5000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "ch1-volt-div",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "setVoltageDiv",
+                                          "name":  "CH1 1V/div",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1",
+                                                         "channel":  1,
+                                                         "voltsPerDiv":  1.0
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  5000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "timebase",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "setTimebaseScale",
+                                          "name":  "Timebase 1ms/div",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1",
+                                                         "secondsPerDiv":  0.001
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  5000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "trigger-edge",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "setEdgeTriggerSource",
+                                          "name":  "Trigger Source CH1",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1",
+                                                         "channel":  1
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  5000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "trigger-slope",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "setEdgeTriggerSlope",
+                                          "name":  "Trigger Rising Edge",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1",
+                                                         "slope":  0
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  5000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "trigger-sweep",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "setTriggerSweep",
+                                          "name":  "Trigger Auto",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1",
+                                                         "sweep":  0
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  5000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "run",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "run",
+                                          "name":  "Run Acquisition",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1"
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  5000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "wait-run",
+                                          "kind":  "wait",
+                                          "name":  "Wait Acquisition Settle",
+                                          "ms":  2000
+                                      },
+                                      {
+                                          "id":  "measure-vpp",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "measure",
+                                          "name":  "Measure CH1 VPP",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1",
+                                                         "item":  "VPP",
+                                                         "source":  1
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  10000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "measure-freq",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "measure",
+                                          "name":  "Measure CH1 Frequency",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1",
+                                                         "item":  "FREQuency",
+                                                         "source":  1
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  10000
+                                                      }
+                                      },
+                                      {
+                                          "id":  "stop",
+                                          "kind":  "action",
+                                          "moduleId":  "device",
+                                          "function":  "stop",
+                                          "name":  "Stop Acquisition",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1"
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  5000
+                                                      }
+                                      }
+                                  ]
+                   },
+                   {
+                       "id":  "cleanup",
+                       "kind":  "cleanup",
+                       "name":  "Cleanup",
+                       "steps":  [
+                                      {
+                                          "id":  "close-scope",
+                                          "kind":  "cleanup",
+                                          "moduleId":  "device",
+                                          "function":  "close",
+                                          "name":  "Close Oscilloscope",
+                                          "enabled":  true,
+                                          "inputs":  {
+                                                         "deviceId":  "SCOPE1"
+                                                     },
+                                          "timeout":  {
+                                                          "timeoutMs":  5000
+                                                      }
+                                      }
+                                  ]
+                   }
+               ]
+}

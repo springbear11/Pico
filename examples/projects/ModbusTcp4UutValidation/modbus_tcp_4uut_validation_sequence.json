@@ -1,0 +1,159 @@
+{
+  "id": "modbus-tcp-4uut-validation",
+  "name": "Modbus TCP Four-UUT Shared Connection Validation",
+  "version": "1.0.0",
+  "variables": [
+    {
+      "name": "MODBUS_UNIT_ID",
+      "type": "integer",
+      "scope": "perUut",
+      "values": [1, 2, 3, 4],
+      "description": "UUT-1..UUT-4 map to Modbus Unit ID 0x01..0x04"
+    },
+    {
+      "name": "MODBUS_READ_ADDRESS",
+      "type": "hex",
+      "scope": "shared",
+      "value": "0x6000",
+      "description": "Read-only address exposed by the local register simulator"
+    },
+    {
+      "name": "EXPECTED_REGISTERS",
+      "type": "string",
+      "scope": "shared",
+      "value": "[0,0,0,0]"
+    }
+  ],
+  "groups": [
+    {
+      "id": "setup",
+      "name": "Setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "setup-open-modbus",
+          "key": "open-modbus",
+          "name": "Open Shared Modbus TCP Connection",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "open",
+          "inputs": {
+            "deviceId": "MODBUS1"
+          },
+          "timeoutMs": 10000
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "name": "Main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "001",
+          "key": "shared-modbus-transaction",
+          "name": "Read and Verify Assigned Modbus Unit",
+          "kind": "testItem",
+          "resourceRegionStart": {
+            "id": "modbus1-transaction",
+            "resources": [
+              {
+                "resourceId": "MODBUS1",
+                "mode": "exclusive"
+              }
+            ]
+          },
+          "resourceRegionEnd": "modbus1-transaction",
+          "steps": [
+            {
+              "id": "01",
+              "key": "read-registers",
+              "name": "FC03 Read 0x6000-0x6003",
+              "kind": "action",
+              "moduleId": "device",
+              "function": "readHoldingRegisters",
+              "inputs": {
+                "deviceId": "MODBUS1",
+                "unitId": "${var.MODBUS_UNIT_ID}",
+                "address": "${var.MODBUS_READ_ADDRESS}",
+                "count": 4
+              },
+              "timeoutMs": 5000
+            },
+            {
+              "id": "02",
+              "key": "settle",
+              "name": "Cooperative Settle Delay",
+              "kind": "wait",
+              "ms": 10
+            },
+            {
+              "id": "03",
+              "key": "read-registers-again",
+              "name": "FC03 Repeat Read on Same Unit",
+              "kind": "action",
+              "moduleId": "device",
+              "function": "readHoldingRegisters",
+              "inputs": {
+                "deviceId": "MODBUS1",
+                "unitId": "${var.MODBUS_UNIT_ID}",
+                "address": "${var.MODBUS_READ_ADDRESS}",
+                "count": 4
+              },
+              "timeoutMs": 5000
+            },
+            {
+              "id": "04",
+              "key": "check-unit-id",
+              "name": "Verify Response Unit ID",
+              "kind": "limit",
+              "inputs": {
+                "actual": "${step:read-registers-again.outputs.unitId}"
+              },
+              "parameters": {
+                "comparison": "equal",
+                "expected": "${var.MODBUS_UNIT_ID}",
+                "measurementName": "MODBUS_UNIT_ID",
+                "unit": "unit"
+              }
+            },
+            {
+              "id": "05",
+              "key": "check-registers",
+              "name": "Verify Register Readback",
+              "kind": "limit",
+              "inputs": {
+                "actual": "${step:read-registers-again.outputs.registers}"
+              },
+              "parameters": {
+                "comparison": "equal",
+                "expected": "${var.EXPECTED_REGISTERS}",
+                "measurementName": "MODBUS_REGISTER_READBACK"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "name": "Cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "cleanup-close-modbus",
+          "key": "close-modbus",
+          "name": "Close Shared Modbus TCP Connection",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "close",
+          "inputs": {
+            "deviceId": "MODBUS1"
+          },
+          "timeoutMs": 5000,
+          "alwaysRun": true
+        }
+      ]
+    }
+  ]
+}

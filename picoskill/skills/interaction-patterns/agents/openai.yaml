@@ -1,0 +1,6 @@
+interface:
+  display_name: "PicoATE 人机交互模式"
+  short_description: "notice 提示 + 状态位轮询 + judgment 判断框的脚本写法"
+  default_prompt: "Use $interaction-patterns when designing operator-facing test steps (prompts, polling, confirmations)."
+policy:
+  allow_implicit_invocation: true

@@ -21,7 +21,7 @@ templates/
 ├── DMM/
 │   ├── DmmAdapter.h             # DMM 统一抽象
 │   ├── DmmPluginBridge.cpp      # DMM ABI/JSON 通用桥
-│   ├── HDM3000/                 # 汉泰 HDM3000 实现
+│   ├── HANTEK/                  # 汉泰 HDM3000 系列 VISA 万用表实现
 │   └── KEYSIGHT34410A/          # Keysight 34410A 实现
 ├── PSU/
 │   ├── PowerSupplyAdapter.h     # 程控电源统一抽象
@@ -30,9 +30,18 @@ templates/
 ├── VISA/
 │   ├── VisaAdapter.h            # VISA/DMM 统一抽象
 │   └── VisaPluginBridge.cpp     # 通用 ABI 桥，存在厂商实现时才参与编译
+├── MCU/
+│   ├── McuAdapter.h             # MCU/开关板统一抽象
+│   ├── McuPluginBridge.cpp      # MCU ABI/JSON 通用桥
+│   └── SWITCHBOARD/             # 串口开关板实现
+├── SCOPE/
+│   ├── ScopeAdapter.h           # 示波器统一抽象
+│   ├── ScopePluginBridge.cpp    # 示波器 ABI/JSON 通用桥
+│   └── RIGOL/                   # Rigol VISA 示波器实现
 └── Modbus/
     ├── ModbusAdapter.h          # Modbus 统一抽象
     ├── ModbusPluginBridge.cpp   # 通用 ABI、参数校验、自描述和实时日志桥
+    ├── Rtu/                     # Windows 串口 Modbus RTU 实现
     └── Tcp/
         ├── ModbusTcpAdapter.cpp # Winsock Modbus TCP 实现
         ├── StationSystem.json   # MODBUS1 工站示例
@@ -66,9 +75,12 @@ cmake --build --preset vs2022-release
 ```text
 bin/Debug/PicoATE.CAN.GCAN.dll
 bin/Debug/PicoATE.CAN.CX.dll
-bin/Debug/PicoATE.DMM.HDM3000.dll
+bin/Debug/PicoATE.DMM.HANTEK.dll
 bin/Debug/PicoATE.DMM.KEYSIGHT34410A.dll
 bin/Debug/PicoATE.PSU.KORAD.dll
+bin/Debug/PicoATE.SCOPE.RIGOL.dll
+bin/Debug/PicoATE.MCU.SWITCHBOARD.dll
+bin/Debug/PicoATE.Modbus.Rtu.dll
 bin/Debug/PicoATE.Modbus.Tcp.dll
 bin/Release/...
 ```
@@ -93,7 +105,8 @@ bin/Release/...
 根目录解决方案。
 
 VISA 厂商实现提供 `createVisaAdapter()`，Modbus 厂商实现提供
-`createModbusAdapter()`。分类根目录中的通用入口会自动加入每个厂商 DLL，因此厂商
+`createModbusAdapter()`，MCU 实现提供 `createMcuAdapter()`，示波器实现提供
+`createScopeAdapter()`。分类根目录中的通用入口会自动加入每个厂商 DLL，因此厂商
 实现不需要重复编写 `PicoATE_Execute`、JSON 分发和实时日志 callback。
 
 当前 `Modbus/Tcp` 是不依赖 Qt 和第三方 Modbus 运行库的 Winsock 实现，支持 FC01、FC02、

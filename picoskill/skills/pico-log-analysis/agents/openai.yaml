@@ -1,0 +1,6 @@
+﻿interface:
+  display_name: "PicoATE 日志分析"
+  short_description: "结合协议表定位日志失败与假 PASS"
+  default_prompt: "Use $pico-log-analysis to analyze this PicoATE log against its sequence and register map."
+policy:
+  allow_implicit_invocation: true

@@ -857,6 +857,7 @@ private slots:
     void sequenceCompilerRejectsInvalidOperatorPromptCloseTarget();
     void sequenceCompilerReportsUnsupportedStepKind();
     void sequenceCompilerReportsFieldTypeErrors();
+    void sequenceCompilerRejectsInvalidLimitDecimalPlaces();
     void sequenceCompilerRejectsMissingBuiltInStepInputs();
     void sequenceCompilerReportsLoopErrors();
     void sequenceCompilerReportsUnknownFieldWarnings();
@@ -6905,6 +6906,42 @@ void CoreTests::sequenceCompilerReportsFieldTypeErrors()
     QVERIFY(hasError("groups[0].steps[0].tags[0]", "Expected string"));
 }
 
+void CoreTests::sequenceCompilerRejectsInvalidLimitDecimalPlaces()
+{
+    const auto document = QJsonDocument::fromJson(R"json(
+    {
+      "id": "invalid-limit-precision",
+      "name": "Invalid Limit Precision",
+      "groups": [{
+        "id": "main",
+        "kind": "main",
+        "steps": [{
+          "id": "check-voltage",
+          "kind": "limit",
+          "inputs": {"actual": 0.0031232},
+          "parameters": {
+            "comparison": "equal",
+            "expected": 0.003,
+            "decimalPlaces": 16
+          }
+        }]
+      }]
+    }
+    )json");
+    QVERIFY(document.isObject());
+
+    SequenceCompiler compiler;
+    const auto result = compiler.compileJson(document.object());
+    QVERIFY(!result.ok());
+    QVERIFY(std::any_of(
+        result.errors.cbegin(), result.errors.cend(),
+        [](const CompileError& error) {
+            return error.path ==
+                       QStringLiteral("groups[0].steps[0].parameters.decimalPlaces") &&
+                   error.message.contains(QStringLiteral("0 to 15"));
+        }));
+}
+
 void CoreTests::sequenceCompilerRejectsMissingBuiltInStepInputs()
 {
     const auto document = QJsonDocument::fromJson(R"json(
@@ -10294,6 +10331,51 @@ void CoreTests::limitNodeSupportsNumericStringAndBooleanComparisons()
 
     result = runLimit({{"actual", true}}, {{"comparison", "isTrue"}});
     QCOMPARE(result.outcome, NodeOutcome::Passed);
+
+    result = runLimit(
+        {{"actual", 0.0031232}},
+        {{"comparison", "equal"}, {"expected", 0.003},
+         {"decimalPlaces", 3}});
+    QCOMPARE(result.outcome, NodeOutcome::Passed);
+    QCOMPARE(result.outputs.value("comparisonMode").toString(),
+             QStringLiteral("roundedNumeric"));
+    QCOMPARE(result.outputs.value("comparedActual").toDouble(), 0.003);
+    QCOMPARE(result.outputs.value("comparedExpected").toDouble(), 0.003);
+    QCOMPARE(result.outputs.value("decimalPlaces").toInt(), 3);
+    QCOMPARE(result.measurements.first().attributes
+                 .value(QStringLiteral("displayLower")).toString(),
+             QStringLiteral("0.003"));
+    QVERIFY(limitLogs.records().last().message.contains(
+        QStringLiteral("comparedActual=0.003")));
+
+    result = runLimit(
+        {{"actual", 0.0031232}},
+        {{"comparison", "equal"}, {"expected", 0.003},
+         {"decimalPlaces", 5}});
+    QCOMPARE(result.outcome, NodeOutcome::Failed);
+    QCOMPARE(result.outputs.value("comparedActual").toDouble(), 0.00312);
+    QCOMPARE(result.measurements.first().attributes
+                 .value(QStringLiteral("displayLower")).toString(),
+             QStringLiteral("0.00300"));
+
+    result = runLimit(
+        {{"actual", 0.0031232}},
+        {{"comparison", "greaterThan"}, {"expected", 0.003},
+         {"decimalPlaces", 3}});
+    QCOMPARE(result.outcome, NodeOutcome::Failed);
+
+    result = runLimit(
+        {{"actual", 0.0031232}},
+        {{"comparison", "greaterThan"}, {"expected", 0.003},
+         {"decimalPlaces", 5}});
+    QCOMPARE(result.outcome, NodeOutcome::Passed);
+
+    result = runLimit(
+        {{"actual", 0.0031232}},
+        {{"comparison", "equal"}, {"expected", 0.003},
+         {"decimalPlaces", 3.5}});
+    QCOMPARE(result.outcome, NodeOutcome::Error);
+    QCOMPARE(result.errorCode, QStringLiteral("LimitConfigurationError"));
 }
 
 void CoreTests::limitSpecificationsAppearInReportBeforeExecution()

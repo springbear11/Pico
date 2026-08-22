@@ -28,6 +28,29 @@ add_dependencies(PicoATECoreTests PicoATEMockHost PicoATEFakeInstrumentHost Pico
 
 add_test(NAME PicoATECoreTests COMMAND PicoATECoreTests)
 
+if(WIN32)
+    add_executable(PicoATESerialPortDiscoveryTests
+        SerialPortDiscoveryTests.cpp
+        ${PROJECT_SOURCE_DIR}/src/core/src/WindowsSerialPortDiscovery.cpp
+    )
+
+    target_include_directories(PicoATESerialPortDiscoveryTests
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/core/src
+    )
+
+    target_link_libraries(PicoATESerialPortDiscoveryTests
+        PRIVATE
+            Qt6::Core
+            Qt6::Test
+            Advapi32
+    )
+
+    target_compile_features(PicoATESerialPortDiscoveryTests PRIVATE cxx_std_20)
+    set_target_properties(PicoATESerialPortDiscoveryTests PROPERTIES AUTOMOC ON)
+    add_test(NAME PicoATESerialPortDiscoveryTests COMMAND PicoATESerialPortDiscoveryTests)
+endif()
+
 add_executable(PicoATERegisterConfigImporterTests
     RegisterConfigImporterTests.cpp
     RegisterConfigImporterTests.h

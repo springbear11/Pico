@@ -1,0 +1,24 @@
+{
+  "stationId": "modbus-4uut-validation",
+  "model": "Modbus TCP Four-UUT Validation",
+  "customerId": "NA",
+  "pluginRegistry": "plugins/PluginRegistry.json",
+  "stopOnFailure": true,
+  "scanDialogEnabled": false,
+  "devices": [
+    {
+      "deviceId": "MODBUS1",
+      "deviceType": "MODBUS",
+      "driverId": "plugin.modbus.tcp",
+      "connectionKind": "tcpIp",
+      "resource": "127.0.0.1:502",
+      "timeoutMs": 10000,
+      "lifetime": "Run",
+      "enabled": true,
+      "options": {
+        "connectTimeoutMs": 3000,
+        "ioTimeoutMs": 2000
+      }
+    }
+  ]
+}

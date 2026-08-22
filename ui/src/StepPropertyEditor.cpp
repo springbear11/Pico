@@ -29,6 +29,7 @@
 #include <QPersistentModelIndex>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QSet>
@@ -275,6 +276,50 @@ QString jsonValueText(const QJsonValue& value)
     return QString::fromUtf8(
         QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact))
         .mid(1).chopped(1);
+}
+
+int decimalPlacesFromLiteral(const QString& source, bool& exceedsLimit)
+{
+    exceedsLimit = false;
+    static const QRegularExpression decimalPattern(
+        QStringLiteral(R"(^[+-]?(?:[0-9]+\.([0-9]+)|\.([0-9]+))$)"));
+    const auto match = decimalPattern.match(source.trimmed());
+    if (!match.hasMatch()) {
+        return -1;
+    }
+    const auto digits = !match.captured(1).isEmpty()
+        ? match.captured(1).size()
+        : match.captured(2).size();
+    exceedsLimit = digits > 15;
+    return digits;
+}
+
+bool usesNumericExpectedPrecision(const QString& editorMode)
+{
+    return editorMode == QStringLiteral("betweenTolerance") ||
+           editorMode == QStringLiteral("equal") ||
+           editorMode == QStringLiteral("notEqual") ||
+           editorMode == QStringLiteral("greaterThan") ||
+           editorMode == QStringLiteral("greaterOrEqual") ||
+           editorMode == QStringLiteral("lessThan") ||
+           editorMode == QStringLiteral("lessOrEqual");
+}
+
+QString limitExpectedEditorText(const QJsonObject& parameters)
+{
+    const auto expected = parameters.value(QStringLiteral("expected"));
+    const auto decimalPlacesValue = parameters.value(QStringLiteral("decimalPlaces"));
+    if (!expected.isDouble() || !decimalPlacesValue.isDouble()) {
+        return jsonValueText(expected);
+    }
+    const auto decimalPlacesNumber = decimalPlacesValue.toDouble(-1.0);
+    if (!std::isfinite(decimalPlacesNumber) ||
+        std::trunc(decimalPlacesNumber) != decimalPlacesNumber ||
+        decimalPlacesNumber < 0.0 || decimalPlacesNumber > 15.0) {
+        return jsonValueText(expected);
+    }
+    return QString::number(
+        expected.toDouble(), 'f', static_cast<int>(decimalPlacesNumber));
 }
 
 bool integerLiteralRequiresText(const QString& text)
@@ -1621,6 +1666,8 @@ void StepPropertyEditor::buildDataPage()
     m_limitExpectedEdit = new QLineEdit(content);
     m_limitExpectedEdit->setObjectName(QStringLiteral("propertyLimitExpectedEdit"));
     m_limitExpectedEdit->setPlaceholderText(tr("Expected value or threshold"));
+    m_limitExpectedEdit->setToolTip(
+        tr("For decimal literals, trailing zeros set the comparison precision"));
     m_limitExpectedField = wrapExpressionEditor(m_limitExpectedEdit);
     m_limitExpectedField->setObjectName(QStringLiteral("propertyLimitExpectedField"));
     addInspectableRow(m_dataForm, tr("Expected / threshold"),
@@ -2227,7 +2274,7 @@ void StepPropertyEditor::loadCurrentObject()
     const auto parameters = m_sourceObject.value("parameters").toObject();
     m_parametersEdit->setPlainText(objectText(parameters));
     setComboValue(m_limitComparisonCombo, limitEditorMode(parameters));
-    m_limitExpectedEdit->setText(jsonValueText(parameters.value(QStringLiteral("expected"))));
+    m_limitExpectedEdit->setText(limitExpectedEditorText(parameters));
     m_limitLowerEdit->setText(jsonValueText(
         parameters.contains(QStringLiteral("lower"))
             ? parameters.value(QStringLiteral("lower"))
@@ -4438,6 +4485,7 @@ bool StepPropertyEditor::commitPendingChanges()
                               runtimeLimitComparison(mode));
             parameters.remove(QStringLiteral("lowerLimit"));
             parameters.remove(QStringLiteral("upperLimit"));
+            parameters.remove(QStringLiteral("decimalPlaces"));
             if (betweenLimits) {
                 parameters.remove(QStringLiteral("expected"));
                 parameters.remove(QStringLiteral("tolerance"));
@@ -4453,6 +4501,20 @@ bool StepPropertyEditor::commitPendingChanges()
                 } else {
                     insertOrRemoveScalar(parameters, QStringLiteral("expected"),
                                          m_limitExpectedEdit->text());
+                    if (usesNumericExpectedPrecision(mode)) {
+                        bool exceedsLimit = false;
+                        const auto decimalPlaces = decimalPlacesFromLiteral(
+                            m_limitExpectedEdit->text(), exceedsLimit);
+                        if (exceedsLimit) {
+                            flashValidationError(m_limitExpectedEdit);
+                            showError(tr("Comparison precision supports at most 15 decimal places"));
+                            return false;
+                        }
+                        if (decimalPlaces >= 0) {
+                            parameters.insert(
+                                QStringLiteral("decimalPlaces"), decimalPlaces);
+                        }
+                    }
                 }
                 if (betweenTolerance || mode == QStringLiteral("equal") ||
                     mode == QStringLiteral("notEqual")) {

@@ -250,6 +250,29 @@ void validatePredicateConfiguration(const QJsonObject& step,
     const bool hasUpper = hasConfiguredValue(parameters, QStringLiteral("upper")) ||
                           hasConfiguredValue(parameters, QStringLiteral("upperLimit"));
 
+    if (parameters.contains(QStringLiteral("decimalPlaces"))) {
+        const auto decimalPlaces = parameters.value(QStringLiteral("decimalPlaces"));
+        const auto decimalPlacesPath = childPath(
+            childPath(path, QStringLiteral("parameters")),
+            QStringLiteral("decimalPlaces"));
+        if (!decimalPlaces.isDouble()) {
+            addTypeError(
+                errors,
+                decimalPlacesPath,
+                QStringLiteral("number, got %1").arg(jsonTypeName(decimalPlaces)));
+        } else {
+            const auto value = decimalPlaces.toDouble();
+            if (!std::isfinite(value) || std::trunc(value) != value ||
+                value < 0.0 || value > 15.0) {
+                addRequiredStepValueError(
+                    errors,
+                    decimalPlacesPath,
+                    QStringLiteral("Decimal places must be an integer from 0 to 15"),
+                    QStringLiteral("Enter a whole number between 0 and 15"));
+            }
+        }
+    }
+
     if (comparison == QStringLiteral("between") ||
         comparison == QStringLiteral("range")) {
         if (!((hasLower && hasUpper) || (hasExpected && hasTolerance))) {

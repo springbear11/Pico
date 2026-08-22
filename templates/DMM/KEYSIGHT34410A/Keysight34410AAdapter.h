@@ -18,7 +18,8 @@ public:
     Result identity() override;
     Result reset() override;
     Result clear() override;
-    Result configure(MeasurementMode mode, double range, double integration) override;
+    Result configure(MeasurementMode mode, double range, double integration,
+                     double resolution = 0.0) override;
     Result read() override;
     Result query(const std::string& command) override;
     Result write(const std::string& command) override;

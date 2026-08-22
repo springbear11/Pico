@@ -1,0 +1,6 @@
+interface:
+  display_name: "PicoATE 仪器插件编写"
+  short_description: "编写/部署/调试 PicoATE 仪器插件"
+  default_prompt: "Use $plugin-writing to create or extend a PicoATE instrument plugin (abstract interface + bridge + vendor adapter + registry deploy + verify sequence)."
+policy:
+  allow_implicit_invocation: true

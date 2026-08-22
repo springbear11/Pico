@@ -6,11 +6,11 @@
 
 namespace PicoATE::Plugins::Dmm {
 
-class Hdm3000Adapter final : public IDmmAdapter
+class HantekAdapter final : public IDmmAdapter
 {
 public:
-    Hdm3000Adapter();
-    ~Hdm3000Adapter() override;
+    HantekAdapter();
+    ~HantekAdapter() override;
 
     Result connect(const std::string& visaAddress, const Plugin::Json& options) override;
     void disconnect() noexcept override;
@@ -18,7 +18,8 @@ public:
     Result identity() override;
     Result reset() override;
     Result clear() override;
-    Result configure(MeasurementMode mode, double range, double integration) override;
+    Result configure(MeasurementMode mode, double range, double integration,
+                     double resolution = 0.0) override;
     Result read() override;
     Result query(const std::string& command) override;
     Result write(const std::string& command) override;

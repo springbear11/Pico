@@ -1,0 +1,6 @@
+interface:
+  display_name: "PicoATE TestStand 迁移"
+  short_description: "把 TestStand 测试项目迁移为 PicoATE 脚本"
+  default_prompt: "Use $teststand-migration to port a TestStand sequence project to PicoATE JSON."
+policy:
+  allow_implicit_invocation: true

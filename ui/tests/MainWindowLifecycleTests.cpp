@@ -2582,12 +2582,26 @@ void MainWindowLifecycleTests::limitPropertyEditorSwitchesComparisonFieldsAndRem
     QVERIFY(!parameters.contains(QStringLiteral("expected")));
 
     comparison->setCurrentIndex(comparison->findData(QStringLiteral("equal")));
+    expected->setText(QStringLiteral("0.00300"));
+    QVERIFY(editor.commitPendingChanges());
+    parameters = document.objectAt(path).value(QStringLiteral("parameters")).toObject();
+    QCOMPARE(parameters.value(QStringLiteral("expected")).toDouble(), 0.003);
+    QCOMPARE(parameters.value(QStringLiteral("decimalPlaces")).toInt(), 5);
+
+    StepPropertyEditor reloadedEditor(&document);
+    reloadedEditor.setCurrentItem(path);
+    auto* reloadedExpected = reloadedEditor.findChild<QLineEdit*>(
+        QStringLiteral("propertyLimitExpectedEdit"));
+    QVERIFY(reloadedExpected);
+    QCOMPARE(reloadedExpected->text(), QStringLiteral("0.00300"));
+
     expected->setText(QStringLiteral("1000000000123456789"));
     QVERIFY(editor.commitPendingChanges());
     parameters = document.objectAt(path).value(QStringLiteral("parameters")).toObject();
     QVERIFY(parameters.value(QStringLiteral("expected")).isString());
     QCOMPARE(parameters.value(QStringLiteral("expected")).toString(),
              QStringLiteral("1000000000123456789"));
+    QVERIFY(!parameters.contains(QStringLiteral("decimalPlaces")));
 
     comparison->setCurrentIndex(comparison->findData(QStringLiteral("isTrue")));
     QVERIFY(expectedField->isHidden());
@@ -2600,6 +2614,7 @@ void MainWindowLifecycleTests::limitPropertyEditorSwitchesComparisonFieldsAndRem
     QVERIFY(!parameters.contains(QStringLiteral("lower")));
     QVERIFY(!parameters.contains(QStringLiteral("upper")));
     QVERIFY(!parameters.contains(QStringLiteral("tolerance")));
+    QVERIFY(!parameters.contains(QStringLiteral("decimalPlaces")));
 }
 
 void MainWindowLifecycleTests::closeAfterEditedRun_data()

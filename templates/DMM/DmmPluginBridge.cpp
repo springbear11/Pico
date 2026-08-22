@@ -100,7 +100,7 @@ bool measurementModeFromFunction(const std::string& function,
     return true;
 }
 
-Plugin::Json execute(const Plugin::Json& request)
+Plugin::Json executeImpl(const Plugin::Json& request)
 {
     const auto function = normalized(Plugin::stringValue(request, "function"));
     const auto& input = Plugin::inputs(request);
@@ -161,7 +161,13 @@ Plugin::Json execute(const Plugin::Json& request)
             return Plugin::errorResponse("ScpiCommandRequired", "Set command or scpiCmd");
         }
         PicoATE_Log("DMM_QUERY {}", command);
-        return resultResponse(dmm.query(command), "response");
+        const auto result = dmm.query(command);
+        if (result.success) {
+            PicoATE_Log("DMM_QUERY {} => {}", command, result.value.get<std::string>());
+        } else {
+            PicoATE_Log("DMM_QUERY {} failed: {}", command, result.errorMessage);
+        }
+        return resultResponse(result, "response");
     }
 
     if (function == "write" || function == "send") {
@@ -180,21 +186,36 @@ Plugin::Json execute(const Plugin::Json& request)
     }
 
     const auto range = Plugin::numberValue(input, "range", 0.0);
+    const auto resolution = Plugin::numberValue(input, "resolution", 0.0);
     const bool apertureMode = mode == MeasurementMode::Frequency ||
                               mode == MeasurementMode::Period;
     const auto integration = Plugin::numberValue(
         input,
         apertureMode ? "aperture" : "nplc",
         apertureMode ? 0.1 : 10.0);
-    PicoATE_Log("DMM_CONFIG function={} range={} integration={}",
+    PicoATE_Log("DMM_CONFIG function={} range={} resolution={} integration={}",
                 function,
                 range,
+                resolution,
                 integration);
-    const auto configured = dmm.configure(mode, range, integration);
+    const auto configured = dmm.configure(mode, range, integration, resolution);
     if (!configured.success) {
         return Plugin::errorResponse(configured.errorCode, configured.errorMessage);
     }
     return Plugin::response("Passed", {{"configured", true}});
+}
+
+// Unified result logging: every function call logs function name + outcome/code/message for R&D debugging
+Plugin::Json execute(const Plugin::Json& request)
+{
+    const auto function = normalized(Plugin::stringValue(request, "function"));
+    const auto response = executeImpl(request);
+    const auto outcome = Plugin::stringValue(response, "outcome");
+    const auto code = Plugin::stringValue(response, "errorCode");
+    const auto message = Plugin::stringValue(response, "errorMessage");
+    PicoATE_Log("DMM_FUNCTION {} outcome={} code={} message={}",
+                function, outcome, code, message);
+    return response;
 }
 
 } // namespace

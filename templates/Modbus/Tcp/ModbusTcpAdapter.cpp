@@ -43,19 +43,6 @@ void appendU16(std::vector<std::uint8_t>& bytes, std::uint16_t value)
     bytes.push_back(static_cast<std::uint8_t>(value & 0xFF));
 }
 
-std::string hexFrame(const std::uint8_t* bytes, std::size_t size)
-{
-    std::string text;
-    text.reserve(size * 3);
-    for (std::size_t index = 0; index < size; ++index) {
-        if (index > 0) {
-            text.push_back(' ');
-        }
-        text += std::format("{:02X}", static_cast<unsigned int>(bytes[index]));
-    }
-    return text;
-}
-
 std::string winsockError(int error)
 {
     return std::format("Winsock error {}", error);
@@ -154,16 +141,11 @@ public:
                 lastError = winsockError(WSAGetLastError());
                 continue;
             }
-            int connectError = 0;
-            if (connectSocket(socket,
-                              address->ai_addr,
-                              static_cast<int>(address->ai_addrlen),
-                              connectTimeout,
-                              connectError)) {
+            if (connectSocket(socket, address->ai_addr, static_cast<int>(address->ai_addrlen), connectTimeout)) {
                 m_socket = socket;
                 break;
             }
-            lastError = winsockError(connectError);
+            lastError = winsockError(WSAGetLastError());
             closesocket(socket);
         }
         freeaddrinfo(addresses);
@@ -411,52 +393,23 @@ private:
         return Result::failed("UnsupportedModbusFunction", std::string(function) + " is not supported by this protocol");
     }
 
-    static bool connectSocket(SOCKET socket,
-                              const sockaddr* address,
-                              int length,
-                              int timeoutMs,
-                              int& error)
+    static bool connectSocket(SOCKET socket, const sockaddr* address, int length, int timeoutMs)
     {
-        error = 0;
         u_long nonBlocking = 1;
-        if (ioctlsocket(socket, FIONBIO, &nonBlocking) != 0) {
-            error = WSAGetLastError();
-            return false;
-        }
+        if (ioctlsocket(socket, FIONBIO, &nonBlocking) != 0) return false;
         const auto connectResult = ::connect(socket, address, length);
-        if (connectResult == SOCKET_ERROR) {
-            error = WSAGetLastError();
-            if (error != WSAEWOULDBLOCK) return false;
-        }
+        if (connectResult == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK) return false;
         fd_set writeSet;
         FD_ZERO(&writeSet);
         FD_SET(socket, &writeSet);
         timeval timeout{timeoutMs / 1000, (timeoutMs % 1000) * 1000};
-        const auto selectResult = select(0, nullptr, &writeSet, nullptr, &timeout);
-        if (selectResult != 1) {
-            error = selectResult == 0 ? WSAETIMEDOUT : WSAGetLastError();
-            return false;
-        }
+        if (select(0, nullptr, &writeSet, nullptr, &timeout) != 1) return false;
         int socketError = 0;
         int socketErrorSize = sizeof(socketError);
-        if (getsockopt(socket,
-                       SOL_SOCKET,
-                       SO_ERROR,
-                       reinterpret_cast<char*>(&socketError),
-                       &socketErrorSize) != 0) {
-            error = WSAGetLastError();
-            return false;
-        }
-        if (socketError != 0) {
-            error = socketError;
-            return false;
-        }
+        if (getsockopt(socket, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&socketError), &socketErrorSize) != 0 ||
+            socketError != 0) return false;
         nonBlocking = 0;
-        if (ioctlsocket(socket, FIONBIO, &nonBlocking) != 0) {
-            error = WSAGetLastError();
-            return false;
-        }
-        return true;
+        return ioctlsocket(socket, FIONBIO, &nonBlocking) == 0;
     }
 
     Result request(std::uint8_t unitId,
@@ -477,52 +430,26 @@ private:
         appendU16(request, static_cast<std::uint16_t>(pdu.size() + 1));
         request.push_back(unitId);
         request.insert(request.end(), pdu.begin(), pdu.end());
-        PicoATE_Log("MODBUS_TCP_TX transactionId=0x{:04X} ({}) unitId=0x{:02X} ({}) function=0x{:02X} frame={}",
-                    transactionId, transactionId, static_cast<unsigned int>(unitId),
-                    static_cast<unsigned int>(unitId), static_cast<unsigned int>(pdu[0]),
-                    hexFrame(request.data(), request.size()));
         if (!sendAll(request.data(), request.size())) {
-            PicoATE_Log("MODBUS_TCP_TX_FAILED transactionId=0x{:04X} error={}",
-                        transactionId, winsockError(WSAGetLastError()));
             return socketFailure("ModbusSendFailed");
         }
 
         std::array<std::uint8_t, 7> header{};
         if (!receiveAll(header.data(), header.size())) {
-            PicoATE_Log("MODBUS_TCP_RX_HEADER_FAILED transactionId=0x{:04X} error={}",
-                        transactionId, winsockError(WSAGetLastError()));
             return socketFailure("ModbusReceiveFailed");
         }
         const auto responseTransaction = readU16(header.data());
         const auto protocolId = readU16(header.data() + 2);
         const auto length = readU16(header.data() + 4);
         if (responseTransaction != transactionId || protocolId != 0 || header[6] != unitId || length < 2 || length > 254) {
-            PicoATE_Log("MODBUS_TCP_RX_INVALID_MBAP expectedTransactionId=0x{:04X} expectedUnitId=0x{:02X} receivedHeader={} protocolId=0x{:04X} length={}",
-                        transactionId, static_cast<unsigned int>(unitId),
-                        hexFrame(header.data(), header.size()), protocolId, length);
             return Result::failed("InvalidModbusResponse", "Invalid Modbus TCP MBAP header");
         }
         response.resize(length - 1);
         if (!receiveAll(response.data(), response.size())) {
-            PicoATE_Log("MODBUS_TCP_RX_BODY_FAILED transactionId=0x{:04X} expectedBodyBytes={} header={} error={}",
-                        transactionId, response.size(), hexFrame(header.data(), header.size()),
-                        winsockError(WSAGetLastError()));
             return socketFailure("ModbusReceiveFailed");
         }
-        std::vector<std::uint8_t> fullResponse;
-        fullResponse.reserve(header.size() + response.size());
-        fullResponse.insert(fullResponse.end(), header.begin(), header.end());
-        fullResponse.insert(fullResponse.end(), response.begin(), response.end());
-        PicoATE_Log("MODBUS_TCP_RX transactionId=0x{:04X} ({}) unitId=0x{:02X} ({}) function=0x{:02X} frame={}",
-                    responseTransaction, responseTransaction,
-                    static_cast<unsigned int>(header[6]), static_cast<unsigned int>(header[6]),
-                    static_cast<unsigned int>(response[0]),
-                    hexFrame(fullResponse.data(), fullResponse.size()));
         if (response.size() == 2 && response[0] == static_cast<std::uint8_t>(pdu[0] | 0x80)) {
             const auto code = response[1];
-            PicoATE_Log("MODBUS_TCP_EXCEPTION transactionId=0x{:04X} requestFunction=0x{:02X} exceptionCode=0x{:02X} description={}",
-                        transactionId, static_cast<unsigned int>(pdu[0]),
-                        static_cast<unsigned int>(code), exceptionDescription(code));
             return Result::failed(std::format("ModbusException0x{:02X}", code), exceptionDescription(code));
         }
         return Result::passed();
@@ -635,31 +562,12 @@ Plugin::Json pluginDescription()
                  {{"key", "address"}, {"name", "Start Address"}, {"type", "string"}, {"required", true}, {"minimum", 0}, {"maximum", 65535}},
                  {{"key", "values"}, {"name", "Coil Values (JSON Array)"}, {"type", "string"}, {"required", true}, {"description", "Example: [true, false, true]"}}
              })}, {"outputs", Json::array({{{"key", "count"}, {"name", "Written Coil Count"}, {"type", "integer"}}})}},
-            {{"id", "writeMultipleRegisters"}, {"name", "Write Multiple Registers"},
-             {"description", "FC10; default dataFormat=registers, optionally encode text"}, {"timeoutMs", 3000},
+            {{"id", "writeMultipleRegisters"}, {"name", "Write Multiple Registers"}, {"timeoutMs", 3000},
              {"inputs", Json::array({
                  {{"key", "unitId"}, {"name", "Unit ID"}, {"type", "string"}, {"required", true}, {"minimum", 0}, {"maximum", 255}},
                  {{"key", "address"}, {"name", "Start Address"}, {"type", "string"}, {"required", true}, {"minimum", 0}, {"maximum", 65535}},
-                 {{"key", "dataFormat"}, {"name", "Data Format"}, {"type", "enum"}, {"default", "registers"}, {"options", Json::array({
-                     {{"label", "Registers"}, {"value", "registers"}},
-                     {{"label", "ASCII Text"}, {"value", "asciiText"}},
-                     {{"label", "UTF-8 Text"}, {"value", "utf8Text"}}
-                 })}},
-                 {{"key", "values"}, {"name", "Register Values (JSON Array)"}, {"type", "string"}, {"required", true}, {"description", "Required when dataFormat=registers. Example: [1, 100, 0xFFFF]"}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"registers"})}}}},
-                 {{"key", "text"}, {"name", "Text"}, {"type", "string"}, {"required", true}, {"description", "Required when dataFormat=asciiText or utf8Text. Variables such as ${var.serialNumber} are supported."}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"asciiText", "utf8Text"})}}}},
-                 {{"key", "registerCount"}, {"name", "Register Count"}, {"type", "integer"}, {"required", true}, {"minimum", 1}, {"maximum", 123}, {"description", "Required for text formats; number of FC10 registers to write."}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"asciiText", "utf8Text"})}}}},
-                 {{"key", "byteOrder"}, {"name", "Byte Order"}, {"type", "enum"}, {"default", "highByteFirst"}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"asciiText", "utf8Text"})}}}, {"options", Json::array({
-                      {{"label", "High Byte First"}, {"value", "highByteFirst"}},
-                      {{"label", "Low Byte First"}, {"value", "lowByteFirst"}}
-                  })}},
-                 {{"key", "padByte"}, {"name", "Padding Byte"}, {"type", "integer"}, {"default", 0}, {"minimum", 0}, {"maximum", 255}, {"visibleWhen", {{"key", "dataFormat"}, {"values", Json::array({"asciiText", "utf8Text"})}}}}
-             })}, {"outputs", Json::array({
-                 {{"key", "count"}, {"name", "Written Register Count"}, {"type", "integer"}},
-                 {{"key", "dataFormat"}, {"name", "Data Format"}, {"type", "string"}},
-                 {{"key", "text"}, {"name", "Written Text"}, {"type", "string"}},
-                 {{"key", "byteCount"}, {"name", "Text Byte Count"}, {"type", "integer"}},
-                 {{"key", "registers"}, {"name", "Encoded Registers"}, {"type", "string"}}
-             })}},
+                 {{"key", "values"}, {"name", "Register Values (JSON Array)"}, {"type", "string"}, {"required", true}, {"description", "Example: [1, 100, 65535]"}}
+             })}, {"outputs", Json::array({{{"key", "count"}, {"name", "Written Register Count"}, {"type", "integer"}}})}},
             {{"id", "close"}, {"name", "Close Modbus TCP"}, {"stepKind", "cleanup"}, {"timeoutMs", 3000},
              {"inputs", Json::array()}, {"outputs", Json::array({{{"key", "connected"}, {"name", "Connected"}, {"type", "boolean"}}})}}
         })}

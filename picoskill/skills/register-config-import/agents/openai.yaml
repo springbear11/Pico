@@ -1,0 +1,6 @@
+interface:
+  display_name: "PicoATE 寄存器表配置导入"
+  short_description: "把寄存器配置表转换为三层 TestItem JSON 配置步骤"
+  default_prompt: "Use $register-config-import to convert a register config sheet into PicoATE sequence JSON steps."
+policy:
+  allow_implicit_invocation: true

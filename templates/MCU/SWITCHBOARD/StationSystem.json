@@ -1,0 +1,20 @@
+{
+  "stationId": "mcu-switch-board-station",
+  "name": "ATE MCU Switch Board Station",
+  "devices": [
+    {
+      "deviceId": "MCU1",
+      "deviceType": "MCU",
+      "driverId": "plugin.mcu.switchboard",
+      "connectionKind": "serialPort",
+      "resource": "COM3",
+      "timeoutMs": 15000,
+      "lifetime": "Run",
+      "enabled": true,
+      "options": {
+        "unitId": "0x00",
+        "ioTimeoutMs": 5000
+      }
+    }
+  ]
+}

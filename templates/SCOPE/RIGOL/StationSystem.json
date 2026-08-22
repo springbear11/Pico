@@ -1,0 +1,24 @@
+{
+    "stationId":  "scope-station",
+    "name":  "Oscilloscope VISA Station",
+    "devices":  [
+                    {
+                        "deviceId":  "SCOPE1",
+                        "deviceType":  "SCOPE",
+                        "driverId":  "plugin.scope.rigol",
+                        "pluginPath":  "${PROJECT_DIR}/templates/bin/Debug/PicoATE.SCOPE.RIGOL.dll",
+                        "address":  "USB0::0x1AB1::0x04CE::DS1ZC260800273::INSTR",
+                        "timeoutMs":  15000,
+                        "lifetime":  "Run",
+                        "enabled":  true,
+                        "options":  {
+                                        "visaLibrary":  "visa64.dll",
+                                        "ioTimeoutMs":  5000,
+                                        "commandDelayMs":  20,
+                                        "writeTermination":  "\\n",
+                                        "readTermination":  "\\n",
+                                        "clearOnConnect":  false
+                                    }
+                    }
+                ]
+}

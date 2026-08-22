@@ -1,0 +1,82 @@
+{
+  "id": "mcu-switch-board-verification",
+  "name": "ATE MCU Switch Board Verification",
+  "version": "1.1.0",
+  "groups": [
+    {
+      "id": "setup",
+      "kind": "setup",
+      "steps": [
+        {
+          "id": "open-switch-board",
+          "name": "Open MCU Switch Board",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "open",
+          "inputs": {"deviceId": "MCU1"},
+          "timeoutMs": 10000
+        }
+      ]
+    },
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "read-all-io",
+          "name": "03_Read All IO (0x0000, 7)",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "readAllIo",
+          "inputs": {"deviceId": "MCU1", "unitId": "0x00"},
+          "timeoutMs": 5000
+        },
+        {
+          "id": "read-bank-1",
+          "name": "03_Read IO1-IO16",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "readIoBank",
+          "inputs": {"deviceId": "MCU1", "unitId": "0x00", "bank": 1},
+          "timeoutMs": 5000
+        },
+        {
+          "id": "set-io-1-on",
+          "name": "10_Set IO1 ON (Enable Manually)",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "setIo",
+          "enabled": false,
+          "inputs": {"deviceId": "MCU1", "unitId": "0x00", "channel": 1, "state": true},
+          "timeoutMs": 10000
+        },
+        {
+          "id": "write-bank-1-zero",
+          "name": "10_Write Bank 1 OFF (Enable Manually)",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "writeIoBank",
+          "enabled": false,
+          "inputs": {"deviceId": "MCU1", "unitId": "0x00", "bank": 1, "value": "0x0000"},
+          "timeoutMs": 10000
+        }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "kind": "cleanup",
+      "steps": [
+        {
+          "id": "close-switch-board",
+          "name": "Close MCU Switch Board",
+          "kind": "action",
+          "moduleId": "device",
+          "function": "close",
+          "inputs": {"deviceId": "MCU1"},
+          "timeoutMs": 3000,
+          "alwaysRun": true
+        }
+      ]
+    }
+  ]
+}

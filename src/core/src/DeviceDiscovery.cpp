@@ -3,10 +3,13 @@
 
 #include "PicoATE/Core/QProcessTransport.h"
 
+#ifdef Q_OS_WIN
+#include "WindowsSerialPortDiscovery.h"
+#endif
+
 #include <QJsonArray>
 #include <QLibrary>
 #include <QRegularExpression>
-#include <QSettings>
 #include <QUuid>
 
 #include <algorithm>
@@ -39,19 +42,14 @@ DeviceDiscoveryResult serialPorts()
 {
     DeviceDiscoveryResult result;
 #ifdef Q_OS_WIN
-    QSettings ports(QStringLiteral("HKEY_LOCAL_MACHINE\\HARDWARE\\DEVICEMAP\\SERIALCOMM"),
-                    QSettings::NativeFormat);
-    QStringList names;
-    for (const auto& key : ports.allKeys()) {
-        const auto name = ports.value(key).toString().trimmed();
-        if (!name.isEmpty() && !names.contains(name, Qt::CaseInsensitive)) {
-            names.push_back(name);
-        }
+    const auto ports = Internal::discoverWindowsSerialPortNames();
+    if (!ports.ok()) {
+        result.errorCode = QStringLiteral("SerialPortEnumerationFailed");
+        result.errorMessage = QStringLiteral("Unable to enumerate Windows serial ports (error %1)")
+                                  .arg(ports.status);
+        return result;
     }
-    std::sort(names.begin(), names.end(), [](const QString& left, const QString& right) {
-        return left.localeAwareCompare(right) < 0;
-    });
-    for (const auto& name : names) {
+    for (const auto& name : ports.portNames) {
         result.resources.push_back({name, name, {}, {}, {{QStringLiteral("portName"), name}}});
     }
 #else

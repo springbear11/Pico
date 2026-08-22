@@ -59,10 +59,21 @@ try {
         }
     }
 
-    # Product projects are deployed separately from the framework release.
+    # Customer projects are deployed separately. Keep only maintained validation
+    # projects that are safe to ship with the framework release.
     $portableProjects = Join-Path $portableDirectory 'projects'
     Remove-Item -LiteralPath $portableProjects -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $portableProjects -Force | Out-Null
+    $bundledProjects = @('ModbusTcp4UutValidation')
+    foreach ($projectName in $bundledProjects) {
+        $source = Join-Path $repoRoot "examples\projects\$projectName"
+        if (-not (Test-Path -LiteralPath $source -PathType Container)) {
+            throw "Bundled validation project was not found: $source"
+        }
+        Copy-Item -LiteralPath $source `
+            -Destination (Join-Path $portableProjects $projectName) `
+            -Recurse -Force
+    }
 
     & (Join-Path $PSScriptRoot 'VerifyPortable.ps1') `
         -PortableDirectory $portableDirectory

@@ -1,0 +1,6 @@
+interface:
+  display_name: "PicoATE Modbus 脚本配置"
+  short_description: "配置与校验 Modbus 测试脚本"
+  default_prompt: "Use $modbus-config to review or create a PicoATE Modbus TCP sequence against the register map."
+policy:
+  allow_implicit_invocation: true

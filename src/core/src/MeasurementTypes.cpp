@@ -68,6 +68,28 @@ bool finiteNumber(const QVariant& value, double& number)
     return ok && std::isfinite(number);
 }
 
+bool configuredDecimalPlaces(const QVariantMap& configuration,
+                             int& decimalPlaces)
+{
+    QVariant value;
+    if (!configuredValue(configuration, QStringLiteral("decimalPlaces"), value)) {
+        return false;
+    }
+    bool ok = false;
+    const auto number = value.toDouble(&ok);
+    if (!ok || !std::isfinite(number) || std::trunc(number) != number ||
+        number < 0.0 || number > 15.0) {
+        return false;
+    }
+    decimalPlaces = static_cast<int>(number);
+    return true;
+}
+
+QString fixedDecimalText(double value, int decimalPlaces)
+{
+    return QString::number(value, 'f', decimalPlaces);
+}
+
 bool preciseEqualityNumber(const QVariant& value, double& number)
 {
     const auto typeId = value.metaType().id();
@@ -326,12 +348,18 @@ void applyConfiguredMeasurementLimits(const QVariantMap& configuration,
                           configuredValue(configuration, QStringLiteral("upperLimit"), upperValue);
     const bool hasExpected = configuredValue(configuration, QStringLiteral("expected"), expectedValue);
     const bool hasTolerance = configuredValue(configuration, QStringLiteral("tolerance"), toleranceValue);
+    int decimalPlaces = 0;
+    const bool hasDecimalPlaces = configuredDecimalPlaces(
+        configuration, decimalPlaces);
 
     if (hasExpected) {
         measurement.attributes.insert(QStringLiteral("expected"), expectedValue);
     }
     if (hasTolerance) {
         measurement.attributes.insert(QStringLiteral("tolerance"), toleranceValue);
+    }
+    if (hasDecimalPlaces) {
+        measurement.attributes.insert(QStringLiteral("decimalPlaces"), decimalPlaces);
     }
 
     double lower = 0.0;
@@ -359,6 +387,10 @@ void applyConfiguredMeasurementLimits(const QVariantMap& configuration,
             measurement.hasUpperLimit = true;
             measurement.upperLimit = expected + tolerance;
             measurement.attributes.insert(QStringLiteral("limitsDerived"), true);
+            if (hasDecimalPlaces && tolerance == 0.0) {
+                const auto expectedText = fixedDecimalText(expected, decimalPlaces);
+                setDisplayRange(measurement, expectedText, expectedText);
+            }
         } else {
             const auto expectedText = displayValue(expectedValue);
             const auto toleranceText = displayValue(toleranceValue);
@@ -382,6 +414,10 @@ void applyConfiguredMeasurementLimits(const QVariantMap& configuration,
             measurement.hasUpperLimit = true;
             measurement.upperLimit = expected + tolerance;
             measurement.attributes.insert(QStringLiteral("limitsDerived"), true);
+            if (hasDecimalPlaces && tolerance == 0.0) {
+                const auto expectedText = fixedDecimalText(expected, decimalPlaces);
+                setDisplayRange(measurement, expectedText, expectedText);
+            }
         } else if (hasTolerance && finiteNumber(toleranceValue, tolerance) &&
                    tolerance > 0.0) {
             const auto expectedText = displayValue(expectedValue);
@@ -413,6 +449,13 @@ void applyConfiguredMeasurementLimits(const QVariantMap& configuration,
             measurement.lowerLimit = expected;
             measurement.hasUpperLimit = upperBound;
             measurement.upperLimit = expected;
+            if (hasDecimalPlaces) {
+                const auto expectedText = fixedDecimalText(expected, decimalPlaces);
+                setDisplayRange(
+                    measurement,
+                    lowerBound ? QVariant(expectedText) : QVariant{},
+                    upperBound ? QVariant(expectedText) : QVariant{});
+            }
         } else if (lowerBound) {
             setDisplayRange(measurement, thresholdValue, {});
         } else {

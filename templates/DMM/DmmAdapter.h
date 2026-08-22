@@ -51,7 +51,8 @@ public:
     virtual Result identity() = 0;
     virtual Result reset() = 0;
     virtual Result clear() = 0;
-    virtual Result configure(MeasurementMode mode, double range, double integration) = 0;
+    virtual Result configure(MeasurementMode mode, double range, double integration,
+                             double resolution = 0.0) = 0;
     virtual Result read() = 0;
     virtual Result query(const std::string& command) = 0;
     virtual Result write(const std::string& command) = 0;

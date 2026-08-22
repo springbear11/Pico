@@ -59,6 +59,36 @@ bool finiteNumber(const QVariant& value, double& number)
     return ok && std::isfinite(number);
 }
 
+constexpr int maximumLimitDecimalPlaces = 15;
+
+bool validLimitDecimalPlaces(const QVariant& value, int& decimalPlaces)
+{
+    if (!value.isValid() || value.isNull() ||
+        value.metaType().id() == QMetaType::Bool) {
+        return false;
+    }
+
+    bool ok = false;
+    const auto number = value.toDouble(&ok);
+    if (!ok || !std::isfinite(number) || std::trunc(number) != number ||
+        number < 0.0 || number > maximumLimitDecimalPlaces) {
+        return false;
+    }
+    decimalPlaces = static_cast<int>(number);
+    return true;
+}
+
+double roundToDecimalPlaces(double value, int decimalPlaces)
+{
+    const auto scale = std::pow(10.0, decimalPlaces);
+    const auto scaled = value * scale;
+    if (!std::isfinite(scale) || !std::isfinite(scaled)) {
+        return value;
+    }
+    const auto rounded = std::round(scaled) / scale;
+    return rounded == 0.0 ? 0.0 : rounded;
+}
+
 bool isTextValue(const QVariant& value)
 {
     const auto typeId = value.metaType().id();
@@ -523,9 +553,22 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
     QVariant toleranceValue;
     double tolerance = 0.0;
     const bool hasTolerance = limitValue(node, "tolerance", toleranceValue);
+    QVariant decimalPlacesValue;
+    int decimalPlaces = 0;
+    const bool hasDecimalPlaces = limitValue(
+        node, "decimalPlaces", decimalPlacesValue);
+    if (hasDecimalPlaces &&
+        !validLimitDecimalPlaces(decimalPlacesValue, decimalPlaces)) {
+        return limitErrorResult(
+            node,
+            actual,
+            "LimitConfigurationError",
+            QStringLiteral("Limit decimalPlaces must be an integer from 0 to %1")
+                .arg(maximumLimitDecimalPlaces));
+    }
     publishLimitLog(
         context,
-        QStringLiteral("%1_CHECK actual=%2 comparison=%3 expected=%4 lower=%5 upper=%6 tolerance=%7")
+        QStringLiteral("%1_CHECK actual=%2 comparison=%3 expected=%4 lower=%5 upper=%6 tolerance=%7 decimalPlaces=%8")
             .arg(controlPredicate ? QStringLiteral("BREAK")
                                   : QStringLiteral("LIMIT"),
                  logValueText(actual),
@@ -533,7 +576,9 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
                  hasExpected ? logValueText(expectedValue) : QStringLiteral("<unset>"),
                  hasLower ? logValueText(lowerValue) : QStringLiteral("<unset>"),
                  hasUpper ? logValueText(upperValue) : QStringLiteral("<unset>"),
-                 hasTolerance ? logValueText(toleranceValue) : QStringLiteral("<unset>")));
+                 hasTolerance ? logValueText(toleranceValue) : QStringLiteral("<unset>"),
+                 hasDecimalPlaces ? QString::number(decimalPlaces)
+                                  : QStringLiteral("<unset>")));
     if (hasTolerance) {
         if (!finiteNumber(toleranceValue, tolerance) || tolerance < 0.0) {
             return limitErrorResult(node,
@@ -549,6 +594,13 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
     double lower = 0.0;
     double upper = 0.0;
     double expected = 0.0;
+    double comparedActual = 0.0;
+    double comparedExpected = 0.0;
+    bool usedDecimalRounding = false;
+    bool hasComparedExpected = false;
+    bool hasComparedRange = false;
+    double comparedLower = 0.0;
+    double comparedUpper = 0.0;
     const bool inclusive = node.payload.value("inclusive", true).toBool();
 
     if (comparison == "between" || comparison == "range") {
@@ -577,6 +629,17 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
                                         "LimitTypeError",
                                         "Lower and upper must be finite numbers");
             }
+            if (hasDecimalPlaces) {
+                actualNumber = roundToDecimalPlaces(actualNumber, decimalPlaces);
+                lower = roundToDecimalPlaces(lower, decimalPlaces);
+                upper = roundToDecimalPlaces(upper, decimalPlaces);
+                comparedActual = actualNumber;
+                comparedLower = lower;
+                comparedUpper = upper;
+                hasComparedRange = true;
+                usedDecimalRounding = true;
+                comparisonMode = QStringLiteral("roundedNumeric");
+            }
         } else {
             if (!finiteNumber(expectedValue, expected)) {
                 return limitErrorResult(node,
@@ -584,8 +647,22 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
                                         "LimitTypeError",
                                         "Expected must be a finite number when deriving limits");
             }
+            if (hasDecimalPlaces) {
+                actualNumber = roundToDecimalPlaces(actualNumber, decimalPlaces);
+                expected = roundToDecimalPlaces(expected, decimalPlaces);
+                comparedActual = actualNumber;
+                comparedExpected = expected;
+                hasComparedExpected = true;
+                usedDecimalRounding = true;
+                comparisonMode = QStringLiteral("roundedNumeric");
+            }
             lower = expected - tolerance;
             upper = expected + tolerance;
+            if (hasDecimalPlaces) {
+                comparedLower = lower;
+                comparedUpper = upper;
+                hasComparedRange = true;
+            }
             if (!std::isfinite(lower) || !std::isfinite(upper)) {
                 return limitErrorResult(node,
                                         actual,
@@ -619,6 +696,15 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
                                     "LimitTypeError",
                                     "Numeric comparison requires finite actual and threshold values");
         }
+        if (hasDecimalPlaces) {
+            actualNumber = roundToDecimalPlaces(actualNumber, decimalPlaces);
+            expected = roundToDecimalPlaces(expected, decimalPlaces);
+            comparedActual = actualNumber;
+            comparedExpected = expected;
+            hasComparedExpected = true;
+            usedDecimalRounding = true;
+            comparisonMode = QStringLiteral("roundedNumeric");
+        }
         if (comparison == ">" || comparison == "gt" || comparison == "greaterthan") passed = actualNumber > expected;
         else if (comparison == ">=" || comparison == "ge" || comparison == "gte" || comparison == "greaterorequal") passed = actualNumber >= expected;
         else if (comparison == "<" || comparison == "lt" || comparison == "lessthan") passed = actualNumber < expected;
@@ -641,7 +727,26 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
                 "Exact equality cannot safely compare a floating-point value beyond its exact integer range; use a string identifier or an integer value");
         }
         double expectedNumber = 0.0;
-        if (isTextValue(actual) && isTextValue(expectedValue) && tolerance == 0.0) {
+        if (hasDecimalPlaces) {
+            if (!finiteNumber(actual, actualNumber) ||
+                !finiteNumber(expectedValue, expectedNumber)) {
+                return limitErrorResult(
+                    node,
+                    actual,
+                    "LimitTypeError",
+                    "decimalPlaces requires finite numeric actual and expected values");
+            }
+            actualNumber = roundToDecimalPlaces(actualNumber, decimalPlaces);
+            expectedNumber = roundToDecimalPlaces(expectedNumber, decimalPlaces);
+            comparedActual = actualNumber;
+            comparedExpected = expectedNumber;
+            hasComparedExpected = true;
+            usedDecimalRounding = true;
+            comparisonMode = QStringLiteral("roundedNumeric");
+            passed = tolerance == 0.0
+                ? actualNumber == expectedNumber
+                : std::abs(actualNumber - expectedNumber) <= tolerance;
+        } else if (isTextValue(actual) && isTextValue(expectedValue) && tolerance == 0.0) {
             comparisonMode = QStringLiteral("text");
             passed = actual.toString() == expectedValue.toString();
         } else if (integralValuesEqual(actual, expectedValue, tolerance, passed)) {
@@ -698,6 +803,17 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
     result.outputs.insert("matched", passed);
     result.outputs.insert("comparison", comparison);
     result.outputs.insert("comparisonMode", comparisonMode);
+    if (usedDecimalRounding) {
+        result.outputs.insert("comparedActual", comparedActual);
+        if (hasComparedExpected) {
+            result.outputs.insert("comparedExpected", comparedExpected);
+        }
+        if (hasComparedRange) {
+            result.outputs.insert("comparedLower", comparedLower);
+            result.outputs.insert("comparedUpper", comparedUpper);
+        }
+        result.outputs.insert("decimalPlaces", decimalPlaces);
+    }
 
     MeasurementResult measurement;
     measurement.name = node.payload.value("measurementName", node.displayName).toString();
@@ -707,6 +823,21 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
     measurement.status = passed ? MeasurementStatus::Passed : MeasurementStatus::Failed;
     applyConfiguredMeasurementLimits(node.payload, measurement);
     measurement.attributes.insert("comparisonMode", comparisonMode);
+    if (usedDecimalRounding) {
+        measurement.attributes.insert("comparedActual", comparedActual);
+        if (hasComparedExpected) {
+            measurement.attributes.insert("comparedExpected", comparedExpected);
+        }
+        if (hasComparedRange) {
+            measurement.hasLowerLimit = true;
+            measurement.lowerLimit = comparedLower;
+            measurement.hasUpperLimit = true;
+            measurement.upperLimit = comparedUpper;
+            measurement.attributes.insert("comparedLower", comparedLower);
+            measurement.attributes.insert("comparedUpper", comparedUpper);
+        }
+        measurement.attributes.insert("decimalPlaces", decimalPlaces);
+    }
     if (!passed && !controlPredicate) {
         result.errorCode = "LimitFailed";
         result.errorMessage = QString("Measurement %1 failed %2 comparison")
@@ -723,9 +854,29 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
     const auto effectiveUpper = measurement.hasUpperLimit
         ? QString::number(measurement.upperLimit, 'g', 15)
         : logValueText(measurement.attributes.value("expected"));
+    QString roundingDetails;
+    if (usedDecimalRounding) {
+        roundingDetails = QStringLiteral(" comparedActual=%1")
+                              .arg(QString::number(
+                                  comparedActual, 'f', decimalPlaces));
+        if (hasComparedExpected) {
+            roundingDetails += QStringLiteral(" comparedExpected=%1")
+                                   .arg(QString::number(
+                                       comparedExpected, 'f', decimalPlaces));
+        }
+        if (hasComparedRange) {
+            roundingDetails += QStringLiteral(" comparedRange=[%1,%2]")
+                                   .arg(QString::number(
+                                            comparedLower, 'f', decimalPlaces),
+                                        QString::number(
+                                            comparedUpper, 'f', decimalPlaces));
+        }
+        roundingDetails += QStringLiteral(" decimalPlaces=%1")
+                               .arg(decimalPlaces);
+    }
     publishLimitLog(
         context,
-        QStringLiteral("%1_RESULT %2 actual=%3 comparison=%4 mode=%5 lower=%6 upper=%7")
+        (QStringLiteral("%1_RESULT %2 actual=%3 comparison=%4 mode=%5 lower=%6 upper=%7")
             .arg(controlPredicate ? QStringLiteral("BREAK")
                                   : QStringLiteral("LIMIT"),
                   controlPredicate
@@ -735,9 +886,9 @@ NodeResult LimitNodeHandler::run(const ExecNode& node,
                                 : QStringLiteral("FAIL")),
                   logValueText(actual),
                   comparison,
-                  comparisonMode,
-                  effectiveLower,
-                  effectiveUpper));
+                   comparisonMode,
+                   effectiveLower,
+                   effectiveUpper) + roundingDetails));
     return result;
 }
 
