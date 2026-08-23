@@ -601,7 +601,671 @@ int totalAttemptCount(const PicoATE::Core::StepReport& step)
     return total;
 }
 
+int totalStepCount(const QVector<PicoATE::Core::StepReport>& steps)
+{
+    int total = 0;
+    for (const auto& step : steps) {
+        ++total;
+        total += totalStepCount(step.children);
+    }
+    return total;
+}
+
+void collectTerminalStepIds(const QVector<PicoATE::Core::StepReport>& steps,
+                            QSet<PicoATE::Core::NodeId>& known,
+                            QSet<PicoATE::Core::NodeId>& terminal)
+{
+    for (const auto& step : steps) {
+        const auto id = step.nodePath.isEmpty() ? step.stepId : step.nodePath;
+        if (!id.isEmpty()) {
+            known.insert(id);
+            if (PicoATE::Core::isTerminalActivation(step.state)) {
+                terminal.insert(id);
+            }
+        }
+        collectTerminalStepIds(step.children, known, terminal);
+    }
+}
+
+void appendRecentOverviewStep(
+    QVector<UutOverviewRecentStep>& recentSteps,
+    UutOverviewRecentStep step)
+{
+    if (step.nodeId.isEmpty()) {
+        return;
+    }
+    if (step.displayName.isEmpty()) {
+        step.displayName = step.nodeId;
+    }
+    for (int index = recentSteps.size() - 1; index >= 0; --index) {
+        if (recentSteps.at(index).nodeId == step.nodeId) {
+            recentSteps.removeAt(index);
+        }
+    }
+    recentSteps.push_back(std::move(step));
+    while (recentSteps.size() > 3) {
+        recentSteps.removeFirst();
+    }
+}
+
+void collectRecentReportSteps(
+    const QVector<PicoATE::Core::StepReport>& steps,
+    QVector<UutOverviewRecentStep>& recentSteps)
+{
+    for (const auto& step : steps) {
+        collectRecentReportSteps(step.children, recentSteps);
+        if (!PicoATE::Core::isTerminalActivation(step.state)) {
+            continue;
+        }
+        appendRecentOverviewStep(
+            recentSteps,
+            {step.nodePath.isEmpty() ? step.stepId : step.nodePath,
+             step.displayName,
+             step.state,
+             step.outcome});
+    }
+}
+
+bool failedOutcome(PicoATE::Core::NodeOutcome outcome)
+{
+    return outcome == PicoATE::Core::NodeOutcome::Failed ||
+           outcome == PicoATE::Core::NodeOutcome::Error ||
+           outcome == PicoATE::Core::NodeOutcome::Timeout;
+}
+
+bool failedActivation(PicoATE::Core::ActivationState state)
+{
+    return state == PicoATE::Core::ActivationState::Failed ||
+           state == PicoATE::Core::ActivationState::Error ||
+           state == PicoATE::Core::ActivationState::Timeout;
+}
+
+bool terminalOverviewState(UutOverviewState state)
+{
+    return state == UutOverviewState::Passed ||
+           state == UutOverviewState::Failed ||
+           state == UutOverviewState::Stopped;
+}
+
+bool findFirstFailedReportStep(
+    const QVector<PicoATE::Core::StepReport>& steps,
+    UutOverviewEntry& entry)
+{
+    for (const auto& step : steps) {
+        if (findFirstFailedReportStep(step.children, entry)) {
+            return true;
+        }
+        if (!step.wasError && !failedOutcome(step.outcome) &&
+            !failedActivation(step.state)) {
+            continue;
+        }
+        entry.failedNodeId = step.nodePath.isEmpty() ? step.stepId
+                                                     : step.nodePath;
+        entry.failedStep = step.displayName.isEmpty() ? step.stepId
+                                                      : step.displayName;
+        entry.failedPhase = step.phase;
+        for (const auto& attempt : step.attempts) {
+            if (!failedOutcome(attempt.outcome)) {
+                continue;
+            }
+            entry.errorCode = attempt.errorCode;
+            entry.message = attempt.errorMessage;
+            break;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool overviewTracksNodeEvent(PicoATE::Core::RuntimeEventKind kind)
+{
+    using PicoATE::Core::RuntimeEventKind;
+    switch (kind) {
+    case RuntimeEventKind::NodeStateChanged:
+    case RuntimeEventKind::AttemptStarted:
+    case RuntimeEventKind::AttemptCompleted:
+    case RuntimeEventKind::RetryScheduled:
+    case RuntimeEventKind::LoopIterationStarted:
+    case RuntimeEventKind::LoopCompleted:
+    case RuntimeEventKind::TestItemStarted:
+    case RuntimeEventKind::TestItemCompleted:
+    case RuntimeEventKind::BarrierWaiting:
+    case RuntimeEventKind::BarrierReleased:
+        return true;
+    default:
+        return false;
+    }
+}
+
 } // namespace
+
+QString uutOverviewStateName(UutOverviewState state)
+{
+    switch (state) {
+    case UutOverviewState::Waiting: return QStringLiteral("Waiting");
+    case UutOverviewState::Running: return QStringLiteral("Running");
+    case UutOverviewState::Paused: return QStringLiteral("Paused");
+    case UutOverviewState::Passed: return QStringLiteral("Pass");
+    case UutOverviewState::Failed: return QStringLiteral("Fail");
+    case UutOverviewState::Stopped: return QStringLiteral("Stopped");
+    }
+    return QStringLiteral("Waiting");
+}
+
+UutOverviewModel::UutOverviewModel(QObject* parent)
+    : QAbstractTableModel(parent)
+{
+}
+
+int UutOverviewModel::rowCount(const QModelIndex& parent) const
+{
+    return parent.isValid() ? 0 : m_rows.size();
+}
+
+int UutOverviewModel::columnCount(const QModelIndex& parent) const
+{
+    return parent.isValid() ? 0 : ColumnCount;
+}
+
+QVariant UutOverviewModel::data(const QModelIndex& index, int role) const
+{
+    if (!index.isValid() || index.row() < 0 || index.row() >= m_rows.size()) {
+        return {};
+    }
+    const auto& entry = m_rows[index.row()].entry;
+    switch (role) {
+    case UutIdRole: return entry.uutId;
+    case SerialNumberRole: return entry.serialNumber;
+    case StateRole: return static_cast<int>(entry.state);
+    case CurrentStepRole: return entry.currentStep;
+    case CurrentNodeIdRole: return entry.currentNodeId;
+    case ErrorCodeRole: return entry.errorCode;
+    case MessageRole: return entry.message;
+    case CompletedStepsRole: return entry.completedSteps;
+    case TotalStepsRole: return entry.totalSteps;
+    case ProgressRole: return entry.progress;
+    case DurationMsRole: return entry.durationMs;
+    case RetryActiveRole: return entry.retryActive;
+    case RetryAttemptRole: return entry.retryAttempt;
+    case RetryMaxAttemptsRole: return entry.retryMaxAttempts;
+    default:
+        break;
+    }
+    if (role != Qt::DisplayRole) {
+        return {};
+    }
+    switch (index.column()) {
+    case UutColumn: return entry.uutId;
+    case SerialNumberColumn:
+        return entry.serialNumber.isEmpty() ? QStringLiteral("--")
+                                            : entry.serialNumber;
+    case StateColumn: return uutOverviewStateName(entry.state);
+    case CurrentStepColumn:
+        return entry.currentStep.isEmpty() ? QStringLiteral("Waiting to start")
+                                           : entry.currentStep;
+    case ProgressColumn:
+        return QStringLiteral("%1 / %2 (%3%)")
+            .arg(entry.completedSteps)
+            .arg(entry.totalSteps)
+            .arg(entry.progress);
+    case DurationColumn: return durationText(entry.durationMs);
+    default: return {};
+    }
+}
+
+QVariant UutOverviewModel::headerData(int section,
+                                      Qt::Orientation orientation,
+                                      int role) const
+{
+    if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
+        return {};
+    }
+    switch (section) {
+    case UutColumn: return QStringLiteral("UUT");
+    case SerialNumberColumn: return QStringLiteral("SN");
+    case StateColumn: return QStringLiteral("State");
+    case CurrentStepColumn: return QStringLiteral("Current Step");
+    case ProgressColumn: return QStringLiteral("Progress");
+    case DurationColumn: return QStringLiteral("Time");
+    default: return {};
+    }
+}
+
+void UutOverviewModel::resetForRun(
+    const PicoATE::Core::ExecutionReport& preview,
+    const QVector<RunRequest::UutInput>& uuts)
+{
+    beginResetModel();
+    m_rows.clear();
+    m_terminalElapsedMs.clear();
+    m_sessionElapsedMs = 0;
+    m_previewStepCount = preview.uuts.isEmpty()
+        ? 0
+        : totalStepCount(preview.uuts.first().steps);
+
+    auto append = [this](const PicoATE::Core::UutId& uutId,
+                         const QString& serialNumber,
+                         int totalSteps) {
+        Row row;
+        row.entry.uutId = uutId;
+        row.entry.serialNumber = serialNumber;
+        row.entry.totalSteps = totalSteps > 0 ? totalSteps : m_previewStepCount;
+        m_rows.push_back(std::move(row));
+    };
+
+    if (!uuts.isEmpty()) {
+        for (const auto& uut : uuts) {
+            auto serialNumber = uut.variables.value(
+                QStringLiteral("serialNumber")).toString().trimmed();
+            if (serialNumber.isEmpty()) {
+                serialNumber = uut.variables.value(
+                    QStringLiteral("sn")).toString().trimmed();
+            }
+            append(uut.uutId, serialNumber, m_previewStepCount);
+        }
+    } else {
+        for (const auto& uut : preview.uuts) {
+            append(uut.uutId, uut.serialNumber, totalStepCount(uut.steps));
+        }
+    }
+    endResetModel();
+}
+
+void UutOverviewModel::setSessionElapsedMs(qint64 elapsedMs)
+{
+    m_sessionElapsedMs = qMax<qint64>(0, elapsedMs);
+}
+
+void UutOverviewModel::setReport(const PicoATE::Core::ExecutionReport& report)
+{
+    QHash<PicoATE::Core::UutId, UutOverviewEntry> previousEntries;
+    for (const auto& row : std::as_const(m_rows)) {
+        previousEntries.insert(row.entry.uutId, row.entry);
+    }
+    beginResetModel();
+    m_rows.clear();
+    for (const auto& uut : report.uuts) {
+        Row row;
+        row.entry.uutId = uut.uutId;
+        row.entry.serialNumber = uut.serialNumber;
+        row.entry.totalSteps = totalStepCount(uut.steps);
+        const auto previous = previousEntries.constFind(uut.uutId);
+        if (previous != previousEntries.constEnd()) {
+            row.entry.currentStep = previous->currentStep;
+            row.entry.currentNodeId = previous->currentNodeId;
+            row.entry.currentPhase = previous->currentPhase;
+            row.entry.failedStep = previous->failedStep;
+            row.entry.failedNodeId = previous->failedNodeId;
+            row.entry.failedPhase = previous->failedPhase;
+            row.entry.errorCode = previous->errorCode;
+            row.entry.message = previous->message;
+            row.entry.recentSteps = previous->recentSteps;
+            if (!uut.completed) {
+                row.entry.retryActive = previous->retryActive;
+                row.entry.retryAttempt = previous->retryAttempt;
+                row.entry.retryMaxAttempts = previous->retryMaxAttempts;
+            }
+        }
+        if (row.entry.recentSteps.isEmpty()) {
+            collectRecentReportSteps(uut.steps, row.entry.recentSteps);
+        }
+        if (row.entry.currentStep.isEmpty() && !row.entry.recentSteps.isEmpty()) {
+            const auto& recent = row.entry.recentSteps.constLast();
+            row.entry.currentNodeId = recent.nodeId;
+            row.entry.currentStep = recent.displayName;
+        }
+        if ((uut.hasError || failedOutcome(uut.outcome)) &&
+            row.entry.failedNodeId.isEmpty()) {
+            findFirstFailedReportStep(uut.steps, row.entry);
+        }
+        collectTerminalStepIds(uut.steps, row.knownNodes, row.terminalNodes);
+        if (uut.completed) {
+            if (uut.outcome == PicoATE::Core::NodeOutcome::Cancelled ||
+                report.state == PicoATE::Core::ExecutionState::Aborted) {
+                row.entry.state = UutOverviewState::Stopped;
+            } else if (uut.hasError || failedOutcome(uut.outcome)) {
+                row.entry.state = UutOverviewState::Failed;
+            } else {
+                row.entry.state = UutOverviewState::Passed;
+                row.entry.failedStep.clear();
+                row.entry.failedNodeId.clear();
+                row.entry.errorCode.clear();
+                row.entry.message.clear();
+            }
+            auto terminalElapsed = m_terminalElapsedMs.value(uut.uutId, -1);
+            if (terminalElapsed < 0) {
+                terminalElapsed = m_sessionElapsedMs >= 0
+                    ? m_sessionElapsedMs
+                    : (report.metadata.durationMs >= 0
+                           ? report.metadata.durationMs
+                           : qMax<qint64>(0, uut.durationMs));
+                m_terminalElapsedMs.insert(uut.uutId, terminalElapsed);
+            }
+            row.entry.durationMs = terminalElapsed;
+        } else {
+            row.entry.durationMs = qMax<qint64>(0, m_sessionElapsedMs);
+        }
+        updateDerivedValues(row);
+        m_rows.push_back(std::move(row));
+    }
+    endResetModel();
+}
+
+void UutOverviewModel::applyRuntimeEvents(
+    const QVector<PicoATE::Core::RuntimeEvent>& events)
+{
+    QSet<int> dirtyRows;
+    const auto clearFailure = [](Row& row) {
+        row.entry.failedStep.clear();
+        row.entry.failedNodeId.clear();
+        row.entry.failedPhase = PicoATE::Core::ExecutionPhase::Main;
+        row.entry.errorCode.clear();
+        row.entry.message.clear();
+        row.failedParentNodeId.clear();
+    };
+    const auto applyNodeEvent = [this, &dirtyRows, &clearFailure](
+                                    Row& row,
+                                    int rowIndex,
+                                    const PicoATE::Core::RuntimeEvent& event,
+                                    bool contributesToUutProgress) {
+        const auto previousState = row.entry.state;
+        const bool preserveTerminalState = terminalOverviewState(previousState);
+        const auto displayName = event.nodeDisplayName.isEmpty()
+            ? (event.nodeLocalId.isEmpty() ? event.nodeId : event.nodeLocalId)
+            : event.nodeDisplayName;
+        const bool skipped =
+            event.activationState == PicoATE::Core::ActivationState::Skipped;
+
+        if (contributesToUutProgress) {
+            row.knownNodes.insert(event.nodeId);
+        }
+        if (!skipped) {
+            row.entry.currentNodeId = event.nodeId;
+            row.entry.currentStep = displayName;
+            row.entry.currentPhase = event.nodePhase;
+        }
+
+        const int maximumAttempts = qMax(
+            1, event.details.value(QStringLiteral("maxAttempts"), 1).toInt());
+        const int currentAttempt = qMax(
+            1, event.details.value(QStringLiteral("retryAttemptIndex"),
+                                   event.attemptIndex).toInt());
+        if (event.kind == PicoATE::Core::RuntimeEventKind::RetryScheduled) {
+            row.entry.retryActive = maximumAttempts > 1;
+            row.entry.retryAttempt = qMin(currentAttempt + 1, maximumAttempts);
+            row.entry.retryMaxAttempts = maximumAttempts;
+            row.retryNodeId = row.entry.retryActive ? event.nodeId
+                                                    : PicoATE::Core::NodeId{};
+        } else if (event.kind == PicoATE::Core::RuntimeEventKind::AttemptStarted ||
+                   event.kind == PicoATE::Core::RuntimeEventKind::TestItemStarted) {
+            const bool retryStarted = maximumAttempts > 1 && currentAttempt > 1;
+            if (retryStarted) {
+                row.entry.retryActive = true;
+                row.entry.retryAttempt = currentAttempt;
+                row.entry.retryMaxAttempts = maximumAttempts;
+                row.retryNodeId = event.nodeId;
+            }
+        } else if (event.kind == PicoATE::Core::RuntimeEventKind::AttemptCompleted ||
+                   event.kind == PicoATE::Core::RuntimeEventKind::TestItemCompleted) {
+            const bool anotherAttempt = failedOutcome(event.outcome) &&
+                                        currentAttempt < maximumAttempts;
+            const bool completesTrackedRetry = row.retryNodeId == event.nodeId;
+            if (anotherAttempt) {
+                row.entry.retryActive = true;
+                row.entry.retryAttempt = currentAttempt + 1;
+                row.entry.retryMaxAttempts = maximumAttempts;
+                row.retryNodeId = event.nodeId;
+            } else if (completesTrackedRetry) {
+                row.entry.retryActive = false;
+                row.entry.retryAttempt = 0;
+                row.entry.retryMaxAttempts = 0;
+                row.retryNodeId.clear();
+                const bool recoveredFailure =
+                    row.entry.failedNodeId == event.nodeId ||
+                    row.failedParentNodeId == event.nodeId;
+                if (!failedOutcome(event.outcome) && recoveredFailure) {
+                    clearFailure(row);
+                }
+            }
+        }
+
+        const bool terminalEvent =
+            (event.kind == PicoATE::Core::RuntimeEventKind::NodeStateChanged ||
+             event.kind == PicoATE::Core::RuntimeEventKind::TestItemCompleted ||
+             event.kind == PicoATE::Core::RuntimeEventKind::LoopCompleted) &&
+            PicoATE::Core::isTerminalActivation(event.activationState);
+        if (terminalEvent) {
+            if (contributesToUutProgress) {
+                row.terminalNodes.insert(event.nodeId);
+            }
+            appendRecentOverviewStep(
+                row.entry.recentSteps,
+                {event.nodeId, displayName, event.activationState, event.outcome});
+        } else if (contributesToUutProgress &&
+                   (event.kind == PicoATE::Core::RuntimeEventKind::AttemptStarted ||
+                    event.kind == PicoATE::Core::RuntimeEventKind::RetryScheduled ||
+                    event.kind == PicoATE::Core::RuntimeEventKind::LoopIterationStarted ||
+                    !PicoATE::Core::isTerminalActivation(event.activationState))) {
+            row.terminalNodes.remove(event.nodeId);
+        }
+
+        const bool eventFailed = failedOutcome(event.outcome) ||
+                                 failedActivation(event.activationState);
+        if (eventFailed) {
+            if (row.entry.failedNodeId.isEmpty()) {
+                row.entry.failedNodeId = event.nodeId;
+                row.entry.failedStep = displayName;
+                row.entry.failedPhase = event.nodePhase;
+                row.failedParentNodeId = event.parentNodeId;
+                row.entry.errorCode = event.errorCode;
+                row.entry.message = event.message;
+            } else if (row.entry.failedNodeId == event.nodeId) {
+                if (row.entry.errorCode.trimmed().isEmpty()) {
+                    row.entry.errorCode = event.errorCode;
+                }
+                if (row.entry.message.trimmed().isEmpty()) {
+                    row.entry.message = event.message;
+                }
+            }
+        }
+
+        const bool waiting =
+            event.kind == PicoATE::Core::RuntimeEventKind::BarrierWaiting ||
+            event.activationState == PicoATE::Core::ActivationState::WaitingForDependency ||
+            event.activationState == PicoATE::Core::ActivationState::WaitingForResource ||
+            event.activationState == PicoATE::Core::ActivationState::WaitingForTimer ||
+            event.activationState == PicoATE::Core::ActivationState::WaitingAtBarrier;
+        if (preserveTerminalState) {
+            row.entry.state = previousState == UutOverviewState::Passed && eventFailed
+                ? UutOverviewState::Failed
+                : previousState;
+        } else {
+            row.entry.state = waiting ? UutOverviewState::Waiting
+                                      : UutOverviewState::Running;
+        }
+        updateDerivedValues(row);
+        dirtyRows.insert(rowIndex);
+    };
+
+    for (const auto& event : events) {
+        if (event.kind == PicoATE::Core::RuntimeEventKind::SessionStateChanged) {
+            if (event.executionState == PicoATE::Core::ExecutionState::Paused) {
+                for (int row = 0; row < m_rows.size(); ++row) {
+                    if (m_rows[row].entry.state == UutOverviewState::Running) {
+                        m_rows[row].entry.state = UutOverviewState::Paused;
+                        dirtyRows.insert(row);
+                    }
+                }
+            } else if (event.executionState == PicoATE::Core::ExecutionState::Running) {
+                for (int row = 0; row < m_rows.size(); ++row) {
+                    if (m_rows[row].entry.state == UutOverviewState::Paused) {
+                        m_rows[row].entry.state = UutOverviewState::Running;
+                        dirtyRows.insert(row);
+                    }
+                }
+            }
+            continue;
+        }
+        if (event.uutId.isEmpty()) {
+            const bool sharedSessionPhase =
+                overviewTracksNodeEvent(event.kind) && !event.nodeId.isEmpty() &&
+                (event.nodePhase == PicoATE::Core::ExecutionPhase::Setup ||
+                 event.nodePhase == PicoATE::Core::ExecutionPhase::Cleanup);
+            if (sharedSessionPhase) {
+                const bool periodicInvocation = event.details.value(
+                    QStringLiteral("periodicInvocation")).toBool();
+                for (int rowIndex = 0; rowIndex < m_rows.size(); ++rowIndex) {
+                    if (periodicInvocation &&
+                        terminalOverviewState(m_rows[rowIndex].entry.state)) {
+                        continue;
+                    }
+                    applyNodeEvent(m_rows[rowIndex], rowIndex, event, false);
+                }
+            }
+            continue;
+        }
+
+        const int rowIndex = ensureUut(event.uutId);
+        auto& row = m_rows[rowIndex];
+
+        if (event.kind == PicoATE::Core::RuntimeEventKind::UutRegistered) {
+            row.entry.state = UutOverviewState::Waiting;
+            row.entry.currentStep.clear();
+            row.entry.currentNodeId.clear();
+            row.entry.currentPhase = PicoATE::Core::ExecutionPhase::Main;
+            clearFailure(row);
+            row.entry.recentSteps.clear();
+            row.entry.retryActive = false;
+            row.entry.retryAttempt = 0;
+            row.entry.retryMaxAttempts = 0;
+            row.retryNodeId.clear();
+            updateDerivedValues(row);
+            dirtyRows.insert(rowIndex);
+            continue;
+        }
+        if (event.kind == PicoATE::Core::RuntimeEventKind::UutCompleted) {
+            const bool hasError = event.details.value(
+                QStringLiteral("hasError")).toBool() || failedOutcome(event.outcome);
+            if (event.outcome == PicoATE::Core::NodeOutcome::Cancelled) {
+                row.entry.state = UutOverviewState::Stopped;
+            } else {
+                row.entry.state = hasError ? UutOverviewState::Failed
+                                           : UutOverviewState::Passed;
+            }
+            if (row.entry.state == UutOverviewState::Passed) {
+                clearFailure(row);
+            } else {
+                if (row.entry.failedNodeId.isEmpty()) {
+                    row.entry.failedNodeId = row.entry.currentNodeId;
+                    row.entry.failedStep = row.entry.currentStep;
+                    row.entry.failedPhase = row.entry.currentPhase;
+                }
+                if (row.entry.errorCode.trimmed().isEmpty() &&
+                    !event.errorCode.trimmed().isEmpty()) {
+                    row.entry.errorCode = event.errorCode;
+                }
+                if (row.entry.message.trimmed().isEmpty() &&
+                    !event.message.trimmed().isEmpty()) {
+                    row.entry.message = event.message;
+                }
+            }
+            row.entry.retryActive = false;
+            row.entry.retryAttempt = 0;
+            row.entry.retryMaxAttempts = 0;
+            row.retryNodeId.clear();
+            updateDerivedValues(row);
+            const auto terminalElapsed = qMax<qint64>(0, m_sessionElapsedMs);
+            m_terminalElapsedMs.insert(event.uutId, terminalElapsed);
+            row.entry.durationMs = terminalElapsed;
+            row.entry.progress = 100;
+            dirtyRows.insert(rowIndex);
+            continue;
+        }
+        if (!overviewTracksNodeEvent(event.kind) || event.nodeId.isEmpty()) {
+            continue;
+        }
+        if (terminalOverviewState(row.entry.state)) {
+            continue;
+        }
+        applyNodeEvent(row, rowIndex, event, true);
+    }
+
+    auto orderedRows = dirtyRows.values();
+    std::sort(orderedRows.begin(), orderedRows.end());
+    for (const int row : orderedRows) {
+        emitRowChanged(row);
+    }
+}
+
+void UutOverviewModel::clear()
+{
+    m_terminalElapsedMs.clear();
+    m_previewStepCount = 0;
+    m_sessionElapsedMs = -1;
+    if (m_rows.isEmpty()) {
+        return;
+    }
+    beginResetModel();
+    m_rows.clear();
+    endResetModel();
+}
+
+int UutOverviewModel::rowForUut(const PicoATE::Core::UutId& uutId) const
+{
+    for (int row = 0; row < m_rows.size(); ++row) {
+        if (m_rows[row].entry.uutId == uutId) {
+            return row;
+        }
+    }
+    return -1;
+}
+
+std::optional<UutOverviewEntry> UutOverviewModel::entryAt(int row) const
+{
+    if (row < 0 || row >= m_rows.size()) {
+        return std::nullopt;
+    }
+    return m_rows[row].entry;
+}
+
+int UutOverviewModel::ensureUut(const PicoATE::Core::UutId& uutId)
+{
+    const int existing = rowForUut(uutId);
+    if (existing >= 0) {
+        return existing;
+    }
+    const int row = m_rows.size();
+    beginInsertRows({}, row, row);
+    Row created;
+    created.entry.uutId = uutId;
+    created.entry.totalSteps = m_previewStepCount;
+    created.entry.durationMs = qMax<qint64>(0, m_sessionElapsedMs);
+    m_rows.push_back(std::move(created));
+    endInsertRows();
+    return row;
+}
+
+void UutOverviewModel::updateDerivedValues(Row& row)
+{
+    row.entry.completedSteps = qMax(
+        row.entry.completedSteps, static_cast<int>(row.terminalNodes.size()));
+    if (row.entry.totalSteps <= 0) {
+        row.entry.totalSteps = qMax(m_previewStepCount,
+                                    static_cast<int>(row.knownNodes.size()));
+    }
+    const int currentProgress = row.entry.totalSteps > 0
+        ? qBound(0, row.entry.completedSteps * 100 / row.entry.totalSteps, 100)
+        : 0;
+    row.entry.progress = qMax(row.entry.progress, currentProgress);
+}
+
+void UutOverviewModel::emitRowChanged(int row)
+{
+    if (row < 0 || row >= m_rows.size()) {
+        return;
+    }
+    emit dataChanged(index(row, 0), index(row, ColumnCount - 1));
+}
 
 DiagnosticModel::DiagnosticModel(QObject* parent)
     : QAbstractTableModel(parent)
@@ -942,6 +1606,22 @@ void UutStepModel::setSingleUutPhaseLayout(bool enabled)
     endResetModel();
 }
 
+void UutStepModel::setVisibleUutId(const PicoATE::Core::UutId& uutId)
+{
+    if (m_visibleUutId == uutId) {
+        return;
+    }
+    beginResetModel();
+    m_visibleUutId = uutId;
+    rebuildIndexTree();
+    endResetModel();
+}
+
+PicoATE::Core::UutId UutStepModel::visibleUutId() const
+{
+    return m_visibleUutId;
+}
+
 void UutStepModel::applyRuntimeEvents(
     const QVector<PicoATE::Core::RuntimeEvent>& events)
 {
@@ -956,6 +1636,7 @@ void UutStepModel::applyRuntimeEvents(
     }
 
     const bool rebuildTree = runtimeEventsRequireTreeRebuild(events);
+    QSet<ModelItem*> dirtyItems;
     if (rebuildTree) {
         beginResetModel();
     }
@@ -968,6 +1649,13 @@ void UutStepModel::applyRuntimeEvents(
             m_report.completed = event.executionState == PicoATE::Core::ExecutionState::Completed ||
                                  event.executionState == PicoATE::Core::ExecutionState::CompletedWithError ||
                                  event.executionState == PicoATE::Core::ExecutionState::Aborted;
+            if (!rebuildTree) {
+                for (auto* root : m_rootItems) {
+                    if (root && root->isUut) {
+                        dirtyItems.insert(root);
+                    }
+                }
+            }
             continue;
         }
         auto* uut = event.uutId.isEmpty() ? nullptr : &ensureUut(event.uutId);
@@ -981,6 +1669,16 @@ void UutStepModel::applyRuntimeEvents(
             m_completedUuts.insert(event.uutId);
             uut->hasError = event.details.value("hasError").toBool();
             m_report.hasError = m_report.hasError || uut->hasError;
+            if (!rebuildTree) {
+                for (auto* root : m_rootItems) {
+                    if (root && root->isUut && root->uutIndex >= 0 &&
+                        root->uutIndex < m_report.uuts.size() &&
+                        m_report.uuts[root->uutIndex].uutId == event.uutId) {
+                        dirtyItems.insert(root);
+                        break;
+                    }
+                }
+            }
             continue;
         }
         if (event.nodeId.isEmpty()) {
@@ -992,6 +1690,9 @@ void UutStepModel::applyRuntimeEvents(
         }
 
         auto& step = ensureStep(uut ? uut->steps : m_report.sessionSteps, event);
+        auto* changedItem = rebuildTree
+            ? nullptr
+            : findModelItem(event.uutId, event.nodeId);
         switch (event.kind) {
         case PicoATE::Core::RuntimeEventKind::NodeStateChanged:
         case PicoATE::Core::RuntimeEventKind::BarrierWaiting:
@@ -1015,6 +1716,7 @@ void UutStepModel::applyRuntimeEvents(
         case PicoATE::Core::RuntimeEventKind::LoopIterationStarted:
             resetCurrentStepResult(step, true);
             step.state = PicoATE::Core::ActivationState::Running;
+            collectItemAndDescendants(changedItem, dirtyItems);
             break;
         case PicoATE::Core::RuntimeEventKind::LoopCompleted:
             step.state = event.activationState;
@@ -1078,6 +1780,10 @@ void UutStepModel::applyRuntimeEvents(
             break;
         }
 
+        if (changedItem) {
+            dirtyItems.insert(changedItem);
+        }
+
         step.wasError = step.outcome == PicoATE::Core::NodeOutcome::Failed ||
                         step.outcome == PicoATE::Core::NodeOutcome::Error ||
                         step.outcome == PicoATE::Core::NodeOutcome::Timeout;
@@ -1093,7 +1799,7 @@ void UutStepModel::applyRuntimeEvents(
         rebuildIndexTree();
         endResetModel();
     } else {
-        emitAllDataChanged();
+        emitItemsDataChanged(dirtyItems);
     }
 }
 
@@ -1286,8 +1992,19 @@ void UutStepModel::rebuildIndexTree()
     m_modelItems.clear();
     m_rootItems.clear();
     m_nextVisualLineNumber = 1;
-    if (m_singleUutPhaseLayout && m_report.uuts.size() == 1) {
-        auto& uut = m_report.uuts.first();
+    int phaseLayoutUutIndex = -1;
+    if (!m_visibleUutId.isEmpty()) {
+        for (int index = 0; index < m_report.uuts.size(); ++index) {
+            if (m_report.uuts[index].uutId == m_visibleUutId) {
+                phaseLayoutUutIndex = index;
+                break;
+            }
+        }
+    } else if (m_singleUutPhaseLayout && m_report.uuts.size() == 1) {
+        phaseLayoutUutIndex = 0;
+    }
+    if (phaseLayoutUutIndex >= 0) {
+        auto& uut = m_report.uuts[phaseLayoutUutIndex];
         const QVector<PicoATE::Core::ExecutionPhase> phases = {
             PicoATE::Core::ExecutionPhase::Setup,
             PicoATE::Core::ExecutionPhase::Main,
@@ -1305,14 +2022,14 @@ void UutStepModel::rebuildIndexTree()
             auto root = std::make_unique<ModelItem>();
             root->isPhase = true;
             root->phase = phase;
-            root->uutIndex = 0;
+            root->uutIndex = phaseLayoutUutIndex;
             root->row = m_rootItems.size();
             auto* rootPointer = root.get();
             m_modelItems.push_back(std::move(root));
             m_rootItems.push_back(rootPointer);
             for (auto& step : phaseSteps) {
                 if (step.phase == phase) {
-                    appendModelItem(rootPointer, 0, &step);
+                    appendModelItem(rootPointer, phaseLayoutUutIndex, &step);
                 }
             }
         }
@@ -1382,6 +2099,9 @@ bool UutStepModel::runtimeEventsRequireTreeRebuild(
     const QVector<PicoATE::Core::RuntimeEvent>& events) const
 {
     for (const auto& event : events) {
+        const bool hiddenUutEvent = !m_visibleUutId.isEmpty() &&
+                                    !event.uutId.isEmpty() &&
+                                    event.uutId != m_visibleUutId;
         if (event.kind == PicoATE::Core::RuntimeEventKind::UutRegistered &&
             !event.uutId.isEmpty()) {
             const bool uutExists = std::any_of(
@@ -1391,6 +2111,9 @@ bool UutStepModel::runtimeEventsRequireTreeRebuild(
             if (!uutExists) {
                 return true;
             }
+        }
+        if (hiddenUutEvent) {
+            continue;
         }
         if (!runtimeEventUpdatesStep(event) || event.nodeId.isEmpty()) {
             continue;
@@ -1409,7 +2132,20 @@ bool UutStepModel::runtimeEventsRequireTreeRebuild(
     return false;
 }
 
-void UutStepModel::emitAllDataChanged()
+void UutStepModel::collectItemAndDescendants(
+    ModelItem* item,
+    QSet<ModelItem*>& items) const
+{
+    if (!item || items.contains(item)) {
+        return;
+    }
+    items.insert(item);
+    for (auto* child : item->children) {
+        collectItemAndDescendants(child, items);
+    }
+}
+
+void UutStepModel::emitItemsDataChanged(const QSet<ModelItem*>& items)
 {
     const QList<int> roles = {
         Qt::DisplayRole,
@@ -1417,12 +2153,12 @@ void UutStepModel::emitAllDataChanged()
         Qt::ForegroundRole,
         Qt::ToolTipRole,
     };
-    for (const auto& item : m_modelItems) {
-        if (!item) {
+    for (auto* item : items) {
+        if (!item || item->row < 0) {
             continue;
         }
-        emit dataChanged(createIndex(item->row, 0, item.get()),
-                         createIndex(item->row, ColumnCount - 1, item.get()),
+        emit dataChanged(createIndex(item->row, 0, item),
+                         createIndex(item->row, ColumnCount - 1, item),
                          roles);
     }
 }
@@ -1876,14 +2612,26 @@ void RuntimeLogModel::applyRuntimeEvents(
         return;
     }
 
-    beginResetModel();
-    m_logs += incoming;
-    if (m_logs.size() > m_maximumRows) {
-        const int removeCount = m_logs.size() - m_maximumRows;
-        m_logs.remove(0, removeCount);
-        m_droppedRows += static_cast<quint64>(removeCount);
+    const int overflow = qMax(0, m_logs.size() + incoming.size() - m_maximumRows);
+    const int existingRemoveCount = qMin(overflow, m_logs.size());
+    if (existingRemoveCount > 0) {
+        beginRemoveRows({}, 0, existingRemoveCount - 1);
+        m_logs.remove(0, existingRemoveCount);
+        endRemoveRows();
     }
-    endResetModel();
+    const int incomingRemoveCount = overflow - existingRemoveCount;
+    if (incomingRemoveCount > 0) {
+        incoming.remove(0, incomingRemoveCount);
+    }
+    m_droppedRows += static_cast<quint64>(overflow);
+    if (incoming.isEmpty()) {
+        return;
+    }
+
+    const int firstRow = m_logs.size();
+    beginInsertRows({}, firstRow, firstRow + incoming.size() - 1);
+    m_logs += incoming;
+    endInsertRows();
 }
 
 void RuntimeLogModel::clear()
@@ -2276,24 +3024,41 @@ QVector<RuntimeLogLine> RuntimeTimelineModel::applyRuntimeEvents(
         return {};
     }
 
-    beginResetModel();
-    const int firstNewRow = m_rows.size();
+    auto existingRows = std::move(m_rows);
+    m_rows.clear();
     for (const auto& event : events) {
         appendEventRows(event);
     }
+    auto appendedRows = std::move(m_rows);
+    m_rows = std::move(existingRows);
+
     QVector<RuntimeLogLine> newLines;
-    newLines.reserve(m_rows.size() - firstNewRow);
-    for (int row = firstNewRow; row < m_rows.size(); ++row) {
-        newLines.push_back({m_rows[row].timestampUtc,
-                            m_rows[row].message,
-                            m_rows[row].event.uutId});
+    newLines.reserve(appendedRows.size());
+    for (const auto& row : appendedRows) {
+        newLines.push_back({row.timestampUtc,
+                            row.message,
+                            row.event.uutId});
     }
-    if (m_rows.size() > m_maximumRows) {
-        const int removeCount = m_rows.size() - m_maximumRows;
-        m_rows.remove(0, removeCount);
-        m_droppedRows += static_cast<quint64>(removeCount);
+
+    const int overflow = qMax(0, m_rows.size() + appendedRows.size() - m_maximumRows);
+    const int existingRemoveCount = qMin(overflow, m_rows.size());
+    if (existingRemoveCount > 0) {
+        beginRemoveRows({}, 0, existingRemoveCount - 1);
+        m_rows.remove(0, existingRemoveCount);
+        endRemoveRows();
     }
-    endResetModel();
+    const int appendedRemoveCount = overflow - existingRemoveCount;
+    if (appendedRemoveCount > 0) {
+        appendedRows.remove(0, appendedRemoveCount);
+    }
+    m_droppedRows += static_cast<quint64>(overflow);
+
+    if (!appendedRows.isEmpty()) {
+        const int firstRow = m_rows.size();
+        beginInsertRows({}, firstRow, firstRow + appendedRows.size() - 1);
+        m_rows += appendedRows;
+        endInsertRows();
+    }
     return newLines;
 }
 
@@ -2356,6 +3121,42 @@ int RuntimeTimelineModel::rowForNode(
 quint64 RuntimeTimelineModel::droppedRowCount() const
 {
     return m_droppedRows;
+}
+
+UutRuntimeTimelineProxyModel::UutRuntimeTimelineProxyModel(QObject* parent)
+    : QSortFilterProxyModel(parent)
+{
+    setDynamicSortFilter(true);
+}
+
+void UutRuntimeTimelineProxyModel::setVisibleUutId(
+    const PicoATE::Core::UutId& uutId)
+{
+    if (m_visibleUutId == uutId) {
+        return;
+    }
+    m_visibleUutId = uutId;
+    invalidateFilter();
+}
+
+PicoATE::Core::UutId UutRuntimeTimelineProxyModel::visibleUutId() const
+{
+    return m_visibleUutId;
+}
+
+bool UutRuntimeTimelineProxyModel::filterAcceptsRow(
+    int sourceRow,
+    const QModelIndex& sourceParent) const
+{
+    if (m_visibleUutId.isEmpty()) {
+        return true;
+    }
+    const auto* timeline = qobject_cast<const RuntimeTimelineModel*>(sourceModel());
+    if (!timeline || sourceParent.isValid()) {
+        return true;
+    }
+    const auto event = timeline->eventAt(sourceRow);
+    return !event || event->uutId.isEmpty() || event->uutId == m_visibleUutId;
 }
 
 DebugSnapshotModel::DebugSnapshotModel(QObject* parent)

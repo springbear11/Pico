@@ -58,6 +58,7 @@ public slots:
     void compile();
     void run(int uutCount = 1, const QString& uutPrefix = QStringLiteral("UUT"));
     void runUut(const QString& uutId, const QVariantMap& variables = {});
+    void runUuts(const QVector<RunRequest::UutInput>& uuts);
     void pause();
     void resume();
     void stepInto();

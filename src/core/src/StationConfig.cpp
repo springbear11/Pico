@@ -308,6 +308,14 @@ StationConfigResult parseStationConfigJson(const QJsonObject& object,
                  "Loop test count must be between 1 and 100000",
                  "Enter the number of complete sequence runs");
     }
+    result.config.uutCount = readInt(
+        object, "uutCount", result, "uutCount", 1);
+    if (result.config.uutCount < 1 || result.config.uutCount > 64) {
+        addError(result,
+                 "uutCount",
+                 "UUT count must be between 1 and 64",
+                 "Enter the number of UUT slots tested in one batch");
+    }
     result.config.pluginRegistryPath = readString(
         object,
         "pluginRegistry",

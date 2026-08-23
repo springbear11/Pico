@@ -102,6 +102,7 @@ private:
     std::shared_ptr<ExecutionControl> m_executionControl;
     bool m_stopPrepared = false;
     StopMode m_preparedStopMode = StopMode::Graceful;
+    QSet<UutId> m_stoppedUuts;
     QSet<UutId> m_publishedCompletedUuts;
     QSet<QString> m_breakpointResumeGuards;
     DebugStepMode m_activeDebugStepMode = DebugStepMode::None;

@@ -289,11 +289,16 @@ void ExecutionViewModel::run(int uutCount, const QString& uutPrefix)
 
 void ExecutionViewModel::runUut(const QString& uutId, const QVariantMap& variables)
 {
-    RunRequest request;
     RunRequest::UutInput input;
     input.uutId = uutId.trimmed();
     input.variables = variables;
-    request.uuts.push_back(std::move(input));
+    runUuts({input});
+}
+
+void ExecutionViewModel::runUuts(const QVector<RunRequest::UutInput>& uuts)
+{
+    RunRequest request;
+    request.uuts = uuts;
     startRun(std::move(request));
 }
 

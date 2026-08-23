@@ -8,6 +8,7 @@
 #include <QHash>
 #include <QMainWindow>
 #include <QSet>
+#include <QStringList>
 
 #include <memory>
 
@@ -54,7 +55,9 @@ private:
     void applyRuntimeEvents(const QVector<PicoATE::Core::RuntimeEvent>& events);
     void focusExecutionLogForResult(const QModelIndex& index);
     void beginRun(const QString& serialNumber);
+    void beginRunBatch(const QStringList& serialNumbers);
     void beginAutoRoutedRun(const QString& serialNumber);
+    void beginAutoRoutedRunBatch(const QStringList& serialNumbers);
     void startResolvedRun();
     void showRoutingError(const QString& message);
     void updateStationSummary();
@@ -113,7 +116,7 @@ private:
     qint64 m_totalCompletedDurationMs = 0;
     QString m_activeUutId;
     QString m_activeSerialNumber;
-    QString m_pendingSerialNumber;
+    QStringList m_pendingSerialNumbers;
     bool m_runPreparationPending = false;
     bool m_currentRunCounted = false;
     bool m_fieldDeviceDialogOpen = false;

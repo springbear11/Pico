@@ -5,6 +5,7 @@
 #include "ExecutionViewModel.h"
 #include "FlowTargetSelector.h"
 #include "LoadingSpinner.h"
+#include "MultiUutOverviewWidget.h"
 #include "OnOffControl.h"
 #include "OperatorPromptPresenter.h"
 #include "ParserActualDelegate.h"
@@ -30,6 +31,7 @@
 #include "YieldDonutWidget.h"
 
 #include <QAction>
+#include <QButtonGroup>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
@@ -42,6 +44,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QFormLayout>
 #include <QGraphicsDropShadowEffect>
@@ -78,8 +81,10 @@
 #include <QSaveFile>
 #include <QSet>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
+#include <QStackedWidget>
 #include <QSplitter>
 #include <QSortFilterProxyModel>
 #include <QStatusBar>
@@ -93,6 +98,7 @@
 #include <QToolButton>
 #include <QTreeView>
 #include <QUndoStack>
+#include <QVariantAnimation>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -130,6 +136,28 @@ QIcon toolbarIcon(const char* name)
 {
     return QIcon(QStringLiteral(":/icons/%1.svg")
                      .arg(QString::fromLatin1(name)));
+}
+
+QIcon overviewIndicatorIcon(qreal fill)
+{
+    QPixmap pixmap(36, 36);
+    pixmap.setDevicePixelRatio(2.0);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const QColor color(QStringLiteral("#202328"));
+    painter.setPen(QPen(color, 1.6));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawEllipse(QRectF(3.5, 3.5, 11.0, 11.0));
+
+    const qreal radius = 4.2 * qBound<qreal>(0.0, fill, 1.0);
+    if (radius > 0.0) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(color);
+        painter.drawEllipse(QPointF(9.0, 9.0), radius, radius);
+    }
+    return QIcon(pixmap);
 }
 
 QString registerImporterExecutablePath()
@@ -901,6 +929,67 @@ QString adminRunStateStyle(UiRunState state)
     }
 }
 
+QString adminOverviewStateText(UiRunState state, bool stopRequested)
+{
+    switch (state) {
+    case UiRunState::Starting: return QObject::tr("STARTING");
+    case UiRunState::Running: return QObject::tr("TESTING");
+    case UiRunState::Pausing: return QObject::tr("PAUSING");
+    case UiRunState::Paused: return QObject::tr("PAUSED");
+    case UiRunState::Stopping: return QObject::tr("STOPPING");
+    case UiRunState::Completed:
+    case UiRunState::Failed:
+        return stopRequested ? QObject::tr("STOPPED")
+                             : QObject::tr("COMPLETED");
+    case UiRunState::Ready: return QObject::tr("READY");
+    default: return QObject::tr("WAITING");
+    }
+}
+
+void setAdminOverallResultTypography(QLabel* label,
+                                     bool overview,
+                                     bool compact)
+{
+    if (!label) {
+        return;
+    }
+    auto font = label->font();
+    font.setBold(true);
+    font.setPointSize(overview ? (compact ? 12 : 14)
+                               : (compact ? 18 : 21));
+    label->setFont(font);
+    label->setWordWrap(overview);
+}
+
+QString adminOverviewStateStyle(UiRunState state, bool stopRequested)
+{
+    switch (state) {
+    case UiRunState::Starting:
+        return QStringLiteral("background:#e7eaec;color:#303940;"
+                              "border:1px solid #c8cfd4;border-radius:6px;");
+    case UiRunState::Running:
+    case UiRunState::Pausing:
+        return QStringLiteral("background:#f4d768;color:#493a00;"
+                              "border:1px solid #cbaa39;border-radius:6px;");
+    case UiRunState::Paused:
+        return QStringLiteral("background:#dceaf2;color:#315f78;"
+                              "border:1px solid #9abed1;border-radius:6px;");
+    case UiRunState::Stopping:
+        return QStringLiteral("background:#f1dddd;color:#7f3939;"
+                              "border:1px solid #cfa0a0;border-radius:6px;");
+    case UiRunState::Completed:
+    case UiRunState::Failed:
+        return stopRequested
+            ? QStringLiteral("background:#f1dddd;color:#7f3939;"
+                             "border:1px solid #cfa0a0;border-radius:6px;")
+            : QStringLiteral("background:#dfe7eb;color:#324751;"
+                             "border:1px solid #aab9c1;border-radius:6px;");
+    default:
+        return QStringLiteral("background:#e7eaec;color:#303940;"
+                              "border:1px solid #c8cfd4;border-radius:6px;");
+    }
+}
+
 QString stationMetadataValue(const QVariantMap& metadata,
                              std::initializer_list<const char*> keys)
 {
@@ -968,15 +1057,19 @@ MainWindow::MainWindow(QWidget* parent)
     m_runArtifactWriter = std::make_unique<RunArtifactWriter>();
     m_uutStepModel = new UutStepModel(this);
     m_uutStepModel->setSingleUutPhaseLayout(true);
+    m_uutOverviewModel = new UutOverviewModel(this);
     m_attemptModel = new AttemptModel(this);
     m_measurementModel = new MeasurementModel(this);
     m_runtimeTimelineModel = new RuntimeTimelineModel(this);
+    m_runtimeTimelineProxy = new UutRuntimeTimelineProxyModel(this);
+    m_runtimeTimelineProxy->setSourceModel(m_runtimeTimelineModel);
     m_debugSnapshotModel = new DebugSnapshotModel(this);
     m_scanDialog = new ScanDialog(this);
     serviceAdminStartupAnimation();
     buildActions();
     serviceAdminStartupAnimation();
     buildLayout();
+    m_operatorPromptPresenter->setOverviewHost(m_adminUutOverview);
     serviceAdminStartupAnimation();
     restoreUiSettings();
     serviceAdminStartupAnimation();
@@ -1033,18 +1126,18 @@ MainWindow::MainWindow(QWidget* parent)
                     m_sequenceTreeModel->setCurrentDebugNodePath({});
                 }
                 if (state == UiRunState::Ready && m_autoRouteBySn &&
-                    !m_pendingRoutedSerialNumber.isEmpty()) {
-                    const auto serialNumber = std::exchange(
-                        m_pendingRoutedSerialNumber, {});
-                    QTimer::singleShot(0, this, [this, serialNumber] {
-                        startAdminRunWithSerial(serialNumber);
+                    !m_pendingRoutedSerialNumbers.isEmpty()) {
+                    const auto serialNumbers = std::exchange(
+                        m_pendingRoutedSerialNumbers, QStringList{});
+                    QTimer::singleShot(0, this, [this, serialNumbers] {
+                        startAdminRunWithSerials(serialNumbers);
                     });
                 }
                 updateAdminRunState(state);
                 if (state == UiRunState::CompileFailed) {
                     const bool routedCompile = m_autoRouteBySn &&
-                        !m_pendingRoutedSerialNumber.isEmpty();
-                    m_pendingRoutedSerialNumber.clear();
+                        !m_pendingRoutedSerialNumbers.isEmpty();
+                    m_pendingRoutedSerialNumbers.clear();
                     if (m_workspaceTabs) {
                         m_workspaceTabs->setCurrentIndex(0);
                     }
@@ -1076,9 +1169,9 @@ MainWindow::MainWindow(QWidget* parent)
                 }
             });
     connect(m_scanDialog,
-            &ScanDialog::barcodeAccepted,
+            &ScanDialog::barcodesAccepted,
             this,
-            &MainWindow::runScannedUut);
+            &MainWindow::runScannedUuts);
     connect(m_viewModel,
             &ExecutionViewModel::deviceConnectionTestStarted,
             this,
@@ -1445,6 +1538,11 @@ MainWindow::MainWindow(QWidget* parent)
                     m_historyLoaded = true;
                     QTimer::singleShot(0, this, [this] { refreshHistory(); });
                 }
+                if (m_runTestPage &&
+                    m_workspaceTabs->widget(currentIndex) == m_runTestPage) {
+                    QTimer::singleShot(
+                        0, this, [this] { refreshVisibleRuntimeViews(); });
+                }
                 updateCommandState();
             });
     connect(m_resultView->selectionModel(),
@@ -1602,7 +1700,7 @@ void MainWindow::configureAutoRouting(const QString& productRoutingPath)
 {
     m_autoRouteBySn = true;
     setProductRoutingPath(productRoutingPath);
-    m_pendingRoutedSerialNumber.clear();
+    m_pendingRoutedSerialNumbers.clear();
     updateCommandState();
 }
 
@@ -1765,6 +1863,10 @@ void MainWindow::applyResponsiveLayout(bool force)
     }
     if (m_adminOverallResult) {
         m_adminOverallResult->setMinimumHeight(compact ? 78 : 104);
+        const bool showingOverview = m_adminRunStack && m_adminRunOverviewPage &&
+            m_adminRunStack->currentWidget() == m_adminRunOverviewPage;
+        setAdminOverallResultTypography(
+            m_adminOverallResult, showingOverview, compact);
     }
     if (m_adminYieldChart) {
         m_adminYieldChart->setMinimumHeight(compact ? 56 : 64);
@@ -1786,6 +1888,9 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
             }
             brandSlot->setFixedWidth(
                 sidebar->width());
+            if (m_adminUutNavigationLead) {
+                m_adminUutNavigationLead->setFixedWidth(sidebar->width());
+            }
         }
     }
     if (m_startupOverlay && watched == centralWidget() &&
@@ -2339,6 +2444,18 @@ bool MainWindow::isStationWorkspaceActive() const
 {
     return m_workspaceTabs && m_stationEditorPage &&
            m_workspaceTabs->currentWidget() == m_stationEditorPage;
+}
+
+bool MainWindow::isRunWorkspaceActive() const
+{
+    return m_workspaceTabs && m_runTestPage &&
+           m_workspaceTabs->currentWidget() == m_runTestPage;
+}
+
+bool MainWindow::isRunDetailVisible() const
+{
+    return isRunWorkspaceActive() && m_adminRunStack && m_adminRunDetailPage &&
+           m_adminRunStack->currentWidget() == m_adminRunDetailPage;
 }
 
 bool MainWindow::saveStation()
@@ -3368,8 +3485,20 @@ void MainWindow::runSequence()
 
 void MainWindow::runScannedUut(const QString& serialNumber)
 {
-    const auto sn = serialNumber.trimmed();
-    if (sn.isEmpty()) {
+    runScannedUuts({serialNumber});
+}
+
+void MainWindow::runScannedUuts(const QStringList& serialNumbers)
+{
+    QStringList sns;
+    sns.reserve(serialNumbers.size());
+    for (const auto& serialNumber : serialNumbers) {
+        const auto sn = serialNumber.trimmed();
+        if (!sn.isEmpty()) {
+            sns.push_back(sn);
+        }
+    }
+    if (sns.isEmpty()) {
         return;
     }
     if (m_autoRouteBySn) {
@@ -3390,7 +3519,8 @@ void MainWindow::runScannedUut(const QString& serialNumber)
             showProductRoutingError(details.join(QStringLiteral("\n")));
             return;
         }
-        const auto route = PicoATE::Core::resolveProductRoute(routing.config, sn);
+        const auto route = PicoATE::Core::resolveProductRoute(
+            routing.config, sns.first());
         if (!route.ok()) {
             QStringList details;
             for (const auto& error : route.errors) {
@@ -3398,6 +3528,29 @@ void MainWindow::runScannedUut(const QString& serialNumber)
             }
             showProductRoutingError(details.join(QStringLiteral("\n")));
             return;
+        }
+        for (int index = 1; index < sns.size(); ++index) {
+            const auto candidate = PicoATE::Core::resolveProductRoute(
+                routing.config, sns[index]);
+            if (!candidate.ok()) {
+                QStringList details;
+                for (const auto& error : candidate.errors) {
+                    details.push_back(error.message);
+                }
+                showProductRoutingError(
+                    tr("UUT %1 (%2): %3")
+                        .arg(index + 1)
+                        .arg(sns[index], details.join(QStringLiteral("; "))));
+                return;
+            }
+            if (candidate.sequencePath != route.sequencePath ||
+                candidate.stationPath != route.stationPath) {
+                showProductRoutingError(
+                    tr("All UUTs in one batch must resolve to the same project. "
+                       "UUT 1 and UUT %1 matched different projects.")
+                        .arg(index + 1));
+                return;
+            }
         }
 
         const auto currentPath = m_sequenceDocument &&
@@ -3411,7 +3564,7 @@ void MainWindow::runScannedUut(const QString& serialNumber)
         if (currentPath == route.sequencePath &&
             currentStationPath == route.stationPath &&
             m_viewModel->canRun()) {
-            startAdminRunWithSerial(sn);
+            startAdminRunWithSerials(sns);
             return;
         }
         if (currentPath != route.sequencePath && !maybeSaveSequence()) {
@@ -3435,41 +3588,90 @@ void MainWindow::runScannedUut(const QString& serialNumber)
                 return;
             }
         }
-        m_pendingRoutedSerialNumber = sn;
+        m_pendingRoutedSerialNumbers = sns;
         statusBar()->showMessage(
-            tr("SN matched %1. Loading project %2...")
+            tr("%1 UUT SN(s) matched %2. Loading project %3...")
+                .arg(sns.size())
                 .arg(route.routeName, route.projectName));
         compileSequence();
         return;
     }
 
-    startAdminRunWithSerial(sn);
+    startAdminRunWithSerials(sns);
 }
 
 void MainWindow::startAdminRunWithSerial(const QString& serialNumber)
 {
+    const auto sn = serialNumber.trimmed();
+    if (!sn.isEmpty()) {
+        startAdminRunWithSerials({sn});
+        return;
+    }
     if (!m_viewModel || !m_viewModel->canRun()) {
         statusBar()->showMessage(
             tr("Compile the sequence before starting a test"), 4000);
         return;
     }
-    const auto sn = serialNumber.trimmed();
-    m_activeAdminSerialNumber = sn;
-    m_activeAdminUutId = sn.isEmpty()
-        ? QStringLiteral("UUT-%1").arg(
+    const int uutCount = m_uutCount
+        ? qMax(1, m_uutCount->value())
+        : 1;
+    m_activeAdminSerialNumber.clear();
+    m_activeAdminUutId = uutCount > 1
+        ? QStringLiteral("UUT-1")
+        : QStringLiteral("UUT-%1").arg(
               QDateTime::currentDateTime().toString(
-                  QStringLiteral("yyyyMMdd-HHmmss-zzz")))
-        : sn;
+                  QStringLiteral("yyyyMMdd-HHmmss-zzz")));
     m_viewModel->setBreakpoints(m_sequenceTreeModel->breakpointSpecs());
     m_sequenceTreeModel->setCurrentDebugNodePath({});
-    m_adminSerialLabel->setText(sn.isEmpty() ? tr("--") : sn);
-    QVariantMap variables;
-    variables.insert(QStringLiteral("sn"), sn);
-    variables.insert(QStringLiteral("serialNumber"), sn);
+    m_adminSerialLabel->setText(tr("--"));
     ApplicationDiagnostics::recordAction(
         QStringLiteral("RUN_REQUESTED"),
-        QStringLiteral("uut=%1").arg(m_activeAdminUutId));
-    m_viewModel->runUut(m_activeAdminUutId, variables);
+        QStringLiteral("uutCount=%1; firstUut=%2")
+            .arg(uutCount)
+            .arg(m_activeAdminUutId));
+    if (uutCount > 1) {
+        m_viewModel->run(uutCount);
+    } else {
+        QVariantMap variables;
+        variables.insert(QStringLiteral("sn"), QString{});
+        variables.insert(QStringLiteral("serialNumber"), QString{});
+        m_viewModel->runUut(m_activeAdminUutId, variables);
+    }
+    showRunPage();
+}
+
+void MainWindow::startAdminRunWithSerials(const QStringList& serialNumbers)
+{
+    if (!m_viewModel || !m_viewModel->canRun() || serialNumbers.isEmpty()) {
+        statusBar()->showMessage(
+            tr("Compile the sequence before starting a test"), 4000);
+        return;
+    }
+
+    QVector<RunRequest::UutInput> inputs;
+    inputs.reserve(serialNumbers.size());
+    for (int index = 0; index < serialNumbers.size(); ++index) {
+        const auto sn = serialNumbers[index].trimmed();
+        RunRequest::UutInput input;
+        input.uutId = serialNumbers.size() == 1
+            ? sn
+            : QStringLiteral("UUT-%1").arg(index + 1);
+        input.variables.insert(QStringLiteral("sn"), sn);
+        input.variables.insert(QStringLiteral("serialNumber"), sn);
+        inputs.push_back(std::move(input));
+    }
+
+    m_activeAdminSerialNumber = serialNumbers.first().trimmed();
+    m_activeAdminUutId = inputs.first().uutId;
+    m_viewModel->setBreakpoints(m_sequenceTreeModel->breakpointSpecs());
+    m_sequenceTreeModel->setCurrentDebugNodePath({});
+    m_adminSerialLabel->setText(m_activeAdminSerialNumber);
+    ApplicationDiagnostics::recordAction(
+        QStringLiteral("RUN_REQUESTED"),
+        QStringLiteral("uutCount=%1; firstUut=%2")
+            .arg(inputs.size())
+            .arg(m_activeAdminUutId));
+    m_viewModel->runUuts(inputs);
     showRunPage();
 }
 
@@ -3523,10 +3725,33 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
     preview.completed = false;
     preview.hasError = false;
     preview.state = PicoATE::Core::ExecutionState::Idle;
-    if (!preview.uuts.isEmpty()) {
-        preview.uuts.first().uutId = m_activeAdminUutId;
-        preview.uuts.first().hasError = false;
+    const auto activeUuts = m_viewModel->activeRunUuts();
+    const auto previewTemplate = preview.uuts.isEmpty()
+        ? PicoATE::Core::UutReport{}
+        : preview.uuts.first();
+    preview.uuts.clear();
+    for (const auto& input : activeUuts) {
+        auto uut = previewTemplate;
+        uut.uutId = input.uutId;
+        uut.serialNumber = input.variables.value(
+            QStringLiteral("serialNumber")).toString().trimmed();
+        if (uut.serialNumber.isEmpty()) {
+            uut.serialNumber = input.variables.value(
+                QStringLiteral("sn")).toString().trimmed();
+        }
+        uut.completed = false;
+        uut.hasError = false;
+        uut.outcome = PicoATE::Core::NodeOutcome::Unknown;
+        preview.uuts.push_back(std::move(uut));
     }
+    m_uutOverviewModel->resetForRun(m_adminPreviewReport, activeUuts);
+    m_selectedAdminUutId = activeUuts.isEmpty()
+        ? PicoATE::Core::UutId{}
+        : activeUuts.first().uutId;
+    m_adminUutOverview->setSelectedUutId(m_selectedAdminUutId);
+    m_uutStepModel->setVisibleUutId(m_selectedAdminUutId);
+    m_runtimeTimelineProxy->setVisibleUutId(m_selectedAdminUutId);
+    rebuildAdminUutButtons();
     displayReport(preview);
     m_resultView->clearSelection();
     m_resultView->setCurrentIndex({});
@@ -3538,6 +3763,11 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
     updateAdminProgress();
     m_adminElapsed.restart();
     m_adminElapsedTimer->start();
+    if (activeUuts.size() > 1) {
+        showAdminUutOverview();
+    } else {
+        showAdminUutDetails(m_selectedAdminUutId);
+    }
     statusBar()->showMessage(
         tr("Loop run %1 of %2").arg(iteration).arg(totalIterations));
 }
@@ -3576,6 +3806,9 @@ void MainWindow::toggleScanDialog()
                                  .toString().trimmed();
     }
     m_scanDialog->setValidationRules(std::move(rules));
+    m_scanDialog->setSlotCount(m_uutCount
+                                   ? qMax(1, m_uutCount->value())
+                                   : 1);
     m_scanDialog->showForNextScan();
 }
 
@@ -5156,9 +5389,12 @@ void MainWindow::buildActions()
     m_uutCount->setObjectName(QStringLiteral("uutCountSpinBox"));
     m_uutCount->setRange(1, 64);
     m_uutCount->setValue(1);
-    m_uutCount->setFixedWidth(64);
+    m_uutCount->setPrefix(tr("UUTs "));
+    m_uutCount->setAlignment(Qt::AlignCenter);
+    m_uutCount->setFixedWidth(88);
     m_uutCount->setToolTip(tr("Number of UUTs in this run"));
-    m_uutCount->hide();
+    mainToolbar->addWidget(m_uutCount);
+    mainToolbar->addSeparator();
     mainToolbar->addAction(m_compileAction);
     mainToolbar->addAction(m_runAction);
     mainToolbar->addAction(m_pauseAction);
@@ -5587,11 +5823,107 @@ void MainWindow::buildLayout()
     m_workspaceTabs->addTab(stationEditorPage, tr("Station Config"));
     serviceAdminStartupAnimation();
 
-    auto* runPage = new QWidget(m_workspaceTabs);
+    m_runTestPage = new QWidget(m_workspaceTabs);
+    auto* runPage = m_runTestPage;
     runPage->setObjectName(QStringLiteral("adminRunPage"));
     auto* runPageLayout = new QVBoxLayout(runPage);
     runPageLayout->setContentsMargins(0, 0, 0, 0);
     runPageLayout->setSpacing(8);
+
+    m_adminRunStack = new QStackedWidget(runPage);
+    m_adminRunStack->setObjectName(QStringLiteral("adminRunStack"));
+    m_adminRunOverviewPage = new QWidget(m_adminRunStack);
+    m_adminRunOverviewPage->setObjectName(
+        QStringLiteral("adminRunOverviewPage"));
+    auto* overviewLayout = new QVBoxLayout(m_adminRunOverviewPage);
+    overviewLayout->setContentsMargins(0, 0, 0, 0);
+    m_adminUutOverview = new MultiUutOverviewWidget(m_adminRunOverviewPage);
+    m_adminUutOverview->setModel(m_uutOverviewModel);
+    overviewLayout->addWidget(m_adminUutOverview);
+    m_adminRunStack->addWidget(m_adminRunOverviewPage);
+
+    m_adminRunDetailPage = new QWidget(m_adminRunStack);
+    m_adminRunDetailPage->setObjectName(QStringLiteral("adminRunDetailPage"));
+    auto* runDetailLayout = new QVBoxLayout(m_adminRunDetailPage);
+    runDetailLayout->setContentsMargins(0, 0, 0, 0);
+    runDetailLayout->setSpacing(8);
+    auto* detailNavigation = new QWidget(runPage);
+    detailNavigation->setObjectName(QStringLiteral("adminUutDetailNavigation"));
+    auto* detailNavigationLayout = new QHBoxLayout(detailNavigation);
+    detailNavigationLayout->setContentsMargins(0, 2, 6, 2);
+    detailNavigationLayout->setSpacing(
+        style()->pixelMetric(QStyle::PM_SplitterWidth));
+
+    m_adminUutNavigationLead = new QWidget(detailNavigation);
+    m_adminUutNavigationLead->setObjectName(
+        QStringLiteral("adminUutNavigationLead"));
+    m_adminUutNavigationLead->setFixedWidth(RunSidebarWidth);
+    auto* navigationLeadLayout = new QHBoxLayout(m_adminUutNavigationLead);
+    navigationLeadLayout->setContentsMargins(6, 0, 6, 0);
+    navigationLeadLayout->setSpacing(8);
+    m_adminBackToOverview = new QPushButton(
+        overviewIndicatorIcon(0.0), tr("Overview"),
+        m_adminUutNavigationLead);
+    m_adminBackToOverview->setObjectName(
+        QStringLiteral("adminBackToUutOverview"));
+    m_adminBackToOverview->setToolTip(tr("Return to the UUT overview"));
+    m_adminBackToOverview->setCheckable(true);
+    m_adminBackToOverview->setIconSize(QSize(18, 18));
+    m_adminBackToOverview->setProperty("overviewIndicatorFill", 0.0);
+    m_adminBackToOverview->setEnabled(false);
+    auto* overviewIndicatorAnimation = new QVariantAnimation(
+        m_adminBackToOverview);
+    overviewIndicatorAnimation->setDuration(140);
+    connect(overviewIndicatorAnimation, &QVariantAnimation::valueChanged,
+            m_adminBackToOverview,
+            [button = m_adminBackToOverview](const QVariant& value) {
+                const qreal fill = value.toReal();
+                button->setProperty("overviewIndicatorFill", fill);
+                button->setIcon(overviewIndicatorIcon(fill));
+            });
+    connect(m_adminBackToOverview, &QPushButton::toggled,
+            m_adminBackToOverview,
+            [button = m_adminBackToOverview,
+             overviewIndicatorAnimation](bool checked) {
+                overviewIndicatorAnimation->stop();
+                overviewIndicatorAnimation->setStartValue(
+                    button->property("overviewIndicatorFill").toReal());
+                overviewIndicatorAnimation->setEndValue(checked ? 1.0 : 0.0);
+                overviewIndicatorAnimation->start();
+            });
+    auto* detailTitle = new QLabel(tr("UUT DETAILS"), m_adminUutNavigationLead);
+    detailTitle->setObjectName(QStringLiteral("adminSectionTitle"));
+    navigationLeadLayout->addWidget(m_adminBackToOverview);
+    navigationLeadLayout->addWidget(detailTitle);
+    navigationLeadLayout->addStretch(1);
+
+    m_adminUutNavigationGroup = new QButtonGroup(detailNavigation);
+    m_adminUutNavigationGroup->setObjectName(
+        QStringLiteral("adminUutNavigationGroup"));
+    m_adminUutNavigationGroup->setExclusive(true);
+
+    auto* uutButtonsHost = new QWidget(detailNavigation);
+    uutButtonsHost->setObjectName(QStringLiteral("adminUutButtonsHost"));
+    m_adminUutNavigationLayout = new QHBoxLayout(uutButtonsHost);
+    m_adminUutNavigationLayout->setContentsMargins(0, 0, 0, 0);
+    m_adminUutNavigationLayout->setSpacing(6);
+    m_adminUutNavigationLayout->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    detailNavigationLayout->addWidget(m_adminUutNavigationLead);
+    detailNavigationLayout->addWidget(uutButtonsHost, 1);
+    m_adminRunStack->addWidget(m_adminRunDetailPage);
+    m_adminRunStack->setCurrentWidget(m_adminRunDetailPage);
+    connect(m_adminUutOverview, &MultiUutOverviewWidget::uutActivated,
+            this, &MainWindow::showAdminUutDetails);
+    connect(m_adminBackToOverview, &QPushButton::clicked,
+            this, &MainWindow::showAdminUutOverview);
+    connect(m_adminUutNavigationGroup, &QButtonGroup::idClicked,
+            this, [this](int id) {
+                const auto* button = m_adminUutNavigationGroup->button(id);
+                if (button) {
+                    showAdminUutDetails(button->property("uutId").toString());
+                }
+            });
+
     auto* splitter = new QSplitter(Qt::Horizontal, runPage);
     splitter->setObjectName(QStringLiteral("runSplitter"));
     splitter->setChildrenCollapsible(false);
@@ -5610,6 +5942,9 @@ void MainWindow::buildLayout()
     auto* unitDetails = new QFormLayout;
     unitDetails->setHorizontalSpacing(12);
     unitDetails->setVerticalSpacing(10);
+    m_adminSerialCaption = new QLabel(tr("SN"), sidebar);
+    m_adminSerialCaption->setObjectName(
+        QStringLiteral("adminSerialCaption"));
     m_adminSerialLabel = new QLabel(tr("--"), sidebar);
     m_adminSerialLabel->setObjectName(QStringLiteral("adminSerialLabel"));
     m_adminStationLabel = new QLabel(tr("--"), sidebar);
@@ -5622,7 +5957,7 @@ void MainWindow::buildLayout()
     m_adminOrderLabel = new QLabel(tr("--"), sidebar);
     m_adminTesterLabel = new QLabel(tr("--"), sidebar);
     m_adminJigLabel = new QLabel(tr("--"), sidebar);
-    unitDetails->addRow(tr("SN"), m_adminSerialLabel);
+    unitDetails->addRow(m_adminSerialCaption, m_adminSerialLabel);
     unitDetails->addRow(tr("Station ID"), m_adminStationLabel);
     unitDetails->addRow(tr("Model"), m_adminModelLabel);
     unitDetails->addRow(tr("Customer ID"), m_adminCustomerIdLabel);
@@ -5658,7 +5993,7 @@ void MainWindow::buildLayout()
     m_adminElapsedLabel->setAlignment(Qt::AlignCenter);
     sidebarLayout->addWidget(m_adminElapsedLabel);
 
-    auto* runDataSplitter = new QSplitter(Qt::Vertical, splitter);
+    auto* runDataSplitter = new QSplitter(Qt::Vertical, m_adminRunDetailPage);
     runDataSplitter->setObjectName(QStringLiteral("adminRunDataSplitter"));
     runDataSplitter->setChildrenCollapsible(false);
 
@@ -5735,7 +6070,7 @@ void MainWindow::buildLayout()
     details->addTab(m_measurementView, tr("Measurements"));
 
     m_runtimeTimelineView = new QTableView(details);
-    m_runtimeTimelineView->setModel(m_runtimeTimelineModel);
+    m_runtimeTimelineView->setModel(m_runtimeTimelineProxy);
     m_runtimeTimelineView->setObjectName(QStringLiteral("runtimeTimelineView"));
     m_runtimeTimelineView->setAlternatingRowColors(true);
     m_runtimeTimelineView->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -5851,21 +6186,25 @@ void MainWindow::buildLayout()
     runDataSplitter->setStretchFactor(0, 3);
     runDataSplitter->setStretchFactor(1, 2);
     runDataSplitter->setSizes({430, 250});
-    splitter->setStretchFactor(0, 0);
-    splitter->setStretchFactor(1, 1);
-    splitter->setSizes({RunSidebarWidth, 930});
-    runPageLayout->addWidget(splitter, 1);
+    runDetailLayout->addWidget(runDataSplitter, 1);
 
-    auto* progressPanel = new QWidget(runPage);
-    progressPanel->setObjectName(QStringLiteral("adminProgressPanel"));
-    auto* progressLayout = new QVBoxLayout(progressPanel);
+    m_adminProgressPanel = new QWidget(runPage);
+    m_adminProgressPanel->setObjectName(QStringLiteral("adminProgressPanel"));
+    auto* progressLayout = new QVBoxLayout(m_adminProgressPanel);
     progressLayout->setContentsMargins(12, 7, 12, 7);
-    m_adminProgress = new QProgressBar(progressPanel);
+    m_adminProgress = new QProgressBar(m_adminProgressPanel);
     m_adminProgress->setObjectName(QStringLiteral("adminRunProgress"));
     m_adminProgress->setRange(0, 100);
     m_adminProgress->setValue(0);
     progressLayout->addWidget(m_adminProgress);
-    runPageLayout->addWidget(progressPanel);
+    splitter->addWidget(sidebar);
+    splitter->addWidget(m_adminRunStack);
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+    splitter->setSizes({RunSidebarWidth, 930});
+    runPageLayout->addWidget(detailNavigation);
+    runPageLayout->addWidget(splitter, 1);
+    runPageLayout->addWidget(m_adminProgressPanel);
 
     statusBar()->setObjectName(QStringLiteral("adminStatusBar"));
     auto* statsBar = new QWidget(statusBar());
@@ -5922,6 +6261,31 @@ void MainWindow::buildLayout()
         }
         QFrame#adminRunSidebar, QWidget#adminProgressPanel {
             background: #ffffff; border: 1px solid #d7dde1; border-radius: 6px;
+        }
+        QWidget#adminUutDetailNavigation {
+            background: #ffffff; border: 1px solid #d7dde1; border-radius: 6px;
+        }
+        QPushButton#adminBackToUutOverview {
+            background: transparent; border: 0; color: #344048;
+            min-height: 30px; padding: 2px 9px; font-weight: 600;
+        }
+        QPushButton#adminBackToUutOverview:hover {
+            background: #e7f1f7; border-radius: 4px;
+        }
+        QPushButton#adminBackToUutOverview:checked {
+            background: #f0f3f5; border-radius: 4px;
+        }
+        QPushButton[adminUutSwitch="true"] {
+            background: #ffffff; border: 1px solid #c7ced3; border-radius: 4px;
+            color: #20262b; min-height: 30px; padding: 1px 12px;
+            font-weight: 700;
+        }
+        QPushButton[adminUutSwitch="true"]:hover {
+            background: #f0f3f5; border-color: #89939a;
+        }
+        QPushButton[adminUutSwitch="true"]:checked,
+        QPushButton[adminUutSwitch="true"]:checked:hover {
+            background: #202328; border-color: #202328; color: #ffffff;
         }
         QStatusBar#adminStatusBar {
             background: #f8f9fa; border-top: 1px solid #dce1e4;
@@ -6225,15 +6589,54 @@ void MainWindow::updateCompilePreview()
     m_adminPreviewReport = summary.previewReport;
     m_adminTotalNodes = qMax(1, summary.nodeCount);
     m_adminTerminalNodes.clear();
-    auto preview = m_adminPreviewReport;
-    if (!preview.uuts.isEmpty()) {
-        preview.uuts.first().uutId.clear();
+
+    QVector<RunRequest::UutInput> previewUuts;
+    const int uutCount = m_uutCount ? qMax(1, m_uutCount->value()) : 1;
+    previewUuts.reserve(uutCount);
+    for (int index = 1; index <= uutCount; ++index) {
+        RunRequest::UutInput input;
+        input.uutId = QStringLiteral("UUT-%1").arg(index);
+        input.variables.insert(QStringLiteral("sn"), QString{});
+        input.variables.insert(QStringLiteral("serialNumber"), QString{});
+        previewUuts.push_back(std::move(input));
     }
+
+    auto preview = m_adminPreviewReport;
+    preview.completed = false;
+    preview.hasError = false;
+    preview.state = PicoATE::Core::ExecutionState::Idle;
+    const auto previewTemplate = preview.uuts.isEmpty()
+        ? PicoATE::Core::UutReport{}
+        : preview.uuts.first();
+    preview.uuts.clear();
+    for (const auto& input : previewUuts) {
+        auto uut = previewTemplate;
+        uut.uutId = input.uutId;
+        uut.serialNumber.clear();
+        uut.completed = false;
+        uut.hasError = false;
+        uut.outcome = PicoATE::Core::NodeOutcome::Unknown;
+        preview.uuts.push_back(std::move(uut));
+    }
+
+    m_uutOverviewModel->resetForRun(preview, previewUuts);
+    m_selectedAdminUutId = previewUuts.isEmpty()
+        ? PicoATE::Core::UutId{}
+        : previewUuts.first().uutId;
+    m_adminUutOverview->setSelectedUutId(m_selectedAdminUutId);
+    m_uutStepModel->setVisibleUutId(m_selectedAdminUutId);
+    m_runtimeTimelineProxy->setVisibleUutId(m_selectedAdminUutId);
     displayReport(preview);
     m_resultView->clearSelection();
     m_resultView->setCurrentIndex({});
     m_attemptModel->setStep(std::nullopt);
     m_measurementModel->setMeasurements({});
+    rebuildAdminUutButtons();
+    if (previewUuts.size() > 1) {
+        showAdminUutOverview();
+    } else {
+        showAdminUutDetails(m_selectedAdminUutId);
+    }
     updateAdminProgress();
 }
 
@@ -6242,8 +6645,30 @@ void MainWindow::updateAdminRunState(UiRunState state)
     if (!m_adminOverallResult) {
         return;
     }
-    m_adminOverallResult->setText(adminRunStateText(state));
-    m_adminOverallResult->setStyleSheet(adminRunStateStyle(state));
+    m_adminSessionState = state;
+    if (state == UiRunState::Starting) {
+        m_adminStopRequested = false;
+    } else if (state == UiRunState::Stopping) {
+        m_adminStopRequested = true;
+    }
+    const bool showingOverview = m_adminRunStack && m_adminRunOverviewPage &&
+        m_adminRunStack->currentWidget() == m_adminRunOverviewPage;
+    setAdminOverallResultTypography(
+        m_adminOverallResult, showingOverview, m_responsiveLayoutMode == 1);
+    if (showingOverview) {
+        m_adminOverallResult->setText(
+            adminOverviewStateText(state, m_adminStopRequested));
+        m_adminOverallResult->setStyleSheet(
+            adminOverviewStateStyle(state, m_adminStopRequested));
+    } else if (m_adminRunStack && m_adminRunDetailPage &&
+               m_adminRunStack->currentWidget() == m_adminRunDetailPage &&
+               m_uutOverviewModel &&
+               m_uutOverviewModel->rowForUut(m_selectedAdminUutId) >= 0) {
+        updateSelectedAdminUutSummary();
+    } else {
+        m_adminOverallResult->setText(adminRunStateText(state));
+        m_adminOverallResult->setStyleSheet(adminRunStateStyle(state));
+    }
     if (state == UiRunState::Starting) {
         m_adminElapsed.restart();
         m_adminElapsedTimer->start();
@@ -6318,15 +6743,249 @@ void MainWindow::updateAdminElapsed()
         return;
     }
     const qint64 elapsed = m_adminElapsed.isValid() ? m_adminElapsed.elapsed() : 0;
+    if (m_uutOverviewModel) {
+        m_uutOverviewModel->setSessionElapsedMs(elapsed);
+    }
     m_adminElapsedLabel->setText(QStringLiteral("%1:%2.%3")
         .arg(elapsed / 60000, 2, 10, QLatin1Char('0'))
         .arg(elapsed / 1000 % 60, 2, 10, QLatin1Char('0'))
         .arg(elapsed % 1000, 3, 10, QLatin1Char('0')));
 }
 
+void MainWindow::showAdminUutOverview()
+{
+    if (!m_adminRunStack || !m_adminRunOverviewPage ||
+        !m_uutOverviewModel || m_uutOverviewModel->rowCount() <= 1) {
+        showAdminUutDetails(m_selectedAdminUutId);
+        return;
+    }
+    if (m_adminUutNavigationGroup) {
+        m_adminUutNavigationGroup->setExclusive(false);
+        for (auto* button : m_adminUutNavigationGroup->buttons()) {
+            button->setChecked(false);
+        }
+        m_adminUutNavigationGroup->setExclusive(true);
+    }
+    if (m_adminSerialCaption) {
+        m_adminSerialCaption->hide();
+    }
+    if (m_adminSerialLabel) {
+        m_adminSerialLabel->hide();
+    }
+    if (m_adminProgressPanel) {
+        m_adminProgressPanel->hide();
+    }
+    if (m_adminBackToOverview) {
+        m_adminBackToOverview->setChecked(true);
+    }
+    m_adminRunStack->setCurrentWidget(m_adminRunOverviewPage);
+    setAdminOverallResultTypography(
+        m_adminOverallResult, true, m_responsiveLayoutMode == 1);
+    m_adminOverallResult->setText(
+        adminOverviewStateText(m_adminSessionState, m_adminStopRequested));
+    m_adminOverallResult->setStyleSheet(
+        adminOverviewStateStyle(m_adminSessionState, m_adminStopRequested));
+}
+
+void MainWindow::showAdminUutDetails(const PicoATE::Core::UutId& uutId)
+{
+    if (!m_uutOverviewModel || !m_adminRunStack || !m_adminRunDetailPage) {
+        return;
+    }
+    auto selected = uutId;
+    int row = m_uutOverviewModel->rowForUut(selected);
+    if (row < 0 && m_uutOverviewModel->rowCount() > 0) {
+        const auto first = m_uutOverviewModel->entryAt(0);
+        selected = first ? first->uutId : PicoATE::Core::UutId{};
+        row = 0;
+    }
+    if (row < 0) {
+        return;
+    }
+
+    m_selectedAdminUutId = selected;
+    m_uutStepModel->setVisibleUutId(selected);
+    m_runtimeTimelineProxy->setVisibleUutId(selected);
+    m_adminUutOverview->setSelectedUutId(selected);
+    if (m_adminUutNavigationGroup) {
+        for (auto* button : m_adminUutNavigationGroup->buttons()) {
+            if (button->property("uutId").toString() == selected) {
+                button->setChecked(true);
+                break;
+            }
+        }
+    }
+    m_adminBackToOverview->show();
+    m_adminBackToOverview->setEnabled(m_uutOverviewModel->rowCount() > 1);
+    if (m_adminSerialCaption) {
+        m_adminSerialCaption->show();
+    }
+    if (m_adminSerialLabel) {
+        m_adminSerialLabel->show();
+    }
+    if (m_adminProgressPanel) {
+        m_adminProgressPanel->show();
+    }
+    if (m_adminBackToOverview) {
+        m_adminBackToOverview->setChecked(false);
+    }
+    m_adminRunStack->setCurrentWidget(m_adminRunDetailPage);
+    setAdminOverallResultTypography(
+        m_adminOverallResult, false, m_responsiveLayoutMode == 1);
+    m_adminLastAutoFollowLine = 0;
+    m_adminLastAutoFollowUutId = selected;
+    m_adminLastAutoFollowNodeId.clear();
+    m_resultView->expandAll();
+    m_resultView->clearSelection();
+    m_resultView->setCurrentIndex({});
+    m_attemptModel->setStep(std::nullopt);
+    m_measurementModel->setMeasurements({});
+    updateSelectedAdminUutSummary();
+    if (m_runtimeTimelineProxy->rowCount() > 0) {
+        m_runtimeTimelineView->scrollToBottom();
+    }
+}
+
+void MainWindow::rebuildAdminUutButtons()
+{
+    if (!m_adminUutNavigationGroup || !m_adminUutNavigationLayout ||
+        !m_uutOverviewModel) {
+        return;
+    }
+
+    const auto existingButtons = m_adminUutNavigationGroup->buttons();
+    for (auto* button : existingButtons) {
+        m_adminUutNavigationGroup->removeButton(button);
+        m_adminUutNavigationLayout->removeWidget(button);
+        delete button;
+    }
+
+    struct ButtonDefinition {
+        PicoATE::Core::UutId uutId;
+        QString serialNumber;
+        QString text;
+    };
+    QVector<ButtonDefinition> definitions;
+    definitions.reserve(m_uutOverviewModel->rowCount());
+    QFont buttonFont;
+    int commonButtonWidth = 92;
+    for (int row = 0; row < m_uutOverviewModel->rowCount(); ++row) {
+        const auto entry = m_uutOverviewModel->entryAt(row);
+        if (!entry) {
+            continue;
+        }
+        const auto prefix = QStringLiteral("UUT%1").arg(row + 1);
+        const auto serialNumber = entry->serialNumber.trimmed();
+        const auto text = serialNumber.isEmpty()
+            ? prefix
+            : QStringLiteral("%1-%2").arg(prefix, serialNumber);
+        if (definitions.isEmpty()) {
+            buttonFont = m_adminBackToOverview->font();
+            buttonFont.setBold(true);
+        }
+        commonButtonWidth = qMax(
+            commonButtonWidth,
+            QFontMetrics(buttonFont).horizontalAdvance(text) + 30);
+        definitions.push_back({entry->uutId, serialNumber, text});
+    }
+    commonButtonWidth = qMin(commonButtonWidth, 240);
+
+    for (int row = 0; row < definitions.size(); ++row) {
+        const auto& definition = definitions.at(row);
+        auto* button = new QPushButton(
+            definition.text, m_adminUutNavigationLayout->parentWidget());
+        button->setObjectName(
+            QStringLiteral("adminUutButton_%1").arg(row + 1));
+        button->setProperty("adminUutSwitch", true);
+        button->setProperty("uutId", definition.uutId);
+        button->setCheckable(true);
+        button->setFont(buttonFont);
+        button->setFixedWidth(commonButtonWidth);
+        button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+        button->setToolTip(definition.serialNumber.isEmpty()
+                               ? definition.uutId
+                               : tr("%1 | SN: %2")
+                                     .arg(definition.uutId,
+                                          definition.serialNumber));
+        m_adminUutNavigationGroup->addButton(button, row + 1);
+        m_adminUutNavigationLayout->addWidget(button);
+    }
+
+    m_adminBackToOverview->setEnabled(m_uutOverviewModel->rowCount() > 1);
+    if (m_adminRunStack &&
+        m_adminRunStack->currentWidget() == m_adminRunOverviewPage &&
+        m_uutOverviewModel->rowCount() > 1) {
+        m_adminUutNavigationGroup->setExclusive(false);
+        for (auto* button : m_adminUutNavigationGroup->buttons()) {
+            button->setChecked(false);
+        }
+        m_adminUutNavigationGroup->setExclusive(true);
+        return;
+    }
+    for (auto* button : m_adminUutNavigationGroup->buttons()) {
+        if (button->property("uutId").toString() == m_selectedAdminUutId) {
+            button->setChecked(true);
+            return;
+        }
+    }
+}
+
+void MainWindow::updateSelectedAdminUutSummary()
+{
+    if (!m_uutOverviewModel || m_selectedAdminUutId.isEmpty()) {
+        return;
+    }
+    const int row = m_uutOverviewModel->rowForUut(m_selectedAdminUutId);
+    const auto entry = m_uutOverviewModel->entryAt(row);
+    if (!entry) {
+        return;
+    }
+    m_adminSerialLabel->setText(entry->serialNumber.isEmpty()
+                                    ? tr("--")
+                                    : entry->serialNumber);
+    if (m_adminRunStack && m_adminRunOverviewPage &&
+        m_adminRunStack->currentWidget() == m_adminRunOverviewPage) {
+        m_adminOverallResult->setText(adminOverviewStateText(
+            m_adminSessionState, m_adminStopRequested));
+        m_adminOverallResult->setStyleSheet(adminOverviewStateStyle(
+            m_adminSessionState, m_adminStopRequested));
+        return;
+    }
+    UiRunState displayState = UiRunState::Ready;
+    switch (entry->state) {
+    case UutOverviewState::Running:
+    case UutOverviewState::Paused:
+        displayState = UiRunState::Running;
+        break;
+    case UutOverviewState::Passed:
+        displayState = UiRunState::Completed;
+        break;
+    case UutOverviewState::Failed:
+    case UutOverviewState::Stopped:
+        displayState = UiRunState::Failed;
+        break;
+    case UutOverviewState::Waiting:
+        displayState = UiRunState::Ready;
+        break;
+    }
+    m_adminOverallResult->setText(
+        entry->state == UutOverviewState::Waiting
+            ? tr("WAITING")
+            : adminRunStateText(displayState));
+    m_adminOverallResult->setStyleSheet(adminRunStateStyle(displayState));
+    m_adminProgress->setValue(entry->progress);
+}
+
 void MainWindow::updateReport()
 {
     const auto report = m_viewModel->report();
+    if (report.completed &&
+        report.state == PicoATE::Core::ExecutionState::Aborted) {
+        m_adminStopRequested = true;
+    }
+    if (m_uutOverviewModel && m_adminElapsed.isValid()) {
+        m_uutOverviewModel->setSessionElapsedMs(m_adminElapsed.elapsed());
+    }
     if (report.planId.isEmpty() && report.uuts.isEmpty()) {
         m_currentReportSaved = false;
     } else if (report.completed && !m_currentReportSaved) {
@@ -6347,19 +7006,31 @@ void MainWindow::updateReport()
         }
     }
     if (report.completed && !m_currentAdminRunCounted) {
-        if (report.state == PicoATE::Core::ExecutionState::Completed &&
-            !report.hasError) {
-            ++m_adminPassedUnits;
-        } else {
-            ++m_adminFailedUnits;
+        for (const auto& uut : report.uuts) {
+            if (uut.completed && !uut.hasError &&
+                uut.outcome != PicoATE::Core::NodeOutcome::Cancelled) {
+                ++m_adminPassedUnits;
+            } else {
+                ++m_adminFailedUnits;
+            }
+            m_adminTotalCompletedDurationMs += uut.durationMs >= 0
+                ? uut.durationMs
+                : 0;
         }
-        m_adminTotalCompletedDurationMs += m_adminElapsed.isValid()
-            ? m_adminElapsed.elapsed()
-            : 0;
         m_currentAdminRunCounted = true;
         updateAdminYield();
     }
+    m_uutOverviewModel->setReport(report);
+    if (m_uutOverviewModel->rowForUut(m_selectedAdminUutId) < 0 &&
+        m_uutOverviewModel->rowCount() > 0) {
+        m_selectedAdminUutId = m_uutOverviewModel->entryAt(0)->uutId;
+    }
+    m_adminUutOverview->setSelectedUutId(m_selectedAdminUutId);
+    m_uutStepModel->setVisibleUutId(m_selectedAdminUutId);
+    m_runtimeTimelineProxy->setVisibleUutId(m_selectedAdminUutId);
+    rebuildAdminUutButtons();
     displayReport(report, true);
+    updateSelectedAdminUutSummary();
 }
 
 void MainWindow::updateDebugSnapshot()
@@ -6428,20 +7099,27 @@ void MainWindow::applyRuntimeEvents(
     const QVector<PicoATE::Core::RuntimeEvent>& events)
 {
     m_operatorPromptPresenter->applyRuntimeEvents(events);
+    const bool detailVisible = isRunDetailVisible();
     PicoATE::Core::UutId selectedUutId;
     PicoATE::Core::NodeId selectedStepId;
-    const auto current = m_resultView->currentIndex();
-    const auto selectedUut = m_uutStepModel->uutAt(current);
-    const auto selectedStep = m_uutStepModel->stepAt(current);
-    if (selectedUut) {
-        selectedUutId = selectedUut->uutId;
-    }
-    if (selectedStep) {
-        selectedStepId = selectedStep->nodePath.isEmpty()
-            ? selectedStep->stepId
-            : selectedStep->nodePath;
+    if (detailVisible) {
+        const auto current = m_resultView->currentIndex();
+        const auto selectedUut = m_uutStepModel->uutAt(current);
+        const auto selectedStep = m_uutStepModel->stepAt(current);
+        if (selectedUut) {
+            selectedUutId = selectedUut->uutId;
+        }
+        if (selectedStep) {
+            selectedStepId = selectedStep->nodePath.isEmpty()
+                ? selectedStep->stepId
+                : selectedStep->nodePath;
+        }
     }
 
+    if (m_adminElapsed.isValid()) {
+        m_uutOverviewModel->setSessionElapsedMs(m_adminElapsed.elapsed());
+    }
+    m_uutOverviewModel->applyRuntimeEvents(events);
     m_uutStepModel->applyRuntimeEvents(events);
     m_deviceStatusModel->applyRuntimeEvents(events);
     const auto logLines = m_runtimeTimelineModel->applyRuntimeEvents(events);
@@ -6451,18 +7129,21 @@ void MainWindow::applyRuntimeEvents(
             tr("TXT log write failed: %1").arg(written.errorMessage),
             10000);
     }
-    if (m_runtimeTimelineView->model()->rowCount() > 0) {
+    if (detailVisible && m_runtimeTimelineView->model()->rowCount() > 0) {
         m_runtimeTimelineView->scrollToBottom();
     }
-    const auto restored = m_uutStepModel->indexForStep(selectedUutId, selectedStepId);
-    if (restored.isValid()) {
-        m_resultView->setCurrentIndex(restored);
-        updateStepDetails(restored);
-    } else if (m_resultView->currentIndex().isValid()) {
-        updateStepDetails(m_resultView->currentIndex());
-    } else {
-        m_attemptModel->setStep(std::nullopt);
-        m_measurementModel->setMeasurements({});
+    if (detailVisible) {
+        const auto restored = m_uutStepModel->indexForStep(selectedUutId,
+                                                            selectedStepId);
+        if (restored.isValid()) {
+            m_resultView->setCurrentIndex(restored);
+            updateStepDetails(restored);
+        } else if (m_resultView->currentIndex().isValid()) {
+            updateStepDetails(m_resultView->currentIndex());
+        } else {
+            m_attemptModel->setStep(std::nullopt);
+            m_measurementModel->setMeasurements({});
+        }
     }
 
     for (const auto& event : events) {
@@ -6484,8 +7165,10 @@ void MainWindow::applyRuntimeEvents(
                     m_adminLastAutoFollowLine = line;
                     m_adminLastAutoFollowUutId = event.uutId;
                     m_adminLastAutoFollowNodeId = event.nodeId;
-                    m_resultView->scrollTo(
-                        index, QAbstractItemView::PositionAtBottom);
+                    if (detailVisible) {
+                        m_resultView->scrollTo(
+                            index, QAbstractItemView::PositionAtBottom);
+                    }
                 }
             }
         }
@@ -6502,7 +7185,37 @@ void MainWindow::applyRuntimeEvents(
             focusDebugNode(event);
         }
     }
+    if (isRunWorkspaceActive()) {
+        updateAdminProgress();
+        updateSelectedAdminUutSummary();
+    }
+}
+
+void MainWindow::refreshVisibleRuntimeViews()
+{
+    if (!isRunWorkspaceActive()) {
+        return;
+    }
     updateAdminProgress();
+    updateSelectedAdminUutSummary();
+    if (!isRunDetailVisible()) {
+        return;
+    }
+    if (m_runtimeTimelineView && m_runtimeTimelineView->model() &&
+        m_runtimeTimelineView->model()->rowCount() > 0) {
+        m_runtimeTimelineView->scrollToBottom();
+    }
+    if (m_resultView && m_resultView->currentIndex().isValid()) {
+        updateStepDetails(m_resultView->currentIndex());
+    }
+    if (!m_adminLastAutoFollowNodeId.isEmpty()) {
+        const auto followed = m_uutStepModel->indexForStep(
+            m_adminLastAutoFollowUutId, m_adminLastAutoFollowNodeId);
+        if (followed.isValid()) {
+            m_resultView->scrollTo(followed,
+                                   QAbstractItemView::PositionAtBottom);
+        }
+    }
 }
 
 void MainWindow::selectRuntimeEvent(const PicoATE::Core::RuntimeEvent& event)
@@ -6551,8 +7264,12 @@ void MainWindow::selectTimelineSequence(quint64 sequenceNumber)
     if (row < 0) {
         return;
     }
-    const auto index = m_runtimeTimelineModel->index(
+    const auto sourceIndex = m_runtimeTimelineModel->index(
         row, RuntimeTimelineModel::MessageColumn);
+    const auto index = m_runtimeTimelineProxy->mapFromSource(sourceIndex);
+    if (!index.isValid()) {
+        return;
+    }
     m_runtimeTimelineView->setCurrentIndex(index);
     m_runtimeTimelineView->scrollTo(index, QAbstractItemView::PositionAtCenter);
 }
@@ -6563,7 +7280,8 @@ void MainWindow::selectTimelineEvent(const QModelIndex& index)
         return;
     }
 
-    const auto event = m_runtimeTimelineModel->eventAt(index.row());
+    const auto sourceIndex = m_runtimeTimelineProxy->mapToSource(index);
+    const auto event = m_runtimeTimelineModel->eventAt(sourceIndex.row());
     if (!event) {
         return;
     }
@@ -6593,8 +7311,12 @@ void MainWindow::focusExecutionLogForResult(const QModelIndex& index)
     if (auto* details = findChild<QTabWidget*>(QStringLiteral("runDetailsTabs"))) {
         details->setCurrentWidget(m_runtimeTimelineView);
     }
-    const auto logIndex = m_runtimeTimelineModel->index(
+    const auto sourceLogIndex = m_runtimeTimelineModel->index(
         row, RuntimeTimelineModel::MessageColumn);
+    const auto logIndex = m_runtimeTimelineProxy->mapFromSource(sourceLogIndex);
+    if (!logIndex.isValid()) {
+        return;
+    }
     m_runtimeTimelineView->setCurrentIndex(logIndex);
     m_runtimeTimelineView->scrollTo(
         logIndex, QAbstractItemView::PositionAtCenter);

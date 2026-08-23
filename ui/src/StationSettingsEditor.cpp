@@ -123,6 +123,15 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
         tr("Optional regular expression applied to the complete SN."));
     form->addRow(tr("Allowed Characters"), m_snAllowedRegexEdit);
 
+    m_uutCountEdit = new QLineEdit(this);
+    m_uutCountEdit->setObjectName(QStringLiteral("stationUutCountEdit"));
+    m_uutCountEdit->setValidator(new QIntValidator(1, 64, m_uutCountEdit));
+    m_uutCountEdit->setMaxLength(2);
+    m_uutCountEdit->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_uutCountEdit->setToolTip(
+        tr("Number of UUT SNs collected before one batch starts"));
+    form->addRow(tr("UUT Count"), m_uutCountEdit);
+
     m_loopTestCountEdit = new QLineEdit(this);
     m_loopTestCountEdit->setObjectName(QStringLiteral("stationLoopTestCountEdit"));
     m_loopTestCountEdit->setValidator(
@@ -225,6 +234,7 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     connect(m_snLengthEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_snPatternEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_snAllowedRegexEdit, &QLineEdit::textEdited, this, markPending);
+    connect(m_uutCountEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_jigNoEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_orderEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_testerEdit, &QLineEdit::textEdited, this, markPending);
@@ -270,6 +280,7 @@ void StationSettingsEditor::setEditable(bool editable)
                         static_cast<QWidget*>(m_scanDialogSwitch),
                         static_cast<QWidget*>(m_loopTestSwitch),
                         static_cast<QWidget*>(m_loopTestCountEdit),
+                        static_cast<QWidget*>(m_uutCountEdit),
                         static_cast<QWidget*>(m_txtLogSwitch),
                         static_cast<QWidget*>(m_csvReportSwitch),
                         static_cast<QWidget*>(m_xlsxReportSwitch),
@@ -320,6 +331,12 @@ bool StationSettingsEditor::commitPendingChanges()
         m_loopTestCountEdit->selectAll();
         return false;
     }
+    if (!m_uutCountEdit->hasAcceptableInput()) {
+        showError(tr("UUT Count must be an integer from 1 to 64"));
+        m_uutCountEdit->setFocus();
+        m_uutCountEdit->selectAll();
+        return false;
+    }
     auto root = m_document->rootObject();
     auto metadata = root.value(QStringLiteral("metadata")).toObject();
     setMetadataValue(metadata, QStringLiteral("jigNo"), m_jigNoEdit->text(),
@@ -340,6 +357,7 @@ bool StationSettingsEditor::commitPendingChanges()
                 m_loopTestCountEdit->hasAcceptableInput()
                     ? loopCountText.toInt()
                     : 1);
+    root.insert(QStringLiteral("uutCount"), m_uutCountEdit->text().toInt());
     root.insert(QStringLiteral("pluginRegistry"),
                 QStringLiteral("plugins/PluginRegistry.json"));
     root.insert(QStringLiteral("txtLogEnabled"), m_txtLogSwitch->isChecked());
@@ -398,6 +416,8 @@ bool StationSettingsEditor::focusField(const QString& path)
         field = m_loopTestSwitch;
     } else if (path == QStringLiteral("loopTestCount")) {
         field = m_loopTestCountEdit;
+    } else if (path == QStringLiteral("uutCount")) {
+        field = m_uutCountEdit;
     } else if (path == QStringLiteral("txtLogEnabled")) {
         field = m_txtLogSwitch;
     } else if (path == QStringLiteral("csvReportEnabled")) {
@@ -456,6 +476,8 @@ void StationSettingsEditor::reload()
         root.value(QStringLiteral("loopTestEnabled")).toBool(false));
     m_loopTestCountEdit->setText(QString::number(qBound(
         1, root.value(QStringLiteral("loopTestCount")).toInt(1), 100000)));
+    m_uutCountEdit->setText(QString::number(qBound(
+        1, root.value(QStringLiteral("uutCount")).toInt(1), 64)));
     m_txtLogSwitch->setChecked(
         root.value(QStringLiteral("txtLogEnabled")).toBool(false));
     m_csvReportSwitch->setChecked(
@@ -489,6 +511,7 @@ void StationSettingsEditor::reload()
                         static_cast<QWidget*>(m_scanDialogSwitch),
                         static_cast<QWidget*>(m_loopTestSwitch),
                         static_cast<QWidget*>(m_loopTestCountEdit),
+                        static_cast<QWidget*>(m_uutCountEdit),
                         static_cast<QWidget*>(m_txtLogSwitch),
                         static_cast<QWidget*>(m_csvReportSwitch),
                         static_cast<QWidget*>(m_xlsxReportSwitch),

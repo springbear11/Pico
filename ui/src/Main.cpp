@@ -11,13 +11,53 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QIcon>
 #include <QScreen>
 #include <QTimer>
+#include <QWidget>
 
 #ifndef PICOATE_VERSION
 #define PICOATE_VERSION "0.2.0"
 #endif
+
+namespace {
+
+void prepareForMaximizedDisplay(QWidget& window,
+                                QScreen* preferredScreen,
+                                const QSize& preferredNormalSize,
+                                const QSize& preferredMinimumSize)
+{
+    auto* screen = preferredScreen ? preferredScreen : window.screen();
+    if (!screen) {
+        screen = QGuiApplication::primaryScreen();
+    }
+    if (!screen) {
+        window.resize(preferredNormalSize);
+        return;
+    }
+
+    const auto available = screen->availableGeometry();
+    auto safeArea = available.adjusted(32, 48, -32, -32);
+    if (!safeArea.isValid()) {
+        safeArea = available;
+    }
+
+    // restoreGeometry() may retain a previous maximized state. Clear it while
+    // the window is still hidden so setGeometry() establishes a real normal
+    // geometry instead of an oversized maximized client area.
+    window.setWindowState(Qt::WindowNoState);
+    window.setMinimumSize(preferredMinimumSize.boundedTo(safeArea.size()));
+
+    const auto normalSize = preferredNormalSize
+        .boundedTo(safeArea.size())
+        .expandedTo(window.minimumSize());
+    QRect normalGeometry(QPoint{}, normalSize);
+    normalGeometry.moveCenter(safeArea.center());
+    window.setGeometry(normalGeometry);
+}
+
+} // namespace
 
 int main(int argc, char* argv[])
 {
@@ -63,6 +103,10 @@ int main(int argc, char* argv[])
     login.reset();
     if (selection.mode == PicoATE::Ui::UiMode::Test) {
         auto window = PicoATE::Ui::createProductionWindow(selection);
+        prepareForMaximizedDisplay(*window,
+                                   startupScreen,
+                                   QSize(1180, 760),
+                                   QSize(840, 560));
         window->showMaximized();
         return application.exec();
     }
@@ -99,9 +143,10 @@ int main(int argc, char* argv[])
                     .arg(startupTimer.elapsed() - windowStartedAt)
                     .arg(startupTimer.elapsed()));
 
-            if (startupScreen) {
-                windowPointer->setGeometry(startupScreen->availableGeometry());
-            }
+            prepareForMaximizedDisplay(*windowPointer,
+                                       startupScreen,
+                                       QSize(1180, 760),
+                                       QSize(900, 600));
             QObject::connect(
                 windowPointer,
                 &PicoATE::Ui::MainWindow::adminWorkspaceReady,

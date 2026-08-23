@@ -388,6 +388,7 @@ ExecutionState ExecutionSession::state() const
 ExecutionSessionResult ExecutionSession::run()
 {
     ExecutionSessionResult result;
+    m_stoppedUuts.clear();
     m_scheduler->stopAllPeriodicTasks();
     m_executionControl->clearDebugSnapshot();
     m_breakpointResumeGuards.clear();
@@ -640,6 +641,8 @@ ExecutionSessionResult ExecutionSession::run()
     const bool cleanupComplete = phaseComplete(m_sessionExecution, ExecutionPhase::Cleanup);
     const bool cleanupHasError = phaseHasError(m_sessionExecution, ExecutionPhase::Cleanup);
     result.hasError = result.hasError || cleanupHasError;
+    const bool sharedLifecycleHasError = setupHasError || cleanupHasError ||
+                                         !setupComplete || !cleanupComplete;
 
     for (auto& uutResult : result.uutResults) {
         const auto uut = std::find_if(
@@ -650,8 +653,12 @@ ExecutionSessionResult ExecutionSession::run()
         if (uut == m_uuts.cend()) {
             continue;
         }
-        uutResult.completed = uutComplete(*uut);
-        uutResult.hasError = uutResult.hasError || phaseHasError(*uut, ExecutionPhase::Main);
+        const bool stoppedBeforeCompletion = m_stoppedUuts.contains(uut->uutId);
+        uutResult.completed = uutComplete(*uut) || stoppedBeforeCompletion;
+        uutResult.hasError = uutResult.hasError ||
+                             phaseHasError(*uut, ExecutionPhase::Main) ||
+                             sharedLifecycleHasError ||
+                             stoppedBeforeCompletion;
     }
 
     result.completed = setupComplete && allUutsComplete() && cleanupComplete;
@@ -706,6 +713,7 @@ ExecutionReport ExecutionSession::report() const
         report.sessionSteps.push_back(std::move(stepReport));
     }
     report.hasError = report.sessionHasError;
+    const bool sharedLifecycleHasError = report.sessionHasError;
 
     report.uuts.reserve(m_uuts.size());
     for (const auto& uut : m_uuts) {
@@ -723,7 +731,8 @@ ExecutionReport ExecutionSession::report() const
             uutReport.serialNumber = uutVariables.value(
                 QStringLiteral("serialNumber")).toString().trimmed();
         }
-        uutReport.completed = uutComplete(uut);
+        const bool stoppedBeforeCompletion = m_stoppedUuts.contains(uut.uutId);
+        uutReport.completed = uutComplete(uut) || stoppedBeforeCompletion;
         uutReport.steps.reserve(nodeIds.size());
 
         for (auto activation = uut.activations.cbegin();
@@ -763,9 +772,16 @@ ExecutionReport ExecutionSession::report() const
             uutReport.steps.push_back(stepReport);
         }
 
-        uutReport.outcome = uutReport.completed
-            ? (uutReport.hasError ? NodeOutcome::Failed : NodeOutcome::Passed)
-            : NodeOutcome::Unknown;
+        uutReport.hasError = uutReport.hasError || sharedLifecycleHasError;
+
+        if (stoppedBeforeCompletion) {
+            uutReport.hasError = true;
+            uutReport.outcome = NodeOutcome::Cancelled;
+        } else {
+            uutReport.outcome = uutReport.completed
+                ? (uutReport.hasError ? NodeOutcome::Failed : NodeOutcome::Passed)
+                : NodeOutcome::Unknown;
+        }
 
         report.hasError = report.hasError || uutReport.hasError;
         report.uuts.push_back(uutReport);
@@ -884,6 +900,14 @@ void ExecutionSession::prepareStopIfRequested(ExecutionPhase activePhase)
 
     const bool firstPreparation = !m_stopPrepared;
     const bool aborting = stopMode == StopMode::Abort;
+
+    if (firstPreparation) {
+        for (const auto& uut : m_uuts) {
+            if (!uutComplete(uut)) {
+                m_stoppedUuts.insert(uut.uutId);
+            }
+        }
+    }
 
     m_state = aborting
         ? ExecutionState::Aborted
@@ -1162,8 +1186,14 @@ void ExecutionSession::publishDebugStepCompleted(DebugStepMode mode,
 
 void ExecutionSession::publishCompletedUuts()
 {
+    const bool sharedSetupHasError =
+        phaseHasError(m_sessionExecution, ExecutionPhase::Setup) ||
+        !phaseComplete(m_sessionExecution, ExecutionPhase::Setup);
+
     for (const auto& uut : m_uuts) {
-        if (m_publishedCompletedUuts.contains(uut.uutId) || !uutComplete(uut)) {
+        const bool stoppedBeforeCompletion = m_stoppedUuts.contains(uut.uutId);
+        if (m_publishedCompletedUuts.contains(uut.uutId) ||
+            (!uutComplete(uut) && !stoppedBeforeCompletion)) {
             continue;
         }
 
@@ -1172,12 +1202,21 @@ void ExecutionSession::publishCompletedUuts()
             const auto outcome = uut.outcomeOf(it.key());
             hasError = hasError || outcomeWasError(outcome);
         }
+        hasError = hasError || sharedSetupHasError;
 
         RuntimeEvent event;
         event.kind = RuntimeEventKind::UutCompleted;
         event.uutId = uut.uutId;
-        event.outcome = hasError ? NodeOutcome::Failed : NodeOutcome::Passed;
-        event.details.insert("hasError", hasError);
+        event.outcome = stoppedBeforeCompletion
+            ? NodeOutcome::Cancelled
+            : hasError ? NodeOutcome::Failed : NodeOutcome::Passed;
+        event.details.insert("hasError", hasError || stoppedBeforeCompletion);
+        if (stoppedBeforeCompletion) {
+            event.message = QStringLiteral("UUT stopped before completion");
+        } else if (sharedSetupHasError) {
+            event.details.insert("sharedSetupHasError", true);
+            event.message = QStringLiteral("UUT invalidated by session setup failure");
+        }
         m_events.publish(event);
         m_publishedCompletedUuts.insert(uut.uutId);
     }

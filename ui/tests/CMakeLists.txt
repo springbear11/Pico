@@ -71,6 +71,8 @@ qt_add_executable(PicoATEUiWindowTests
     MainWindowLifecycleTests.cpp
     ../src/MainWindow.cpp
     ../src/MainWindow.h
+    ../src/MultiUutOverviewWidget.cpp
+    ../src/MultiUutOverviewWidget.h
     ../src/StepPropertyEditor.cpp
     ../src/StepPropertyEditor.h
     ../src/StationPropertyEditor.cpp

@@ -96,6 +96,8 @@ qt_add_executable(PicoATEUi WIN32
     Main.cpp
     MainWindow.cpp
     MainWindow.h
+    MultiUutOverviewWidget.cpp
+    MultiUutOverviewWidget.h
     OnOffControl.cpp
     OnOffControl.h
     PicoATE.qrc
@@ -161,6 +163,16 @@ if(TARGET PicoATENativeHost)
                 "$<TARGET_FILE:PicoATENativeHost>"
                 "$<TARGET_FILE_DIR:PicoATEUi>"
         COMMENT "Deploying PicoATE.NativeHost beside PicoATE.UI"
+    )
+endif()
+
+if(TARGET PicoATECli)
+    add_dependencies(PicoATEUi PicoATECli)
+    add_custom_command(TARGET PicoATEUi POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:PicoATECli>"
+                "$<TARGET_FILE_DIR:PicoATEUi>"
+        COMMENT "Deploying PicoATE.Cli beside PicoATE.UI"
     )
 endif()
 
@@ -247,6 +259,9 @@ add_custom_target(PicoATEUiPortable
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "$<TARGET_FILE:PicoATERegisterImporter>"
             "${PICOATE_UI_PORTABLE_DIR}/"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:PicoATECli>"
+            "${PICOATE_UI_PORTABLE_DIR}/"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${PICOATE_ROOT_DIR}/templates/bin/$<CONFIG>"
             "${PICOATE_UI_PORTABLE_DIR}/plugins"
@@ -268,7 +283,7 @@ add_custom_target(PicoATEUiPortable
     COMMAND powershell -NoProfile -ExecutionPolicy Bypass
             -File "${PICOATE_ROOT_DIR}/packaging/GeneratePluginRegistry.ps1"
             -PortableDirectory "${PICOATE_UI_PORTABLE_DIR}"
-    DEPENDS PicoATEUi PicoATECore PicoATENativeHost PicoATERegisterImporter
+    DEPENDS PicoATEUi PicoATECore PicoATENativeHost PicoATERegisterImporter PicoATECli
     COMMENT "Creating a self-contained PicoATE UI folder"
     VERBATIM
 )

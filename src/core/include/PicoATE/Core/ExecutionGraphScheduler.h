@@ -191,7 +191,10 @@ private:
                              const UutExecution& uut,
                              const ExecNode& node,
                              const NodeAttempt& attempt,
-                             const QString& message = {});
+                             const QString& message = {},
+                             bool periodicInvocation = false,
+                             int periodicIndex = 0,
+                             qint64 periodicCounter = 0);
     void closeOperatorPromptsForNode(const UutExecution& uut,
                                      const ExecNode& completedNode,
                                      const NodeResult& result);

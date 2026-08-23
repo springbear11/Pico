@@ -163,6 +163,7 @@ QJsonObject StartupSupport::newProjectStationTemplate()
         {QStringLiteral("pdfReportEnabled"), true},
         {QStringLiteral("loopTestEnabled"), false},
         {QStringLiteral("loopTestCount"), 1},
+        {QStringLiteral("uutCount"), 1},
         {QStringLiteral("reportOutputDirectory"), QString{}},
         {QStringLiteral("snLength"), 0},
         {QStringLiteral("snPattern"), QString{}},
@@ -197,6 +198,20 @@ int StartupSupport::stationSnLength(const QString& stationPath, int defaultValue
     }
     const int length = value.toInt(defaultValue);
     return length >= 0 && length <= 256 ? length : defaultValue;
+}
+
+int StartupSupport::stationUutCount(const QString& stationPath, int defaultValue)
+{
+    QJsonObject root;
+    if (!readJsonObject(stationPath, root)) {
+        return defaultValue;
+    }
+    const auto value = root.value(QStringLiteral("uutCount"));
+    if (!value.isDouble()) {
+        return defaultValue;
+    }
+    const int count = value.toInt(defaultValue);
+    return count >= 1 && count <= 64 ? count : defaultValue;
 }
 
 SnValidationRules StartupSupport::stationSnValidationRules(

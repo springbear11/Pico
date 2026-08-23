@@ -8,13 +8,128 @@
 
 #include <QAbstractItemModel>
 #include <QAbstractTableModel>
+#include <QDateTime>
 #include <QHash>
+#include <QSet>
+#include <QSortFilterProxyModel>
 
 #include <optional>
 #include <memory>
 #include <vector>
 
 namespace PicoATE::Ui {
+
+enum class UutOverviewState {
+    Waiting,
+    Running,
+    Paused,
+    Passed,
+    Failed,
+    Stopped
+};
+
+struct UutOverviewRecentStep {
+    PicoATE::Core::NodeId nodeId;
+    QString displayName;
+    PicoATE::Core::ActivationState state =
+        PicoATE::Core::ActivationState::Created;
+    PicoATE::Core::NodeOutcome outcome = PicoATE::Core::NodeOutcome::Unknown;
+};
+
+struct UutOverviewEntry {
+    PicoATE::Core::UutId uutId;
+    QString serialNumber;
+    UutOverviewState state = UutOverviewState::Waiting;
+    QString currentStep;
+    PicoATE::Core::NodeId currentNodeId;
+    PicoATE::Core::ExecutionPhase currentPhase =
+        PicoATE::Core::ExecutionPhase::Main;
+    QString failedStep;
+    PicoATE::Core::NodeId failedNodeId;
+    PicoATE::Core::ExecutionPhase failedPhase =
+        PicoATE::Core::ExecutionPhase::Main;
+    QString errorCode;
+    QString message;
+    int completedSteps = 0;
+    int totalSteps = 0;
+    int progress = 0;
+    bool retryActive = false;
+    int retryAttempt = 0;
+    int retryMaxAttempts = 0;
+    QVector<UutOverviewRecentStep> recentSteps;
+    qint64 durationMs = 0;
+};
+
+QString uutOverviewStateName(UutOverviewState state);
+
+class UutOverviewModel final : public QAbstractTableModel
+{
+    Q_OBJECT
+
+public:
+    enum Column {
+        UutColumn,
+        SerialNumberColumn,
+        StateColumn,
+        CurrentStepColumn,
+        ProgressColumn,
+        DurationColumn,
+        ColumnCount
+    };
+
+    enum DataRole {
+        UutIdRole = Qt::UserRole + 200,
+        SerialNumberRole,
+        StateRole,
+        CurrentStepRole,
+        CurrentNodeIdRole,
+        ErrorCodeRole,
+        MessageRole,
+        CompletedStepsRole,
+        TotalStepsRole,
+        ProgressRole,
+        DurationMsRole,
+        RetryActiveRole,
+        RetryAttemptRole,
+        RetryMaxAttemptsRole
+    };
+
+    explicit UutOverviewModel(QObject* parent = nullptr);
+
+    int rowCount(const QModelIndex& parent = {}) const override;
+    int columnCount(const QModelIndex& parent = {}) const override;
+    QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
+    QVariant headerData(int section,
+                        Qt::Orientation orientation,
+                        int role = Qt::DisplayRole) const override;
+
+    void resetForRun(const PicoATE::Core::ExecutionReport& preview,
+                     const QVector<RunRequest::UutInput>& uuts);
+    void setSessionElapsedMs(qint64 elapsedMs);
+    void setReport(const PicoATE::Core::ExecutionReport& report);
+    void applyRuntimeEvents(const QVector<PicoATE::Core::RuntimeEvent>& events);
+    void clear();
+    int rowForUut(const PicoATE::Core::UutId& uutId) const;
+    std::optional<UutOverviewEntry> entryAt(int row) const;
+
+private:
+    struct Row {
+        UutOverviewEntry entry;
+        QSet<PicoATE::Core::NodeId> terminalNodes;
+        QSet<PicoATE::Core::NodeId> knownNodes;
+        PicoATE::Core::NodeId retryNodeId;
+        PicoATE::Core::NodeId failedParentNodeId;
+    };
+
+    int ensureUut(const PicoATE::Core::UutId& uutId);
+    void updateDerivedValues(Row& row);
+    void emitRowChanged(int row);
+
+    QVector<Row> m_rows;
+    QHash<PicoATE::Core::UutId, qint64> m_terminalElapsedMs;
+    int m_previewStepCount = 0;
+    qint64 m_sessionElapsedMs = -1;
+};
 
 class DiagnosticModel final : public QAbstractTableModel
 {
@@ -90,6 +205,8 @@ public:
 
     void setReport(PicoATE::Core::ExecutionReport report);
     void setSingleUutPhaseLayout(bool enabled);
+    void setVisibleUutId(const PicoATE::Core::UutId& uutId);
+    PicoATE::Core::UutId visibleUutId() const;
     void applyRuntimeEvents(const QVector<PicoATE::Core::RuntimeEvent>& events);
     void clear();
     ItemType itemType(const QModelIndex& index) const;
@@ -123,7 +240,9 @@ private:
                              const PicoATE::Core::NodeId& stepId) const;
     bool runtimeEventsRequireTreeRebuild(
         const QVector<PicoATE::Core::RuntimeEvent>& events) const;
-    void emitAllDataChanged();
+    void collectItemAndDescendants(ModelItem* item,
+                                   QSet<ModelItem*>& items) const;
+    void emitItemsDataChanged(const QSet<ModelItem*>& items);
     PicoATE::Core::UutReport& ensureUut(const PicoATE::Core::UutId& uutId);
     PicoATE::Core::StepReport& ensureStep(QVector<PicoATE::Core::StepReport>& steps,
                                           const PicoATE::Core::RuntimeEvent& event);
@@ -131,6 +250,7 @@ private:
     PicoATE::Core::ExecutionReport m_report;
     QSet<PicoATE::Core::UutId> m_completedUuts;
     bool m_singleUutPhaseLayout = false;
+    PicoATE::Core::UutId m_visibleUutId;
     std::vector<std::unique_ptr<ModelItem>> m_modelItems;
     QVector<ModelItem*> m_rootItems;
     int m_nextVisualLineNumber = 1;
@@ -355,6 +475,24 @@ private:
     QHash<PicoATE::Core::NodeId, PicoATE::Core::NodeId> m_parentNodes;
     QVector<QPair<PicoATE::Core::UutId, PicoATE::Core::NodeId>> m_activeAttempts;
     quint64 m_droppedRows = 0;
+};
+
+class UutRuntimeTimelineProxyModel final : public QSortFilterProxyModel
+{
+    Q_OBJECT
+
+public:
+    explicit UutRuntimeTimelineProxyModel(QObject* parent = nullptr);
+
+    void setVisibleUutId(const PicoATE::Core::UutId& uutId);
+    PicoATE::Core::UutId visibleUutId() const;
+
+protected:
+    bool filterAcceptsRow(int sourceRow,
+                          const QModelIndex& sourceParent) const override;
+
+private:
+    PicoATE::Core::UutId m_visibleUutId;
 };
 
 class DebugSnapshotModel final : public QAbstractTableModel

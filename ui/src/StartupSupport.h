@@ -57,6 +57,8 @@ public:
                                          bool defaultValue = true);
     static int stationSnLength(const QString& stationPath,
                                int defaultValue = 0);
+    static int stationUutCount(const QString& stationPath,
+                               int defaultValue = 1);
     static SnValidationRules stationSnValidationRules(
         const QString& stationPath);
     static SnValidationResult validateSerialNumber(

@@ -33,6 +33,23 @@ int failureEscalationPriority(ErrorAction action)
     return 0;
 }
 
+bool failurePreventsBarrierArrival(ErrorAction action)
+{
+    // A failed result remains a cohort member when policy allows execution to continue.
+    switch (action) {
+    case ErrorAction::Continue:
+    case ErrorAction::Retry:
+        return false;
+    case ErrorAction::Inherit:
+    case ErrorAction::StopUut:
+    case ErrorAction::JumpTo:
+    case ErrorAction::RunCleanup:
+    case ErrorAction::Abort:
+        return true;
+    }
+    return true;
+}
+
 QString controllerEscalationKey(const UutId& uutId,
                                 const FrameId& frameId,
                                 const NodeId& controllerNodeId)
@@ -314,7 +331,10 @@ SchedulerStepResult ExecutionGraphScheduler::pumpPeriodicTaskOnce()
     context.logSink = m_events ? &moduleLogSink : nullptr;
 
     publishAttemptEvent(RuntimeEventKind::AttemptStarted, *execution, *node, attempt,
-                        QStringLiteral("periodic task tick"));
+                        QStringLiteral("periodic task tick"),
+                        true,
+                        invocation->invocationIndex + 1,
+                        invocation->counterValue);
     auto executableNode = *node;
     executableNode.periodic.enabled = false;
     auto result = m_runner.run(executableNode, context);
@@ -330,7 +350,10 @@ SchedulerStepResult ExecutionGraphScheduler::pumpPeriodicTaskOnce()
                         *execution,
                         *node,
                         activation.attempts.last(),
-                        result.errorMessage);
+                        result.errorMessage,
+                        true,
+                        invocation->invocationIndex + 1,
+                        invocation->counterValue);
 
     if (hasLease) {
         m_resources.release(lease.leaseId);
@@ -1510,7 +1533,9 @@ NodeResult ExecutionGraphScheduler::executeNode(UutExecution& uut,
             } else if (finalDecision.action == ErrorAction::Abort) {
                 requestSessionAbort();
             }
-            handleNodeFailureForBarriers(uut, node, result, frameId);
+            if (failurePreventsBarrierArrival(finalDecision.action)) {
+                handleNodeFailureForBarriers(uut, node, result, frameId);
+            }
             if (finalDecision.action == ErrorAction::StopUut ||
                 finalDecision.action == ErrorAction::RunCleanup ||
                 finalDecision.action == ErrorAction::Abort) {
@@ -1921,7 +1946,9 @@ bool ExecutionGraphScheduler::completePendingOperatorPrompt(
             } else if (finalDecision.action == ErrorAction::Abort) {
                 requestSessionAbort();
             }
-            handleNodeFailureForBarriers(uut, *node, result, frameId);
+            if (failurePreventsBarrierArrival(finalDecision.action)) {
+                handleNodeFailureForBarriers(uut, *node, result, frameId);
+            }
             if (finalDecision.action == ErrorAction::StopUut ||
                 finalDecision.action == ErrorAction::RunCleanup ||
                 finalDecision.action == ErrorAction::Abort) {
@@ -2411,7 +2438,9 @@ NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
             } else if (decision.action == ErrorAction::Abort) {
                 requestSessionAbort();
             }
-            handleNodeFailureForBarriers(uut, node, result, frameId);
+            if (failurePreventsBarrierArrival(decision.action)) {
+                handleNodeFailureForBarriers(uut, node, result, frameId);
+            }
             if (decision.action == ErrorAction::StopUut ||
                 decision.action == ErrorAction::RunCleanup ||
                 decision.action == ErrorAction::Abort) {
@@ -2553,7 +2582,9 @@ NodeResult ExecutionGraphScheduler::executeLoopNode(UutExecution& uut,
                 } else if (errorDecision.action == ErrorAction::Abort) {
                     requestSessionAbort();
                 }
-                handleNodeFailureForBarriers(uut, node, result, frameId);
+                if (failurePreventsBarrierArrival(errorDecision.action)) {
+                    handleNodeFailureForBarriers(uut, node, result, frameId);
+                }
                 if (errorDecision.action == ErrorAction::StopUut ||
                     errorDecision.action == ErrorAction::RunCleanup ||
                     errorDecision.action == ErrorAction::Abort) {
@@ -2903,7 +2934,10 @@ void ExecutionGraphScheduler::publishAttemptEvent(RuntimeEventKind kind,
                                                    const UutExecution& uut,
                                                    const ExecNode& node,
                                                    const NodeAttempt& attempt,
-                                                   const QString& message)
+                                                   const QString& message,
+                                                   bool periodicInvocation,
+                                                   int periodicIndex,
+                                                   qint64 periodicCounter)
 {
     if (!m_events) {
         return;
@@ -2931,6 +2965,11 @@ void ExecutionGraphScheduler::publishAttemptEvent(RuntimeEventKind kind,
     event.errorCode = attempt.result.errorCode;
     event.message = message;
     event.details.insert("maxAttempts", qMax(1, node.retry.maxAttempts));
+    if (periodicInvocation) {
+        event.details.insert("periodicInvocation", true);
+        event.details.insert("periodicIndex", periodicIndex);
+        event.details.insert("periodicCounter", periodicCounter);
+    }
     if (node.kind == ExecNodeKind::Break) {
         const auto breakRequested = attempt.result.outputs.value("breakRequested");
         if (breakRequested.isValid()) {

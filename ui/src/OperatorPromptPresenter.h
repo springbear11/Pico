@@ -13,6 +13,7 @@ class QWidget;
 namespace PicoATE::Ui {
 
 class ExecutionViewModel;
+class MultiUutOverviewWidget;
 
 class OperatorPromptPresenter final : public QObject
 {
@@ -26,6 +27,7 @@ public:
     void applyRuntimeEvents(const QVector<PicoATE::Core::RuntimeEvent>& events);
     void closeAll();
     void setSequencePath(QString sequencePath);
+    void setOverviewHost(MultiUutOverviewWidget* overviewHost);
 
 private:
     void showPrompt(const PicoATE::Core::RuntimeEvent& event);
@@ -35,6 +37,7 @@ private:
 
     ExecutionViewModel* m_viewModel = nullptr;
     QWidget* m_owner = nullptr;
+    QPointer<MultiUutOverviewWidget> m_overviewHost;
     QString m_sequencePath;
     QHash<QString, QPointer<QDialog>> m_dialogs;
     QHash<QString, QPointer<QDialog>> m_dialogsByKey;

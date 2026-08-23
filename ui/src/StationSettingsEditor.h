@@ -52,6 +52,7 @@ private:
     QAbstractButton* m_scanDialogSwitch = nullptr;
     QAbstractButton* m_loopTestSwitch = nullptr;
     QLineEdit* m_loopTestCountEdit = nullptr;
+    QLineEdit* m_uutCountEdit = nullptr;
     QAbstractButton* m_txtLogSwitch = nullptr;
     QAbstractButton* m_csvReportSwitch = nullptr;
     QAbstractButton* m_xlsxReportSwitch = nullptr;

@@ -8,6 +8,7 @@
 #include "LoginDialog.h"
 #include "LoadingSpinner.h"
 #include "MainWindow.h"
+#include "MultiUutOverviewWidget.h"
 #include "OperatorPromptPresenter.h"
 #include "ParserActualDelegate.h"
 #include "ProjectResourcePaths.h"
@@ -35,6 +36,7 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QAbstractButton>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QColor>
@@ -389,6 +391,8 @@ private slots:
     void runActionSyncsTreeBreakpointsAndStopsAtBreakpoint();
     void runTestBreakpointGutterControlsExecutionBreakpoints();
     void runPopulatesRuntimeTimeline();
+    void multiUutOverviewShowsRetryAndRecentSteps();
+    void adminMultiUutRunShowsOverviewAndNavigatesToDetails();
     void persistsLayoutAndRecentFiles();
     void invalidOrOffscreenGeometryFallsBackToPrimaryScreen();
     void loginDialogDiscoversSequenceAndValidatesAdminPassword();
@@ -405,8 +409,11 @@ private slots:
     void fieldDeviceDialogAppliesCurrentDeviceAndSavesAll();
     void productionFieldDeviceDialogDefersScannerUntilClosed();
     void scanDialogAcceptsRepeatedBarcodeAndHasNoWindowButtons();
+    void scanDialogCollectsCarouselBatchAndSupportsReplacement();
     void adminStartsOnProductionDashboardAndOpensScannerOnDemand();
+    void adminScannerRunsFourExplicitUuts();
     void productionWindowPreloadsFlowAndRunsWithoutScanner();
+    void productionScannerRunsFourExplicitUutsAndCountsYield();
     void productionWindowRoutesScannedSnBeforeCompiling();
     void adminWindowRoutesScannedSnBeforeCompiling();
     void productionStoppedRunCountsAsFailure();
@@ -443,6 +450,7 @@ private slots:
     void operatorPromptDialogCannotBeDismissedByKeyboardOrWindowControls();
     void operatorPromptDialogValidatesInputMode();
     void operatorPromptDialogReusesKeyForJudgment();
+    void operatorPromptsUseTheirMatchingOverviewCards();
     void messageBoxPropertyEditorSwitchesConfirmationMode();
     void messageBoxPropertyEditorConfiguresJudgmentMode();
     void messageBoxPropertyEditorConfiguresInputMode();
@@ -3965,12 +3973,18 @@ void MainWindowLifecycleTests::runPopulatesRuntimeTimeline()
                              viewModel->state() == UiRunState::Failed,
                              3000);
 
-    auto* model = qobject_cast<RuntimeTimelineModel*>(timelineView->model());
+    auto* timelineProxy = qobject_cast<UutRuntimeTimelineProxyModel*>(
+        timelineView->model());
+    QVERIFY(timelineProxy);
+    auto* model = qobject_cast<RuntimeTimelineModel*>(
+        timelineProxy->sourceModel());
     QVERIFY(model);
-    QVERIFY(model->rowCount() > 0);
+    QVERIFY(timelineProxy->rowCount() > 0);
     bool sawNodeEvent = false;
-    for (int row = 0; row < model->rowCount(); ++row) {
-        const auto event = model->eventAt(row);
+    for (int row = 0; row < timelineProxy->rowCount(); ++row) {
+        const auto sourceIndex = timelineProxy->mapToSource(
+            timelineProxy->index(row, RuntimeTimelineModel::MessageColumn));
+        const auto event = model->eventAt(sourceIndex.row());
         if (event &&
             (event->kind == PicoATE::Core::RuntimeEventKind::AttemptStarted ||
              event->kind == PicoATE::Core::RuntimeEventKind::AttemptCompleted)) {
@@ -3981,10 +3995,13 @@ void MainWindowLifecycleTests::runPopulatesRuntimeTimeline()
     QVERIFY(sawNodeEvent);
 
     QModelIndex measureEvent;
-    for (int row = 0; row < model->rowCount(); ++row) {
-        const auto event = model->eventAt(row);
+    for (int row = 0; row < timelineProxy->rowCount(); ++row) {
+        const auto proxyIndex = timelineProxy->index(
+            row, RuntimeTimelineModel::MessageColumn);
+        const auto sourceIndex = timelineProxy->mapToSource(proxyIndex);
+        const auto event = model->eventAt(sourceIndex.row());
         if (event && event->nodeDisplayName == QStringLiteral("Measure")) {
-            measureEvent = model->index(row, RuntimeTimelineModel::MessageColumn);
+            measureEvent = proxyIndex;
             break;
         }
     }
@@ -4028,11 +4045,371 @@ void MainWindowLifecycleTests::runPopulatesRuntimeTimeline()
                               static_cast<QWidget*>(timelineView),
                               1000);
     QTRY_VERIFY_WITH_TIMEOUT(timelineView->currentIndex().isValid(), 1000);
-    const auto focusedLog = model->eventAt(timelineView->currentIndex().row());
+    const auto focusedSourceIndex = timelineProxy->mapToSource(
+        timelineView->currentIndex());
+    const auto focusedLog = model->eventAt(focusedSourceIndex.row());
     QVERIFY(focusedLog.has_value());
     QCOMPARE(focusedLog->nodeDisplayName, QStringLiteral("Measure"));
     QCOMPARE(focusedLog->kind,
              PicoATE::Core::RuntimeEventKind::AttemptStarted);
+    QVERIFY(window.close());
+}
+
+void MainWindowLifecycleTests::multiUutOverviewShowsRetryAndRecentSteps()
+{
+    using namespace PicoATE::Core;
+
+    StepReport first;
+    first.stepId = QStringLiteral("first");
+    first.nodePath = QStringLiteral("main.first");
+    first.displayName = QStringLiteral("Open Device");
+    StepReport second;
+    second.stepId = QStringLiteral("second");
+    second.nodePath = QStringLiteral("main.second");
+    second.displayName = QStringLiteral("Configure Device");
+    StepReport third;
+    third.stepId = QStringLiteral("third");
+    third.nodePath = QStringLiteral("main.third");
+    third.displayName = QStringLiteral("Read Registers");
+    UutReport previewUut;
+    previewUut.uutId = QStringLiteral("UUT-1");
+    previewUut.steps = {first, second, third};
+    ExecutionReport preview;
+    preview.uuts = {previewUut};
+
+    RunRequest::UutInput input;
+    input.uutId = QStringLiteral("UUT-1");
+    input.variables.insert(QStringLiteral("serialNumber"),
+                           QStringLiteral("BTSN00000001"));
+
+    UutOverviewModel model;
+    model.resetForRun(preview, {input});
+    MultiUutOverviewWidget overview;
+    overview.resize(860, 420);
+    overview.setModel(&model);
+    overview.show();
+    QTest::qWait(20);
+
+    RuntimeEvent registered;
+    registered.kind = RuntimeEventKind::UutRegistered;
+    registered.uutId = QStringLiteral("UUT-1");
+    const auto completedEvent = [&registered](const QString& nodeId,
+                                               const QString& displayName) {
+        RuntimeEvent event = registered;
+        event.kind = RuntimeEventKind::NodeStateChanged;
+        event.nodeId = nodeId;
+        event.nodeDisplayName = displayName;
+        event.activationState = ActivationState::Passed;
+        event.outcome = NodeOutcome::Passed;
+        return event;
+    };
+    RuntimeEvent retry = completedEvent(QStringLiteral("main.third"),
+                                        QStringLiteral("Read Registers"));
+    retry.kind = RuntimeEventKind::RetryScheduled;
+    retry.activationState = ActivationState::Running;
+    retry.outcome = NodeOutcome::Failed;
+    retry.errorCode = QStringLiteral("TRANSIENT");
+    retry.details.insert(QStringLiteral("maxAttempts"), 3);
+    retry.details.insert(QStringLiteral("retryAttemptIndex"), 1);
+    model.applyRuntimeEvents(
+        {registered,
+         completedEvent(QStringLiteral("main.first"),
+                        QStringLiteral("Open Device")),
+         completedEvent(QStringLiteral("main.second"),
+                        QStringLiteral("Configure Device")),
+         retry});
+
+    auto* card = overview.findChild<QAbstractButton*>(
+        QStringLiteral("uutOverviewCard_1"));
+    QTRY_VERIFY_WITH_TIMEOUT(card, 500);
+    auto* caption = card->findChild<QLabel*>(
+        QStringLiteral("uutOverviewStepCaption"));
+    auto* retryLabel = card->findChild<QLabel*>(
+        QStringLiteral("uutOverviewRetry"));
+    auto* errorLabel = card->findChild<QLabel*>(
+        QStringLiteral("uutOverviewError"));
+    auto* currentState = card->findChild<QLabel*>(
+        QStringLiteral("uutOverviewCurrentState"));
+    auto* currentStep = card->findChild<QLabel*>(
+        QStringLiteral("uutOverviewStep"));
+    auto* latestRecent = card->findChild<QLabel*>(
+        QStringLiteral("uutOverviewRecentStep_1"));
+    auto* earlierRecent = card->findChild<QLabel*>(
+        QStringLiteral("uutOverviewRecentStep_2"));
+    QVERIFY(caption);
+    QVERIFY(retryLabel);
+    QVERIFY(errorLabel);
+    QVERIFY(currentState);
+    QVERIFY(currentStep);
+    QVERIFY(latestRecent);
+    QVERIFY(earlierRecent);
+    QCOMPARE(caption->text(), QStringLiteral("RETRYING CURRENT STEP"));
+    QVERIFY(retryLabel->isVisible());
+    QCOMPARE(retryLabel->text(), QStringLiteral("ATTEMPT 2 / 3"));
+    QCOMPARE(errorLabel->text(), QStringLiteral("TRANSIENT"));
+    QCOMPARE(currentState->text(), QStringLiteral("RETRY"));
+    QCOMPARE(latestRecent->text(), QStringLiteral("Configure Device"));
+    QCOMPARE(earlierRecent->text(), QStringLiteral("Open Device"));
+
+    RuntimeEvent finalFailedAttempt = retry;
+    finalFailedAttempt.kind = RuntimeEventKind::AttemptCompleted;
+    finalFailedAttempt.activationState = ActivationState::Failed;
+    finalFailedAttempt.details.insert(QStringLiteral("retryAttemptIndex"), 3);
+    model.applyRuntimeEvents({finalFailedAttempt});
+
+    RuntimeEvent cleanup = retry;
+    cleanup.uutId.clear();
+    cleanup.kind = RuntimeEventKind::NodeStateChanged;
+    cleanup.nodeId = QStringLiteral("cleanup.close");
+    cleanup.nodeDisplayName = QStringLiteral("Close Shared Device");
+    cleanup.nodePhase = ExecutionPhase::Cleanup;
+    cleanup.activationState = ActivationState::Running;
+    cleanup.outcome = NodeOutcome::Unknown;
+    cleanup.errorCode.clear();
+    model.applyRuntimeEvents({cleanup});
+    QTRY_COMPARE(caption->text(), QStringLiteral("CLEANUP STEP"));
+    QCOMPARE(currentState->text(), QStringLiteral("RUN"));
+    QCOMPARE(currentStep->text(), QStringLiteral("Close Shared Device"));
+
+    RuntimeEvent failedUut;
+    failedUut.kind = RuntimeEventKind::UutCompleted;
+    failedUut.uutId = QStringLiteral("UUT-1");
+    failedUut.outcome = NodeOutcome::Failed;
+    failedUut.details.insert(QStringLiteral("hasError"), true);
+    model.applyRuntimeEvents({failedUut});
+    QTRY_COMPARE(caption->text(), QStringLiteral("FAILED STEP"));
+    QCOMPARE(currentState->text(), QStringLiteral("FAIL"));
+    QCOMPARE(currentStep->text(), QStringLiteral("Read Registers"));
+}
+
+void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetails()
+{
+    QSettings().clear();
+    const QString projectDir = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR);
+
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(
+        projectDir + QStringLiteral("/examples/simple_sequence.json")));
+    window.resize(1280, 800);
+    window.show();
+    QTest::qWait(20);
+
+    auto* viewModel = window.findChild<ExecutionViewModel*>();
+    auto* uutCount = window.findChild<QSpinBox*>(
+        QStringLiteral("uutCountSpinBox"));
+    auto* runAction = window.findChild<QAction*>(QStringLiteral("runAction"));
+    auto* runStack = window.findChild<QStackedWidget*>(
+        QStringLiteral("adminRunStack"));
+    auto* overviewPage = window.findChild<QWidget*>(
+        QStringLiteral("adminRunOverviewPage"));
+    auto* detailPage = window.findChild<QWidget*>(
+        QStringLiteral("adminRunDetailPage"));
+    auto* overviewModel = window.findChild<UutOverviewModel*>();
+    auto* stepModel = window.findChild<UutStepModel*>();
+    auto* timelineProxy = window.findChild<UutRuntimeTimelineProxyModel*>();
+    auto* uutNavigation = window.findChild<QButtonGroup*>(
+        QStringLiteral("adminUutNavigationGroup"));
+    auto* backButton = window.findChild<QPushButton*>(
+        QStringLiteral("adminBackToUutOverview"));
+    auto* runSidebar = window.findChild<QWidget*>(
+        QStringLiteral("adminRunSidebar"));
+    auto* serialCaption = window.findChild<QLabel*>(
+        QStringLiteral("adminSerialCaption"));
+    auto* serialLabel = window.findChild<QLabel*>(
+        QStringLiteral("adminSerialLabel"));
+    auto* progressPanel = window.findChild<QWidget*>(
+        QStringLiteral("adminProgressPanel"));
+    auto* overallResult = window.findChild<QLabel*>(
+        QStringLiteral("adminOverallResult"));
+    auto* resultView = window.findChild<QTreeView*>(
+        QStringLiteral("resultView"));
+    QVERIFY(viewModel);
+    QVERIFY(uutCount);
+    QVERIFY(runAction);
+    QVERIFY(runStack);
+    QVERIFY(overviewPage);
+    QVERIFY(detailPage);
+    QVERIFY(overviewModel);
+    QVERIFY(stepModel);
+    QVERIFY(timelineProxy);
+    QVERIFY(uutNavigation);
+    QVERIFY(backButton);
+    QVERIFY(runSidebar);
+    QVERIFY(serialCaption);
+    QVERIFY(serialLabel);
+    QVERIFY(progressPanel);
+    QVERIFY(overallResult);
+    QVERIFY(resultView);
+    QVERIFY(!window.findChild<QComboBox*>(QStringLiteral("adminUutSelector")));
+
+    uutCount->setValue(4);
+    viewModel->compile();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 3000);
+    QVERIFY(backButton->isVisible());
+    QVERIFY(backButton->isEnabled());
+    QVERIFY(backButton->isChecked());
+    QCOMPARE(runStack->currentWidget(), overviewPage);
+    QCOMPARE(overviewModel->rowCount(), 4);
+    for (int row = 0; row < overviewModel->rowCount(); ++row) {
+        const auto entry = overviewModel->entryAt(row);
+        QVERIFY(entry.has_value());
+        QCOMPARE(entry->uutId, QStringLiteral("UUT-%1").arg(row + 1));
+        QCOMPARE(entry->state, UutOverviewState::Waiting);
+        QCOMPARE(entry->completedSteps, 0);
+        QVERIFY(entry->totalSteps > 0);
+        QCOMPARE(entry->progress, 0);
+    }
+    auto* previewCard = window.findChild<QAbstractButton*>(
+        QStringLiteral("uutOverviewCard_1"));
+    QVERIFY(previewCard);
+    auto* previewCardState = previewCard->findChild<QLabel*>(
+        QStringLiteral("uutOverviewState"));
+    QVERIFY(previewCardState);
+    QCOMPARE(previewCardState->text(), QStringLiteral("WAITING"));
+    runAction->trigger();
+
+    QTRY_COMPARE_WITH_TIMEOUT(overviewModel->rowCount(), 4, 1000);
+    QCOMPARE(runStack->currentWidget(), overviewPage);
+    QVERIFY(runSidebar->isVisible());
+    QVERIFY(serialCaption->isHidden());
+    QVERIFY(serialLabel->isHidden());
+    QVERIFY(backButton->isVisible());
+    QVERIFY(backButton->isCheckable());
+    QVERIFY(backButton->isChecked());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        backButton->property("overviewIndicatorFill").toReal() > 0.99, 500);
+    QVERIFY(progressPanel->isHidden());
+    QTRY_VERIFY_WITH_TIMEOUT(viewModel->state() == UiRunState::Completed ||
+                             viewModel->state() == UiRunState::Failed,
+                             5000);
+    QCOMPARE(overallResult->text(), QStringLiteral("COMPLETED"));
+    const int overviewResultPointSize = overallResult->font().pointSize();
+    QVERIFY(overviewResultPointSize <= 14);
+    QCOMPARE(overviewModel->rowCount(), 4);
+    for (int row = 0; row < overviewModel->rowCount(); ++row) {
+        const auto entry = overviewModel->entryAt(row);
+        QVERIFY(entry.has_value());
+        QCOMPARE(entry->uutId, QStringLiteral("UUT-%1").arg(row + 1));
+        QVERIFY(entry->state == UutOverviewState::Passed ||
+                entry->state == UutOverviewState::Failed ||
+                entry->state == UutOverviewState::Stopped);
+    }
+
+    auto* secondCard = window.findChild<QAbstractButton*>(
+        QStringLiteral("uutOverviewCard_2"));
+    QVERIFY(secondCard);
+    auto* cardState = secondCard->findChild<QLabel*>(
+        QStringLiteral("uutOverviewState"));
+    auto* cardSerial = secondCard->findChild<QLabel*>(
+        QStringLiteral("uutOverviewSerial"));
+    auto* cardStepCaption = secondCard->findChild<QLabel*>(
+        QStringLiteral("uutOverviewCaption"));
+    auto* cardPercent = secondCard->findChild<QLabel*>(
+        QStringLiteral("uutOverviewPercent"));
+    auto* cardError = secondCard->findChild<QLabel*>(
+        QStringLiteral("uutOverviewError"));
+    auto* cardRecent = secondCard->findChild<QLabel*>(
+        QStringLiteral("uutOverviewRecentStep_1"));
+    QVERIFY(cardState);
+    QVERIFY(cardSerial);
+    QVERIFY(cardStepCaption);
+    QVERIFY(cardPercent);
+    QVERIFY(cardError);
+    QVERIFY(cardRecent);
+    QVERIFY(!cardState->text().isEmpty());
+    QVERIFY(cardSerial->text().startsWith(QStringLiteral("SN")));
+    QVERIFY(!cardStepCaption->text().isEmpty());
+    QVERIFY(cardPercent->text().endsWith(QLatin1Char('%')));
+    QVERIFY(!cardError->isHidden());
+    QVERIFY(!cardError->text().isEmpty());
+    QVERIFY(!cardRecent->isHidden());
+    QVERIFY(!cardRecent->text().isEmpty());
+    QTest::mouseClick(secondCard, Qt::LeftButton);
+    auto* secondButton = window.findChild<QPushButton*>(
+        QStringLiteral("adminUutButton_2"));
+    auto* thirdButton = window.findChild<QPushButton*>(
+        QStringLiteral("adminUutButton_3"));
+    auto* firstButton = window.findChild<QPushButton*>(
+        QStringLiteral("adminUutButton_1"));
+    QVERIFY(firstButton);
+    QVERIFY(secondButton);
+    QVERIFY(thirdButton);
+    QCOMPARE(runStack->currentWidget(), detailPage);
+    const auto selectedEntry = overviewModel->entryAt(1);
+    QVERIFY(selectedEntry.has_value());
+    QCOMPARE(overallResult->text(),
+             selectedEntry->state == UutOverviewState::Passed
+                 ? QStringLiteral("PASS")
+                 : QStringLiteral("FAIL"));
+    QVERIFY(overallResult->font().pointSize() > overviewResultPointSize);
+    QVERIFY(serialCaption->isVisible());
+    QVERIFY(serialLabel->isVisible());
+    QVERIFY(progressPanel->isVisible());
+    QVERIFY(!backButton->isChecked());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        backButton->property("overviewIndicatorFill").toReal() < 0.01, 500);
+    QVERIFY(backButton->isVisible());
+    QVERIFY(backButton->isEnabled());
+    QCOMPARE(stepModel->visibleUutId(), QStringLiteral("UUT-2"));
+    QCOMPARE(timelineProxy->visibleUutId(), QStringLiteral("UUT-2"));
+    QVERIFY(secondButton->isChecked());
+    QCOMPARE(secondButton->text(), QStringLiteral("UUT2"));
+    QVERIFY(secondButton->font().bold());
+    QCOMPARE(secondButton->sizePolicy().horizontalPolicy(), QSizePolicy::Fixed);
+    QCOMPARE(firstButton->width(), secondButton->width());
+    QCOMPARE(secondButton->width(), thirdButton->width());
+    QVERIFY(qAbs(firstButton->mapTo(&window, QPoint(0, 0)).x() -
+                 resultView->mapTo(&window, QPoint(0, 0)).x()) <= 2);
+    QCOMPARE(stepModel->rowCount(), 3);
+
+    QTest::mouseClick(thirdButton, Qt::LeftButton);
+    QCOMPARE(stepModel->visibleUutId(), QStringLiteral("UUT-3"));
+    QCOMPARE(timelineProxy->visibleUutId(), QStringLiteral("UUT-3"));
+    QVERIFY(thirdButton->isChecked());
+    QVERIFY(!secondButton->isChecked());
+
+    QTest::mouseClick(backButton, Qt::LeftButton);
+    QCOMPARE(runStack->currentWidget(), overviewPage);
+    QVERIFY(serialCaption->isHidden());
+    QVERIFY(serialLabel->isHidden());
+    QVERIFY(progressPanel->isHidden());
+    QVERIFY(backButton->isChecked());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        backButton->property("overviewIndicatorFill").toReal() > 0.99, 500);
+    QVERIFY(!secondButton->isChecked());
+    QVERIFY(!thirdButton->isChecked());
+    QCOMPARE(overallResult->text(), QStringLiteral("COMPLETED"));
+    QCOMPARE(overallResult->font().pointSize(), overviewResultPointSize);
+
+    uutCount->setValue(2);
+    runAction->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(overviewModel->rowCount(), 2, 1000);
+    QCOMPARE(runStack->currentWidget(), overviewPage);
+    auto* cardsHost = window.findChild<QWidget*>(
+        QStringLiteral("multiUutOverviewCards"));
+    auto* firstPairCard = window.findChild<QAbstractButton*>(
+        QStringLiteral("uutOverviewCard_1"));
+    auto* secondPairCard = window.findChild<QAbstractButton*>(
+        QStringLiteral("uutOverviewCard_2"));
+    QVERIFY(cardsHost);
+    QVERIFY(firstPairCard);
+    QVERIFY(secondPairCard);
+    QTRY_VERIFY_WITH_TIMEOUT(firstPairCard->height() <= 280, 500);
+    QTRY_VERIFY_WITH_TIMEOUT(firstPairCard->y() > 0, 500);
+    QCOMPARE(firstPairCard->y(), secondPairCard->y());
+    const int cardCenterY = firstPairCard->geometry().center().y();
+    const int hostCenterY = cardsHost->rect().center().y();
+    QVERIFY2(qAbs(cardCenterY - hostCenterY) <= 3,
+             qPrintable(QStringLiteral("card center %1, host center %2, card %3x%4 at %5,%6")
+                            .arg(cardCenterY)
+                            .arg(hostCenterY)
+                            .arg(firstPairCard->width())
+                            .arg(firstPairCard->height())
+                            .arg(firstPairCard->x())
+                            .arg(firstPairCard->y())));
+    QTRY_VERIFY_WITH_TIMEOUT(viewModel->state() == UiRunState::Completed ||
+                             viewModel->state() == UiRunState::Failed,
+                             5000);
     QVERIFY(window.close());
 }
 
@@ -4913,6 +5290,8 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
         QStringLiteral("stationPdfReportSwitch"));
     auto* loopCount = window.findChild<QLineEdit*>(
         QStringLiteral("stationLoopTestCountEdit"));
+    auto* uutCount = window.findChild<QLineEdit*>(
+        QStringLiteral("stationUutCountEdit"));
     auto* snLength = window.findChild<QLineEdit*>(
         QStringLiteral("stationSnLengthEdit"));
     auto* snPattern = window.findChild<QLineEdit*>(
@@ -4940,6 +5319,7 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QVERIFY(loopEnabled);
     QVERIFY(pdfReport);
     QVERIFY(loopCount);
+    QVERIFY(uutCount);
     QVERIFY(snLength);
     QVERIFY(snPattern);
     QVERIFY(snAllowedRegex);
@@ -4999,6 +5379,10 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QVERIFY(loopCount->validator());
     loopCount->setText(QStringLiteral("100001"));
     QVERIFY(!loopCount->hasAcceptableInput());
+    QCOMPARE(uutCount->text(), QStringLiteral("1"));
+    QVERIFY(uutCount->validator());
+    uutCount->setText(QStringLiteral("65"));
+    QVERIFY(!uutCount->hasAcceptableInput());
     QCOMPARE(model->text(), QStringLiteral("Legacy Model"));
     QCOMPARE(customerId->text(), QStringLiteral("OLD-CUSTOMER"));
     QCOMPARE(jigNo->text(), QStringLiteral("JIG-01"));
@@ -5010,6 +5394,7 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     pdfReport->setChecked(true);
     snLength->setText(QStringLiteral("10"));
     loopCount->setText(QStringLiteral("12"));
+    uutCount->setText(QStringLiteral("4"));
     snPattern->setText(QStringLiteral("BTSN*"));
     snAllowedRegex->setText(QStringLiteral("^[A-Z0-9]+$"));
     model->setText(QStringLiteral("PICO-M3"));
@@ -5027,6 +5412,7 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
              true);
     QCOMPARE(document->rootObject().value(QStringLiteral("loopTestCount")).toInt(),
              12);
+    QCOMPARE(document->rootObject().value(QStringLiteral("uutCount")).toInt(), 4);
     QCOMPARE(document->rootObject().value(QStringLiteral("pdfReportEnabled")).toBool(),
              true);
     QCOMPARE(document->rootObject().value(QStringLiteral("snLength")).toInt(), 10);
@@ -5056,6 +5442,7 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QVERIFY2(!StartupSupport::stationScanDialogEnabled(stationPath),
              qPrintable(errorMessage));
     QCOMPARE(StartupSupport::stationSnLength(stationPath), 10);
+    QCOMPARE(StartupSupport::stationUutCount(stationPath), 4);
     const auto rules = StartupSupport::stationSnValidationRules(stationPath);
     QCOMPARE(rules.wildcardPattern, QStringLiteral("BTSN*"));
     QCOMPARE(rules.allowedRegex, QStringLiteral("^[A-Z0-9]+$"));
@@ -5339,6 +5726,113 @@ void MainWindowLifecycleTests::scanDialogAcceptsRepeatedBarcodeAndHasNoWindowBut
     QVERIFY(dialog.isHidden());
 }
 
+void MainWindowLifecycleTests::scanDialogCollectsCarouselBatchAndSupportsReplacement()
+{
+    ScanDialog dialog;
+    dialog.setAttribute(Qt::WA_DontShowOnScreen);
+    dialog.setSlotCount(4);
+    QSignalSpy batchSpy(&dialog, &ScanDialog::barcodesAccepted);
+    QSignalSpy singleSpy(&dialog, &ScanDialog::barcodeAccepted);
+
+    auto* barcode = dialog.findChild<QLineEdit*>(QStringLiteral("barcodeEdit"));
+    auto* titleLabel = dialog.findChild<QLabel*>(QStringLiteral("scanTitleLabel"));
+    auto* progress = dialog.findChild<QLabel*>(QStringLiteral("scanProgressLabel"));
+    auto* error = dialog.findChild<QLabel*>(QStringLiteral("scanErrorLabel"));
+    auto* previous = dialog.findChild<QToolButton*>(
+        QStringLiteral("scanPreviousButton"));
+    auto* next = dialog.findChild<QToolButton*>(QStringLiteral("scanNextButton"));
+    auto* undo = dialog.findChild<QPushButton*>(QStringLiteral("scanUndoButton"));
+    auto* clear = dialog.findChild<QPushButton*>(QStringLiteral("scanClearButton"));
+    QVERIFY(barcode);
+    QVERIFY(titleLabel);
+    QVERIFY(progress);
+    QVERIFY(error);
+    QVERIFY(previous);
+    QVERIFY(next);
+    QVERIFY(undo);
+    QVERIFY(clear);
+
+    const auto submit = [&](const QString& value) {
+        barcode->setText(value);
+        QVERIFY(QMetaObject::invokeMethod(&dialog, "submitBarcode"));
+    };
+
+    dialog.showForNextScan();
+    QCOMPARE(dialog.size(), QSize(460, 230));
+    const auto screenshotPath = qEnvironmentVariable(
+        "PICOATE_SCAN_SCREENSHOT");
+    if (!screenshotPath.isEmpty()) {
+        QCoreApplication::processEvents();
+        QVERIFY2(dialog.grab().save(screenshotPath), qPrintable(screenshotPath));
+    }
+    QCOMPARE(dialog.slotCount(), 4);
+    QCOMPARE(titleLabel->text(), QStringLiteral("Scan UUT 1 SN"));
+    QCOMPARE(progress->text(), QStringLiteral("0 / 4 scanned"));
+    QVERIFY(!previous->isEnabled());
+    QVERIFY(next->isEnabled());
+
+    barcode->setFocus(Qt::OtherFocusReason);
+    QTest::keyClicks(barcode, QStringLiteral("SN-001"));
+    QTest::keyClick(barcode, Qt::Key_Return);
+    QCoreApplication::processEvents();
+    QCOMPARE(titleLabel->text(), QStringLiteral("Scan UUT 2 SN"));
+    QCOMPARE(progress->text(), QStringLiteral("1 / 4 scanned"));
+    QCOMPARE(dialog.barcodes().at(0), QStringLiteral("SN-001"));
+    QCOMPARE(batchSpy.count(), 0);
+
+    submit(QStringLiteral("SN-001"));
+    QCOMPARE(titleLabel->text(), QStringLiteral("Scan UUT 2 SN"));
+    QVERIFY(!error->isHidden());
+    QVERIFY(error->text().contains(QStringLiteral("UUT 1")));
+    QCOMPARE(dialog.barcodes().at(1), QString{});
+
+    submit(QStringLiteral("SN-002"));
+    QCOMPARE(titleLabel->text(), QStringLiteral("Scan UUT 3 SN"));
+    previous->click();
+    QCOMPARE(titleLabel->text(), QStringLiteral("Scan UUT 2 SN"));
+    QCOMPARE(barcode->text(), QStringLiteral("SN-002"));
+    QVERIFY(barcode->styleSheet().contains(QStringLiteral("#7b858c")));
+
+    barcode->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QTest::keyClicks(barcode, QStringLiteral("SN-002-NEW"));
+    QCOMPARE(barcode->text(), QStringLiteral("SN-002-NEW"));
+    QVERIFY(QMetaObject::invokeMethod(&dialog, "submitBarcode"));
+    QCOMPARE(dialog.barcodes().at(1), QStringLiteral("SN-002-NEW"));
+    QCOMPARE(titleLabel->text(), QStringLiteral("Scan UUT 3 SN"));
+
+    undo->click();
+    QCOMPARE(titleLabel->text(), QStringLiteral("Scan UUT 2 SN"));
+    QCOMPARE(dialog.barcodes().at(1), QStringLiteral("SN-002"));
+    next->click();
+    QCOMPARE(titleLabel->text(), QStringLiteral("Scan UUT 3 SN"));
+    submit(QStringLiteral("SN-003"));
+    QCOMPARE(titleLabel->text(), QStringLiteral("Scan UUT 4 SN"));
+    QCOMPARE(batchSpy.count(), 0);
+    submit(QStringLiteral("SN-004"));
+
+    QCOMPARE(batchSpy.count(), 1);
+    QCOMPARE(singleSpy.count(), 0);
+    QCOMPARE(batchSpy.first().first().toStringList(),
+             QStringList({QStringLiteral("SN-001"),
+                          QStringLiteral("SN-002"),
+                          QStringLiteral("SN-003"),
+                          QStringLiteral("SN-004")}));
+    QVERIFY(dialog.isHidden());
+
+    dialog.showForNextScan();
+    submit(QStringLiteral("ONE"));
+    submit(QStringLiteral("TWO"));
+    next->click();
+    submit(QStringLiteral("THREE"));
+    previous->click();
+    QCOMPARE(titleLabel->text(), QStringLiteral("Scan UUT 2 SN"));
+    clear->click();
+    QCOMPARE(dialog.barcodes(), QStringList(4, QString{}));
+    QCOMPARE(titleLabel->text(), QStringLiteral("Scan UUT 1 SN"));
+    QCOMPARE(progress->text(), QStringLiteral("0 / 4 scanned"));
+}
+
 void MainWindowLifecycleTests::adminStartsOnProductionDashboardAndOpensScannerOnDemand()
 {
     QSettings().clear();
@@ -5463,6 +5957,73 @@ void MainWindowLifecycleTests::adminStartsOnProductionDashboardAndOpensScannerOn
              QStringLiteral("Power Off"));
     QCOMPARE(resultModel->data(powerOff.siblingAtColumn(UutStepModel::StateColumn)).toString(),
              QStringLiteral("Passed"));
+}
+
+void MainWindowLifecycleTests::adminScannerRunsFourExplicitUuts()
+{
+    QSettings().clear();
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("simple_sequence.json"));
+    QVERIFY(QFile::copy(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+                           + QStringLiteral("/examples/simple_sequence.json"),
+                       sequencePath));
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(R"({"stationId":"admin-four","uutCount":4,"scanDialogEnabled":true,"devices":[]})");
+    station.close();
+
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(sequencePath));
+    QVERIFY(window.openStationFile(stationPath));
+    window.showRunPage();
+    window.show();
+
+    auto* viewModel = window.findChild<ExecutionViewModel*>();
+    auto* compileAction = window.findChild<QAction*>(QStringLiteral("compileAction"));
+    auto* scanAction = window.findChild<QAction*>(QStringLiteral("adminScanAction"));
+    auto* uutCount = window.findChild<QSpinBox*>(QStringLiteral("uutCountSpinBox"));
+    auto* scanDialog = window.findChild<ScanDialog*>();
+    auto* barcode = scanDialog
+        ? scanDialog->findChild<QLineEdit*>(QStringLiteral("barcodeEdit"))
+        : nullptr;
+    QVERIFY(viewModel);
+    QVERIFY(compileAction);
+    QVERIFY(scanAction);
+    QVERIFY(uutCount);
+    QVERIFY(scanDialog);
+    QVERIFY(barcode);
+
+    uutCount->setValue(4);
+    compileAction->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 3000);
+    scanAction->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(scanDialog->isVisible(), 1000);
+    QCOMPARE(scanDialog->slotCount(), 4);
+
+    for (int index = 1; index <= 4; ++index) {
+        barcode->setText(QStringLiteral("ADMIN%1").arg(index, 2, 10,
+                                                        QLatin1Char('0')));
+        QVERIFY(QMetaObject::invokeMethod(scanDialog, "submitBarcode"));
+    }
+
+    QTRY_VERIFY_WITH_TIMEOUT(viewModel->state() == UiRunState::Completed ||
+                             viewModel->state() == UiRunState::Failed,
+                             5000);
+    QCOMPARE(viewModel->state(), UiRunState::Completed);
+    const auto report = viewModel->report();
+    QCOMPARE(report.uuts.size(), 4);
+    for (int index = 0; index < report.uuts.size(); ++index) {
+        QCOMPARE(report.uuts[index].uutId,
+                 QStringLiteral("UUT-%1").arg(index + 1));
+        QCOMPARE(report.uuts[index].serialNumber,
+                 QStringLiteral("ADMIN%1").arg(index + 1, 2, 10,
+                                                   QLatin1Char('0')));
+        QVERIFY(report.uuts[index].completed);
+        QVERIFY(!report.uuts[index].hasError);
+    }
+    QVERIFY(window.close());
 }
 
 void MainWindowLifecycleTests::productionWindowPreloadsFlowAndRunsWithoutScanner()
@@ -5646,6 +6207,73 @@ void MainWindowLifecycleTests::productionWindowPreloadsFlowAndRunsWithoutScanner
     QVERIFY(window.close());
 }
 
+void MainWindowLifecycleTests::productionScannerRunsFourExplicitUutsAndCountsYield()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("four_uut_sequence.json"));
+    QVERIFY(QFile::copy(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+                           + QStringLiteral("/examples/simple_sequence.json"),
+                       sequencePath));
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(R"({"stationId":"line-four","uutCount":4,"scanDialogEnabled":true,"devices":[]})");
+    station.close();
+
+    StartupSelection selection;
+    selection.mode = UiMode::Test;
+    selection.sequencePath = sequencePath;
+    selection.stationPath = stationPath;
+    selection.scanDialogEnabled = true;
+    ProductionWindow window(selection);
+    window.show();
+
+    auto* viewModel = window.findChild<ExecutionViewModel*>();
+    auto* scanDialog = window.findChild<ScanDialog*>();
+    auto* barcode = scanDialog
+        ? scanDialog->findChild<QLineEdit*>(QStringLiteral("barcodeEdit"))
+        : nullptr;
+    auto* passCount = window.findChild<QLabel*>(QStringLiteral("productionPassCount"));
+    auto* failCount = window.findChild<QLabel*>(QStringLiteral("productionFailCount"));
+    auto* totalCount = window.findChild<QLabel*>(QStringLiteral("productionTotalCount"));
+    QVERIFY(viewModel);
+    QVERIFY(scanDialog);
+    QVERIFY(barcode);
+    QVERIFY(passCount);
+    QVERIFY(failCount);
+    QVERIFY(totalCount);
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(scanDialog->isVisible(), 1000);
+    QCOMPARE(scanDialog->slotCount(), 4);
+
+    for (int index = 1; index <= 4; ++index) {
+        barcode->setText(QStringLiteral("PROD%1").arg(index, 2, 10,
+                                                       QLatin1Char('0')));
+        QVERIFY(QMetaObject::invokeMethod(scanDialog, "submitBarcode"));
+    }
+
+    QTRY_VERIFY_WITH_TIMEOUT(viewModel->state() == UiRunState::Completed ||
+                             viewModel->state() == UiRunState::Failed,
+                             5000);
+    QCOMPARE(viewModel->state(), UiRunState::Completed);
+    const auto report = viewModel->report();
+    QCOMPARE(report.uuts.size(), 4);
+    for (int index = 0; index < report.uuts.size(); ++index) {
+        QCOMPARE(report.uuts[index].uutId,
+                 QStringLiteral("UUT-%1").arg(index + 1));
+        QCOMPARE(report.uuts[index].serialNumber,
+                 QStringLiteral("PROD%1").arg(index + 1, 2, 10,
+                                                  QLatin1Char('0')));
+        QVERIFY(report.uuts[index].completed);
+        QVERIFY(!report.uuts[index].hasError);
+    }
+    QCOMPARE(passCount->text(), QStringLiteral("PASS 4"));
+    QCOMPARE(failCount->text(), QStringLiteral("FAIL 0"));
+    QCOMPARE(totalCount->text(), QStringLiteral("TOTAL 4"));
+    QVERIFY(window.close());
+}
+
 void MainWindowLifecycleTests::productionWindowRoutesScannedSnBeforeCompiling()
 {
     QTemporaryDir directory;
@@ -5724,6 +6352,7 @@ void MainWindowLifecycleTests::productionWindowRoutesScannedSnBeforeCompiling()
 
 void MainWindowLifecycleTests::adminWindowRoutesScannedSnBeforeCompiling()
 {
+    QSettings().clear();
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const auto projectPath = directory.filePath(
@@ -5782,10 +6411,12 @@ void MainWindowLifecycleTests::adminWindowRoutesScannedSnBeforeCompiling()
     QTRY_VERIFY_WITH_TIMEOUT(scan->isVisible(), 1000);
     auto* barcode = scan->findChild<QLineEdit*>(QStringLiteral("barcodeEdit"));
     QVERIFY(barcode);
-    QSignalSpy acceptedSpy(scan, &ScanDialog::barcodeAccepted);
+    QSignalSpy acceptedSpy(scan, &ScanDialog::barcodesAccepted);
     barcode->setText(QStringLiteral("ADMIN-0001"));
     QVERIFY(QMetaObject::invokeMethod(scan, "submitBarcode"));
     QCOMPARE(acceptedSpy.count(), 1);
+    QCOMPARE(acceptedSpy.first().first().toStringList(),
+             QStringList{QStringLiteral("ADMIN-0001")});
     QTRY_VERIFY_WITH_TIMEOUT(viewModel->state() == UiRunState::Completed ||
                              viewModel->state() == UiRunState::Failed,
                              4000);
@@ -6313,6 +6944,136 @@ void MainWindowLifecycleTests::operatorPromptDialogReusesKeyForJudgment()
                                   QStringLiteral("judgment-1"));
     presenter.applyRuntimeEvents({judgmentClosed});
     QTRY_VERIFY(guardedDialog.isNull() || !guardedDialog->isVisible());
+    viewModel.shutdown();
+}
+
+void MainWindowLifecycleTests::operatorPromptsUseTheirMatchingOverviewCards()
+{
+    QWidget owner;
+    auto* layout = new QVBoxLayout(&owner);
+    auto* overview = new MultiUutOverviewWidget(&owner);
+    auto* model = new UutOverviewModel(&owner);
+    layout->addWidget(overview);
+    overview->setModel(model);
+
+    QVector<RunRequest::UutInput> uuts;
+    for (int index = 1; index <= 2; ++index) {
+        RunRequest::UutInput input;
+        input.uutId = QStringLiteral("UUT-%1").arg(index);
+        input.variables.insert(
+            QStringLiteral("serialNumber"),
+            QStringLiteral("BTSN00000%1").arg(index));
+        uuts.push_back(std::move(input));
+    }
+    model->resetForRun({}, uuts);
+    owner.resize(980, 520);
+    owner.show();
+    QTRY_VERIFY(overview->isVisible());
+
+    ExecutionViewModel viewModel;
+    OperatorPromptPresenter presenter(&viewModel, &owner);
+    presenter.setOverviewHost(overview);
+    QString responseInstanceId;
+    PicoATE::Core::OperatorPromptResponse response =
+        PicoATE::Core::OperatorPromptResponse::None;
+    QVariantMap responseValues;
+    connect(overview,
+            &MultiUutOverviewWidget::operatorPromptResponseRequested,
+            &owner,
+            [&](const QString& instanceId,
+                PicoATE::Core::OperatorPromptResponse nextResponse,
+                const QVariantMap& values) {
+                responseInstanceId = instanceId;
+                response = nextResponse;
+                responseValues = values;
+            });
+
+    PicoATE::Core::RuntimeEvent judgment;
+    judgment.kind = PicoATE::Core::RuntimeEventKind::OperatorPromptRequested;
+    judgment.uutId = QStringLiteral("UUT-2");
+    judgment.details = {
+        {QStringLiteral("promptInstanceId"), QStringLiteral("uut-2-judge")},
+        {QStringLiteral("mode"), QStringLiteral("judgment")},
+        {QStringLiteral("title"), QStringLiteral("Indicator Check")},
+        {QStringLiteral("message"), QStringLiteral("Is the indicator green?")},
+        {QStringLiteral("passText"), QStringLiteral("PASS")},
+        {QStringLiteral("failText"), QStringLiteral("FAIL")},
+    };
+    presenter.applyRuntimeEvents({judgment});
+
+    auto* firstCard = owner.findChild<QAbstractButton*>(
+        QStringLiteral("uutOverviewCard_1"));
+    auto* secondCard = owner.findChild<QAbstractButton*>(
+        QStringLiteral("uutOverviewCard_2"));
+    QVERIFY(firstCard && secondCard);
+    QVERIFY(!firstCard->findChild<QWidget*>(
+        QStringLiteral("uutOverviewPromptOverlay")));
+    auto* secondOverlay = secondCard->findChild<QWidget*>(
+        QStringLiteral("uutOverviewPromptOverlay"));
+    QVERIFY(secondOverlay);
+    QTRY_VERIFY(secondOverlay->isVisible());
+    QCOMPARE(secondOverlay->findChild<QLabel*>(
+                 QStringLiteral("uutOverviewPromptContext"))->text(),
+             QStringLiteral("UUT-2  |  SN BTSN000002"));
+    QCOMPARE(secondOverlay->findChild<QLabel*>(
+                 QStringLiteral("uutOverviewPromptMessage"))->text(),
+             QStringLiteral("Is the indicator green?"));
+    auto* passButton = secondOverlay->findChild<QPushButton*>(
+        QStringLiteral("uutOverviewPromptPassButton"));
+    QVERIFY(passButton->isVisible());
+    QVERIFY(secondOverlay->findChild<QPushButton*>(
+        QStringLiteral("uutOverviewPromptFailButton"))->isVisible());
+    QVERIFY(owner.findChildren<QDialog*>(
+        QStringLiteral("operatorPromptDialog")).isEmpty());
+    passButton->click();
+    QCOMPARE(responseInstanceId, QStringLiteral("uut-2-judge"));
+    QCOMPARE(response, PicoATE::Core::OperatorPromptResponse::Passed);
+    QVERIFY(responseValues.isEmpty());
+
+    PicoATE::Core::RuntimeEvent input = judgment;
+    input.uutId = QStringLiteral("UUT-1");
+    input.details = {
+        {QStringLiteral("promptInstanceId"), QStringLiteral("uut-1-input")},
+        {QStringLiteral("mode"), QStringLiteral("input")},
+        {QStringLiteral("title"), QStringLiteral("Measured Value")},
+        {QStringLiteral("message"), QStringLiteral("Enter the observed value")},
+        {QStringLiteral("inputType"), QStringLiteral("number")},
+        {QStringLiteral("confirmText"), QStringLiteral("Submit")},
+    };
+    presenter.applyRuntimeEvents({input});
+    auto* firstOverlay = firstCard->findChild<QWidget*>(
+        QStringLiteral("uutOverviewPromptOverlay"));
+    QVERIFY(firstOverlay);
+    QTRY_VERIFY(firstOverlay->isVisible());
+    QTRY_VERIFY(secondOverlay->isVisible());
+    QVERIFY(owner.findChildren<QDialog*>(
+        QStringLiteral("operatorPromptDialog")).isEmpty());
+    const auto screenshotPath = qEnvironmentVariable(
+        "PICOATE_CARD_PROMPT_SCREENSHOT");
+    if (!screenshotPath.isEmpty()) {
+        QVERIFY2(owner.grab().save(screenshotPath), qPrintable(screenshotPath));
+    }
+    auto* inputEdit = firstOverlay->findChild<QLineEdit*>(
+        QStringLiteral("uutOverviewPromptInput"));
+    auto* submitButton = firstOverlay->findChild<QPushButton*>(
+        QStringLiteral("uutOverviewPromptConfirmButton"));
+    QVERIFY(inputEdit && submitButton);
+    inputEdit->setText(QStringLiteral("13.75"));
+    submitButton->click();
+    QCOMPARE(responseInstanceId, QStringLiteral("uut-1-input"));
+    QCOMPARE(response, PicoATE::Core::OperatorPromptResponse::Submitted);
+    QCOMPARE(responseValues.value(QStringLiteral("value")).toDouble(), 13.75);
+
+    PicoATE::Core::RuntimeEvent closed;
+    closed.kind = PicoATE::Core::RuntimeEventKind::OperatorPromptClosed;
+    closed.details.insert(QStringLiteral("promptInstanceId"),
+                          QStringLiteral("uut-2-judge"));
+    presenter.applyRuntimeEvents({closed});
+    QVERIFY(!secondOverlay->isVisible());
+    QVERIFY(firstOverlay->isVisible());
+
+    presenter.closeAll();
+    QVERIFY(!firstOverlay->isVisible());
     viewModel.shutdown();
 }
 

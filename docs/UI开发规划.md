@@ -620,3 +620,46 @@ UI-1 至 UI-7 的主链路已经完成，UI-8 已完成工作区持久化和大�
 4. 完成登录页、Flow、Station、日志和诊断区域的统一视觉收口；不改变已经稳定的数据链。
 
 2026-07-22 Debug 全量回归基线为 CTest `17/17` 通过。
+
+## 18. 多 UUT UI 增量改造（2026-08-22）
+
+### 18.1 不变边界
+
+- Core 继续负责多 UUT 调度、变量隔离、共享 Setup/Cleanup、资源仲裁和最终结果。
+- UI 只消费 `RuntimeEvent` 与 `ExecutionReport` 值对象，不读取 Scheduler/Session 可变对象。
+- 一拖一 Test/Admin 界面必须继续可用；多 UUT 采用新增总览层，不重写单 UUT 详情页。
+- 第一阶段不修改引擎和插件 ABI。若后续只缺展示字段，只允许补充向后兼容的只读 DTO 字段。
+
+### 18.2 数据链
+
+```text
+ExecutionSession / ExecutionGraphScheduler
+    -> RuntimeEvent (uutId)
+    -> ExecutionReport (UutReport[])
+    -> ExecutionViewModel
+    -> UutOverviewModel
+       + UutStepModel(selectedUutId)
+       + UutRuntimeTimelineProxyModel(selectedUutId)
+    -> UUT 总览卡片 / 单 UUT 详情页
+```
+
+### 18.3 分阶段计划
+
+| 阶段 | 内容 | 状态 | 验收结果 |
+|---|---|---|---|
+| UI-M0 | 建立一拖一回退标签 | 已完成 | `single-uut-ui-baseline-20260822` 已推送 |
+| UI-M1 | 总览模型、Admin 卡片总览、详情与日志按 UUT 过滤 | 已完成 | 4 UUT 可独立观察并相互切换 |
+| UI-M2 | Test 模式总览与单 UUT 详情导航 | 待开始 | 单 UUT 保持原页面，多 UUT 才显示总览 |
+| UI-M3 | 多 UUT SN/槽位输入与启动流程 | 待开始 | 每个 UUT 有独立 SN 和变量，不误复用扫码值 |
+| UI-M4 | 每 UUT 日志、报告、良率和终止结果对账 | 待开始 | 一 UUT 一份归档，一轮可统计多个产品 |
+| UI-M5 | 小屏自适应、混合状态、长时间运行与真实硬件验收 | 待开始 | 1/2/4/8 UUT 下页面稳定、无串状态 |
+
+### 18.4 UI-M1 已完成细节
+
+- 总览卡片显示 UUT、SN、当前步骤、状态、完成步数、进度和用时。
+- 状态颜色遵循现有产线语义：Running 黄色、Passed 绿色、Failed 红色、Waiting 灰色、Paused 蓝色。
+- 4 UUT 默认两列布局，更多 UUT 自动使用三列并滚动，不把 8 路写死为固定四宫格。
+- 点击卡片复用原 Run Test 详情页；返回按钮回到总览，详情下拉框可直接切换 UUT。
+- Step 树与实时日志均按所选 UUT 过滤；Session 级公共事件仍可见。
+- Admin 无扫码启动时可设置 UUT 数量；扫码运行暂时维持单 UUT，直到 UI-M3 明确多 SN 流程。
+- 完整 Debug CTest `25/25` 通过，Core 与 Scheduler 源码没有变化。

@@ -1,6 +1,7 @@
 #include "OperatorPromptPresenter.h"
 
 #include "ExecutionViewModel.h"
+#include "MultiUutOverviewWidget.h"
 #include "ProjectResourcePaths.h"
 
 #include <QCloseEvent>
@@ -339,6 +340,9 @@ void OperatorPromptPresenter::applyRuntimeEvents(
 
 void OperatorPromptPresenter::closeAll()
 {
+    if (m_overviewHost) {
+        m_overviewHost->clearOperatorPrompts();
+    }
     QSet<QDialog*> dialogs;
     for (const auto& dialog : std::as_const(m_dialogs)) {
         if (dialog) {
@@ -360,10 +364,41 @@ void OperatorPromptPresenter::setSequencePath(QString sequencePath)
         : QFileInfo(sequencePath).absoluteFilePath();
 }
 
+void OperatorPromptPresenter::setOverviewHost(
+    MultiUutOverviewWidget* overviewHost)
+{
+    if (m_overviewHost == overviewHost) {
+        return;
+    }
+    if (m_overviewHost) {
+        disconnect(m_overviewHost, nullptr, this, nullptr);
+    }
+    m_overviewHost = overviewHost;
+    if (!m_overviewHost) {
+        return;
+    }
+    connect(m_overviewHost,
+            &MultiUutOverviewWidget::operatorPromptResponseRequested,
+            this,
+            [this](const QString& instanceId,
+                   PicoATE::Core::OperatorPromptResponse response,
+                   const QVariantMap& values) {
+                if (m_viewModel &&
+                    m_viewModel->respondToOperatorPrompt(instanceId,
+                                                         response,
+                                                         values) &&
+                    m_overviewHost) {
+                    m_overviewHost->setOperatorPromptResponsePending(
+                        instanceId, true);
+                }
+            });
+}
+
 void OperatorPromptPresenter::showPrompt(const PicoATE::Core::RuntimeEvent& event)
 {
     const auto instanceId = event.details.value("promptInstanceId").toString();
-    if (instanceId.isEmpty() || m_dialogs.contains(instanceId)) {
+    if (instanceId.isEmpty() || m_dialogs.contains(instanceId) ||
+        (m_overviewHost && m_overviewHost->hasOperatorPrompt(instanceId))) {
         return;
     }
 
@@ -373,6 +408,21 @@ void OperatorPromptPresenter::showPrompt(const PicoATE::Core::RuntimeEvent& even
     auto* dialog = key.isEmpty()
         ? nullptr
         : static_cast<OperatorPromptDialog*>(m_dialogsByKey.value(key).data());
+    if (!dialog && m_overviewHost &&
+        m_overviewHost->presentOperatorPrompt(event, m_sequencePath)) {
+        if (notice) {
+            QPointer<OperatorPromptPresenter> self(this);
+            QTimer::singleShot(0, this, [self, instanceId] {
+                if (self && self->m_viewModel) {
+                    self->m_viewModel->respondToOperatorPrompt(
+                        instanceId,
+                        PicoATE::Core::OperatorPromptResponse::Shown);
+                }
+            });
+        }
+        return;
+    }
+
     if (!dialog) {
         dialog = new OperatorPromptDialog(m_owner);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -439,6 +489,9 @@ void OperatorPromptPresenter::showPrompt(const PicoATE::Core::RuntimeEvent& even
 
 void OperatorPromptPresenter::closePrompt(const QString& instanceId)
 {
+    if (m_overviewHost && m_overviewHost->closeOperatorPrompt(instanceId)) {
+        return;
+    }
     const auto dialog = m_dialogs.take(instanceId);
     auto* prompt = static_cast<OperatorPromptDialog*>(dialog.data());
     if (!prompt || prompt->currentInstanceId() != instanceId) {

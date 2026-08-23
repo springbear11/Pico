@@ -422,6 +422,10 @@ private slots:
     void uutStepModelUsesProductionStateColors();
     void uutStepModelResetsLoopAndRetryPresentation();
     void uutStepModelBuildsSingleUutPhaseLayout();
+    void uutOverviewModelTracksIndependentRuntimeState();
+    void uutOverviewModelPreservesFailureAcrossSharedCleanup();
+    void uutStepModelFiltersSelectedUutAndKeepsSessionPhases();
+    void runtimeTimelineProxyFiltersSelectedUut();
     void coreServiceRunsBasicAndForLoopExamples();
     void viewModelFlushesWorkerEventsInBatches();
     void corePublishesOrderedBarrierLoopRetryAndStopEvents();
@@ -1358,7 +1362,9 @@ void ExecutionViewModelTests::pluginCatalogValidatesNestedSequenceInputs()
            "enabled":false,"inputs":{"deviceId":"CAN1","mode":"raw"}}
         ]},
         {"id":"002","kind":"action","moduleId":"device","function":"open",
-         "inputs":{"deviceId":"CAN1"}}
+         "inputs":{"deviceId":"CAN1"}},
+        {"id":"003","kind":"action","moduleId":"device","function":"write",
+         "inputs":{"deviceId":"CAN1","mode":"text"}}
       ]}]
     })json").object();
     const auto station = QJsonDocument::fromJson(R"json({
@@ -1382,6 +1388,7 @@ void ExecutionViewModelTests::pluginCatalogValidatesNestedSequenceInputs()
     QVERIFY(!hasPath(QStringLiteral(
         "groups[0].steps[0].steps[1].inputs.data")));
     QVERIFY(!hasPath(QStringLiteral("groups[0].steps[1].inputs.address")));
+    QVERIFY(!hasPath(QStringLiteral("groups[0].steps[2].inputs.data")));
 }
 
 void ExecutionViewModelTests::coreServiceRejectsUntouchedRequiredPluginInputs()
@@ -2288,6 +2295,7 @@ void ExecutionViewModelTests::uutStepModelResetsLoopAndRetryPresentation()
     QVERIFY(childIndex.isValid());
     QPersistentModelIndex persistentChild(childIndex);
     QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+    QSignalSpy dataChangedSpy(&model, &QAbstractItemModel::dataChanged);
 
     RuntimeEvent nextIteration;
     nextIteration.kind = RuntimeEventKind::LoopIterationStarted;
@@ -2298,6 +2306,7 @@ void ExecutionViewModelTests::uutStepModelResetsLoopAndRetryPresentation()
     model.applyRuntimeEvents({nextIteration});
 
     QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(dataChangedSpy.count(), 2);
     QVERIFY(persistentChild.isValid());
     const auto resetLoop = model.stepAt(loopIndex);
     const auto resetChild = model.stepAt(childIndex);
@@ -2329,8 +2338,10 @@ void ExecutionViewModelTests::uutStepModelResetsLoopAndRetryPresentation()
     childStarted.nodeKind = ExecNodeKind::Action;
     childStarted.activationState = ActivationState::Running;
     childStarted.attemptIndex = 2;
+    dataChangedSpy.clear();
     model.applyRuntimeEvents({childStarted});
     QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(dataChangedSpy.count(), 1);
     const auto runningChildIndex = model.indexForStep(
         QStringLiteral("UUT-1"), QStringLiteral("loop.sample"));
     const auto runningUut = model.uutAt(model.index(0, 0));
@@ -2424,6 +2435,440 @@ void ExecutionViewModelTests::uutStepModelBuildsSingleUutPhaseLayout()
     QVERIFY(measure.isValid());
     QCOMPARE(model.data(model.parent(measure)).toString(), QStringLiteral("MAIN"));
     QCOMPARE(model.data(measure).toString(), QStringLiteral("Measure"));
+}
+
+void ExecutionViewModelTests::uutOverviewModelTracksIndependentRuntimeState()
+{
+    using namespace PicoATE::Core;
+
+    StepReport first;
+    first.stepId = QStringLiteral("send");
+    first.nodePath = QStringLiteral("main.send");
+    first.displayName = QStringLiteral("Send Request");
+    StepReport second;
+    second.stepId = QStringLiteral("read");
+    second.nodePath = QStringLiteral("main.read");
+    second.displayName = QStringLiteral("Read Response");
+    UutReport previewUut;
+    previewUut.uutId = QStringLiteral("UUT");
+    previewUut.steps = {first, second};
+    ExecutionReport preview;
+    preview.uuts = {previewUut};
+
+    QVector<RunRequest::UutInput> inputs;
+    for (int index = 1; index <= 4; ++index) {
+        RunRequest::UutInput input;
+        input.uutId = QStringLiteral("UUT-%1").arg(index);
+        input.variables.insert(
+            QStringLiteral("serialNumber"),
+            QStringLiteral("SN%1").arg(index));
+        inputs.push_back(input);
+    }
+
+    UutOverviewModel model;
+    QAbstractItemModelTester tester(
+        &model,
+        QAbstractItemModelTester::FailureReportingMode::QtTest);
+    model.resetForRun(preview, inputs);
+    QCOMPARE(model.rowCount(), 4);
+    QCOMPARE(model.entryAt(1)->serialNumber, QStringLiteral("SN2"));
+    QCOMPARE(model.entryAt(0)->totalSteps, 2);
+    model.setSessionElapsedMs(2500);
+
+    RuntimeEvent registered;
+    registered.kind = RuntimeEventKind::UutRegistered;
+    registered.uutId = QStringLiteral("UUT-1");
+    registered.timestampUtc = QDateTime::fromMSecsSinceEpoch(1000, Qt::UTC);
+    RuntimeEvent started = registered;
+    started.kind = RuntimeEventKind::NodeStateChanged;
+    started.nodeId = QStringLiteral("main.send");
+    started.nodeDisplayName = QStringLiteral("Send Request");
+    started.activationState = ActivationState::Running;
+    started.timestampUtc = QDateTime::fromMSecsSinceEpoch(1100, Qt::UTC);
+    RuntimeEvent completed = started;
+    completed.activationState = ActivationState::Passed;
+    completed.outcome = NodeOutcome::Passed;
+    completed.timestampUtc = QDateTime::fromMSecsSinceEpoch(1250, Qt::UTC);
+
+    RuntimeEvent waiting = registered;
+    waiting.uutId = QStringLiteral("UUT-2");
+    waiting.kind = RuntimeEventKind::BarrierWaiting;
+    waiting.nodeId = QStringLiteral("main.read");
+    waiting.nodeDisplayName = QStringLiteral("Read Response");
+    waiting.activationState = ActivationState::WaitingAtBarrier;
+    QSignalSpy dataChangedSpy(&model, &QAbstractItemModel::dataChanged);
+    model.applyRuntimeEvents({registered, started, completed, waiting});
+    QCOMPARE(dataChangedSpy.count(), 2);
+
+    const auto uut1 = model.entryAt(model.rowForUut(QStringLiteral("UUT-1")));
+    QVERIFY(uut1.has_value());
+    QCOMPARE(uut1->state, UutOverviewState::Running);
+    QCOMPARE(uut1->currentStep, QStringLiteral("Send Request"));
+    QCOMPARE(uut1->completedSteps, 1);
+    QCOMPARE(uut1->progress, 50);
+    QCOMPARE(uut1->durationMs, qint64(0));
+    QCOMPARE(uut1->recentSteps.size(), 1);
+    QCOMPARE(uut1->recentSteps.constLast().nodeId,
+             QStringLiteral("main.send"));
+    QCOMPARE(uut1->recentSteps.constLast().displayName,
+             QStringLiteral("Send Request"));
+    QCOMPARE(model.entryAt(1)->state, UutOverviewState::Waiting);
+
+    RuntimeEvent retryScheduled = completed;
+    retryScheduled.kind = RuntimeEventKind::RetryScheduled;
+    retryScheduled.outcome = NodeOutcome::Failed;
+    retryScheduled.errorCode = QStringLiteral("TRANSIENT");
+    retryScheduled.details.insert(QStringLiteral("maxAttempts"), 3);
+    retryScheduled.details.insert(QStringLiteral("retryAttemptIndex"), 1);
+    model.applyRuntimeEvents({retryScheduled});
+    auto retryingUut = model.entryAt(0);
+    QVERIFY(retryingUut->retryActive);
+    QCOMPARE(retryingUut->retryAttempt, 2);
+    QCOMPARE(retryingUut->retryMaxAttempts, 3);
+    QCOMPARE(retryingUut->completedSteps, 1);
+    QCOMPARE(retryingUut->progress, 50);
+
+    RuntimeEvent retryStarted = started;
+    retryStarted.kind = RuntimeEventKind::AttemptStarted;
+    retryStarted.attemptIndex = 2;
+    retryStarted.details.insert(QStringLiteral("maxAttempts"), 3);
+    retryStarted.details.insert(QStringLiteral("retryAttemptIndex"), 2);
+    model.applyRuntimeEvents({retryStarted});
+    retryingUut = model.entryAt(0);
+    QVERIFY(retryingUut->retryActive);
+    QCOMPARE(retryingUut->retryAttempt, 2);
+    QCOMPARE(retryingUut->completedSteps, 1);
+    QCOMPARE(retryingUut->progress, 50);
+
+    RuntimeEvent retryPassed = retryStarted;
+    retryPassed.kind = RuntimeEventKind::AttemptCompleted;
+    retryPassed.activationState = ActivationState::Passed;
+    retryPassed.outcome = NodeOutcome::Passed;
+    model.applyRuntimeEvents({retryPassed});
+    QVERIFY(!model.entryAt(0)->retryActive);
+    QCOMPARE(model.entryAt(0)->progress, 50);
+
+    RuntimeEvent parentRetry = retryScheduled;
+    parentRetry.nodeId = QStringLiteral("main.parent");
+    parentRetry.nodeDisplayName = QStringLiteral("Parent Test Item");
+    model.applyRuntimeEvents({parentRetry});
+    QVERIFY(model.entryAt(0)->retryActive);
+    QCOMPARE(model.entryAt(0)->retryAttempt, 2);
+    QCOMPARE(model.entryAt(0)->retryMaxAttempts, 3);
+
+    RuntimeEvent childStarted = started;
+    childStarted.kind = RuntimeEventKind::AttemptStarted;
+    childStarted.nodeId = QStringLiteral("main.parent.child");
+    childStarted.nodeDisplayName = QStringLiteral("Retry Child Step");
+    childStarted.attemptIndex = 1;
+    childStarted.details.insert(QStringLiteral("maxAttempts"), 1);
+    childStarted.details.insert(QStringLiteral("retryAttemptIndex"), 1);
+    model.applyRuntimeEvents({childStarted});
+    const auto childDuringParentRetry = model.entryAt(0);
+    QVERIFY(childDuringParentRetry->retryActive);
+    QCOMPARE(childDuringParentRetry->retryAttempt, 2);
+    QCOMPARE(childDuringParentRetry->retryMaxAttempts, 3);
+    QCOMPARE(childDuringParentRetry->currentStep,
+             QStringLiteral("Retry Child Step"));
+
+    RuntimeEvent parentPassed = parentRetry;
+    parentPassed.kind = RuntimeEventKind::TestItemCompleted;
+    parentPassed.activationState = ActivationState::Passed;
+    parentPassed.outcome = NodeOutcome::Passed;
+    parentPassed.details.insert(QStringLiteral("retryAttemptIndex"), 2);
+    model.applyRuntimeEvents({parentPassed});
+    QVERIFY(!model.entryAt(0)->retryActive);
+
+    model.setSessionElapsedMs(5000);
+    RuntimeEvent uutCompleted = completed;
+    uutCompleted.kind = RuntimeEventKind::UutCompleted;
+    uutCompleted.nodeId.clear();
+    uutCompleted.outcome = NodeOutcome::Passed;
+    uutCompleted.details.insert(QStringLiteral("hasError"), false);
+    uutCompleted.details.insert(QStringLiteral("durationMs"), 875);
+    model.applyRuntimeEvents({uutCompleted});
+    const auto finalUut1 = model.entryAt(0);
+    QCOMPARE(finalUut1->state, UutOverviewState::Passed);
+    QCOMPARE(finalUut1->progress, 100);
+    QCOMPARE(finalUut1->durationMs, qint64(5000));
+
+    model.setSessionElapsedMs(7250);
+    QCOMPARE(model.entryAt(0)->durationMs, qint64(5000));
+    QCOMPARE(model.entryAt(1)->durationMs, qint64(0));
+
+    RuntimeEvent uut2Completed = uutCompleted;
+    uut2Completed.uutId = QStringLiteral("UUT-2");
+    uut2Completed.outcome = NodeOutcome::Failed;
+    uut2Completed.details.insert(QStringLiteral("hasError"), true);
+    model.applyRuntimeEvents({uut2Completed});
+    QCOMPARE(model.entryAt(1)->state, UutOverviewState::Failed);
+    QCOMPARE(model.entryAt(1)->durationMs, qint64(7250));
+
+    const auto uut1StepBeforePeriodic = model.entryAt(0)->currentStep;
+    const auto uut2StepBeforePeriodic = model.entryAt(1)->currentStep;
+    RuntimeEvent periodicTick;
+    periodicTick.kind = RuntimeEventKind::AttemptStarted;
+    periodicTick.nodeId = QStringLiteral("setup.heartbeat");
+    periodicTick.nodeDisplayName = QStringLiteral("Station Heartbeat");
+    periodicTick.nodePhase = ExecutionPhase::Setup;
+    periodicTick.activationState = ActivationState::Running;
+    periodicTick.details.insert(QStringLiteral("periodicInvocation"), true);
+    model.applyRuntimeEvents({periodicTick});
+    QCOMPARE(model.entryAt(0)->state, UutOverviewState::Passed);
+    QCOMPARE(model.entryAt(1)->state, UutOverviewState::Failed);
+    QCOMPARE(model.entryAt(0)->currentStep, uut1StepBeforePeriodic);
+    QCOMPARE(model.entryAt(1)->currentStep, uut2StepBeforePeriodic);
+
+    model.setSessionElapsedMs(9000);
+    QCOMPARE(model.entryAt(0)->durationMs, qint64(5000));
+    QCOMPARE(model.entryAt(1)->durationMs, qint64(7250));
+
+    UutReport reportedUut1;
+    reportedUut1.uutId = QStringLiteral("UUT-1");
+    reportedUut1.completed = true;
+    reportedUut1.outcome = NodeOutcome::Passed;
+    reportedUut1.durationMs = 875;
+    UutReport reportedUut2;
+    reportedUut2.uutId = QStringLiteral("UUT-2");
+    reportedUut2.completed = true;
+    reportedUut2.hasError = true;
+    reportedUut2.outcome = NodeOutcome::Failed;
+    reportedUut2.durationMs = 1200;
+    ExecutionReport finalReport;
+    finalReport.completed = true;
+    finalReport.uuts = {reportedUut1, reportedUut2};
+    model.setReport(finalReport);
+    QCOMPARE(model.entryAt(0)->durationMs, qint64(5000));
+    QCOMPARE(model.entryAt(1)->durationMs, qint64(7250));
+    QVERIFY(!model.entryAt(0)->recentSteps.isEmpty());
+}
+
+void ExecutionViewModelTests::uutOverviewModelPreservesFailureAcrossSharedCleanup()
+{
+    using namespace PicoATE::Core;
+
+    StepReport previewStep;
+    previewStep.stepId = QStringLiteral("limit");
+    previewStep.nodePath = QStringLiteral("main.limit");
+    previewStep.displayName = QStringLiteral("Check Overvoltage State");
+    UutReport previewUut;
+    previewUut.uutId = QStringLiteral("UUT");
+    previewUut.steps = {previewStep};
+    ExecutionReport preview;
+    preview.uuts = {previewUut};
+
+    QVector<RunRequest::UutInput> inputs;
+    for (int index = 1; index <= 2; ++index) {
+        RunRequest::UutInput input;
+        input.uutId = QStringLiteral("UUT-%1").arg(index);
+        inputs.push_back(input);
+    }
+
+    UutOverviewModel model;
+    model.resetForRun(preview, inputs);
+
+    RuntimeEvent setupRunning;
+    setupRunning.kind = RuntimeEventKind::NodeStateChanged;
+    setupRunning.nodeId = QStringLiteral("setup.open");
+    setupRunning.nodeDisplayName = QStringLiteral("Open Shared Device");
+    setupRunning.nodePhase = ExecutionPhase::Setup;
+    setupRunning.activationState = ActivationState::Running;
+    model.applyRuntimeEvents({setupRunning});
+    for (int row = 0; row < model.rowCount(); ++row) {
+        const auto entry = model.entryAt(row);
+        QCOMPARE(entry->currentStep, QStringLiteral("Open Shared Device"));
+        QCOMPARE(entry->currentPhase, ExecutionPhase::Setup);
+        QCOMPARE(entry->completedSteps, 0);
+    }
+
+    RuntimeEvent failedLimit;
+    failedLimit.kind = RuntimeEventKind::NodeStateChanged;
+    failedLimit.uutId = QStringLiteral("UUT-1");
+    failedLimit.nodeId = QStringLiteral("main.limit");
+    failedLimit.nodeLocalId = QStringLiteral("limit");
+    failedLimit.nodeDisplayName = QStringLiteral("Check Overvoltage State");
+    failedLimit.nodePhase = ExecutionPhase::Main;
+    failedLimit.activationState = ActivationState::Failed;
+    failedLimit.outcome = NodeOutcome::Failed;
+    failedLimit.errorCode = QStringLiteral("OVERVOLTAGE_STATE");
+    failedLimit.message = QStringLiteral("Expected overvoltage state");
+    RuntimeEvent skipped = failedLimit;
+    skipped.nodeId = QStringLiteral("main.stop-fan");
+    skipped.nodeDisplayName = QStringLiteral("Stop UUT Fan");
+    skipped.activationState = ActivationState::Skipped;
+    skipped.outcome = NodeOutcome::Skipped;
+    skipped.errorCode.clear();
+    skipped.message.clear();
+    model.applyRuntimeEvents({failedLimit, skipped});
+
+    auto failedEntry = model.entryAt(0);
+    QCOMPARE(failedEntry->failedStep,
+             QStringLiteral("Check Overvoltage State"));
+    QCOMPARE(failedEntry->failedNodeId, QStringLiteral("main.limit"));
+    QCOMPARE(failedEntry->failedPhase, ExecutionPhase::Main);
+    QCOMPARE(failedEntry->currentStep,
+             QStringLiteral("Check Overvoltage State"));
+    QCOMPARE(failedEntry->errorCode, QStringLiteral("OVERVOLTAGE_STATE"));
+
+    RuntimeEvent cleanupRunning;
+    cleanupRunning.kind = RuntimeEventKind::NodeStateChanged;
+    cleanupRunning.nodeId = QStringLiteral("cleanup.stop-fan");
+    cleanupRunning.nodeDisplayName = QStringLiteral("Stop UUT Fan");
+    cleanupRunning.nodePhase = ExecutionPhase::Cleanup;
+    cleanupRunning.activationState = ActivationState::Running;
+    model.applyRuntimeEvents({cleanupRunning});
+
+    failedEntry = model.entryAt(0);
+    QCOMPARE(failedEntry->currentStep, QStringLiteral("Stop UUT Fan"));
+    QCOMPARE(failedEntry->currentPhase, ExecutionPhase::Cleanup);
+    QCOMPARE(failedEntry->failedStep,
+             QStringLiteral("Check Overvoltage State"));
+    QCOMPARE(model.entryAt(1)->currentPhase, ExecutionPhase::Cleanup);
+
+    RuntimeEvent uutCompleted;
+    uutCompleted.kind = RuntimeEventKind::UutCompleted;
+    uutCompleted.uutId = QStringLiteral("UUT-1");
+    uutCompleted.outcome = NodeOutcome::Failed;
+    uutCompleted.errorCode = QStringLiteral("TestItemChildFailed");
+    uutCompleted.details.insert(QStringLiteral("hasError"), true);
+    model.applyRuntimeEvents({uutCompleted});
+
+    failedEntry = model.entryAt(0);
+    QCOMPARE(failedEntry->state, UutOverviewState::Failed);
+    QCOMPARE(failedEntry->failedStep,
+             QStringLiteral("Check Overvoltage State"));
+    QCOMPARE(failedEntry->errorCode, QStringLiteral("OVERVOLTAGE_STATE"));
+
+    RuntimeEvent periodicTick = setupRunning;
+    periodicTick.kind = RuntimeEventKind::AttemptStarted;
+    periodicTick.nodeId = QStringLiteral("setup.heartbeat");
+    periodicTick.nodeDisplayName = QStringLiteral("Station Heartbeat");
+    periodicTick.details.insert(QStringLiteral("periodicInvocation"), true);
+    model.applyRuntimeEvents({periodicTick});
+    failedEntry = model.entryAt(0);
+    QCOMPARE(failedEntry->state, UutOverviewState::Failed);
+    QCOMPARE(failedEntry->currentStep, QStringLiteral("Stop UUT Fan"));
+    QCOMPARE(failedEntry->failedStep,
+             QStringLiteral("Check Overvoltage State"));
+
+    RuntimeEvent cleanupFinished = cleanupRunning;
+    cleanupFinished.nodeId = QStringLiteral("cleanup.close");
+    cleanupFinished.nodeDisplayName = QStringLiteral("Close Shared Device");
+    cleanupFinished.activationState = ActivationState::Passed;
+    cleanupFinished.outcome = NodeOutcome::Passed;
+    model.applyRuntimeEvents({cleanupFinished});
+    failedEntry = model.entryAt(0);
+    QCOMPARE(failedEntry->state, UutOverviewState::Failed);
+    QCOMPARE(failedEntry->currentStep, QStringLiteral("Close Shared Device"));
+    QCOMPARE(failedEntry->failedStep,
+             QStringLiteral("Check Overvoltage State"));
+}
+
+void ExecutionViewModelTests::uutStepModelFiltersSelectedUutAndKeepsSessionPhases()
+{
+    using namespace PicoATE::Core;
+
+    const auto makeStep = [](const QString& id,
+                             const QString& name,
+                             ExecutionPhase phase) {
+        StepReport step;
+        step.stepId = id;
+        step.nodePath = id;
+        step.displayName = name;
+        step.phase = phase;
+        return step;
+    };
+    UutReport uut1;
+    uut1.uutId = QStringLiteral("UUT-1");
+    uut1.steps = {makeStep(QStringLiteral("uut1.measure"),
+                           QStringLiteral("Measure UUT 1"),
+                           ExecutionPhase::Main)};
+    UutReport uut2;
+    uut2.uutId = QStringLiteral("UUT-2");
+    uut2.steps = {makeStep(QStringLiteral("uut2.measure"),
+                           QStringLiteral("Measure UUT 2"),
+                           ExecutionPhase::Main)};
+    ExecutionReport report;
+    report.sessionSteps = {
+        makeStep(QStringLiteral("session.open"),
+                 QStringLiteral("Open Shared Device"),
+                 ExecutionPhase::Setup),
+        makeStep(QStringLiteral("session.close"),
+                 QStringLiteral("Close Shared Device"),
+                 ExecutionPhase::Cleanup)};
+    report.uuts = {uut1, uut2};
+
+    UutStepModel model;
+    QAbstractItemModelTester tester(
+        &model,
+        QAbstractItemModelTester::FailureReportingMode::QtTest);
+    model.setSingleUutPhaseLayout(true);
+    model.setVisibleUutId(QStringLiteral("UUT-2"));
+    model.setReport(report);
+
+    QCOMPARE(model.visibleUutId(), QStringLiteral("UUT-2"));
+    QCOMPARE(model.rowCount(), 3);
+    QCOMPARE(model.data(model.index(0, 0)).toString(), QStringLiteral("SETUP"));
+    QCOMPARE(model.data(model.index(1, 0)).toString(), QStringLiteral("MAIN"));
+    QCOMPARE(model.data(model.index(2, 0)).toString(), QStringLiteral("CLEANUP"));
+    QVERIFY(!model.indexForStep(QStringLiteral("UUT-1"),
+                                QStringLiteral("uut1.measure")).isValid());
+    const auto uut2Step = model.indexForStep(
+        QStringLiteral("UUT-2"), QStringLiteral("uut2.measure"));
+    QVERIFY(uut2Step.isValid());
+    QCOMPARE(model.data(uut2Step).toString(), QStringLiteral("Measure UUT 2"));
+
+    QSignalSpy dataChangedSpy(&model, &QAbstractItemModel::dataChanged);
+    RuntimeEvent hiddenRunning;
+    hiddenRunning.kind = RuntimeEventKind::NodeStateChanged;
+    hiddenRunning.uutId = QStringLiteral("UUT-1");
+    hiddenRunning.nodeId = QStringLiteral("uut1.measure");
+    hiddenRunning.activationState = ActivationState::Running;
+    model.applyRuntimeEvents({hiddenRunning});
+    QCOMPARE(dataChangedSpy.count(), 0);
+
+    model.setVisibleUutId(QStringLiteral("UUT-1"));
+    const auto uut1Step = model.indexForStep(
+        QStringLiteral("UUT-1"), QStringLiteral("uut1.measure"));
+    QVERIFY(uut1Step.isValid());
+    QCOMPARE(model.data(uut1Step.siblingAtColumn(UutStepModel::StateColumn)).toString(),
+             QStringLiteral("Running"));
+    QVERIFY(!model.indexForStep(QStringLiteral("UUT-2"),
+                                QStringLiteral("uut2.measure")).isValid());
+}
+
+void ExecutionViewModelTests::runtimeTimelineProxyFiltersSelectedUut()
+{
+    using namespace PicoATE::Core;
+
+    RuntimeTimelineModel source;
+    RuntimeEvent session;
+    session.kind = RuntimeEventKind::SessionStateChanged;
+    session.executionState = ExecutionState::Running;
+    RuntimeEvent uut1;
+    uut1.kind = RuntimeEventKind::ModuleLog;
+    uut1.uutId = QStringLiteral("UUT-1");
+    uut1.message = QStringLiteral("UUT 1 log");
+    RuntimeEvent uut2 = uut1;
+    uut2.uutId = QStringLiteral("UUT-2");
+    uut2.message = QStringLiteral("UUT 2 log");
+    source.applyRuntimeEvents({session, uut1, uut2});
+    QCOMPARE(source.rowCount(), 3);
+
+    UutRuntimeTimelineProxyModel proxy;
+    proxy.setSourceModel(&source);
+    proxy.setVisibleUutId(QStringLiteral("UUT-1"));
+    QCOMPARE(proxy.rowCount(), 2);
+    QVERIFY(proxy.data(proxy.index(1, RuntimeTimelineModel::MessageColumn))
+                .toString().contains(QStringLiteral("UUT 1 log")));
+
+    proxy.setVisibleUutId(QStringLiteral("UUT-2"));
+    QCOMPARE(proxy.rowCount(), 2);
+    QVERIFY(proxy.data(proxy.index(1, RuntimeTimelineModel::MessageColumn))
+                .toString().contains(QStringLiteral("UUT 2 log")));
+
+    proxy.setVisibleUutId({});
+    QCOMPARE(proxy.rowCount(), 3);
 }
 
 void ExecutionViewModelTests::coreServiceRunsBasicAndForLoopExamples()
@@ -2819,7 +3264,11 @@ void ExecutionViewModelTests::runtimeLogModelKeepsRecentBoundedLogs()
         events.push_back(log);
     }
 
+    QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+    QSignalSpy rowsInsertedSpy(&model, &QAbstractItemModel::rowsInserted);
     model.applyRuntimeEvents(events);
+    QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(rowsInsertedSpy.count(), 1);
     QCOMPARE(model.rowCount(), 3);
     QCOMPARE(model.droppedRowCount(), quint64(2));
     QCOMPARE(model.data(model.index(0, RuntimeLogModel::MessageColumn)).toString(),
@@ -2839,6 +3288,8 @@ void ExecutionViewModelTests::runtimeTimelineModelMergesControlEventsAndLogs()
     QAbstractItemModelTester tester(
         &model,
         QAbstractItemModelTester::FailureReportingMode::QtTest);
+    QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+    QSignalSpy rowsInsertedSpy(&model, &QAbstractItemModel::rowsInserted);
 
     QVector<RuntimeEvent> events;
     RuntimeEvent session;
@@ -2915,6 +3366,8 @@ void ExecutionViewModelTests::runtimeTimelineModelMergesControlEventsAndLogs()
     events.push_back(breakCompleted);
 
     model.applyRuntimeEvents(events);
+    QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(rowsInsertedSpy.count(), 1);
     QCOMPARE(model.rowCount(), 8);
     QCOMPARE(model.droppedRowCount(), quint64(0));
     QCOMPARE(model.data(model.index(0, RuntimeTimelineModel::MessageColumn)).toString(),

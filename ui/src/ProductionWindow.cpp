@@ -157,6 +157,36 @@ QString compactDuration(qint64 milliseconds)
         .arg(milliseconds % 1000, 3, 10, QLatin1Char('0'));
 }
 
+int autoRoutingUutCount(const QString& routingPath)
+{
+    const auto routing = PicoATE::Core::loadProductRoutingFile(routingPath);
+    if (!routing.ok()) {
+        return 1;
+    }
+
+    QSet<int> counts;
+    for (const auto& route : routing.config.routes) {
+        if (!route.enabled) {
+            continue;
+        }
+        QString stationPath;
+        if (!route.projectPath.isEmpty()) {
+            const auto project = PicoATE::Core::inspectProductProject(
+                route.projectPath);
+            if (project.ok()) {
+                stationPath = project.stationPath;
+            }
+        } else if (!route.sequencePath.isEmpty()) {
+            stationPath = StartupSupport::stationPathForSequence(
+                route.sequencePath);
+        }
+        if (!stationPath.isEmpty()) {
+            counts.insert(StartupSupport::stationUutCount(stationPath, 1));
+        }
+    }
+    return counts.size() == 1 ? *counts.cbegin() : 1;
+}
+
 } // namespace
 
 ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
@@ -204,8 +234,8 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
             this, &ProductionWindow::beginRunIteration);
     connect(m_viewModel, &ExecutionViewModel::runtimeEventsReady,
             this, &ProductionWindow::applyRuntimeEvents);
-    connect(m_scanDialog, &ScanDialog::barcodeAccepted,
-            this, &ProductionWindow::beginRun);
+    connect(m_scanDialog, &ScanDialog::barcodesAccepted,
+            this, &ProductionWindow::beginRunBatch);
     if (m_selection.sequenceLoadMode == SequenceLoadMode::Manual) {
         m_viewModel->setStationPath(m_selection.stationPath);
         m_viewModel->setSequencePath(m_selection.sequencePath);
@@ -805,7 +835,7 @@ void ProductionWindow::updateCompileSummary()
         const bool routedCompile =
             m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn &&
             m_runPreparationPending;
-        m_pendingSerialNumber.clear();
+        m_pendingSerialNumbers.clear();
         m_runPreparationPending = false;
         if (routedCompile) {
             QStringList details;
@@ -876,18 +906,18 @@ void ProductionWindow::updateReport()
     }
     updateProgress();
 
-    const bool matchingUut = m_activeUutId.isEmpty() || std::any_of(
-        report.uuts.cbegin(),
-        report.uuts.cend(),
-        [this](const auto& uut) { return uut.uutId == m_activeUutId; });
-    if (!m_currentRunCounted && matchingUut && report.completed) {
-        if (report.state == PicoATE::Core::ExecutionState::Completed &&
-            !report.hasError) {
-            ++m_passedUnits;
-        } else {
-            ++m_failedUnits;
+    if (!m_currentRunCounted && report.completed) {
+        for (const auto& uut : report.uuts) {
+            if (uut.completed && !uut.hasError &&
+                uut.outcome != PicoATE::Core::NodeOutcome::Cancelled) {
+                ++m_passedUnits;
+            } else {
+                ++m_failedUnits;
+            }
+            m_totalCompletedDurationMs += uut.durationMs >= 0
+                ? uut.durationMs
+                : 0;
         }
-        m_totalCompletedDurationMs += m_elapsed.isValid() ? m_elapsed.elapsed() : 0;
         m_currentRunCounted = true;
         updateYieldStatistics();
     }
@@ -963,15 +993,28 @@ void ProductionWindow::focusExecutionLogForResult(const QModelIndex& index)
 
 void ProductionWindow::beginRun(const QString& serialNumber)
 {
+    beginRunBatch(serialNumber.trimmed().isEmpty()
+                      ? QStringList{}
+                      : QStringList{serialNumber});
+}
+
+void ProductionWindow::beginRunBatch(const QStringList& serialNumbers)
+{
     if (m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn) {
-        beginAutoRoutedRun(serialNumber);
+        beginAutoRoutedRunBatch(serialNumbers);
         return;
     }
     if (!m_viewModel->canRun()) {
         showScanDialogWhenReady();
         return;
     }
-    m_pendingSerialNumber = serialNumber.trimmed();
+    m_pendingSerialNumbers.clear();
+    for (const auto& serialNumber : serialNumbers) {
+        const auto sn = serialNumber.trimmed();
+        if (!sn.isEmpty()) {
+            m_pendingSerialNumbers.push_back(sn);
+        }
+    }
     m_runPreparationPending = true;
     statusBar()->showMessage(tr("Preparing station devices..."));
     startResolvedRun();
@@ -979,8 +1022,20 @@ void ProductionWindow::beginRun(const QString& serialNumber)
 
 void ProductionWindow::beginAutoRoutedRun(const QString& serialNumber)
 {
-    const auto sn = serialNumber.trimmed();
-    if (sn.isEmpty()) {
+    beginAutoRoutedRunBatch({serialNumber});
+}
+
+void ProductionWindow::beginAutoRoutedRunBatch(
+    const QStringList& serialNumbers)
+{
+    QStringList sns;
+    for (const auto& serialNumber : serialNumbers) {
+        const auto sn = serialNumber.trimmed();
+        if (!sn.isEmpty()) {
+            sns.push_back(sn);
+        }
+    }
+    if (sns.isEmpty()) {
         return;
     }
     if (!m_viewModel->canChangeSources()) {
@@ -1000,7 +1055,8 @@ void ProductionWindow::beginAutoRoutedRun(const QString& serialNumber)
         showRoutingError(details.join(QStringLiteral("\n")));
         return;
     }
-    const auto route = PicoATE::Core::resolveProductRoute(routing.config, sn);
+    const auto route = PicoATE::Core::resolveProductRoute(
+        routing.config, sns.first());
     if (!route.ok()) {
         QStringList details;
         for (const auto& error : route.errors) {
@@ -1010,7 +1066,31 @@ void ProductionWindow::beginAutoRoutedRun(const QString& serialNumber)
         return;
     }
 
-    m_pendingSerialNumber = sn;
+    for (int index = 1; index < sns.size(); ++index) {
+        const auto candidate = PicoATE::Core::resolveProductRoute(
+            routing.config, sns[index]);
+        if (!candidate.ok()) {
+            QStringList details;
+            for (const auto& error : candidate.errors) {
+                details.push_back(error.message);
+            }
+            showRoutingError(
+                tr("UUT %1 (%2): %3")
+                    .arg(index + 1)
+                    .arg(sns[index], details.join(QStringLiteral("; "))));
+            return;
+        }
+        if (candidate.sequencePath != route.sequencePath ||
+            candidate.stationPath != route.stationPath) {
+            showRoutingError(
+                tr("All UUTs in one batch must resolve to the same project. "
+                   "UUT 1 and UUT %1 matched different projects.")
+                    .arg(index + 1));
+            return;
+        }
+    }
+
+    m_pendingSerialNumbers = sns;
     m_runPreparationPending = true;
     m_selection.projectName = route.projectName;
     m_selection.projectPath = route.projectPath;
@@ -1032,7 +1112,8 @@ void ProductionWindow::beginAutoRoutedRun(const QString& serialNumber)
     m_viewModel->setSequencePath(route.sequencePath);
     m_viewModel->compile();
     statusBar()->showMessage(
-        tr("SN matched %1. Loading %2...")
+        tr("%1 UUT SN(s) matched %2. Loading %3...")
+            .arg(sns.size())
             .arg(route.routeName, QFileInfo(route.sequencePath).fileName()));
 }
 
@@ -1054,19 +1135,37 @@ void ProductionWindow::startResolvedRun()
     if (!m_viewModel->canRun() || !m_runPreparationPending) {
         return;
     }
-    const auto sn = std::exchange(m_pendingSerialNumber, {});
+    auto serialNumbers = std::exchange(m_pendingSerialNumbers, QStringList{});
     m_runPreparationPending = false;
-    m_activeSerialNumber = sn;
-    m_activeUutId = sn.isEmpty()
-        ? QStringLiteral("UUT-%1").arg(
-              QDateTime::currentDateTime().toString(
-                  QStringLiteral("yyyyMMdd-HHmmss-zzz")))
-        : sn;
-    m_serialLabel->setText(sn.isEmpty() ? tr("--") : sn);
-    QVariantMap variables;
-    variables.insert(QStringLiteral("sn"), sn);
-    variables.insert(QStringLiteral("serialNumber"), sn);
-    m_viewModel->runUut(m_activeUutId, variables);
+    int uutCount = serialNumbers.size();
+    if (uutCount == 0) {
+        uutCount = StartupSupport::stationUutCount(m_selection.stationPath, 1);
+        serialNumbers = QStringList(uutCount, QString{});
+    }
+
+    QVector<RunRequest::UutInput> inputs;
+    inputs.reserve(uutCount);
+    for (int index = 0; index < uutCount; ++index) {
+        const auto sn = serialNumbers.value(index).trimmed();
+        RunRequest::UutInput input;
+        input.uutId = uutCount == 1 && !sn.isEmpty()
+            ? sn
+            : QStringLiteral("UUT-%1").arg(index + 1);
+        input.variables.insert(QStringLiteral("sn"), sn);
+        input.variables.insert(QStringLiteral("serialNumber"), sn);
+        inputs.push_back(std::move(input));
+    }
+
+    m_activeSerialNumber = serialNumbers.value(0).trimmed();
+    m_activeUutId = inputs.first().uutId;
+    m_serialLabel->setText(m_activeSerialNumber.isEmpty()
+                               ? tr("--")
+                               : uutCount > 1
+                               ? tr("%1  (+%2)").arg(m_activeSerialNumber)
+                                                  .arg(uutCount - 1)
+                               : m_activeSerialNumber);
+    m_resultModel->setVisibleUutId(m_activeUutId);
+    m_viewModel->runUuts(inputs);
 }
 
 void ProductionWindow::openFieldDeviceConfiguration()
@@ -1192,6 +1291,10 @@ void ProductionWindow::showScanDialogWhenReady()
     }
     m_scanDialog->setValidationRules(
         autoRouting ? SnValidationRules{} : m_selection.snValidationRules);
+    const int uutCount = autoRouting
+        ? autoRoutingUutCount(m_selection.productRoutingPath)
+        : StartupSupport::stationUutCount(m_selection.stationPath, 1);
+    m_scanDialog->setSlotCount(uutCount);
     QTimer::singleShot(0, m_scanDialog, [dialog = m_scanDialog] {
         dialog->showForNextScan();
     });

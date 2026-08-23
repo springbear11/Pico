@@ -14,16 +14,20 @@
 #include <memory>
 
 class QAction;
+class QButtonGroup;
 class QCloseEvent;
 class QEvent;
+class QHBoxLayout;
 class QLineEdit;
 class QLabel;
 class QMenu;
 class QProgressBar;
+class QPushButton;
 class QProcess;
 class QResizeEvent;
 class QSortFilterProxyModel;
 class QSpinBox;
+class QStackedWidget;
 class QTableView;
 class QTabWidget;
 class QThread;
@@ -41,6 +45,7 @@ class FlowTargetSelector;
 class HistoryModel;
 class LoadingSpinner;
 class MeasurementModel;
+class MultiUutOverviewWidget;
 class OperatorPromptPresenter;
 class PluginFunctionModel;
 class RuntimeTimelineModel;
@@ -54,6 +59,8 @@ class StationPropertyEditor;
 class StationSettingsEditor;
 class StepPropertyEditor;
 class UutStepModel;
+class UutOverviewModel;
+class UutRuntimeTimelineProxyModel;
 class YieldDonutWidget;
 
 class MainWindow final : public QMainWindow
@@ -103,6 +110,8 @@ private:
     bool commitPendingStationChanges();
     void discardPendingStationChanges();
     void saveActiveDocument();
+    bool isRunWorkspaceActive() const;
+    bool isRunDetailVisible() const;
     bool isStationWorkspaceActive() const;
     bool saveStation();
     bool saveStationAs();
@@ -127,7 +136,9 @@ private:
     void openProductRoutingConfiguration();
     QString effectiveProductRoutingPath() const;
     void runScannedUut(const QString& serialNumber);
+    void runScannedUuts(const QStringList& serialNumbers);
     void startAdminRunWithSerial(const QString& serialNumber);
+    void startAdminRunWithSerials(const QStringList& serialNumbers);
     void showProductRoutingError(const QString& message);
     void beginAdminRunIteration(int iteration, int totalIterations);
     void toggleScanDialog();
@@ -171,6 +182,11 @@ private:
     void updateAdminProgress();
     void updateAdminYield();
     void updateAdminElapsed();
+    void showAdminUutOverview();
+    void showAdminUutDetails(const PicoATE::Core::UutId& uutId);
+    void rebuildAdminUutButtons();
+    void updateSelectedAdminUutSummary();
+    void refreshVisibleRuntimeViews();
     void updateDebugSnapshot();
     void setRunTestInstructionPointer(const QString& nodePath);
     void displayReport(const PicoATE::Core::ExecutionReport& report,
@@ -212,6 +228,8 @@ private:
     DeviceStatusModel* m_deviceStatusModel = nullptr;
     HistoryModel* m_historyModel = nullptr;
     UutStepModel* m_uutStepModel = nullptr;
+    UutOverviewModel* m_uutOverviewModel = nullptr;
+    UutRuntimeTimelineProxyModel* m_runtimeTimelineProxy = nullptr;
     AttemptModel* m_attemptModel = nullptr;
     MeasurementModel* m_measurementModel = nullptr;
     PluginFunctionModel* m_pluginFunctionModel = nullptr;
@@ -269,10 +287,20 @@ private:
     QSpinBox* m_uutCount = nullptr;
     QSpinBox* m_connectionTimeoutMs = nullptr;
     QTabWidget* m_workspaceTabs = nullptr;
+    QWidget* m_runTestPage = nullptr;
+    QStackedWidget* m_adminRunStack = nullptr;
+    QWidget* m_adminRunOverviewPage = nullptr;
+    QWidget* m_adminRunDetailPage = nullptr;
+    MultiUutOverviewWidget* m_adminUutOverview = nullptr;
+    QPushButton* m_adminBackToOverview = nullptr;
+    QWidget* m_adminUutNavigationLead = nullptr;
+    QButtonGroup* m_adminUutNavigationGroup = nullptr;
+    QHBoxLayout* m_adminUutNavigationLayout = nullptr;
     QWidget* m_flowEditorPage = nullptr;
     QWidget* m_stationEditorPage = nullptr;
     ScanDialog* m_scanDialog = nullptr;
     QLabel* m_adminSequenceLabel = nullptr;
+    QLabel* m_adminSerialCaption = nullptr;
     QLabel* m_adminSerialLabel = nullptr;
     QLabel* m_adminStationLabel = nullptr;
     QLabel* m_adminModelLabel = nullptr;
@@ -287,6 +315,7 @@ private:
     QLabel* m_adminTotalCount = nullptr;
     QLabel* m_adminAverageTime = nullptr;
     YieldDonutWidget* m_adminYieldChart = nullptr;
+    QWidget* m_adminProgressPanel = nullptr;
     QProgressBar* m_adminProgress = nullptr;
     QTimer* m_adminElapsedTimer = nullptr;
     QWidget* m_startupOverlay = nullptr;
@@ -319,9 +348,10 @@ private:
     QStringList m_recentStations;
     QString m_productRoutingPath;
     QString m_newProjectRootPath;
-    QString m_pendingRoutedSerialNumber;
+    QStringList m_pendingRoutedSerialNumbers;
     QString m_activeAdminUutId;
     QString m_activeAdminSerialNumber;
+    PicoATE::Core::UutId m_selectedAdminUutId;
     QVector<QJsonObject> m_sequenceClipboard;
     SequenceItemPath m_selectedSequencePath;
     QString m_selectedSequenceNodePath;
@@ -332,6 +362,7 @@ private:
     QHash<QString, QString> m_pendingStationLogicalIdMigrations;
     bool m_currentReportSaved = false;
     bool m_currentAdminRunCounted = false;
+    bool m_adminStopRequested = false;
     bool m_shuttingDown = false;
     bool m_handlingSequenceSelection = false;
     bool m_handlingStationSelection = false;
@@ -347,6 +378,7 @@ private:
     bool m_autoRouteBySn = false;
     bool m_newProjectTemplate = false;
     int m_responsiveLayoutMode = -1;
+    UiRunState m_adminSessionState = UiRunState::Empty;
     int m_adminTotalNodes = 0;
     int m_adminPassedUnits = 0;
     int m_adminFailedUnits = 0;

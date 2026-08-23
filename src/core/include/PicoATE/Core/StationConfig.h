@@ -29,6 +29,7 @@ struct StationConfig {
     bool pdfReportEnabled = false;
     bool loopTestEnabled = false;
     int loopTestCount = 1;
+    int uutCount = 1;
     QString pluginRegistryPath = QStringLiteral("plugins/PluginRegistry.json");
     QString reportOutputDirectory;
     int snLength = 0;
