@@ -117,6 +117,11 @@ namespace PicoATE::Ui {
 namespace {
 
 constexpr int MaxRecentFiles = 8;
+// Temporary presentation gates for the staged multi-UUT UI rollout.
+// Restore them in order: count control, detail switcher, then overview.
+constexpr bool ShowAdminUutCountControl = false;
+constexpr bool ShowAdminUutSwitcher = false;
+constexpr bool ShowAdminUutOverview = false;
 const QString StationDiagnosticPrefix = QStringLiteral("Station: ");
 const QString RegisterDirectoryName = QStringLiteral("register");
 
@@ -1069,7 +1074,8 @@ MainWindow::MainWindow(QWidget* parent)
     buildActions();
     serviceAdminStartupAnimation();
     buildLayout();
-    m_operatorPromptPresenter->setOverviewHost(m_adminUutOverview);
+    m_operatorPromptPresenter->setOverviewHost(
+        ShowAdminUutOverview ? m_adminUutOverview : nullptr);
     serviceAdminStartupAnimation();
     restoreUiSettings();
     serviceAdminStartupAnimation();
@@ -3763,7 +3769,7 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
     updateAdminProgress();
     m_adminElapsed.restart();
     m_adminElapsedTimer->start();
-    if (activeUuts.size() > 1) {
+    if (ShowAdminUutOverview && activeUuts.size() > 1) {
         showAdminUutOverview();
     } else {
         showAdminUutDetails(m_selectedAdminUutId);
@@ -5393,8 +5399,13 @@ void MainWindow::buildActions()
     m_uutCount->setAlignment(Qt::AlignCenter);
     m_uutCount->setFixedWidth(88);
     m_uutCount->setToolTip(tr("Number of UUTs in this run"));
-    mainToolbar->addWidget(m_uutCount);
-    mainToolbar->addSeparator();
+    if (ShowAdminUutCountControl) {
+        mainToolbar->addWidget(m_uutCount);
+        mainToolbar->addSeparator();
+    } else {
+        m_uutCount->setValue(1);
+        m_uutCount->hide();
+    }
     mainToolbar->addAction(m_compileAction);
     mainToolbar->addAction(m_runAction);
     mainToolbar->addAction(m_pauseAction);
@@ -5849,6 +5860,8 @@ void MainWindow::buildLayout()
     runDetailLayout->setSpacing(8);
     auto* detailNavigation = new QWidget(runPage);
     detailNavigation->setObjectName(QStringLiteral("adminUutDetailNavigation"));
+    detailNavigation->setVisible(
+        ShowAdminUutOverview || ShowAdminUutSwitcher);
     auto* detailNavigationLayout = new QHBoxLayout(detailNavigation);
     detailNavigationLayout->setContentsMargins(0, 2, 6, 2);
     detailNavigationLayout->setSpacing(
@@ -5871,6 +5884,7 @@ void MainWindow::buildLayout()
     m_adminBackToOverview->setIconSize(QSize(18, 18));
     m_adminBackToOverview->setProperty("overviewIndicatorFill", 0.0);
     m_adminBackToOverview->setEnabled(false);
+    m_adminBackToOverview->setVisible(ShowAdminUutOverview);
     auto* overviewIndicatorAnimation = new QVariantAnimation(
         m_adminBackToOverview);
     overviewIndicatorAnimation->setDuration(140);
@@ -5904,6 +5918,7 @@ void MainWindow::buildLayout()
 
     auto* uutButtonsHost = new QWidget(detailNavigation);
     uutButtonsHost->setObjectName(QStringLiteral("adminUutButtonsHost"));
+    uutButtonsHost->setVisible(ShowAdminUutSwitcher);
     m_adminUutNavigationLayout = new QHBoxLayout(uutButtonsHost);
     m_adminUutNavigationLayout->setContentsMargins(0, 0, 0, 0);
     m_adminUutNavigationLayout->setSpacing(6);
@@ -6409,7 +6424,8 @@ void MainWindow::updateCommandState()
     m_scanAction->setEnabled(
         m_autoRouteBySn ? canChangeSources : m_viewModel->canRun());
     m_productRoutingAction->setEnabled(canChangeSources);
-    m_uutCount->setEnabled(canChangeSources);
+    m_uutCount->setEnabled(
+        ShowAdminUutCountControl && canChangeSources);
 
     const bool hasDocument = m_sequenceDocument && !m_sequenceDocument->isEmpty();
     const auto selectedPath = m_sequenceTreeView
@@ -6632,7 +6648,7 @@ void MainWindow::updateCompilePreview()
     m_attemptModel->setStep(std::nullopt);
     m_measurementModel->setMeasurements({});
     rebuildAdminUutButtons();
-    if (previewUuts.size() > 1) {
+    if (ShowAdminUutOverview && previewUuts.size() > 1) {
         showAdminUutOverview();
     } else {
         showAdminUutDetails(m_selectedAdminUutId);
@@ -6754,7 +6770,8 @@ void MainWindow::updateAdminElapsed()
 
 void MainWindow::showAdminUutOverview()
 {
-    if (!m_adminRunStack || !m_adminRunOverviewPage ||
+    if (!ShowAdminUutOverview || !m_adminRunStack ||
+        !m_adminRunOverviewPage ||
         !m_uutOverviewModel || m_uutOverviewModel->rowCount() <= 1) {
         showAdminUutDetails(m_selectedAdminUutId);
         return;
@@ -6815,8 +6832,11 @@ void MainWindow::showAdminUutDetails(const PicoATE::Core::UutId& uutId)
             }
         }
     }
-    m_adminBackToOverview->show();
-    m_adminBackToOverview->setEnabled(m_uutOverviewModel->rowCount() > 1);
+    if (m_adminBackToOverview) {
+        m_adminBackToOverview->setVisible(ShowAdminUutOverview);
+        m_adminBackToOverview->setEnabled(
+            ShowAdminUutOverview && m_uutOverviewModel->rowCount() > 1);
+    }
     if (m_adminSerialCaption) {
         m_adminSerialCaption->show();
     }
@@ -6858,6 +6878,14 @@ void MainWindow::rebuildAdminUutButtons()
         m_adminUutNavigationGroup->removeButton(button);
         m_adminUutNavigationLayout->removeWidget(button);
         delete button;
+    }
+
+    if (!ShowAdminUutSwitcher) {
+        if (m_adminBackToOverview) {
+            m_adminBackToOverview->setEnabled(
+                ShowAdminUutOverview && m_uutOverviewModel->rowCount() > 1);
+        }
+        return;
     }
 
     struct ButtonDefinition {
@@ -6911,7 +6939,8 @@ void MainWindow::rebuildAdminUutButtons()
         m_adminUutNavigationLayout->addWidget(button);
     }
 
-    m_adminBackToOverview->setEnabled(m_uutOverviewModel->rowCount() > 1);
+    m_adminBackToOverview->setEnabled(
+        ShowAdminUutOverview && m_uutOverviewModel->rowCount() > 1);
     if (m_adminRunStack &&
         m_adminRunStack->currentWidget() == m_adminRunOverviewPage &&
         m_uutOverviewModel->rowCount() > 1) {
@@ -7546,7 +7575,10 @@ void MainWindow::restoreUiSettings()
             details->setCurrentIndex(detailsTab);
         }
     }
-    m_uutCount->setValue(settings.value(QStringLiteral("UutCount"), 1).toInt());
+    m_uutCount->setValue(
+        ShowAdminUutCountControl
+            ? settings.value(QStringLiteral("UutCount"), 1).toInt()
+            : 1);
     m_connectionTimeoutMs->setValue(
         settings.value(QStringLiteral("ConnectionTimeoutMs"), 5000).toInt());
     m_responsiveLayoutMode = settings.value(
@@ -7578,7 +7610,8 @@ void MainWindow::saveUiSettings() const
     if (const auto* details = findChild<QTabWidget*>(QStringLiteral("runDetailsTabs"))) {
         settings.setValue(QStringLiteral("RunDetailsTab"), details->currentIndex());
     }
-    settings.setValue(QStringLiteral("UutCount"), m_uutCount->value());
+    settings.setValue(QStringLiteral("UutCount"),
+                      ShowAdminUutCountControl ? m_uutCount->value() : 1);
     settings.setValue(QStringLiteral("ConnectionTimeoutMs"),
                       m_connectionTimeoutMs->value());
     settings.setValue(QStringLiteral("ResponsiveLayoutMode"),

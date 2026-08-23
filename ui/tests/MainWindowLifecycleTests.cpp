@@ -4242,6 +4242,47 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
     QVERIFY(resultView);
     QVERIFY(!window.findChild<QComboBox*>(QStringLiteral("adminUutSelector")));
 
+    if (uutCount->isHidden()) {
+        auto* detailNavigation = window.findChild<QWidget*>(
+            QStringLiteral("adminUutDetailNavigation"));
+        auto* buttonsHost = window.findChild<QWidget*>(
+            QStringLiteral("adminUutButtonsHost"));
+        QVERIFY(detailNavigation);
+        QVERIFY(buttonsHost);
+        QVERIFY(detailNavigation->isHidden());
+        QVERIFY(buttonsHost->isHidden());
+        QVERIFY(backButton->isHidden());
+
+        // Exercise four UUTs through the hidden control to prove the rollout
+        // gates affect presentation only; the model and runtime stay intact.
+        uutCount->setValue(4);
+        viewModel->compile();
+        QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 3000);
+        QCOMPARE(runStack->currentWidget(), detailPage);
+        QCOMPARE(overviewModel->rowCount(), 4);
+        QCOMPARE(stepModel->visibleUutId(), QStringLiteral("UUT-1"));
+        QVERIFY(!window.findChild<QPushButton*>(
+            QStringLiteral("adminUutButton_1")));
+
+        runAction->trigger();
+        QTRY_COMPARE_WITH_TIMEOUT(overviewModel->rowCount(), 4, 1000);
+        QCOMPARE(runStack->currentWidget(), detailPage);
+        QTRY_VERIFY_WITH_TIMEOUT(viewModel->state() == UiRunState::Completed ||
+                                 viewModel->state() == UiRunState::Failed,
+                                 5000);
+        QCOMPARE(runStack->currentWidget(), detailPage);
+        for (int row = 0; row < overviewModel->rowCount(); ++row) {
+            const auto entry = overviewModel->entryAt(row);
+            QVERIFY(entry.has_value());
+            QCOMPARE(entry->uutId, QStringLiteral("UUT-%1").arg(row + 1));
+            QVERIFY(entry->state == UutOverviewState::Passed ||
+                    entry->state == UutOverviewState::Failed ||
+                    entry->state == UutOverviewState::Stopped);
+        }
+        QVERIFY(window.close());
+        return;
+    }
+
     uutCount->setValue(4);
     viewModel->compile();
     QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 3000);
@@ -4447,6 +4488,7 @@ void MainWindowLifecycleTests::persistsLayoutAndRecentFiles()
         QVERIFY(detailsTabs);
         QVERIFY(runSplitter);
         QVERIFY(uutCount);
+        QVERIFY(uutCount->isHidden());
         workspaceTabs->setCurrentIndex(2);
         detailsTabs->setCurrentIndex(3);
         runSplitter->setSizes({320, 720});
@@ -4467,7 +4509,7 @@ void MainWindowLifecycleTests::persistsLayoutAndRecentFiles()
              QFileInfo(stationPath).absoluteFilePath());
     QCOMPARE(saved.value(QStringLiteral("MainWindow/WorkspaceTab")).toInt(), 2);
     QCOMPARE(saved.value(QStringLiteral("MainWindow/RunDetailsTab")).toInt(), 3);
-    QCOMPARE(saved.value(QStringLiteral("MainWindow/UutCount")).toInt(), 3);
+    QCOMPARE(saved.value(QStringLiteral("MainWindow/UutCount")).toInt(), 1);
 
     MainWindow restored;
     restored.show();
@@ -4491,8 +4533,11 @@ void MainWindowLifecycleTests::persistsLayoutAndRecentFiles()
     QVERIFY(resetLayout);
     QCOMPARE(workspaceTabs->currentIndex(), 2);
     QCOMPARE(detailsTabs->currentIndex(), 3);
-    QCOMPARE(restored.findChild<QSpinBox*>(
-                 QStringLiteral("uutCountSpinBox"))->value(), 3);
+    auto* restoredUutCount = restored.findChild<QSpinBox*>(
+        QStringLiteral("uutCountSpinBox"));
+    QVERIFY(restoredUutCount);
+    QVERIFY(restoredUutCount->isHidden());
+    QCOMPARE(restoredUutCount->value(), 1);
     QCOMPARE(recentSequences->actions().size(), 1);
     QCOMPARE(recentStations->actions().size(), 1);
     QCOMPARE(recentSequences->actions().first()->toolTip(),

@@ -663,3 +663,26 @@ ExecutionSession / ExecutionGraphScheduler
 - Step 树与实时日志均按所选 UUT 过滤；Session 级公共事件仍可见。
 - Admin 无扫码启动时可设置 UUT 数量；扫码运行暂时维持单 UUT，直到 UI-M3 明确多 SN 流程。
 - 完整 Debug CTest `25/25` 通过，Core 与 Scheduler 源码没有变化。
+
+### 18.5 多 UUT UI 分阶段展示开关（2026-08-23）
+
+为保留已经验证的一拖多代码，同时暂时按一拖一界面进行演示，Admin UI
+使用三个集中在 `ui/src/MainWindow.cpp` 匿名命名空间内的临时常量：
+
+| 常量 | 当前值 | 作用 |
+|---|---:|---|
+| `ShowAdminUutCountControl` | `false` | 隐藏工具栏 UUT 数量控件；隐藏期间 Admin 固定按 1 路启动 |
+| `ShowAdminUutSwitcher` | `false` | 隐藏 Run Test 页的 UUT1/UUT2/UUT3/UUT4 详情切换按钮 |
+| `ShowAdminUutOverview` | `false` | 隐藏 Overview 入口和卡片页；编译、Run 后保持原树状详情页 |
+
+恢复顺序固定为：
+
+1. 将 `ShowAdminUutCountControl` 改为 `true`，先开放 UUT 数量配置和现有滚动扫码流程。
+2. 将 `ShowAdminUutSwitcher` 改为 `true`，开放各 UUT 的树状结果与日志切换。
+3. 最后将 `ShowAdminUutOverview` 改为 `true`，开放完整卡片总览。
+
+这些常量只控制 Admin UI 的可见性，不删除 Overview、独立报告、多 UUT
+模型或调度能力，也不改变 Flow 中的 Barrier、LOCK/UNLOCK、UUT Scope
+和数组变量。扫码框继续复用多槽位实现，UUT 数量为 1 时就是单 SN 流程。
+Overview 隐藏时，Operator Prompt 自动使用原普通弹窗，避免消息投递到不可见卡片。
+这里不引入 `FeatureProfile`、QSettings 隐藏配置或新的 Station/Sequence 字段。
