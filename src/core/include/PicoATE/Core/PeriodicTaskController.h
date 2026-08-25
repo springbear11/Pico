@@ -16,6 +16,7 @@ struct PeriodicTaskRegistration {
     UutExecution* execution = nullptr;
     FrameId frameId;
     ActivationId activationId;
+    bool stopWhenUutCompletes = false;
     int intervalMs = 5000;
     bool runImmediately = true;
     int counterStart = 1;
@@ -52,6 +53,7 @@ public:
     void defer(const PeriodicTaskInvocation& invocation,
                int delayMs = 20);
 
+    QVector<PeriodicTaskSummary> stopForUut(const UutId& uutId);
     QVector<PeriodicTaskSummary> stopAll();
     bool hasActiveTasks() const;
     int activeTaskCount() const;

@@ -163,6 +163,7 @@ StepReport makeStepReport(const ExecutionPlan& plan, const UutExecution& uut, co
         report.functionName = node->payload.value(QStringLiteral("function")).toString();
         report.kind = node->kind;
         report.phase = executionPhaseOf(*node);
+        report.executionScope = node->executionScope;
         report.resultRecording = node->resultRecording;
         if (node->kind == ExecNodeKind::Limit) {
             report.measurements.push_back(
@@ -418,8 +419,38 @@ ExecutionSessionResult ExecutionSession::run()
         result.sessionNodeResults += step.nodeResults;
         result.nodeResults += step.nodeResults;
         result.hasError = result.hasError || step.hasError;
+        if (!step.sourceUutId.isEmpty()) {
+            auto sourceUut = std::find_if(
+                result.uutResults.begin(), result.uutResults.end(),
+                [&step](const ExecutionSessionResult::UutResult& candidate) {
+                    return candidate.uutId == step.sourceUutId;
+                });
+            if (sourceUut != result.uutResults.end()) {
+                sourceUut->nodeResults += step.nodeResults;
+                sourceUut->hasError = sourceUut->hasError || step.hasError;
+            }
+        }
     };
-    auto appendUutStep = [&result](const UutId& uutId, const SchedulerStepResult& step) {
+    auto appendSharedNodeResults = [&result](
+        const QVector<SchedulerStepResult::UutNodeResult>& sharedResults) {
+        for (const auto& shared : sharedResults) {
+            result.nodeResults.push_back(shared.result);
+            const bool sharedHasError = outcomeWasError(shared.result.outcome);
+            result.hasError = result.hasError || sharedHasError;
+            auto sharedUut = std::find_if(
+                result.uutResults.begin(), result.uutResults.end(),
+                [&shared](const ExecutionSessionResult::UutResult& candidate) {
+                    return candidate.uutId == shared.uutId;
+                });
+            if (sharedUut != result.uutResults.end()) {
+                sharedUut->nodeResults.push_back(shared.result);
+                sharedUut->hasError = sharedUut->hasError || sharedHasError;
+            }
+        }
+    };
+    auto appendUutStep = [&result, &appendSharedNodeResults](
+                             const UutId& uutId,
+                             const SchedulerStepResult& step) {
         result.nodeResults += step.nodeResults;
         result.hasError = result.hasError || step.hasError;
         auto it = std::find_if(
@@ -431,6 +462,7 @@ ExecutionSessionResult ExecutionSession::run()
             it->nodeResults += step.nodeResults;
             it->hasError = it->hasError || step.hasError;
         }
+        appendSharedNodeResults(step.sharedNodeResults);
     };
     auto applyRequestedCleanup = [this] {
         if (!m_scheduler->sessionCleanupRequested()) {
@@ -537,6 +569,8 @@ ExecutionSessionResult ExecutionSession::run()
                 }
             }
             m_scheduler->applyBarrierReleases(uutPointers());
+            appendSharedNodeResults(
+                m_scheduler->applySharedExecutionUpdates(uutPointers()));
             publishCompletedUuts();
             if (m_scheduler->hasPendingRequests()) {
                 if (!completedPendingRequest) {
@@ -572,6 +606,8 @@ ExecutionSessionResult ExecutionSession::run()
             }
 
             m_scheduler->applyBarrierReleases(uutPointers());
+            appendSharedNodeResults(
+                m_scheduler->applySharedExecutionUpdates(uutPointers()));
             publishCompletedUuts();
             pauseAfterDebugStepIfNeeded(uut, step, "root");
             if (applyRequestedCleanup()) {
@@ -803,6 +839,18 @@ ExecutionReport ExecutionSession::report() const
     if (m_state == ExecutionState::CompletedWithError ||
         m_state == ExecutionState::Aborted) {
         report.hasError = true;
+    }
+
+    // Setup and Cleanup are shared by the whole batch. If either shared
+    // lifecycle phase fails or cannot finish, no UUT may be reported as a
+    // passing product merely because all of its Main nodes were skipped.
+    if (report.sessionHasError) {
+        for (auto& uut : report.uuts) {
+            uut.hasError = true;
+            if (uut.completed && uut.outcome != NodeOutcome::Cancelled) {
+                uut.outcome = NodeOutcome::Failed;
+            }
+        }
     }
 
     return report;
@@ -1197,7 +1245,7 @@ void ExecutionSession::publishCompletedUuts()
             continue;
         }
 
-        bool hasError = false;
+        bool hasError = m_scheduler->stopPeriodicTasksForUut(uut.uutId);
         for (auto it = uut.activations.constBegin(); it != uut.activations.constEnd(); ++it) {
             const auto outcome = uut.outcomeOf(it.key());
             hasError = hasError || outcomeWasError(outcome);

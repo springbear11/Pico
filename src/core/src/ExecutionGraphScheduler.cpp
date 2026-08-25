@@ -207,6 +207,7 @@ ExecutionGraphScheduler::ExecutionGraphScheduler(const ExecutionPlan& plan,
     : m_plan(plan)
     , m_resources(resources)
     , m_resourceRegions(plan, resources)
+    , m_sharedExecution(plan)
     , m_barrierRuntime(plan, barriers)
     , m_cleanupRuntime(plan)
     , m_loops(loops)
@@ -255,6 +256,9 @@ SchedulerStepResult ExecutionGraphScheduler::pumpPeriodicTaskOnce()
 
     const auto* node = m_plan.node(invocation->nodeId);
     auto* execution = invocation->execution;
+    if (execution) {
+        step.sourceUutId = execution->uutId;
+    }
     if (!node || !execution) {
         NodeResult missing;
         missing.nodeId = invocation->nodeId;
@@ -378,6 +382,15 @@ bool ExecutionGraphScheduler::stopAllPeriodicTasks()
     return hadError;
 }
 
+bool ExecutionGraphScheduler::stopPeriodicTasksForUut(const UutId& uutId)
+{
+    bool hadError = false;
+    for (const auto& summary : m_periodicTasks.stopForUut(uutId)) {
+        hadError = hadError || summary.failureCount > 0;
+    }
+    return hadError;
+}
+
 int ExecutionGraphScheduler::activePeriodicTaskCount() const
 {
     return m_periodicTasks.activeTaskCount();
@@ -470,23 +483,44 @@ SchedulerStepResult ExecutionGraphScheduler::pumpOnce(
 
     const auto previousState = uut.stateOf(nodeId);
     NodeResult result;
-    const auto regionDecision =
-        m_resourceRegions.acquireForNode(uut.uutId, frameId, node->id);
-    if (regionDecision.canExecute()) {
-        result = executeNode(uut, *node, frameId);
+    bool sharedExecutionMayRun = true;
+    if (node->executionScope == NodeExecutionScope::OncePerBatch) {
+        const auto sharedDecision = m_sharedExecution.arrive(*node, uut, frameId);
+        sharedExecutionMayRun = sharedDecision.execute;
+        if (!sharedExecutionMayRun) {
+            publishNodeEvent(
+                RuntimeEventKind::NodeStateChanged,
+                uut,
+                *node,
+                uut.stateOf(node->id),
+                NodeOutcome::Unknown,
+                QStringLiteral("waiting for once-per-batch participants"));
+            result.nodeId = nodeId;
+            result.outcome = NodeOutcome::Unknown;
+        }
+    }
+
+    if (sharedExecutionMayRun) {
+        const auto regionDecision =
+            m_resourceRegions.acquireForNode(uut.uutId, frameId, node->id);
+        if (regionDecision.canExecute()) {
+            result = executeNode(uut, *node, frameId);
+        } else {
+            auto& activation = uut.ensureActivation(node->id, frameId);
+            activation.state = ActivationState::WaitingForResource;
+            publishNodeEvent(
+                RuntimeEventKind::NodeStateChanged,
+                uut,
+                *node,
+                activation.state,
+                NodeOutcome::Unknown,
+                QStringLiteral("waiting for resource region %1")
+                    .arg(regionDecision.regionId));
+            result.nodeId = nodeId;
+            result.outcome = NodeOutcome::Unknown;
+        }
     } else {
-        auto& activation = uut.ensureActivation(node->id, frameId);
-        activation.state = ActivationState::WaitingForResource;
-        publishNodeEvent(
-            RuntimeEventKind::NodeStateChanged,
-            uut,
-            *node,
-            activation.state,
-            NodeOutcome::Unknown,
-            QStringLiteral("waiting for resource region %1")
-                .arg(regionDecision.regionId));
         result.nodeId = nodeId;
-        result.outcome = NodeOutcome::Unknown;
     }
     if (node->kind == ExecNodeKind::OperatorPrompt &&
         result.outcome == NodeOutcome::Passed &&
@@ -512,7 +546,9 @@ SchedulerStepResult ExecutionGraphScheduler::pumpOnce(
     discardObsoletePendingWaits(uut);
     m_resourceRegions.releaseCompleted(uut, frameId);
     clearCompletedFailureJump(uut);
+    step.sharedNodeResults = applySharedExecutionUpdates({&uut});
     step.progressed = previousState != currentState || result.outcome != NodeOutcome::Unknown;
+    step.progressed = step.progressed || !step.sharedNodeResults.isEmpty();
     step.blocked = !step.progressed;
     step.hasError = !m_plan.isInsideTestItem(nodeId) &&
                     !isLoopBodyNode(nodeId) &&
@@ -533,6 +569,7 @@ SchedulerStepResult ExecutionGraphScheduler::pumpPendingRequestOnce(
     discardObsoletePendingOperatorPrompts(uut);
     if (completePendingOperatorPrompt(uut, frameId, phase, step)) {
         m_resourceRegions.releaseCompleted(uut, frameId);
+        step.sharedNodeResults = applySharedExecutionUpdates({&uut});
         return step;
     }
     const auto completion = m_timers.takeReadyForContext(uut.uutId, frameId);
@@ -553,6 +590,8 @@ SchedulerStepResult ExecutionGraphScheduler::pumpPendingRequestOnce(
     }
     m_resourceRegions.releaseCompleted(uut, frameId);
     clearCompletedFailureJump(uut);
+    step.sharedNodeResults = applySharedExecutionUpdates({&uut});
+    step.progressed = step.progressed || !step.sharedNodeResults.isEmpty();
     return step;
 }
 
@@ -570,6 +609,7 @@ std::optional<NodeId> ExecutionGraphScheduler::nextReadyNodeId(
 void ExecutionGraphScheduler::setCohortUuts(const QSet<UutId>& uutIds)
 {
     m_barrierRuntime.setCohortUuts(uutIds);
+    m_sharedExecution.setCohortUuts(uutIds);
 }
 
 void ExecutionGraphScheduler::releaseBarrierNodes(const BarrierReleaseDecision& decision)
@@ -605,6 +645,33 @@ void ExecutionGraphScheduler::applyBarrierReleases(const QVector<UutExecution*>&
             clearCompletedFailureJump(*uut);
         }
     }
+}
+
+QVector<SchedulerStepResult::UutNodeResult>
+ExecutionGraphScheduler::applySharedExecutionUpdates(
+    const QVector<UutExecution*>& uuts)
+{
+    QVector<SchedulerStepResult::UutNodeResult> results;
+    const auto update = m_sharedExecution.synchronize(uuts);
+    for (const auto& ready : update.readyLeaders) {
+        if (!ready.leader) {
+            continue;
+        }
+        const auto* node = m_plan.node(ready.rootNodeId);
+        if (!node) {
+            continue;
+        }
+        publishNodeEvent(RuntimeEventKind::NodeStateChanged,
+                         *ready.leader,
+                         *node,
+                         ActivationState::Ready,
+                         NodeOutcome::Unknown,
+                         QStringLiteral("once-per-batch participants ready"));
+    }
+    for (const auto& completion : update.completions) {
+        results += broadcastSharedCompletion(completion);
+    }
+    return results;
 }
 
 void ExecutionGraphScheduler::activateAllCleanup(UutExecution& uut)
@@ -1567,11 +1634,15 @@ NodeResult ExecutionGraphScheduler::registerPeriodicTask(
                         QStringLiteral("registering periodic task"));
 
     PeriodicTaskRegistration registration;
-    registration.taskId = node.id;
+    registration.taskId = QStringLiteral("%1:%2:%3")
+                              .arg(uut.uutId, frameId, node.id);
     registration.nodeId = node.id;
     registration.execution = &uut;
     registration.frameId = frameId;
     registration.activationId = activation.id;
+    registration.stopWhenUutCompletes =
+        executionPhaseOf(node) == ExecutionPhase::Main &&
+        node.executionScope == NodeExecutionScope::PerUut;
     registration.intervalMs = node.periodic.intervalMs;
     registration.runImmediately = node.periodic.runImmediately;
     registration.counterStart = node.periodic.counterStart;
@@ -1582,9 +1653,11 @@ NodeResult ExecutionGraphScheduler::registerPeriodicTask(
     result.nodeId = node.id;
     result.startedAt = QDateTime::currentDateTimeUtc();
     QString errorMessage;
+    const auto taskInstanceId = registration.taskId;
     if (m_periodicTasks.registerTask(std::move(registration), &errorMessage)) {
         result.outcome = NodeOutcome::Passed;
         result.outputs.insert(QStringLiteral("taskId"), node.id);
+        result.outputs.insert(QStringLiteral("taskInstanceId"), taskInstanceId);
         result.outputs.insert(QStringLiteral("intervalMs"), node.periodic.intervalMs);
         result.outputs.insert(QStringLiteral("runImmediately"), node.periodic.runImmediately);
         result.outputs.insert(QStringLiteral("counterStart"), node.periodic.counterStart);
@@ -2284,6 +2357,142 @@ void ExecutionGraphScheduler::closeOperatorPromptsForTestItemRetry(
     }
 }
 
+QVector<NodeId> ExecutionGraphScheduler::sharedExecutionSubtree(
+    const NodeId& rootNodeId) const
+{
+    QVector<NodeId> ordered;
+    const auto append = [&](const NodeId& nodeId, const auto& self) -> void {
+        if (ordered.contains(nodeId)) {
+            return;
+        }
+        ordered.push_back(nodeId);
+        if (const auto testItem = m_plan.testItemRegionForController(nodeId)) {
+            for (const auto& childNodeId : testItem->childNodeIds) {
+                self(childNodeId, self);
+            }
+        }
+    };
+    append(rootNodeId, append);
+    return ordered;
+}
+
+QVector<SchedulerStepResult::UutNodeResult>
+ExecutionGraphScheduler::broadcastSharedCompletion(
+    const SharedExecutionCompletion& completion)
+{
+    QVector<SchedulerStepResult::UutNodeResult> notifications;
+    if (!completion.leader) {
+        return notifications;
+    }
+
+    const auto nodeIds = sharedExecutionSubtree(completion.rootNodeId);
+    for (auto* recipient : completion.recipients) {
+        if (!recipient) {
+            continue;
+        }
+        for (const auto& nodeId : nodeIds) {
+            const auto source = completion.leader->activations.constFind(nodeId);
+            const auto* node = m_plan.node(nodeId);
+            if (source == completion.leader->activations.constEnd() || !node) {
+                continue;
+            }
+
+            recipient->activations.insert(nodeId, source.value());
+            const auto& copied = recipient->activations[nodeId];
+            for (const auto& attempt : copied.attempts) {
+                m_results.commit(recipient->uutId,
+                                 completion.frameId,
+                                 nodeId,
+                                 attempt.attemptIndex,
+                                 attempt.result);
+                publishAttemptEvent(
+                    RuntimeEventKind::AttemptCompleted,
+                    *recipient,
+                    *node,
+                    attempt,
+                    QStringLiteral("once-per-batch result executed by %1")
+                        .arg(completion.leader->uutId));
+            }
+
+            const auto outcome = copied.attempts.isEmpty()
+                ? NodeOutcome::Unknown
+                : copied.attempts.last().result.outcome;
+            const auto message = QStringLiteral(
+                "once-per-batch result shared from %1")
+                                     .arg(completion.leader->uutId);
+            publishNodeEvent(
+                node->kind == ExecNodeKind::TestItem
+                    ? RuntimeEventKind::TestItemCompleted
+                    : RuntimeEventKind::NodeStateChanged,
+                *recipient,
+                *node,
+                copied.state,
+                outcome,
+                message,
+                copied.attempts.isEmpty()
+                    ? LoopIterationContext{}
+                    : copied.attempts.last().loopIteration,
+                copied.attempts.isEmpty()
+                    ? QString{}
+                    : copied.attempts.last().result.errorCode);
+
+            if (!copied.attempts.isEmpty()) {
+                notifications.push_back(
+                    {recipient->uutId, copied.attempts.last().result});
+            }
+        }
+
+        const auto rootActivation = recipient->activations.constFind(
+            completion.rootNodeId);
+        const auto* rootNode = m_plan.node(completion.rootNodeId);
+        if (rootNode &&
+            rootActivation != recipient->activations.constEnd() &&
+            !rootActivation->attempts.isEmpty()) {
+            applySharedFailurePolicy(
+                *recipient,
+                *rootNode,
+                rootActivation->attempts.last().result,
+                completion.frameId);
+        }
+    }
+    return notifications;
+}
+
+void ExecutionGraphScheduler::applySharedFailurePolicy(
+    UutExecution& uut,
+    const ExecNode& node,
+    const NodeResult& result,
+    const FrameId& frameId)
+{
+    if (result.outcome == NodeOutcome::Passed ||
+        result.outcome == NodeOutcome::Skipped ||
+        result.outcome == NodeOutcome::Unknown) {
+        return;
+    }
+    const auto activation = uut.activations.constFind(node.id);
+    const int completedAttempts = activation == uut.activations.constEnd()
+        ? 1
+        : qMax(1, static_cast<int>(activation->attempts.size()));
+    const auto decision = m_errorPolicy.decide(
+        node,
+        result,
+        completedAttempts,
+        inheritedErrorAction(node, result.outcome));
+
+    if (decision.action == ErrorAction::RunCleanup) {
+        m_cleanupRuntime.requestSessionCleanup(
+            uut.uutId, node.id, decision.reason);
+    } else if (decision.action == ErrorAction::Abort) {
+        requestSessionAbort();
+    }
+    if (decision.action == ErrorAction::StopUut ||
+        decision.action == ErrorAction::RunCleanup ||
+        decision.action == ErrorAction::Abort) {
+        skipPendingNonAlwaysRun(
+            uut, frameId, executionPhaseOf(node));
+    }
+}
+
 NodeResult ExecutionGraphScheduler::executeTestItemNode(UutExecution& uut,
                                                         const ExecNode& node,
                                                         const FrameId& frameId)
@@ -2907,6 +3116,8 @@ void ExecutionGraphScheduler::publishNodeEvent(RuntimeEventKind kind,
     event.message = message;
     event.loopIteration = loopIteration;
     event.details.insert("maxAttempts", qMax(1, node.retry.maxAttempts));
+    event.details.insert("executionScope",
+                         nodeExecutionScopeName(node.executionScope));
     const auto activation = uut.activations.constFind(node.id);
     if (activation != uut.activations.constEnd()) {
         event.frameId = activation->frameId;
@@ -2965,6 +3176,8 @@ void ExecutionGraphScheduler::publishAttemptEvent(RuntimeEventKind kind,
     event.errorCode = attempt.result.errorCode;
     event.message = message;
     event.details.insert("maxAttempts", qMax(1, node.retry.maxAttempts));
+    event.details.insert("executionScope",
+                         nodeExecutionScopeName(node.executionScope));
     if (periodicInvocation) {
         event.details.insert("periodicInvocation", true);
         event.details.insert("periodicIndex", periodicIndex);

@@ -506,6 +506,8 @@ NodeResult OperatorPromptNodeHandler::run(const ExecNode& node,
     QVariantMap promptDetails = node.payload;
     promptDetails.insert("promptInstanceId", instanceId);
     promptDetails.insert("mode", operatorPromptModeName(mode));
+    promptDetails.insert("executionScope",
+                         nodeExecutionScopeName(node.executionScope));
 
     RuntimeEvent requested;
     requested.kind = RuntimeEventKind::OperatorPromptRequested;

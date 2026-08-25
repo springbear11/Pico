@@ -126,6 +126,17 @@ std::optional<ExecutionPhase> executionPhaseFromString(const QString& value)
     return std::nullopt;
 }
 
+std::optional<NodeExecutionScope> executionScopeFromString(const QString& value)
+{
+    if (value.compare(QStringLiteral("PerUut"), Qt::CaseInsensitive) == 0) {
+        return NodeExecutionScope::PerUut;
+    }
+    if (value.compare(QStringLiteral("OncePerBatch"), Qt::CaseInsensitive) == 0) {
+        return NodeExecutionScope::OncePerBatch;
+    }
+    return std::nullopt;
+}
+
 std::optional<NodeOutcome> outcomeFromString(const QString& value)
 {
     if (value == "Unknown") return NodeOutcome::Unknown;
@@ -314,6 +325,7 @@ QJsonObject stepToJson(const StepReport& step)
         {"functionName", step.functionName},
         {"kind", nodeKindName(step.kind)},
         {"phase", executionPhaseName(step.phase)},
+        {"executionScope", nodeExecutionScopeName(step.executionScope)},
         {"state", activationStateName(step.state)},
         {"outcome", nodeOutcomeName(step.outcome)},
         {"durationMs", step.durationMs},
@@ -345,6 +357,14 @@ StepReport stepFromJson(const QJsonObject& object,
         const auto phase = executionPhaseFromString(phaseText);
         if (phase) step.phase = *phase;
         else addError(errors, path + ".phase", "Unsupported execution phase: " + phaseText);
+    }
+    if (object.contains("executionScope")) {
+        const auto scopeText = object.value("executionScope").toString();
+        const auto scope = executionScopeFromString(scopeText);
+        if (scope) step.executionScope = *scope;
+        else addError(errors,
+                      path + ".executionScope",
+                      "Unsupported execution scope: " + scopeText);
     }
     const auto stateText = object.value("state").toString("Created");
     const auto state = activationStateFromString(stateText);

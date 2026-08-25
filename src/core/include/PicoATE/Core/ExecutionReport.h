@@ -44,6 +44,7 @@ struct StepReport {
     QVector<AttemptReport> attempts;
     QVector<StepReport> children;
     ExecutionPhase phase = ExecutionPhase::Main;
+    NodeExecutionScope executionScope = NodeExecutionScope::PerUut;
 };
 
 struct UutReport {

@@ -310,4 +310,15 @@ QString executionPhaseName(ExecutionPhase phase)
     return "Main";
 }
 
+QString nodeExecutionScopeName(NodeExecutionScope scope)
+{
+    switch (scope) {
+    case NodeExecutionScope::PerUut:
+        return QStringLiteral("PerUut");
+    case NodeExecutionScope::OncePerBatch:
+        return QStringLiteral("OncePerBatch");
+    }
+    return QStringLiteral("PerUut");
+}
+
 } // namespace PicoATE::Core

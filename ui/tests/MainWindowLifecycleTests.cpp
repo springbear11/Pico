@@ -451,6 +451,7 @@ private slots:
     void operatorPromptDialogValidatesInputMode();
     void operatorPromptDialogReusesKeyForJudgment();
     void operatorPromptsUseTheirMatchingOverviewCards();
+    void oncePerBatchOperatorPromptCoversAllOverviewCards();
     void messageBoxPropertyEditorSwitchesConfirmationMode();
     void messageBoxPropertyEditorConfiguresJudgmentMode();
     void messageBoxPropertyEditorConfiguresInputMode();
@@ -461,6 +462,7 @@ private slots:
     void whileLoopPropertyEditorUsesTypedFields();
     void valueToolsPropertyEditorUsesExpressionList();
     void periodicActionPropertyEditorUsesTypedPolicyFields();
+    void stepExecutionScopeEditorPersistsSharedMode();
     void barrierPropertyEditorUsesMinimalConfiguration();
     void stepFailurePolicyEditorUsesThreeOutcomeCombos();
 
@@ -7122,6 +7124,109 @@ void MainWindowLifecycleTests::operatorPromptsUseTheirMatchingOverviewCards()
     viewModel.shutdown();
 }
 
+void MainWindowLifecycleTests::oncePerBatchOperatorPromptCoversAllOverviewCards()
+{
+    QWidget owner;
+    auto* layout = new QVBoxLayout(&owner);
+    auto* overview = new MultiUutOverviewWidget(&owner);
+    auto* model = new UutOverviewModel(&owner);
+    layout->addWidget(overview);
+    overview->setModel(model);
+
+    QVector<RunRequest::UutInput> uuts;
+    for (int index = 1; index <= 4; ++index) {
+        RunRequest::UutInput input;
+        input.uutId = QStringLiteral("UUT-%1").arg(index);
+        input.variables.insert(
+            QStringLiteral("serialNumber"),
+            QStringLiteral("BTSN00000%1").arg(index));
+        uuts.push_back(std::move(input));
+    }
+    model->resetForRun({}, uuts);
+    owner.resize(1180, 720);
+    owner.show();
+    QTRY_VERIFY(overview->isVisible());
+
+    ExecutionViewModel viewModel;
+    OperatorPromptPresenter presenter(&viewModel, &owner);
+    presenter.setOverviewHost(overview);
+    QString responseInstanceId;
+    PicoATE::Core::OperatorPromptResponse response =
+        PicoATE::Core::OperatorPromptResponse::None;
+    connect(overview,
+            &MultiUutOverviewWidget::operatorPromptResponseRequested,
+            &owner,
+            [&](const QString& instanceId,
+                PicoATE::Core::OperatorPromptResponse nextResponse,
+                const QVariantMap&) {
+                responseInstanceId = instanceId;
+                response = nextResponse;
+            });
+
+    PicoATE::Core::RuntimeEvent requested;
+    requested.kind = PicoATE::Core::RuntimeEventKind::OperatorPromptRequested;
+    requested.uutId = QStringLiteral("UUT-3");
+    requested.details = {
+        {QStringLiteral("promptInstanceId"), QStringLiteral("batch-confirm")},
+        {QStringLiteral("executionScope"), QStringLiteral("OncePerBatch")},
+        {QStringLiteral("mode"), QStringLiteral("confirm")},
+        {QStringLiteral("title"), QStringLiteral("Connect Shared Fixture")},
+        {QStringLiteral("message"),
+         QStringLiteral("Confirm the shared fixture is ready for all UUTs.")},
+        {QStringLiteral("confirmText"), QStringLiteral("Continue Batch")},
+    };
+    presenter.applyRuntimeEvents({requested});
+
+    auto* cardsHost = owner.findChild<QWidget*>(
+        QStringLiteral("multiUutOverviewCards"));
+    auto* overlay = owner.findChild<QWidget*>(
+        QStringLiteral("multiUutOverviewPromptOverlay"));
+    QVERIFY(cardsHost);
+    QVERIFY(overlay);
+    QCOMPARE(overlay->parentWidget(), cardsHost);
+    QTRY_VERIFY(overlay->isVisible());
+    QTRY_COMPARE(overlay->geometry(), cardsHost->rect());
+    QCOMPARE(overlay->findChild<QLabel*>(
+                 QStringLiteral("uutOverviewPromptContext"))->text(),
+             QStringLiteral("ALL 4 UUTs  |  ONCE PER BATCH"));
+    QCOMPARE(overlay->findChild<QLabel*>(
+                 QStringLiteral("uutOverviewPromptMessage"))->text(),
+             QStringLiteral("Confirm the shared fixture is ready for all UUTs."));
+    for (int index = 1; index <= 4; ++index) {
+        auto* card = owner.findChild<QAbstractButton*>(
+            QStringLiteral("uutOverviewCard_%1").arg(index));
+        QVERIFY(card);
+        QVERIFY(!card->findChild<QWidget*>(
+            QStringLiteral("uutOverviewPromptOverlay")));
+    }
+    QVERIFY(owner.findChildren<QDialog*>(
+        QStringLiteral("operatorPromptDialog")).isEmpty());
+    const auto screenshotPath = qEnvironmentVariable(
+        "PICOATE_BATCH_PROMPT_SCREENSHOT");
+    if (!screenshotPath.isEmpty()) {
+        QVERIFY2(owner.grab().save(screenshotPath), qPrintable(screenshotPath));
+    }
+
+    auto* confirm = overlay->findChild<QPushButton*>(
+        QStringLiteral("uutOverviewPromptConfirmButton"));
+    QVERIFY(confirm);
+    confirm->click();
+    QCOMPARE(responseInstanceId, QStringLiteral("batch-confirm"));
+    QCOMPARE(response, PicoATE::Core::OperatorPromptResponse::Confirmed);
+    QVERIFY(overview->setOperatorPromptResponsePending(
+        QStringLiteral("batch-confirm"), true));
+    QVERIFY(!confirm->isEnabled());
+
+    PicoATE::Core::RuntimeEvent closed;
+    closed.kind = PicoATE::Core::RuntimeEventKind::OperatorPromptClosed;
+    closed.details.insert(QStringLiteral("promptInstanceId"),
+                          QStringLiteral("batch-confirm"));
+    presenter.applyRuntimeEvents({closed});
+    QTRY_VERIFY(!overlay->isVisible());
+    QVERIFY(!overview->hasOperatorPrompt(QStringLiteral("batch-confirm")));
+    viewModel.shutdown();
+}
+
 void MainWindowLifecycleTests::messageBoxPropertyEditorSwitchesConfirmationMode()
 {
     QTemporaryDir project;
@@ -7818,6 +7923,71 @@ void MainWindowLifecycleTests::periodicActionPropertyEditorUsesTypedPolicyFields
     QCOMPARE(counter.value(QStringLiteral("start")).toInt(), 1);
     QCOMPARE(counter.value(QStringLiteral("increment")).toInt(), 1);
     QCOMPARE(counter.value(QStringLiteral("wrapAt")).toInt(), 255);
+}
+
+void MainWindowLifecycleTests::stepExecutionScopeEditorPersistsSharedMode()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath(QStringLiteral("shared-scope.json"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"({
+      "id":"shared-scope","name":"Shared Scope","groups":[
+        {"id":"setup","kind":"setup","steps":[
+          {"id":"setup-step","kind":"noop","name":"Setup Step"}
+        ]},{
+        "id":"main","kind":"main","steps":[
+          {"id":"shared-step","kind":"noop","name":"Shared Step"}
+        ]
+      },{
+        "id":"cleanup","kind":"cleanup","steps":[
+          {"id":"cleanup-step","kind":"noop","name":"Cleanup Step"}
+        ]}
+      ]
+    })");
+    file.close();
+
+    SequenceDocument document;
+    QVERIFY(document.load(path));
+    StepPropertyEditor editor(&document);
+    const SequenceItemPath stepPath{1, {0}};
+    editor.setCurrentItem(stepPath);
+
+    auto* scope = editor.findChild<QComboBox*>(
+        QStringLiteral("propertyExecutionScopeCombo"));
+    QVERIFY(scope);
+    QCOMPARE(scope->currentData().toString(), QStringLiteral("perUut"));
+
+    const int sharedIndex = scope->findData(QStringLiteral("oncePerBatch"));
+    QVERIFY(sharedIndex >= 0);
+    scope->setCurrentIndex(sharedIndex);
+    QVERIFY(editor.commitPendingChanges());
+    QCOMPARE(document.objectAt(stepPath)
+                 .value(QStringLiteral("executionScope"))
+                 .toString(),
+             QStringLiteral("oncePerBatch"));
+
+    editor.setCurrentItem(stepPath);
+    scope->setCurrentIndex(scope->findData(QStringLiteral("perUut")));
+    QVERIFY(editor.commitPendingChanges());
+    QVERIFY(!document.objectAt(stepPath).contains(
+        QStringLiteral("executionScope")));
+
+    const SequenceItemPath setupPath{0, {0}};
+    editor.setCurrentItem(setupPath);
+    QCOMPARE(scope->count(), 1);
+    QCOMPARE(scope->currentData().toString(),
+             QStringLiteral("sessionLifecycle"));
+    QVERIFY(!scope->isEnabled());
+    QVERIFY(scope->toolTip().contains(QStringLiteral("once for the whole batch")));
+
+    const SequenceItemPath cleanupPath{2, {0}};
+    editor.setCurrentItem(cleanupPath);
+    QCOMPARE(scope->count(), 1);
+    QCOMPARE(scope->currentData().toString(),
+             QStringLiteral("sessionLifecycle"));
+    QVERIFY(!scope->isEnabled());
 }
 
 void MainWindowLifecycleTests::barrierPropertyEditorUsesMinimalConfiguration()

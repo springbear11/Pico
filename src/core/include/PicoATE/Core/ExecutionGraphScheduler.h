@@ -13,6 +13,7 @@
 #include "PicoATE/Core/ResourceManager.h"
 #include "PicoATE/Core/ResourceRegionController.h"
 #include "PicoATE/Core/RuntimeEvent.h"
+#include "PicoATE/Core/SharedExecutionController.h"
 #include "PicoATE/Core/StopToken.h"
 #include "PicoATE/Core/TimerService.h"
 
@@ -30,8 +31,14 @@ struct SchedulerStepResult {
     bool progressed = false;
     bool blocked = false;
     bool hasError = false;
+    UutId sourceUutId;
     NodeId nodeId;
     QVector<NodeResult> nodeResults;
+    struct UutNodeResult {
+        UutId uutId;
+        NodeResult result;
+    };
+    QVector<UutNodeResult> sharedNodeResults;
 };
 
 class ExecutionGraphScheduler {
@@ -61,6 +68,8 @@ public:
     void setCohortUuts(const QSet<UutId>& uutIds);
     void releaseBarrierNodes(const BarrierReleaseDecision& decision);
     void applyBarrierReleases(const QVector<UutExecution*>& uuts);
+    QVector<SchedulerStepResult::UutNodeResult> applySharedExecutionUpdates(
+        const QVector<UutExecution*>& uuts = {});
     void activateAllCleanup(UutExecution& uut);
     void skipPendingNonAlwaysRun(UutExecution& uut,
                                  const FrameId& frameId = "root",
@@ -75,6 +84,7 @@ public:
     bool waitForPendingRequest(
         std::chrono::milliseconds maximumWait = std::chrono::milliseconds(20));
     SchedulerStepResult pumpPeriodicTaskOnce();
+    bool stopPeriodicTasksForUut(const UutId& uutId);
     bool stopAllPeriodicTasks();
     int activePeriodicTaskCount() const;
     bool sessionCleanupRequested() const;
@@ -171,6 +181,13 @@ private:
                                const FrameId& frameId);
     void closeOperatorPromptsForTestItemRetry(const UutExecution& uut,
                                               const NodeId& testItemNodeId);
+    QVector<NodeId> sharedExecutionSubtree(const NodeId& rootNodeId) const;
+    QVector<SchedulerStepResult::UutNodeResult> broadcastSharedCompletion(
+        const SharedExecutionCompletion& completion);
+    void applySharedFailurePolicy(UutExecution& uut,
+                                  const ExecNode& node,
+                                  const NodeResult& result,
+                                  const FrameId& frameId);
     bool isNodeOrDescendantOf(const NodeId& nodeId, const NodeId& rootNodeId) const;
     bool finalizeBlockedCleanup(UutExecution& uut, const FrameId& frameId);
     void handleNodeFailureForBarriers(UutExecution& uut,
@@ -231,6 +248,7 @@ private:
     const ExecutionPlan& m_plan;
     ResourceManager& m_resources;
     ResourceRegionController m_resourceRegions;
+    SharedExecutionController m_sharedExecution;
     BarrierRuntimeCoordinator m_barrierRuntime;
     CleanupRuntimeCoordinator m_cleanupRuntime;
     LoopController& m_loops;

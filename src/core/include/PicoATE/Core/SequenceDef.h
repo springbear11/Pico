@@ -174,6 +174,7 @@ struct StepDef {
     bool checkpointBefore = false;
     bool checkpointAfter = false;
     QStringList tags;
+    NodeExecutionScope executionScope = NodeExecutionScope::PerUut;
 
     bool isCleanup() const;
 };

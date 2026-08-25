@@ -114,6 +114,18 @@ QString promptPresentationKey(const PicoATE::Core::RuntimeEvent& event)
         .trimmed();
 }
 
+bool isOncePerBatchPrompt(const PicoATE::Core::RuntimeEvent& event)
+{
+    auto scope = event.details.value(QStringLiteral("executionScope"))
+                     .toString()
+                     .trimmed()
+                     .toLower();
+    scope.remove(QLatin1Char('-'));
+    scope.remove(QLatin1Char('_'));
+    scope.remove(QLatin1Char(' '));
+    return scope == QStringLiteral("onceperbatch");
+}
+
 class UutOverviewPromptOverlay final : public QWidget
 {
 public:
@@ -122,10 +134,12 @@ public:
         PicoATE::Core::OperatorPromptResponse,
         const QVariantMap&)>;
 
-    explicit UutOverviewPromptOverlay(QWidget* parent = nullptr)
+    explicit UutOverviewPromptOverlay(
+        QWidget* parent = nullptr,
+        const QString& objectName = QStringLiteral("uutOverviewPromptOverlay"))
         : QWidget(parent)
     {
-        setObjectName(QStringLiteral("uutOverviewPromptOverlay"));
+        setObjectName(objectName);
         setAttribute(Qt::WA_StyledBackground, true);
         setFocusPolicy(Qt::StrongFocus);
 
@@ -216,7 +230,8 @@ public:
                 m_confirmButton, &QPushButton::click);
 
         setStyleSheet(QStringLiteral(
-            "QWidget#uutOverviewPromptOverlay{"
+            "QWidget#uutOverviewPromptOverlay,"
+            "QWidget#multiUutOverviewPromptOverlay{"
             "background:rgba(226,242,252,250);border:2px solid #6ea8ca;"
             "border-radius:7px;}"
             "QLabel#uutOverviewPromptContext{color:#45677b;font-size:13px;"
@@ -254,7 +269,8 @@ public:
 
     void configure(const PicoATE::Core::RuntimeEvent& event,
                    const QString& sequencePath,
-                   const QString& serialNumber)
+                   const QString& serialNumber,
+                   const QString& contextOverride = {})
     {
         m_instanceId = event.details.value(
             QStringLiteral("promptInstanceId")).toString();
@@ -270,9 +286,12 @@ public:
                               .trimmed()
                               .toLower();
 
-        m_contextLabel->setText(serialNumber.trimmed().isEmpty()
-            ? event.uutId
-            : tr("%1  |  SN %2").arg(event.uutId, serialNumber.trimmed()));
+        m_contextLabel->setText(!contextOverride.trimmed().isEmpty()
+            ? contextOverride.trimmed()
+            : (serialNumber.trimmed().isEmpty()
+                   ? event.uutId
+                   : tr("%1  |  SN %2").arg(event.uutId,
+                                               serialNumber.trimmed())));
         const auto title = event.details.value(
             QStringLiteral("title")).toString().trimmed();
         m_titleLabel->setText(title.isEmpty() ? tr("Operator Action") : title);
@@ -983,6 +1002,7 @@ MultiUutOverviewWidget::MultiUutOverviewWidget(QWidget* parent)
     scroll->setFrameShape(QFrame::NoFrame);
     m_cardsHost = new QWidget(scroll);
     m_cardsHost->setObjectName(QStringLiteral("multiUutOverviewCards"));
+    m_cardsHost->installEventFilter(this);
     m_cardsLayout = new QGridLayout(m_cardsHost);
     m_cardsLayout->setContentsMargins(0, 0, 0, 0);
     m_cardsLayout->setHorizontalSpacing(14);
@@ -1054,7 +1074,56 @@ bool MultiUutOverviewWidget::presentOperatorPrompt(
 {
     const auto instanceId = event.details.value(
         QStringLiteral("promptInstanceId")).toString();
-    if (!isVisible() || instanceId.isEmpty() || event.uutId.isEmpty()) {
+    if (!isVisible() || instanceId.isEmpty()) {
+        return false;
+    }
+
+    if (isOncePerBatchPrompt(event)) {
+        const auto currentId = m_currentBatchPromptId;
+        if (!currentId.isEmpty() && currentId != instanceId) {
+            const auto current = m_activePrompts.constFind(currentId);
+            const auto currentKey = current == m_activePrompts.constEnd()
+                ? QString{}
+                : promptPresentationKey(current->event);
+            const auto nextKey = promptPresentationKey(event);
+            if (currentKey.isEmpty() || nextKey.isEmpty() ||
+                currentKey != nextKey) {
+                return false;
+            }
+        }
+
+        m_activePrompts.insert(instanceId, ActivePrompt{event, sequencePath});
+        m_currentBatchPromptId = instanceId;
+        if (!m_batchPromptOverlay) {
+            m_batchPromptOverlay = new UutOverviewPromptOverlay(
+                m_cardsHost,
+                QStringLiteral("multiUutOverviewPromptOverlay"));
+        }
+        auto* overlay = static_cast<UutOverviewPromptOverlay*>(
+            m_batchPromptOverlay);
+        overlay->setResponseHandler(
+            [this](const QString& responseInstanceId,
+                   PicoATE::Core::OperatorPromptResponse response,
+                   const QVariantMap& values) {
+                emit operatorPromptResponseRequested(responseInstanceId,
+                                                      response,
+                                                      values);
+            });
+        const int participantCount = m_model ? m_model->rowCount()
+                                             : m_cards.size();
+        overlay->configure(
+            event,
+            sequencePath,
+            {},
+            tr("ALL %1 UUTs  |  ONCE PER BATCH")
+                .arg(qMax(1, participantCount)));
+        updateBatchPromptGeometry();
+        overlay->show();
+        overlay->raise();
+        return true;
+    }
+
+    if (event.uutId.isEmpty()) {
         return false;
     }
 
@@ -1096,8 +1165,19 @@ bool MultiUutOverviewWidget::closeOperatorPrompt(const QString& instanceId)
     if (prompt == m_activePrompts.end()) {
         return false;
     }
+    const bool batchPrompt = isOncePerBatchPrompt(prompt->event);
     const auto uutId = prompt->event.uutId;
     m_activePrompts.erase(prompt);
+    if (batchPrompt) {
+        if (m_currentBatchPromptId != instanceId) {
+            return true;
+        }
+        m_currentBatchPromptId.clear();
+        if (m_batchPromptOverlay) {
+            m_batchPromptOverlay->hide();
+        }
+        return true;
+    }
     if (m_currentPromptByUut.value(uutId) != instanceId) {
         return true;
     }
@@ -1119,8 +1199,18 @@ bool MultiUutOverviewWidget::setOperatorPromptResponsePending(
     bool pending)
 {
     const auto prompt = m_activePrompts.constFind(instanceId);
-    if (prompt == m_activePrompts.constEnd() ||
-        m_currentPromptByUut.value(prompt->event.uutId) != instanceId) {
+    if (prompt == m_activePrompts.constEnd()) {
+        return false;
+    }
+    if (isOncePerBatchPrompt(prompt->event)) {
+        if (m_currentBatchPromptId != instanceId || !m_batchPromptOverlay) {
+            return false;
+        }
+        static_cast<UutOverviewPromptOverlay*>(m_batchPromptOverlay)
+            ->setResponsePending(pending);
+        return true;
+    }
+    if (m_currentPromptByUut.value(prompt->event.uutId) != instanceId) {
         return false;
     }
     auto* card = overviewCardForUut(m_cards, prompt->event.uutId);
@@ -1131,6 +1221,10 @@ void MultiUutOverviewWidget::clearOperatorPrompts()
 {
     m_activePrompts.clear();
     m_currentPromptByUut.clear();
+    m_currentBatchPromptId.clear();
+    if (m_batchPromptOverlay) {
+        m_batchPromptOverlay->hide();
+    }
     for (auto* button : std::as_const(m_cards)) {
         static_cast<UutOverviewCard*>(button)->clearOperatorPrompt();
     }
@@ -1214,6 +1308,7 @@ void MultiUutOverviewWidget::rebuildCards()
     }
     m_gridRowCount = centeredPair ? 3 : gridRows;
     m_gridColumnCount = columns;
+    restoreBatchOperatorPrompt();
     updateSummary();
 }
 
@@ -1250,6 +1345,16 @@ void MultiUutOverviewWidget::refreshCardRange(int firstRow, int lastRow)
     updateSummary();
 }
 
+bool MultiUutOverviewWidget::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == m_cardsHost &&
+        (event->type() == QEvent::Resize || event->type() == QEvent::Show ||
+         event->type() == QEvent::LayoutRequest)) {
+        updateBatchPromptGeometry();
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
 void MultiUutOverviewWidget::showEvent(QShowEvent* event)
 {
     QWidget::showEvent(event);
@@ -1258,6 +1363,7 @@ void MultiUutOverviewWidget::showEvent(QShowEvent* event)
     } else if (m_refreshPending) {
         refreshCards();
     }
+    updateBatchPromptGeometry();
 }
 
 void MultiUutOverviewWidget::updateSummary()
@@ -1312,6 +1418,54 @@ void MultiUutOverviewWidget::restoreOperatorPrompt(QAbstractButton* button)
                                                   response,
                                                   values);
         });
+}
+
+void MultiUutOverviewWidget::restoreBatchOperatorPrompt()
+{
+    if (m_currentBatchPromptId.isEmpty()) {
+        return;
+    }
+    const auto prompt = m_activePrompts.constFind(m_currentBatchPromptId);
+    if (prompt == m_activePrompts.constEnd()) {
+        m_currentBatchPromptId.clear();
+        if (m_batchPromptOverlay) {
+            m_batchPromptOverlay->hide();
+        }
+        return;
+    }
+    if (!m_batchPromptOverlay) {
+        m_batchPromptOverlay = new UutOverviewPromptOverlay(
+            m_cardsHost,
+            QStringLiteral("multiUutOverviewPromptOverlay"));
+    }
+    auto* overlay = static_cast<UutOverviewPromptOverlay*>(m_batchPromptOverlay);
+    overlay->setResponseHandler(
+        [this](const QString& responseInstanceId,
+               PicoATE::Core::OperatorPromptResponse response,
+               const QVariantMap& values) {
+            emit operatorPromptResponseRequested(responseInstanceId,
+                                                  response,
+                                                  values);
+        });
+    const int participantCount = m_model ? m_model->rowCount() : m_cards.size();
+    overlay->configure(
+        prompt->event,
+        prompt->sequencePath,
+        {},
+        tr("ALL %1 UUTs  |  ONCE PER BATCH")
+            .arg(qMax(1, participantCount)));
+    updateBatchPromptGeometry();
+    overlay->show();
+    overlay->raise();
+}
+
+void MultiUutOverviewWidget::updateBatchPromptGeometry()
+{
+    if (!m_batchPromptOverlay || !m_cardsHost) {
+        return;
+    }
+    m_batchPromptOverlay->setGeometry(m_cardsHost->rect());
+    m_batchPromptOverlay->raise();
 }
 
 } // namespace PicoATE::Ui

@@ -8,6 +8,7 @@
 #include <QWidget>
 
 class QAbstractButton;
+class QEvent;
 class QLabel;
 class QGridLayout;
 class QShowEvent;
@@ -43,6 +44,7 @@ signals:
         const QVariantMap& values);
 
 protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void showEvent(QShowEvent* event) override;
 
 private:
@@ -51,6 +53,8 @@ private:
     void refreshCardRange(int firstRow, int lastRow);
     void updateSummary();
     void restoreOperatorPrompt(QAbstractButton* card);
+    void restoreBatchOperatorPrompt();
+    void updateBatchPromptGeometry();
 
     struct ActivePrompt {
         PicoATE::Core::RuntimeEvent event;
@@ -64,6 +68,8 @@ private:
     QVector<QAbstractButton*> m_cards;
     QHash<QString, ActivePrompt> m_activePrompts;
     QHash<PicoATE::Core::UutId, QString> m_currentPromptByUut;
+    QWidget* m_batchPromptOverlay = nullptr;
+    QString m_currentBatchPromptId;
     PicoATE::Core::UutId m_selectedUutId;
     bool m_rebuildPending = false;
     bool m_refreshPending = false;

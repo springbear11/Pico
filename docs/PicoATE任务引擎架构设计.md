@@ -1487,6 +1487,7 @@ public:
 | NodeRunner | NodeRunner.h | 节点分发执行器 |
 | ResourceManager | ResourceManager.h | 资源仲裁 |
 | BarrierController | BarrierController.h | 批次同步 |
+| SharedExecutionController | SharedExecutionController.h | 多 UUT 会合、一次执行与结果广播 |
 | LoopController | LoopController.h | 循环控制 |
 | ErrorPolicyEngine | ErrorPolicyEngine.h | 错误策略决策 |
 | SequenceCompiler | SequenceCompiler.h | JSON 编译器 |
@@ -1520,6 +1521,7 @@ public:
 | ActivationState | 11 | RuntimeTypes.h |
 | AttemptState | 4 | RuntimeTypes.h |
 | FrameState | 4 | RuntimeTypes.h |
+| NodeExecutionScope | 2 | ExecutionPlan.h |
 | ExecNodeKind | 6 | ExecutionPlan.h |
 | EdgeKind | 4 | ExecutionPlan.h |
 | EdgeTrigger | 9 | ExecutionPlan.h |
@@ -1557,4 +1559,31 @@ PicoATE/
 
 ---
 
-**文档结束。** 本架构设计文档基于 PicoATE 源码（截至 2026-06-26）完整分析得出。标注"当前代码无法确认"的项目代表源码中没有对应实现或设计文档中没有相关规划。
+## 17.5 多 UUT 批次共享执行补充（2026-08-24）
+
+`NodeExecutionScope::OncePerBatch` 用于“所有有效 UUT 到达后，只执行一次，再把最终结果投影给每个 UUT”的场景。它由独立的 `SharedExecutionController` 管理，不把会合、成员退出和执行者选择继续堆进 Barrier 或普通资源锁逻辑。
+
+```text
+UUT-1 ─┐
+UUT-2 ─┼─ arrive(shared node) -> SharedExecutionController
+UUT-3 ─┼─ 等待有效成员到齐 -> 选择一个 leader -> 实际执行一次
+UUT-4 ─┘                                      |
+                                                v
+                         attempts / outputs / measurements / failure
+                                                |
+                         写入每个 UUT activation、result store 与 report
+```
+
+职责边界：
+
+- `SequenceCompiler/PlanBuilder`：解析 `executionScope`，拒绝嵌套、Per-UUT 输入、事务锁区间及不支持的控制节点。
+- `SharedExecutionController`：维护批次参与集合、到达顺序、退出成员、leader 和完成通知，不直接执行插件。
+- `ExecutionGraphScheduler`：leader 走原有 NodeRunner/TestItem/Retry 路径；完成后复制不可变结果并对各 UUT 应用失败策略。
+- `ExecutionResultStore/ExecutionReport`：每个 UUT 保留完整共享结果；物理调用一次不等于报告只记录一份。
+- UI：只负责配置 `Per UUT` / `Once per batch`，不参与选择 leader 或复制结果。
+
+该模型与其他同步机制互不替代：Barrier 是“等齐后各自继续”，Resource Region 是“按 UUT 串行占用”，Once Per Batch 是“等齐后执行一次并广播”。
+
+---
+
+**文档结束。** 主体文档基于早期架构分析，后续增量能力按日期补充；标注"当前代码无法确认"的项目代表源码中没有对应实现或设计文档中没有相关规划。

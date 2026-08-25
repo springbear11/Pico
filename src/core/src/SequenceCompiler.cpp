@@ -513,6 +513,7 @@ void collectStepWarnings(const QJsonObject& object,
         "type",
         "enabled",
         "alwaysRun",
+        "executionScope",
         "resultRecording",
         "checkpointBefore",
         "checkpointAfter",
@@ -743,6 +744,22 @@ StepGroupKind parseGroupKindString(const QString& text, bool& ok)
     }
     ok = false;
     return StepGroupKind::Custom;
+}
+
+NodeExecutionScope parseExecutionScopeString(const QString& text, bool& ok)
+{
+    const auto value = normalized(text);
+    ok = true;
+    if (value.isEmpty() || value == QStringLiteral("peruut")) {
+        return NodeExecutionScope::PerUut;
+    }
+    if (value == QStringLiteral("onceperbatch") ||
+        value == QStringLiteral("batch") ||
+        value == QStringLiteral("shared")) {
+        return NodeExecutionScope::OncePerBatch;
+    }
+    ok = false;
+    return NodeExecutionScope::PerUut;
 }
 
 ResourceMode parseResourceModeString(const QString& text, bool& ok)
@@ -1212,6 +1229,16 @@ StepDef SequenceCompiler::parseStep(const QJsonObject& object,
     step.name = readString(object, "name", path, errors, step.id);
     step.enabled = readBool(object, "enabled", path, errors, true);
     step.alwaysRun = readBool(object, "alwaysRun", path, errors, false);
+    bool executionScopeOk = false;
+    step.executionScope = parseExecutionScopeString(
+        readString(object, "executionScope", path, errors, "perUut"),
+        executionScopeOk);
+    if (!executionScopeOk) {
+        addError(errors,
+                 childPath(path, "executionScope"),
+                 "Unsupported execution scope",
+                 "Use perUut or oncePerBatch");
+    }
     step.resultRecording = readBool(object, "resultRecording", path, errors, true);
     step.checkpointBefore = readBool(object, "checkpointBefore", path, errors, false);
     step.checkpointAfter = readBool(object, "checkpointAfter", path, errors, false);

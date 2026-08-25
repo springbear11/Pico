@@ -118,6 +118,40 @@ void PeriodicTaskController::defer(const PeriodicTaskInvocation& invocation,
     schedule(*taskIt, std::max(1, delayMs));
 }
 
+QVector<PeriodicTaskSummary> PeriodicTaskController::stopForUut(
+    const UutId& uutId)
+{
+    QVector<QString> taskIds;
+    for (auto it = m_tasks.cbegin(); it != m_tasks.cend(); ++it) {
+        const auto* execution = it->registration.execution;
+        if (it->registration.stopWhenUutCompletes && execution &&
+            execution->uutId == uutId) {
+            taskIds.push_back(it.key());
+        }
+    }
+
+    QVector<PeriodicTaskSummary> summaries;
+    summaries.reserve(taskIds.size());
+    for (const auto& taskId : taskIds) {
+        auto taskIt = m_tasks.find(taskId);
+        if (taskIt == m_tasks.end()) {
+            continue;
+        }
+        if (!taskIt->pendingRequestId.isEmpty()) {
+            m_timers.cancel(taskIt->pendingRequestId);
+            m_taskByRequest.remove(taskIt->pendingRequestId);
+        }
+        summaries.push_back({taskIt->registration.taskId,
+                             taskIt->registration.nodeId,
+                             taskIt->registration.execution,
+                             taskIt->registration.frameId,
+                             taskIt->executionCount,
+                             taskIt->failureCount});
+        m_tasks.erase(taskIt);
+    }
+    return summaries;
+}
+
 QVector<PeriodicTaskSummary> PeriodicTaskController::stopAll()
 {
     QVector<PeriodicTaskSummary> summaries;

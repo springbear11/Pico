@@ -60,6 +60,7 @@ private:
     void buildPolicyPage();
     void loadCurrentObject();
     void applyEditableState();
+    bool usesAutomaticBatchExecutionScope() const;
     void updateKindRows();
     void updateLimitRows();
     void updateLoopRows();
@@ -142,6 +143,7 @@ private:
     QLineEdit* m_keyEdit = nullptr;
     QLineEdit* m_nameEdit = nullptr;
     QComboBox* m_kindCombo = nullptr;
+    QComboBox* m_executionScopeCombo = nullptr;
     QCheckBox* m_enabledCheck = nullptr;
     QCheckBox* m_alwaysRunCheck = nullptr;
     QCheckBox* m_resultRecordingCheck = nullptr;

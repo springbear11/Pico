@@ -22,6 +22,7 @@
 #include "PicoATE/Core/OperatorPromptRuntimeCoordinator.h"
 #include "PicoATE/Core/PlanBuilder.h"
 #include "PicoATE/Core/PlanCache.h"
+#include "PicoATE/Core/PeriodicTaskController.h"
 #include "PicoATE/Core/ProductRouting.h"
 #include "PicoATE/Core/PluginLog.h"
 #include "PicoATE/Core/PersistentQProcessTransport.h"
@@ -313,6 +314,7 @@ public:
                          const ModuleExecutionContext& context) override
     {
         requestIds.push_back(context.requestId);
+        uutIds.push_back(context.uutId);
         callTimesMs.push_back(clock.isValid() ? clock.elapsed() : 0);
         heartbeatValues.push_back(context.inputs.value(QStringLiteral("heartbeat")));
         ModuleResult result;
@@ -328,6 +330,7 @@ public:
     bool failFirst = false;
     QElapsedTimer clock;
     QVector<RequestId> requestIds;
+    QVector<UutId> uutIds;
     QVector<qint64> callTimesMs;
     QVector<QVariant> heartbeatValues;
 };
@@ -360,6 +363,56 @@ public:
     }
 
     QVector<QString> calls;
+};
+
+class SharedBatchModule final : public IModule {
+public:
+    ModuleId moduleId() const override
+    {
+        return QStringLiteral("test.shared-batch");
+    }
+
+    ModuleResult execute(const ModuleFunction& functionName,
+                         const ModuleExecutionContext& context) override
+    {
+        ++calls[functionName];
+        uutCalls.push_back(QStringLiteral("%1:%2")
+                               .arg(functionName, context.uutId));
+
+        ModuleResult result;
+        result.outputs.insert(QStringLiteral("token"),
+                              QStringLiteral("batch-token"));
+        result.outputs.insert(QStringLiteral("executedBy"), context.uutId);
+        result.measurements.push_back(
+            makeMeasurement(QStringLiteral("SHARED_CALL_COUNT"),
+                            calls.value(functionName),
+                            QStringLiteral("count")));
+        if (functionName == QStringLiteral("flaky") &&
+            calls.value(functionName) == 1) {
+            result.outcome = ModuleOutcome::Failed;
+            result.errorCode = QStringLiteral("SharedFirstAttemptFailed");
+            result.errorMessage = QStringLiteral("intentional shared retry");
+        } else if (functionName == QStringLiteral("fail-uut-1") &&
+                   context.uutId == QStringLiteral("UUT-1")) {
+            result.outcome = ModuleOutcome::Failed;
+            result.errorCode = QStringLiteral("IntentionalUutFailure");
+            result.errorMessage = QStringLiteral("UUT-1 leaves the cohort");
+        } else if (functionName == QStringLiteral("always-fail")) {
+            result.outcome = ModuleOutcome::Failed;
+            result.errorCode = QStringLiteral("SharedBatchFailed");
+            result.errorMessage = QStringLiteral("shared operation failed");
+        } else if (functionName == QStringLiteral("consume") &&
+                   context.inputs.value(QStringLiteral("token")).toString() !=
+                       QStringLiteral("batch-token")) {
+            result.outcome = ModuleOutcome::Error;
+            result.errorCode = QStringLiteral("SharedOutputMissing");
+            result.errorMessage = QStringLiteral("shared output was not broadcast");
+        }
+        return result;
+    }
+
+    QHash<QString, int> calls;
+    QVector<QString> uutCalls;
 };
 
 class TestItemRetryLockModule final : public IModule {
@@ -859,6 +912,11 @@ private slots:
     void executionSessionPropagatesSharedSetupFailureToEveryUut();
     void executionSessionRunCleanupStopsCohortAndRunsCleanupOnce();
     void executionSessionAbortPolicyStopsCohortAndRunsCleanupOnce();
+    void executionSessionRunsOncePerBatchAndBroadcastsReports();
+    void executionSessionBroadcastsSharedFailureToEveryReport();
+    void executionSessionRetriesSharedTestItemOnceForCohort();
+    void executionSessionDropsStoppedMemberFromSharedExecution();
+    void sequenceCompilerRejectsUnsafeOncePerBatchShapes();
     void executionSessionKeepsResourceAcrossUutTransaction();
     void executionSessionReleasesResourceRegionAfterUutFailure();
     void sequenceCompilerRunsNestedResourceRegionAcrossUuts();
@@ -877,6 +935,9 @@ private slots:
     void executionSessionConsumesCrossThreadStopToken();
     void executionSessionWaitDoesNotBlockOtherUuts();
     void sequenceCompilerRunsCooperativePeriodicAction();
+    void periodicActionRunsOncePerBatchFromMain();
+    void periodicActionRunsIndependentlyPerUutFromMain();
+    void periodicTaskControllerStopsOnlyCompletedUutTasks();
     void periodicActionWaitsForResourceRegionAndStopsWithSession();
     void periodicActionFailureMarksSessionButDoesNotStopMain();
     void sequenceCompilerRejectsUnsupportedPeriodicTaskShapes();
@@ -915,6 +976,8 @@ private slots:
     void operatorPromptStopCancelsPendingRequestAndRunsCleanup();
     void operatorPromptStopMarksAllIncompleteUutsCancelled();
     void operatorPromptsRemainIndependentAcrossUuts();
+    void operatorPromptOncePerBatchPublishesOneSharedRequest();
+    void operatorPromptOncePerBatchTimeoutCompletesCohort();
     void operatorPromptWithoutResponderFailsWithoutBlocking();
     void sequenceCompilerRejectsInvalidOperatorPrompt();
     void sequenceCompilerRejectsInvalidOperatorPromptCloseTarget();
@@ -960,6 +1023,7 @@ private slots:
     void testItemRetryResetsNestedLoopState();
     void testItemRetryExhaustionKeepsFinalFailure();
     void compilerRejectsBarrierInsideRetryingTestItem();
+    void compilerRejectsBarrierInSharedSetup();
     void testItemAggregatesErrorSeverity();
     void testItemStopSkipsChildrenAndRunsCleanup();
     void cleanupTestItemRunsAllChildren();
@@ -9337,6 +9401,29 @@ void CoreTests::compilerRejectsBarrierInsideRetryingTestItem()
     }));
 }
 
+void CoreTests::compilerRejectsBarrierInSharedSetup()
+{
+    const auto json = R"json({
+      "id":"setup-barrier","name":"Setup Barrier","groups":[
+        {"id":"setup","kind":"setup","steps":[
+          {"id":"sync","kind":"barrier"}
+        ]},
+        {"id":"main","kind":"main","steps":[
+          {"id":"measure","kind":"noop"}
+        ]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compile = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(!compile.ok());
+    QVERIFY(std::any_of(
+        compile.errors.cbegin(), compile.errors.cend(), [](const CompileError& error) {
+            return error.message.contains(
+                QStringLiteral("Barrier is not valid in shared Setup"));
+        }));
+}
+
 void CoreTests::testItemStopSkipsChildrenAndRunsCleanup()
 {
     const auto json = R"json(
@@ -9583,6 +9670,12 @@ void CoreTests::incompleteCleanupReturnsCompletedWithError()
     QVERIFY(report.completed);
     QVERIFY(report.hasError);
     QCOMPARE(report.state, ExecutionState::CompletedWithError);
+
+    QCOMPARE(report.uuts.size(), 2);
+    for (const auto& uut : report.uuts) {
+        QVERIFY(uut.hasError);
+        QCOMPARE(uut.outcome, NodeOutcome::Failed);
+    }
 
     const auto runtimeEvents = events.records();
     const bool sawTerminalState = std::any_of(
@@ -11543,6 +11636,118 @@ void CoreTests::operatorPromptsRemainIndependentAcrossUuts()
     QCOMPARE(uutIds, QSet<QString>({QStringLiteral("UUT-1"), QStringLiteral("UUT-2")}));
 }
 
+void CoreTests::operatorPromptOncePerBatchPublishesOneSharedRequest()
+{
+    const auto json = R"json({
+      "id":"prompt-shared-batch","name":"Shared Batch Prompt","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"confirm-shared","kind":"operatorPrompt",
+          "executionScope":"oncePerBatch","prompt":{
+            "mode":"confirm","message":"Confirm shared fixture","timeoutMs":1000
+          }
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QString{} : compiled.errors.first().message));
+
+    auto control = std::make_shared<ExecutionControl>();
+    control->operatorPrompts().setResponderAvailable(true);
+    OperatorPromptResponderSink events(control);
+    ExecutionSession session(compiled.plan, {}, &events, control);
+    for (int index = 1; index <= 4; ++index) {
+        session.addUut(QStringLiteral("UUT-%1").arg(index));
+    }
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(!result.hasError);
+    QCOMPARE(result.state, ExecutionState::Completed);
+
+    int requestedCount = 0;
+    RuntimeEvent requested;
+    for (const auto& event : events.records()) {
+        if (event.kind != RuntimeEventKind::OperatorPromptRequested) {
+            continue;
+        }
+        ++requestedCount;
+        requested = event;
+    }
+    QCOMPARE(requestedCount, 1);
+    QCOMPARE(requested.details.value(QStringLiteral("executionScope")).toString(),
+             QStringLiteral("OncePerBatch"));
+    QVERIFY(!requested.uutId.isEmpty());
+
+    const auto report = session.report();
+    QCOMPARE(report.uuts.size(), 4);
+    for (const auto& uut : report.uuts) {
+        const auto* prompt = findStep(uut, QStringLiteral("confirm-shared"));
+        QVERIFY(prompt);
+        QCOMPARE(prompt->executionScope, NodeExecutionScope::OncePerBatch);
+        QCOMPARE(prompt->outcome, NodeOutcome::Passed);
+    }
+}
+
+void CoreTests::operatorPromptOncePerBatchTimeoutCompletesCohort()
+{
+    const auto json = R"json({
+      "id":"prompt-shared-timeout","name":"Shared Prompt Timeout","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"confirm-shared","kind":"operatorPrompt",
+          "executionScope":"oncePerBatch","prompt":{
+            "mode":"confirm","message":"No response expected","timeoutMs":30
+          },"errorPolicy":{"onTimeout":"Continue","stopUutOnFailure":false}
+        },{
+          "id":"after","kind":"noop"
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compiled.ok());
+
+    auto control = std::make_shared<ExecutionControl>();
+    control->operatorPrompts().setResponderAvailable(true);
+    CollectingRuntimeEventSink events;
+    ExecutionSession session(compiled.plan, {}, &events, control);
+    for (int index = 1; index <= 4; ++index) {
+        session.addUut(QStringLiteral("UUT-%1").arg(index));
+    }
+    QElapsedTimer elapsed;
+    elapsed.start();
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    QVERIFY2(elapsed.elapsed() >= 20 && elapsed.elapsed() < 1000,
+             "An unanswered shared prompt must finish the cohort at timeout");
+
+    int requestedCount = 0;
+    int closedCount = 0;
+    for (const auto& event : events.records()) {
+        requestedCount += event.kind == RuntimeEventKind::OperatorPromptRequested;
+        closedCount += event.kind == RuntimeEventKind::OperatorPromptClosed;
+    }
+    QCOMPARE(requestedCount, 1);
+    QCOMPARE(closedCount, 1);
+    for (int index = 1; index <= 4; ++index) {
+        const auto uutId = QStringLiteral("UUT-%1").arg(index);
+        const auto prompt = session.results().latest(
+            uutId, QStringLiteral("root"), QStringLiteral("confirm-shared"));
+        const auto after = session.results().latest(
+            uutId, QStringLiteral("root"), QStringLiteral("after"));
+        QVERIFY(prompt.has_value());
+        QVERIFY(after.has_value());
+        QCOMPARE(prompt->result.outcome, NodeOutcome::Timeout);
+        QCOMPARE(prompt->result.errorCode, QStringLiteral("OperatorPromptTimeout"));
+        QCOMPARE(after->result.outcome, NodeOutcome::Passed);
+    }
+}
+
 void CoreTests::operatorPromptWithoutResponderFailsWithoutBlocking()
 {
     const auto json = R"json({
@@ -11687,10 +11892,13 @@ void CoreTests::sequenceCompilerRunsCooperativePeriodicAction()
     module->clock.start();
     ExecutionSession session(compiled.plan);
     QVERIFY(session.registerModule(module));
-    session.addUut(QStringLiteral("UUT-1"));
+    for (int index = 1; index <= 4; ++index) {
+        session.addUut(QStringLiteral("UUT-%1").arg(index));
+    }
     const auto result = session.run();
 
     QVERIFY(result.completed);
+    QCOMPARE(result.uutResults.size(), 4);
     QVERIFY(module->requestIds.size() >= 4);
     QCOMPARE(module->heartbeatValues[0].toLongLong(), qint64(1));
     QCOMPARE(module->heartbeatValues[1].toLongLong(), qint64(2));
@@ -11698,9 +11906,249 @@ void CoreTests::sequenceCompilerRunsCooperativePeriodicAction()
     QCOMPARE(module->heartbeatValues[3].toLongLong(), qint64(1));
     QSet<RequestId> uniqueRequests(module->requestIds.cbegin(), module->requestIds.cend());
     QCOMPARE(uniqueRequests.size(), module->requestIds.size());
+    const auto snapshot = session.snapshot();
+    QVERIFY(snapshot.sessionExecution.activations.contains(
+        QStringLiteral("heartbeat")));
+    for (const auto& uut : snapshot.uuts) {
+        QVERIFY2(!uut.activations.contains(QStringLiteral("heartbeat")),
+                 qPrintable(QStringLiteral("%1 registered a duplicate heartbeat")
+                                .arg(uut.uutId)));
+    }
+    for (const auto& uutId : module->uutIds) {
+        QCOMPARE(uutId, snapshot.sessionExecution.uutId);
+    }
     const auto countAtCompletion = module->requestIds.size();
     QTest::qWait(40);
     QCOMPARE(module->requestIds.size(), countAtCompletion);
+}
+
+void CoreTests::periodicActionRunsOncePerBatchFromMain()
+{
+    const auto json = R"json({
+      "id":"main-periodic-action","name":"Main Periodic Action","groups":[
+        {"id":"main","kind":"main","steps":[
+          {"id":"heartbeat","name":"Shared Heartbeat","kind":"action",
+           "executionScope":"oncePerBatch",
+           "moduleId":"test.periodic","function":"send",
+           "inputs":{"deviceId":"DEVICE1","heartbeat":"${periodic.counter}"},
+           "periodic":{"intervalMs":10,"runImmediately":true,
+                       "counter":{"start":1,"increment":1,"wrapAt":255}}},
+          {"id":"wait-main","kind":"wait","ms":75},
+          {"id":"main-finished","kind":"noop"}
+        ]},
+        {"id":"cleanup","kind":"cleanup","steps":[
+          {"id":"cleanup-done","kind":"cleanup"}
+        ]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), compiled.errors.isEmpty()
+                                ? "compile failed"
+                                : qPrintable(compiled.errors.first().message));
+    const auto* heartbeat = compiled.plan.node(QStringLiteral("heartbeat"));
+    QVERIFY(heartbeat);
+    QVERIFY(heartbeat->periodic.enabled);
+    QCOMPARE(heartbeat->executionScope, NodeExecutionScope::OncePerBatch);
+
+    auto module = std::make_shared<PeriodicRecordingModule>();
+    module->clock.start();
+    CollectingRuntimeEventSink events;
+    ExecutionSession session(compiled.plan, {}, &events);
+    QVERIFY(session.registerModule(module));
+    for (int index = 1; index <= 4; ++index) {
+        session.addUut(QStringLiteral("UUT-%1").arg(index));
+    }
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(!result.hasError);
+    QCOMPARE(result.state, ExecutionState::Completed);
+    QCOMPARE(result.uutResults.size(), 4);
+    QVERIFY2(module->requestIds.size() >= 4,
+             "The shared Main heartbeat must keep running while Main is active");
+    QSet<UutId> physicalExecutors(module->uutIds.cbegin(), module->uutIds.cend());
+    QCOMPARE(physicalExecutors.size(), 1);
+    QSet<RequestId> uniqueRequests(module->requestIds.cbegin(),
+                                   module->requestIds.cend());
+    QCOMPARE(uniqueRequests.size(), module->requestIds.size());
+
+    const auto report = session.report();
+    QCOMPARE(report.uuts.size(), 4);
+    for (const auto& uut : report.uuts) {
+        const auto* sharedHeartbeat = findStep(uut, QStringLiteral("heartbeat"));
+        QVERIFY(sharedHeartbeat);
+        QCOMPARE(sharedHeartbeat->executionScope, NodeExecutionScope::OncePerBatch);
+        QCOMPARE(sharedHeartbeat->outcome, NodeOutcome::Passed);
+        const auto stored = session.results().latest(
+            uut.uutId, QStringLiteral("root"), QStringLiteral("heartbeat"));
+        QVERIFY(stored.has_value());
+        QCOMPARE(stored->result.outcome, NodeOutcome::Passed);
+    }
+
+    bool cleanupStarted = false;
+    for (const auto& event : events.records()) {
+        if (event.nodeId == QStringLiteral("cleanup-done") &&
+            event.kind == RuntimeEventKind::NodeStateChanged &&
+            event.activationState == ActivationState::Running) {
+            cleanupStarted = true;
+            continue;
+        }
+        if (cleanupStarted && event.nodeId == QStringLiteral("heartbeat") &&
+            event.kind == RuntimeEventKind::AttemptStarted &&
+            event.details.value(QStringLiteral("periodicInvocation")).toBool()) {
+            QFAIL("Periodic Main task ran after Cleanup started");
+        }
+    }
+    QVERIFY(cleanupStarted);
+
+    const auto countAtCompletion = module->requestIds.size();
+    QTest::qWait(40);
+    QCOMPARE(module->requestIds.size(), countAtCompletion);
+}
+
+void CoreTests::periodicActionRunsIndependentlyPerUutFromMain()
+{
+    const auto json = R"json({
+      "id":"main-periodic-per-uut","name":"Main Per-UUT Periodic","groups":[
+        {"id":"main","kind":"main","steps":[
+          {"id":"heartbeat","name":"Per-UUT Heartbeat","kind":"action",
+           "executionScope":"perUut",
+           "moduleId":"test.periodic","function":"send",
+           "inputs":{"deviceId":"DEVICE1","heartbeat":"${periodic.counter}"},
+           "periodic":{"intervalMs":10,"runImmediately":true,
+                       "counter":{"start":1,"increment":1,"wrapAt":255}}},
+          {"id":"wait-main","kind":"wait","ms":120},
+          {"id":"main-finished","kind":"noop"}
+        ]},
+        {"id":"cleanup","kind":"cleanup","steps":[
+          {"id":"cleanup-done","kind":"cleanup"}
+        ]}
+      ]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), compiled.errors.isEmpty()
+                                ? "compile failed"
+                                : qPrintable(compiled.errors.first().message));
+    const auto* heartbeat = compiled.plan.node(QStringLiteral("heartbeat"));
+    QVERIFY(heartbeat);
+    QVERIFY(heartbeat->periodic.enabled);
+    QCOMPARE(heartbeat->executionScope, NodeExecutionScope::PerUut);
+
+    auto module = std::make_shared<PeriodicRecordingModule>();
+    module->clock.start();
+    ExecutionSession session(compiled.plan);
+    QVERIFY(session.registerModule(module));
+    for (int index = 1; index <= 4; ++index) {
+        session.addUut(QStringLiteral("UUT-%1").arg(index));
+    }
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(!result.hasError);
+    QCOMPARE(result.state, ExecutionState::Completed);
+    QCOMPARE(result.uutResults.size(), 4);
+
+    QHash<UutId, QVector<int>> countersByUut;
+    for (qsizetype index = 0; index < module->uutIds.size(); ++index) {
+        countersByUut[module->uutIds.at(index)].push_back(
+            module->heartbeatValues.at(index).toInt());
+    }
+    QCOMPARE(countersByUut.size(), 4);
+    for (int index = 1; index <= 4; ++index) {
+        const auto uutId = QStringLiteral("UUT-%1").arg(index);
+        QVERIFY2(countersByUut.contains(uutId), qPrintable(uutId));
+        QVERIFY2(countersByUut.value(uutId).size() >= 2,
+                 qPrintable(QStringLiteral("%1 did not receive independent periodic ticks")
+                                .arg(uutId)));
+        QCOMPARE(countersByUut.value(uutId).at(0), 1);
+        QCOMPARE(countersByUut.value(uutId).at(1), 2);
+    }
+
+    QSet<RequestId> uniqueRequests(module->requestIds.cbegin(),
+                                   module->requestIds.cend());
+    QCOMPARE(uniqueRequests.size(), module->requestIds.size());
+
+    QSet<QString> taskInstanceIds;
+    for (const auto& uut : session.uuts()) {
+        const auto activation = uut.activations.constFind(QStringLiteral("heartbeat"));
+        QVERIFY(activation != uut.activations.constEnd());
+        QVERIFY(activation->attempts.size() >= 2);
+        const auto taskInstanceId = activation->attempts.first().result.outputs
+                                        .value(QStringLiteral("taskInstanceId"))
+                                        .toString();
+        QVERIFY(taskInstanceId.contains(uut.uutId));
+        taskInstanceIds.insert(taskInstanceId);
+
+        const auto uutResult = std::find_if(
+            result.uutResults.cbegin(), result.uutResults.cend(),
+            [&uut](const ExecutionSessionResult::UutResult& candidate) {
+                return candidate.uutId == uut.uutId;
+            });
+        QVERIFY(uutResult != result.uutResults.cend());
+        const auto heartbeatResults = std::count_if(
+            uutResult->nodeResults.cbegin(), uutResult->nodeResults.cend(),
+            [](const NodeResult& nodeResult) {
+                return nodeResult.nodeId == QStringLiteral("heartbeat");
+            });
+        QVERIFY(heartbeatResults >= 2);
+    }
+    QCOMPARE(taskInstanceIds.size(), 4);
+
+    const auto countAtCompletion = module->requestIds.size();
+    QTest::qWait(40);
+    QCOMPARE(module->requestIds.size(), countAtCompletion);
+}
+
+void CoreTests::periodicTaskControllerStopsOnlyCompletedUutTasks()
+{
+    PeriodicTaskController controller;
+    UutExecution uut1;
+    uut1.uutId = QStringLiteral("UUT-1");
+    UutExecution uut2;
+    uut2.uutId = QStringLiteral("UUT-2");
+
+    auto registrationFor = [](const QString& taskId,
+                              UutExecution* execution,
+                              bool stopWhenUutCompletes) {
+        PeriodicTaskRegistration registration;
+        registration.taskId = taskId;
+        registration.nodeId = QStringLiteral("heartbeat");
+        registration.execution = execution;
+        registration.frameId = QStringLiteral("root");
+        registration.activationId = QStringLiteral("root:heartbeat");
+        registration.stopWhenUutCompletes = stopWhenUutCompletes;
+        registration.intervalMs = 1000;
+        registration.runImmediately = false;
+        return registration;
+    };
+
+    QVERIFY(controller.registerTask(
+        registrationFor(QStringLiteral("UUT-1:root:heartbeat"), &uut1, true)));
+    QVERIFY(controller.registerTask(
+        registrationFor(QStringLiteral("UUT-2:root:heartbeat"), &uut2, true)));
+    QVERIFY(controller.registerTask(
+        registrationFor(QStringLiteral("batch:root:heartbeat"), &uut1, false)));
+    QCOMPARE(controller.activeTaskCount(), 3);
+
+    const auto uut1Summaries = controller.stopForUut(uut1.uutId);
+    QCOMPARE(uut1Summaries.size(), 1);
+    QCOMPARE(uut1Summaries.first().taskId,
+             QStringLiteral("UUT-1:root:heartbeat"));
+    QCOMPARE(controller.activeTaskCount(), 2);
+
+    const auto uut2Summaries = controller.stopForUut(uut2.uutId);
+    QCOMPARE(uut2Summaries.size(), 1);
+    QCOMPARE(controller.activeTaskCount(), 1);
+
+    const auto remaining = controller.stopAll();
+    QCOMPARE(remaining.size(), 1);
+    QCOMPARE(remaining.first().taskId,
+             QStringLiteral("batch:root:heartbeat"));
+    QCOMPARE(controller.activeTaskCount(), 0);
 }
 
 void CoreTests::periodicActionWaitsForResourceRegionAndStopsWithSession()
@@ -11826,12 +12274,283 @@ void CoreTests::sequenceCompilerRejectsUnsupportedPeriodicTaskShapes()
             return error.message.contains(text, Qt::CaseInsensitive);
         });
     };
-    QVERIFY(hasMessage(QStringLiteral("top-level Setup")));
     QVERIFY(hasMessage(QStringLiteral("interval")));
     QVERIFY(hasMessage(QStringLiteral("retry")));
     QVERIFY(hasMessage(QStringLiteral("exclusive resource")));
     QVERIFY(hasMessage(QStringLiteral("counter increment")));
     QVERIFY(hasMessage(QStringLiteral("wrapAt")));
+}
+
+void CoreTests::executionSessionRunsOncePerBatchAndBroadcastsReports()
+{
+    const auto json = R"json({
+      "id":"shared-batch","name":"Shared Batch","groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"shared-power","name":"Shared Power On","kind":"action",
+           "executionScope":"oncePerBatch",
+           "moduleId":"test.shared-batch","function":"power-on"},
+          {"id":"consume","name":"Consume Shared Output","kind":"action",
+           "moduleId":"test.shared-batch","function":"consume",
+           "inputs":{"token":"${step:shared-power.outputs.token}"}}
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QString{} : compiled.errors.first().message));
+    QCOMPARE(compiled.plan.node(QStringLiteral("shared-power"))->executionScope,
+             NodeExecutionScope::OncePerBatch);
+
+    auto module = std::make_shared<SharedBatchModule>();
+    ExecutionSession session(compiled.plan);
+    QVERIFY(session.registerModule(module));
+    for (int index = 1; index <= 4; ++index) {
+        session.addUut(QStringLiteral("UUT-%1").arg(index));
+    }
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(!result.hasError);
+    QCOMPARE(module->calls.value(QStringLiteral("power-on")), 1);
+    QCOMPARE(module->calls.value(QStringLiteral("consume")), 4);
+    QCOMPARE(result.uutResults.size(), 4);
+
+    const auto report = session.report();
+    QCOMPARE(report.uuts.size(), 4);
+    for (const auto& uut : report.uuts) {
+        const auto* shared = findStep(uut, QStringLiteral("shared-power"));
+        QVERIFY(shared);
+        QCOMPARE(shared->executionScope, NodeExecutionScope::OncePerBatch);
+        QCOMPARE(shared->outcome, NodeOutcome::Passed);
+        QCOMPARE(shared->attempts.size(), 1);
+        const auto stored = session.results().latest(
+            uut.uutId, QStringLiteral("root"), QStringLiteral("shared-power"));
+        QVERIFY(stored.has_value());
+        QCOMPARE(stored->result.outputs.value(QStringLiteral("token")).toString(),
+                 QStringLiteral("batch-token"));
+    }
+
+    const auto roundTrip = parseExecutionReport(serializeExecutionReport(report));
+    QVERIFY(roundTrip.ok());
+    QCOMPARE(findStep(roundTrip.report.uuts.first(),
+                      QStringLiteral("shared-power"))->executionScope,
+             NodeExecutionScope::OncePerBatch);
+}
+
+void CoreTests::executionSessionBroadcastsSharedFailureToEveryReport()
+{
+    const auto json = R"json({
+      "id":"shared-failure","name":"Shared Failure","groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"shared-check","name":"Shared Check","kind":"action",
+           "executionScope":"oncePerBatch",
+           "moduleId":"test.shared-batch","function":"always-fail",
+           "errorPolicy":{"onFail":"Continue"}},
+          {"id":"tail","name":"Per-UUT Tail","kind":"action",
+           "moduleId":"test.shared-batch","function":"tail"}
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY(compiled.ok());
+    auto module = std::make_shared<SharedBatchModule>();
+    ExecutionSession session(compiled.plan);
+    QVERIFY(session.registerModule(module));
+    session.addUut(QStringLiteral("UUT-1"));
+    session.addUut(QStringLiteral("UUT-2"));
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(module->calls.value(QStringLiteral("always-fail")), 1);
+    QCOMPARE(module->calls.value(QStringLiteral("tail")), 2);
+
+    const auto report = session.report();
+    QCOMPARE(report.uuts.size(), 2);
+    for (const auto& uut : report.uuts) {
+        QVERIFY(uut.hasError);
+        const auto* shared = findStep(uut, QStringLiteral("shared-check"));
+        QVERIFY(shared);
+        QCOMPARE(shared->executionScope, NodeExecutionScope::OncePerBatch);
+        QCOMPARE(shared->outcome, NodeOutcome::Failed);
+        QVERIFY(!shared->attempts.isEmpty());
+        QCOMPARE(shared->attempts.last().errorCode,
+                 QStringLiteral("SharedBatchFailed"));
+    }
+}
+
+void CoreTests::executionSessionRetriesSharedTestItemOnceForCohort()
+{
+    const auto json = R"json({
+      "id":"shared-test-item","name":"Shared TestItem","groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"shared-item","name":"Shared Initialization","kind":"testItem",
+          "executionScope":"oncePerBatch","retry":{"maxAttempts":2},
+          "errorPolicy":{"onFail":"StopUut"},
+          "steps":[
+            {"id":"flaky-child","name":"Flaky Shared Child","kind":"action",
+             "moduleId":"test.shared-batch","function":"flaky"},
+            {"id":"stable-child","name":"Stable Shared Child","kind":"action",
+             "moduleId":"test.shared-batch","function":"stable"}
+          ]
+        },{
+          "id":"tail","name":"Per-UUT Tail","kind":"action",
+          "moduleId":"test.shared-batch","function":"tail"
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+        ? QString{} : compiled.errors.first().message));
+
+    auto module = std::make_shared<SharedBatchModule>();
+    ExecutionSession session(compiled.plan);
+    QVERIFY(session.registerModule(module));
+    session.addUut(QStringLiteral("UUT-1"));
+    session.addUut(QStringLiteral("UUT-2"));
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(!result.hasError);
+    QCOMPARE(module->calls.value(QStringLiteral("flaky")), 2);
+    QCOMPARE(module->calls.value(QStringLiteral("stable")), 1);
+    QCOMPARE(module->calls.value(QStringLiteral("tail")), 2);
+
+    const auto report = session.report();
+    for (const auto& uut : report.uuts) {
+        const auto* item = findStep(uut, QStringLiteral("shared-item"));
+        const auto* child = findStep(uut, QStringLiteral("flaky-child"));
+        QVERIFY(item);
+        QVERIFY(child);
+        QCOMPARE(item->executionScope, NodeExecutionScope::OncePerBatch);
+        QCOMPARE(item->outcome, NodeOutcome::Passed);
+        QCOMPARE(item->attempts.size(), 2);
+        QCOMPARE(child->outcome, NodeOutcome::Passed);
+    }
+}
+
+void CoreTests::executionSessionDropsStoppedMemberFromSharedExecution()
+{
+    const auto json = R"json({
+      "id":"shared-drop","name":"Shared Drop","groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"precheck","kind":"action","moduleId":"test.shared-batch",
+           "function":"fail-uut-1","errorPolicy":{"onFail":"StopUut"}},
+          {"id":"shared-open","kind":"action","executionScope":"oncePerBatch",
+           "moduleId":"test.shared-batch","function":"shared-open"},
+          {"id":"tail","kind":"action","moduleId":"test.shared-batch",
+           "function":"tail"}
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY(compiled.ok());
+    auto module = std::make_shared<SharedBatchModule>();
+    ExecutionSession session(compiled.plan);
+    QVERIFY(session.registerModule(module));
+    session.addUut(QStringLiteral("UUT-1"));
+    session.addUut(QStringLiteral("UUT-2"));
+
+    const auto result = session.run();
+    QVERIFY(result.completed);
+    QVERIFY(result.hasError);
+    QCOMPARE(module->calls.value(QStringLiteral("shared-open")), 1);
+    QCOMPARE(module->calls.value(QStringLiteral("tail")), 1);
+
+    const auto report = session.report();
+    const auto* uut1Shared = findStep(report.uuts[0], QStringLiteral("shared-open"));
+    const auto* uut2Shared = findStep(report.uuts[1], QStringLiteral("shared-open"));
+    QVERIFY(uut1Shared);
+    QVERIFY(uut2Shared);
+    QCOMPARE(uut1Shared->outcome, NodeOutcome::Skipped);
+    QCOMPARE(uut2Shared->outcome, NodeOutcome::Passed);
+}
+
+void CoreTests::sequenceCompilerRejectsUnsafeOncePerBatchShapes()
+{
+    const auto json = R"json({
+      "id":"invalid-shared","name":"Invalid Shared","variables":[
+        {"name":"address","type":"integer","scope":"perUut","values":[1,2]}
+      ],"groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"nested-parent","kind":"testItem","steps":[
+            {"id":"nested-shared","kind":"action",
+             "executionScope":"oncePerBatch"}
+          ]},
+          {"id":"shared-loop","kind":"loop","executionScope":"oncePerBatch",
+           "loop":{"type":"for","from":0,"to":1,"step":1},
+           "steps":[{"id":"body","kind":"noop"}]},
+          {"id":"shared-variable","kind":"action",
+           "executionScope":"oncePerBatch","inputs":{"address":"${var.address}"}}
+        ]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY(!compiled.ok());
+    const auto hasMessage = [&compiled](const QString& text) {
+        return std::any_of(compiled.errors.cbegin(), compiled.errors.cend(),
+                           [&text](const CompileError& error) {
+            return error.message.contains(text, Qt::CaseInsensitive);
+        });
+    };
+    QVERIFY(hasMessage(QStringLiteral("top-level")));
+    QVERIFY(hasMessage(QStringLiteral("step kind")));
+    QVERIFY(hasMessage(QStringLiteral("per-UUT value")));
+
+    const auto locked = compiler.compileJson(QJsonDocument::fromJson(R"json({
+      "id":"invalid-shared-lock","name":"Invalid Shared Lock","groups":[{
+        "id":"main","kind":"main","steps":[
+          {"id":"lock-start","kind":"noop",
+           "resourceRegionStart":{"id":"unsafe-shared-lock","resources":[
+             {"resourceId":"DEVICE1","mode":"exclusive"}
+           ]}},
+          {"id":"shared-in-lock","kind":"action",
+           "executionScope":"oncePerBatch"},
+          {"id":"lock-end","kind":"noop",
+           "resourceRegionEnd":"unsafe-shared-lock"}
+        ]
+      }]
+    })json").object());
+    QVERIFY(!locked.ok());
+    QVERIFY(std::any_of(locked.errors.cbegin(), locked.errors.cend(),
+                        [](const CompileError& error) {
+        return error.message.contains(
+            QStringLiteral("contains a once-per-batch step"),
+            Qt::CaseInsensitive);
+    }));
+
+    const auto perUutReference = compiler.compileJson(
+        QJsonDocument::fromJson(R"json({
+      "id":"invalid-shared-reference","name":"Invalid Shared Reference",
+      "groups":[{"id":"main","kind":"main","steps":[
+        {"id":"per-uut-source","kind":"action"},
+        {"id":"shared-consumer","kind":"action",
+         "executionScope":"oncePerBatch",
+         "inputs":{"value":"${step:per-uut-source.outputs.value}"}}
+      ]}]
+    })json").object());
+    QVERIFY(!perUutReference.ok());
+    QVERIFY(std::any_of(perUutReference.errors.cbegin(),
+                        perUutReference.errors.cend(),
+                        [](const CompileError& error) {
+        return error.message.contains(QStringLiteral("reads per-UUT result"),
+                                      Qt::CaseInsensitive);
+    }));
 }
 
 QTEST_MAIN(CoreTests)

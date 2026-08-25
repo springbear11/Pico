@@ -1281,7 +1281,9 @@ void StepPropertyEditor::applyEditableState()
         edit->setReadOnly(!canEdit);
     }
     for (auto* combo : m_tabs->findChildren<QComboBox*>()) {
-        combo->setEnabled(canEdit && !combo->property("stationInherited").toBool());
+        combo->setEnabled(canEdit &&
+                          !combo->property("stationInherited").toBool() &&
+                          !combo->property("contextReadOnly").toBool());
     }
     if (m_deviceIdCombo) {
         bool hasCompatibleDevice = false;
@@ -1371,6 +1373,7 @@ bool StepPropertyEditor::focusField(const QString& fieldPath)
     else if (field == "key") widget = m_keyEdit;
     else if (field == "name") widget = m_nameEdit;
     else if (field == "kind" || field == "type") widget = m_kindCombo;
+    else if (field == "executionScope") widget = m_executionScopeCombo;
     else if (field == "enabled") widget = m_enabledCheck;
     else if (field == "alwaysRun") widget = m_alwaysRunCheck;
     else if (field == "resultRecording") widget = m_resultRecordingCheck;
@@ -1570,6 +1573,18 @@ void StepPropertyEditor::buildGeneralPage()
     m_kindCombo->setObjectName(QStringLiteral("propertyKindCombo"));
     addInspectableRow(m_generalForm, tr("Kind"), m_kindCombo,
                       QStringLiteral("kind"));
+    m_executionScopeCombo = new QComboBox(content);
+    m_executionScopeCombo->setObjectName(
+        QStringLiteral("propertyExecutionScopeCombo"));
+    m_executionScopeCombo->addItem(tr("Per UUT"), QStringLiteral("perUut"));
+    m_executionScopeCombo->addItem(tr("Once per batch"),
+                                   QStringLiteral("oncePerBatch"));
+    m_executionScopeCombo->setToolTip(tr(
+        "Per UUT runs once for every UUT. Once per batch waits for all active UUTs, executes once, then shares the result with each UUT."));
+    addInspectableRow(m_generalForm,
+                      tr("Execution scope"),
+                      m_executionScopeCombo,
+                      QStringLiteral("executionScope"));
     m_enabledCheck = new QCheckBox(content);
     m_enabledCheck->setObjectName(QStringLiteral("propertyEnabledCheck"));
     addInspectableRow(m_generalForm, tr("Enabled"), m_enabledCheck,
@@ -1604,6 +1619,29 @@ void StepPropertyEditor::buildGeneralPage()
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidget(content);
     m_tabs->addTab(scroll, tr("General"));
+}
+
+bool StepPropertyEditor::usesAutomaticBatchExecutionScope() const
+{
+    if (!m_document || !m_path.isValid() || m_path.isGroup() || m_previewing) {
+        return false;
+    }
+
+    const auto groups = m_document->rootObject()
+                            .value(QStringLiteral("groups"))
+                            .toArray();
+    if (m_path.groupIndex < 0 || m_path.groupIndex >= groups.size() ||
+        !groups.at(m_path.groupIndex).isObject()) {
+        return false;
+    }
+
+    const auto group = groups.at(m_path.groupIndex).toObject();
+    const auto kind = group.value(QStringLiteral("kind"))
+                          .toString(group.value(QStringLiteral("type")).toString())
+                          .trimmed()
+                          .toLower();
+    return kind == QStringLiteral("setup") ||
+           kind == QStringLiteral("cleanup");
 }
 
 void StepPropertyEditor::buildDataPage()
@@ -2224,6 +2262,26 @@ void StepPropertyEditor::loadCurrentObject()
                                    .value(QStringLiteral("kind"))
                                    .toString(rawKind);
     setComboValue(m_kindCombo, displayedKind);
+    const bool automaticBatchScope = usesAutomaticBatchExecutionScope();
+    m_executionScopeCombo->clear();
+    m_executionScopeCombo->setProperty("contextReadOnly", automaticBatchScope);
+    if (automaticBatchScope) {
+        m_executionScopeCombo->addItem(
+            tr("Batch shared (automatic)"),
+            QStringLiteral("sessionLifecycle"));
+        m_executionScopeCombo->setToolTip(tr(
+            "Setup and Cleanup run once for the whole batch automatically; no per-UUT execution scope is required."));
+    } else {
+        m_executionScopeCombo->addItem(tr("Per UUT"), QStringLiteral("perUut"));
+        m_executionScopeCombo->addItem(tr("Once per batch"),
+                                       QStringLiteral("oncePerBatch"));
+        m_executionScopeCombo->setToolTip(tr(
+            "Per UUT runs once for every UUT. Once per batch waits for all active UUTs, executes once, then shares the result with each UUT."));
+        setComboValue(
+            m_executionScopeCombo,
+            m_sourceObject.value(QStringLiteral("executionScope"))
+                .toString(QStringLiteral("perUut")));
+    }
     m_enabledCheck->setChecked(m_sourceObject.value("enabled").toBool(true));
     m_alwaysRunCheck->setChecked(m_sourceObject.value("alwaysRun").toBool(false));
     m_resultRecordingCheck->setChecked(m_sourceObject.value("resultRecording").toBool(true));
@@ -2395,6 +2453,7 @@ void StepPropertyEditor::loadCurrentObject()
     rebuildPluginInputEditors();
     setFormRowVisible(m_generalForm, m_idEdit, !standardGroup);
     setFormRowVisible(m_generalForm, m_kindCombo, !standardGroup);
+    setFormRowVisible(m_generalForm, m_executionScopeCombo, !m_isGroup);
     setFormRowVisible(m_generalForm, m_keyEdit, !m_isGroup);
     setFormRowVisible(m_generalForm, m_enabledCheck, !m_isGroup);
     setFormRowVisible(m_generalForm, m_alwaysRunCheck, !m_isGroup);
@@ -4435,6 +4494,13 @@ bool StepPropertyEditor::commitPendingChanges()
 
     if (!m_isGroup) {
         updated.insert("enabled", m_enabledCheck->isChecked());
+        const auto executionScope =
+            m_executionScopeCombo->currentData().toString();
+        if (executionScope == QStringLiteral("oncePerBatch")) {
+            updated.insert(QStringLiteral("executionScope"), executionScope);
+        } else {
+            updated.remove(QStringLiteral("executionScope"));
+        }
         insertOrRemove(updated, "key", m_keyEdit->text());
         updated.insert("alwaysRun", m_alwaysRunCheck->isChecked());
         updated.insert("resultRecording", m_resultRecordingCheck->isChecked());

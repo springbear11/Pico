@@ -4401,7 +4401,8 @@ void ExecutionViewModelTests::testItemReportAndRuntimeEventsPreserveHierarchy()
 
     const auto serialized = PicoATE::Core::serializeExecutionReport(runResult.report);
     const auto document = QJsonDocument::fromJson(serialized);
-    QCOMPARE(document.object().value(QStringLiteral("schemaVersion")).toInt(), 6);
+    QCOMPARE(document.object().value(QStringLiteral("schemaVersion")).toInt(),
+             PicoATE::Core::ExecutionReportSchemaVersion);
     const auto parsed = PicoATE::Core::parseExecutionReport(serialized);
     QVERIFY(parsed.ok());
     QCOMPARE(parsed.report.metadata.model, runResult.report.metadata.model);

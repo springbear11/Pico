@@ -52,6 +52,11 @@ enum class ExecutionPhase {
     Cleanup
 };
 
+enum class NodeExecutionScope {
+    PerUut,
+    OncePerBatch
+};
+
 enum class EdgeKind {
     Dependency,
     Control,
@@ -216,6 +221,7 @@ struct ExecNode {
     bool resultRecording = true;
     QStringList tags;
     ExecutionPhase phase = ExecutionPhase::Main;
+    NodeExecutionScope executionScope = NodeExecutionScope::PerUut;
 };
 
 // Cleanup was represented by the node kind before explicit phases existed.
@@ -318,5 +324,6 @@ bool isTerminalOutcome(NodeOutcome outcome);
 bool triggerMatchesOutcome(EdgeTrigger trigger, NodeOutcome outcome);
 QString nodeOutcomeName(NodeOutcome outcome);
 QString executionPhaseName(ExecutionPhase phase);
+QString nodeExecutionScopeName(NodeExecutionScope scope);
 
 } // namespace PicoATE::Core

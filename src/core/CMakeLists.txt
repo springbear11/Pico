@@ -37,6 +37,7 @@ add_library(PicoATECore SHARED
     src/ResourceRegionController.cpp
     src/RuntimeEvent.cpp
     src/RuntimeVariableResolver.cpp
+    src/SharedExecutionController.cpp
     src/SequenceCompiler.cpp
     src/SequenceDef.cpp
     src/StationConfig.cpp

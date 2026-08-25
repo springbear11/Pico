@@ -66,6 +66,25 @@ QVector<NodeId> structuralLineage(const ExecutionPlan& plan, NodeId nodeId)
     return lineage;
 }
 
+std::optional<NodeId> oncePerBatchRoot(const ExecutionPlan& plan,
+                                       NodeId nodeId)
+{
+    QSet<NodeId> visited;
+    while (!nodeId.isEmpty() && !visited.contains(nodeId)) {
+        visited.insert(nodeId);
+        const auto* node = plan.node(nodeId);
+        if (node && node->executionScope == NodeExecutionScope::OncePerBatch) {
+            return nodeId;
+        }
+        const auto parent = plan.structuralParentOf(nodeId);
+        if (!parent) {
+            break;
+        }
+        nodeId = *parent;
+    }
+    return std::nullopt;
+}
+
 bool sourceRunsBeforeConsumer(const ExecutionPlan& plan,
                               const NodeId& source,
                               const NodeId& consumer)
@@ -322,6 +341,47 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
     QHash<NodeId, int> activeNodePathCounts;
     QHash<NodeId, QSet<QString>> idsByScope;
     QHash<NodeId, QSet<QString>> keysByScope;
+    QSet<QString> perUutVariableNames;
+    for (const auto& variable : sequence.variables) {
+        if (variable.scope == SequenceVariableScope::PerUut) {
+            perUutVariableNames.insert(variable.name.trimmed());
+        }
+    }
+    const auto valueUsesPerUutContext =
+        [&perUutVariableNames](const QVariant& value, const auto& self) -> bool {
+        if (value.metaType().id() == QMetaType::QString) {
+            const auto text = value.toString();
+            if (text.contains(QStringLiteral("${uut."), Qt::CaseInsensitive) ||
+                text.contains(QStringLiteral("${sn}"), Qt::CaseInsensitive) ||
+                text.contains(QStringLiteral("${serialNumber}"), Qt::CaseInsensitive)) {
+                return true;
+            }
+            for (const auto& variableName : perUutVariableNames) {
+                if (text.contains(QStringLiteral("${var.%1}").arg(variableName),
+                                  Qt::CaseInsensitive)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (value.metaType().id() == QMetaType::QVariantMap) {
+            const auto map = value.toMap();
+            for (auto it = map.cbegin(); it != map.cend(); ++it) {
+                if (self(it.value(), self)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (value.metaType().id() == QMetaType::QVariantList) {
+            for (const auto& item : value.toList()) {
+                if (self(item, self)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
     const auto containsEnabledBreak = [](const StepDef& parent, const auto& self) -> bool {
         for (const auto& child : parent.steps) {
             if (!child.enabled) {
@@ -339,6 +399,7 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
                                  bool insideLoop,
                                  bool insideWhileLoop,
                                  bool insideRetryingTestItem,
+                                 bool insideSharedExecution,
                                  const auto& collectRef) -> void {
         if (!step.enabled) {
             return;
@@ -382,6 +443,86 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
             ? segment
             : QString("%1.%2").arg(parentPath, segment);
         activeNodePathCounts[nodePath] += 1;
+
+        const bool startsSharedExecution =
+            step.executionScope == NodeExecutionScope::OncePerBatch;
+        const bool sharedExecution = insideSharedExecution || startsSharedExecution;
+        if (startsSharedExecution) {
+            if (groupKind != StepGroupKind::Main &&
+                groupKind != StepGroupKind::Custom) {
+                result.errors.push_back({
+                    "Once-per-batch execution is only valid in Main",
+                    QString("Move %1 to Main, or keep its executionScope as perUut")
+                        .arg(nodePath)});
+            }
+            if (!parentPath.isEmpty()) {
+                result.errors.push_back({
+                    "Once-per-batch execution must be top-level",
+                    QString("Set executionScope on the containing top-level TestItem instead of %1")
+                        .arg(nodePath)});
+            }
+            if (step.kind == StepKind::Loop ||
+                step.kind == StepKind::Barrier ||
+                step.kind == StepKind::Break) {
+                result.errors.push_back({
+                    "Unsupported once-per-batch step kind",
+                    QString("Use an ordinary top-level Step or complete TestItem for %1; Loop, Barrier, and Break are not supported")
+                        .arg(nodePath)});
+            }
+            if (step.alwaysRun) {
+                result.errors.push_back({
+                    "Once-per-batch alwaysRun is not supported",
+                    QString("Disable alwaysRun on %1 or keep the step perUut")
+                        .arg(nodePath)});
+            }
+            if (step.checkpointBefore || step.checkpointAfter) {
+                result.errors.push_back({
+                    "Once-per-batch checkpoint is not supported",
+                    QString("Remove checkpointBefore/checkpointAfter from %1")
+                        .arg(nodePath)});
+            }
+            if (step.errorPolicy.onFail == OnFailureAction::JumpTo ||
+                step.errorPolicy.onError == OnFailureAction::JumpTo ||
+                step.errorPolicy.onTimeout == OnFailureAction::JumpTo) {
+                result.errors.push_back({
+                    "Once-per-batch JumpTo is not supported",
+                    QString("Use Continue, StopUut, RunCleanup, or Abort for %1")
+                        .arg(nodePath)});
+            }
+        } else if (insideSharedExecution &&
+                   step.executionScope != NodeExecutionScope::PerUut) {
+            result.errors.push_back({
+                "Nested once-per-batch execution is not supported",
+                QString("Remove executionScope from shared TestItem child %1")
+                    .arg(nodePath)});
+        }
+        if (sharedExecution &&
+            (step.kind == StepKind::Loop || step.kind == StepKind::Barrier)) {
+            result.errors.push_back({
+                "Shared TestItem contains unsupported coordination logic",
+                QString("Move Loop or Barrier %1 outside the once-per-batch TestItem")
+                    .arg(nodePath)});
+        }
+        if (sharedExecution &&
+            (step.resourceRegionStart || !step.resourceRegionEnd.isEmpty())) {
+            result.errors.push_back({
+                "Resource region boundary is not allowed in once-per-batch execution",
+                QString("Remove LOCK/UNLOCK from %1; use ordinary Step resources inside the shared item")
+                    .arg(nodePath)});
+        }
+        if (sharedExecution) {
+            QVariantMap sharedInputs = step.inputs;
+            sharedInputs.insert(QStringLiteral("parameters"), step.parameters);
+            sharedInputs.insert(QStringLiteral("promptMessage"), step.prompt.message);
+            sharedInputs.insert(QStringLiteral("promptTitle"), step.prompt.title);
+            sharedInputs.insert(QStringLiteral("promptImage"), step.prompt.image);
+            if (valueUsesPerUutContext(sharedInputs, valueUsesPerUutContext)) {
+                result.errors.push_back({
+                    "Once-per-batch execution uses a per-UUT value",
+                    QString("Replace UUT/SN/per-UUT variable references in %1 with a shared value")
+                        .arg(nodePath)});
+            }
+        }
 
         if (step.kind == StepKind::Cleanup &&
             groupKind != StepGroupKind::Cleanup) {
@@ -438,6 +579,13 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
                 QString("Move barrier %1 outside the retrying TestItem; coordinated multi-UUT reset is undefined")
                     .arg(step.id)});
         }
+        if (step.kind == StepKind::Barrier &&
+            groupKind == StepGroupKind::Setup) {
+            result.errors.push_back({
+                "Barrier is not valid in shared Setup",
+                QString("Remove barrier %1; Setup already runs once for the batch before any UUT enters Main, or move the barrier to Main if UUT synchronization is required")
+                    .arg(step.id)});
+        }
         if (step.kind == StepKind::Barrier && insideWhileLoop) {
             result.errors.push_back({
                 "Barrier inside a While Loop is not supported",
@@ -452,10 +600,16 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
 
 
         if (step.periodic.enabled) {
-            if (groupKind != StepGroupKind::Setup || !parentPath.isEmpty()) {
+            const bool topLevelSetup =
+                groupKind == StepGroupKind::Setup && parentPath.isEmpty();
+            const bool mainBodyGroup = groupKind == StepGroupKind::Main ||
+                                       groupKind == StepGroupKind::Custom;
+            const bool topLevelMain = mainBodyGroup && parentPath.isEmpty();
+            if (!topLevelSetup && !topLevelMain) {
                 result.errors.push_back({
-                    "Periodic task must be a top-level Setup step",
-                    QString("Move %1 directly into the Setup group").arg(step.id)});
+                    "Periodic task must be a top-level Setup or Main step",
+                    QString("Move %1 directly into Setup, Main, or Custom; periodic tasks cannot be nested")
+                        .arg(step.id)});
             }
             if (step.kind != StepKind::Action) {
                 result.errors.push_back({
@@ -509,6 +663,7 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
                        step.kind == StepKind::Loop || insideLoop,
                        whileLoop,
                        retryingTestItem,
+                       sharedExecution,
                        collectRef);
         }
     };
@@ -518,7 +673,7 @@ bool PlanBuilder::validateSequence(const SequenceDef& sequence, PlanBuildResult&
             continue;
         }
         for (const auto& step : group.steps) {
-            collectStep(step, {}, group.kind, false, false, false, collectStep);
+            collectStep(step, {}, group.kind, false, false, false, false, collectStep);
         }
     }
 
@@ -730,6 +885,7 @@ ExecNode PlanBuilder::buildNode(const StepDef& step,
     node.checkpointBefore = step.checkpointBefore;
     node.checkpointAfter = step.checkpointAfter;
     node.tags = step.tags;
+    node.executionScope = step.executionScope;
 
     if (step.kind == StepKind::Barrier) {
         node.payload = step.barrier.toPayload();
@@ -848,6 +1004,18 @@ void PlanBuilder::addResourceRegions(const SequenceDef& sequence,
         }
         return false;
     };
+    const auto containsOncePerBatch = [](const StepDef& step,
+                                         const auto& self) -> bool {
+        if (step.executionScope == NodeExecutionScope::OncePerBatch) {
+            return true;
+        }
+        for (const auto& child : step.steps) {
+            if (child.enabled && self(child, self)) {
+                return true;
+            }
+        }
+        return false;
+    };
     const auto nodeIdForStep = [](const StepDef& step, const NodeId& parentPath) {
         const auto segment = parentPath.isEmpty() || step.key.isEmpty()
             ? step.id
@@ -873,6 +1041,7 @@ void PlanBuilder::addResourceRegions(const SequenceDef& sequence,
         ResourceRegionStartDef definition;
         NodeId entryNodeId;
         bool containsBarrier = false;
+        bool containsOncePerBatch = false;
     };
 
     const auto processSiblings = [&](const QVector<StepDef>& steps,
@@ -916,11 +1085,19 @@ void PlanBuilder::addResourceRegions(const SequenceDef& sequence,
                         "Use a unique id for every resource interval"});
                 } else {
                     regionIds.insert(definition.id);
-                    open = OpenRegion{definition, nodeId, containsBarrier(step, containsBarrier)};
+                    open = OpenRegion{definition,
+                                      nodeId,
+                                      containsBarrier(step, containsBarrier),
+                                      containsOncePerBatch(step,
+                                                           containsOncePerBatch)};
                 }
             } else if (!insideAncestorRegion && open &&
                        containsBarrier(step, containsBarrier)) {
                 open->containsBarrier = true;
+            }
+            if (!insideAncestorRegion && open &&
+                containsOncePerBatch(step, containsOncePerBatch)) {
+                open->containsOncePerBatch = true;
             }
 
             bool singleNodeRegion = false;
@@ -945,6 +1122,11 @@ void PlanBuilder::addResourceRegions(const SequenceDef& sequence,
                             QString("Resource region %1 contains a Barrier")
                                 .arg(open->definition.id),
                             "Move the Barrier outside the locked interval to avoid multi-UUT deadlock"});
+                    } else if (open->containsOncePerBatch) {
+                        result.errors.push_back({
+                            QString("Resource region %1 contains a once-per-batch step")
+                                .arg(open->definition.id),
+                            "Move the shared step outside LOCK/UNLOCK; it performs its own cohort rendezvous"});
                     } else {
                         ResourceRegion region;
                         region.id = open->definition.id;
@@ -1007,6 +1189,16 @@ void PlanBuilder::addDataReferenceEdges(ExecutionPlan& plan, PlanBuildResult& re
                                              .arg(consumer.id, reference->nodeAddress),
                                          "Use a sibling key or a complete node path such as 001.rx"});
                 continue;
+            }
+            const auto consumerSharedRoot = oncePerBatchRoot(plan, consumer.id);
+            const auto sourceSharedRoot = oncePerBatchRoot(plan, *source);
+            const auto* sourceNode = plan.node(*source);
+            if (consumerSharedRoot && !sourceSharedRoot && sourceNode &&
+                executionPhaseOf(*sourceNode) != ExecutionPhase::Setup) {
+                result.errors.push_back({
+                    QString("Once-per-batch step %1 reads per-UUT result %2")
+                        .arg(consumer.id, *source),
+                    "Use a shared/Setup source, or move the dependent work back to per-UUT execution"});
             }
             if (!sourceRunsBeforeConsumer(plan, *source, consumer.id)) {
                 result.errors.push_back({QString("Step result source is not guaranteed to run before consumer: %1 -> %2")

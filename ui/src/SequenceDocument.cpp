@@ -284,6 +284,11 @@ QJsonObject canonicalizeStepForUi(QJsonObject step)
 
     removeDefaultBoolean(step, QStringLiteral("enabled"), true);
     removeDefaultBoolean(step, QStringLiteral("alwaysRun"), false);
+    if (normalizedSchemaToken(
+            step.value(QStringLiteral("executionScope")).toString()) ==
+        QStringLiteral("peruut")) {
+        step.remove(QStringLiteral("executionScope"));
+    }
     removeDefaultBoolean(step, QStringLiteral("resultRecording"), true);
     removeDefaultBoolean(step, QStringLiteral("checkpointBefore"), false);
     removeDefaultBoolean(step, QStringLiteral("checkpointAfter"), false);

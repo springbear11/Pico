@@ -1210,15 +1210,59 @@ Potential future strict mode:
 
 当前约束：`LOCK` 和 `UNLOCK` 必须位于同一父级；普通区间的 `UNLOCK` 必须晚于 `LOCK`；单项锁允许起止点为同一 Step 或 TestItem。区间不可交叉、嵌套、缺少一端，也不可包含 Barrier。失败、Stop 或跳过 `UNLOCK` 时，调度器仍会释放租约。复制 Step 时不会复制资源区间标记，避免生成重复区间 ID。
 
+# 多 UUT 共享执行（Once Per Batch）
+
+多 UUT 流程中，默认每个 Step 都由每个 UUT 分别执行。对于公共上电、公共复位、批次确认等只需要执行一次的动作，可以在 Main 顶层 Step 或完整 TestItem 上设置：
+
+```json
+{
+  "id": "shared-power-on",
+  "name": "公共电源上电",
+  "kind": "action",
+  "executionScope": "oncePerBatch",
+  "moduleId": "device",
+  "function": "powerOn"
+}
+```
+
+`executionScope` 支持：
+
+| 值 | 含义 |
+|---|---|
+| `perUut` | 默认值；每个 UUT 各执行一次。默认值保存时可省略。 |
+| `oncePerBatch` | 本批次所有仍有效的 UUT 到达后，只执行一次，再把最终结果共享给各 UUT。 |
+
+运行语义：
+
+1. 到达共享节点的 UUT 先进入等待，不会各自调用插件。
+2. 所有仍参与本批次的 UUT 到达后，由第一个到达的 UUT 作为执行者调用一次。
+3. 如果共享对象是 TestItem，子步骤和 TestItem 整体 Retry 也只运行一套；重试完成后再发布最终结果。
+4. 最终 attempts、outputs、measurements、错误码和结果会写入每个参与 UUT 的结果仓库，因此每个 UUT 的独立 TXT/CSV/XLSX/PDF/运行报告都能看到该共享测试项。
+5. 某个 UUT 在到达前已经失败并进入终态，会从本次等待集合移除，不会拖死其他 UUT。
+6. 共享执行失败时，最终失败策略会对每个参与 UUT 生效；例如 `StopUut` 会结束各 UUT 后续普通流程，`Continue` 则允许各 UUT继续执行。
+
+当前安全约束：
+
+- 只允许 Main/Custom 顶层普通 Step 或完整 TestItem；不允许嵌套设置，也不支持 Loop、Barrier、Break。
+- 共享对象不能读取 `${uut...}`、SN、Per-UUT 变量或普通 Per-UUT Main Step 的结果，否则执行者选择会改变输入含义。
+- 共享对象不能位于 `LOCK/UNLOCK` 资源区间内，也不能自行携带资源区间边界；插件 Step 自身的普通资源声明仍然可用，并且只由实际执行者申请一次。
+- 当前不支持 `alwaysRun`、Checkpoint 和失败 `JumpTo`。
+- Setup 与 Cleanup 已经是 Session 级只执行一次，不需要再设置 `oncePerBatch`。
+
+它与 Barrier、资源锁的区别：Barrier 只负责“等齐后分别继续”，资源锁负责“同一时刻只让一个 UUT 使用设备”；`oncePerBatch` 才负责“等齐、真正执行一次、把同一结果写入每个 UUT 报告”。
+
 # 周期后台 Action（MVP）
 
-普通插件 Action 可以在 Setup 顶层增加 `periodic`，把该 Action 注册为覆盖本次测试主流程的周期任务：
+普通插件 Action 可以在 Setup 顶层增加 `periodic`，把该 Action 注册为覆盖本次测试主流程的周期任务。
+也可以放在 Main/Custom 顶层，并通过 `executionScope` 选择每个 UUT 各自运行，或整个批次
+只运行一份。下面是默认的 Per-UUT 用法：
 
 ```json
 {
   "id": "heartbeat",
   "name": "Send Heartbeat",
   "kind": "action",
+  "executionScope": "perUut",
   "moduleId": "device",
   "function": "write",
   "inputs": {
@@ -1262,13 +1306,17 @@ Potential future strict mode:
 
 当前约束：
 
-1. 只支持 Setup 组顶层的单个 `action`，不支持放进 TestItem、Loop 或 Cleanup。
+1. 支持 Setup 顶层 `action`，以及 Main/Custom 顶层 `action`；不支持放进 TestItem、
+   Loop 或 Cleanup。
 2. 周期 Action 不使用 Step Retry；一次失败后等待下一周期再次执行，主流程继续，最终 Session 记为失败。
 3. 必须声明资源；若 `inputs.deviceId` 是固定值，编译器会自动取通道前的设备 ID，例如 `CAN1.CH2` 自动使用独占资源 `CAN1`。动态 `deviceId` 必须显式填写 `resources`。
 4. 任务使用与主流程相同的 `ResourceManager`。事务区间持有同一资源时，本次周期执行会延后，不会插入 Send/Read 等事务中间。
    设备级资源与通道资源按层级互斥，例如 `CAN1` 与 `CAN1.CH1` 视为同一资源树。
 5. 每次触发生成独立 `requestId`，不允许同一任务重入，也不会积压补跑错过的周期。
-6. 所有 UUT Main 结束或 Session Stop 后自动取消定时请求，再进入 Cleanup，不需要额外 Stop Step。
-7. 当前为调度线程协作式执行。普通插件调用若长时间阻塞，周期任务会延后；本版本不会另起线程强行并发进入厂家 DLL。
+6. Main 中 `perUut` 任务使用 `UUT + Frame + Node` 唯一标识。每个 UUT 独立维护计数器、
+   requestId、变量上下文和报告；该 UUT 完成或失败退出时立即停止自己的任务。
+7. `oncePerBatch` 只注册一份公共任务，不会因实际执行者先完成而提前停止；所有 UUT Main
+   结束或 Session Stop 后统一取消，再进入 Cleanup。
+8. 当前为调度线程协作式执行。普通插件调用若长时间阻塞，周期任务会延后；本版本不会另起线程强行并发进入厂家 DLL。
 
 完整运行边界见 [周期后台任务](周期后台任务.md)。
