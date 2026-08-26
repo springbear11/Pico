@@ -4,6 +4,7 @@
 
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 namespace PicoATE::Core {
@@ -53,6 +54,17 @@ struct ProductRouteResolution {
     }
 };
 
+struct ProductBatchRouteResolution {
+    ProductRouteResolution route;
+    int uutCount = 1;
+    QVector<ProductRoutingDiagnostic> errors;
+
+    bool ok() const
+    {
+        return errors.isEmpty() && route.ok() && uutCount > 0;
+    }
+};
+
 struct ProductProject {
     QString name;
     QString directoryPath;
@@ -87,5 +99,9 @@ PICOATE_CORE_EXPORT QVector<ProductProject> discoverProductProjects(
 PICOATE_CORE_EXPORT ProductRouteResolution resolveProductRoute(
     const ProductRoutingConfig& config,
     const QString& serialNumber);
+
+PICOATE_CORE_EXPORT ProductBatchRouteResolution resolveProductBatchRoute(
+    const ProductRoutingConfig& config,
+    const QStringList& serialNumbers);
 
 } // namespace PicoATE::Core

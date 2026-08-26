@@ -77,6 +77,7 @@ std::optional<PeriodicTaskInvocation> PeriodicTaskController::takeReady()
 
         taskIt->pendingRequestId.clear();
         taskIt->inFlight = true;
+        taskIt->nextDueAtUtc = {};
         PeriodicTaskInvocation invocation;
         invocation.taskId = taskId;
         invocation.requestId = completion->requestId;
@@ -183,6 +184,16 @@ int PeriodicTaskController::activeTaskCount() const
     return m_tasks.size();
 }
 
+std::optional<QDateTime> PeriodicTaskController::nextDueAtUtc(
+    const QString& taskId) const
+{
+    const auto task = m_tasks.constFind(taskId);
+    if (task == m_tasks.constEnd() || !task->nextDueAtUtc.isValid()) {
+        return std::nullopt;
+    }
+    return task->nextDueAtUtc;
+}
+
 bool PeriodicTaskController::schedule(ActiveTask& task, int delayMs)
 {
     TimerRequest timer;
@@ -199,6 +210,7 @@ bool PeriodicTaskController::schedule(ActiveTask& task, int delayMs)
     if (!m_timers.schedule(timer)) {
         return false;
     }
+    task.nextDueAtUtc = timer.startedAt.addMSecs(timer.durationMs);
     task.pendingRequestId = timer.requestId;
     m_taskByRequest.insert(timer.requestId, task.registration.taskId);
     return true;

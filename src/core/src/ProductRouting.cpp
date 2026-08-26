@@ -54,6 +54,25 @@ QString routeDisplayName(const ProductRoute& route)
     return route.name.isEmpty() ? route.pattern : route.name;
 }
 
+QString comparableFilePath(const QString& path)
+{
+    const QFileInfo file(path);
+    const auto canonical = file.canonicalFilePath();
+    return QDir::cleanPath(canonical.isEmpty()
+                               ? file.absoluteFilePath()
+                               : canonical);
+}
+
+bool sameFilePath(const QString& left, const QString& right)
+{
+#if defined(Q_OS_WIN)
+    return comparableFilePath(left).compare(comparableFilePath(right),
+                                            Qt::CaseInsensitive) == 0;
+#else
+    return comparableFilePath(left) == comparableFilePath(right);
+#endif
+}
+
 bool validateStationSnCharacters(ProductRouteResolution& result,
                                  const QString& serialNumber)
 {
@@ -553,6 +572,96 @@ ProductRouteResolution resolveProductRoute(const ProductRoutingConfig& config,
     result.sequencePath = QFileInfo(route.sequencePath).absoluteFilePath();
     result.stationPath = QFileInfo(stationPath).absoluteFilePath();
     validateStationSnCharacters(result, sn);
+    return result;
+}
+
+ProductBatchRouteResolution resolveProductBatchRoute(
+    const ProductRoutingConfig& config,
+    const QStringList& serialNumbers)
+{
+    ProductBatchRouteResolution result;
+    int anchorIndex = -1;
+
+    for (int index = 0; index < serialNumbers.size(); ++index) {
+        const auto serialNumber = serialNumbers[index].trimmed();
+        if (serialNumber.isEmpty()) {
+            continue;
+        }
+
+        const auto candidate = resolveProductRoute(config, serialNumber);
+        if (!candidate.ok()) {
+            for (const auto& diagnostic : candidate.errors) {
+                const auto nestedPath = diagnostic.path.isEmpty()
+                    ? QStringLiteral("serialNumbers[%1]").arg(index)
+                    : QStringLiteral("serialNumbers[%1].%2")
+                          .arg(index)
+                          .arg(diagnostic.path);
+                addError(result.errors,
+                         nestedPath,
+                         QStringLiteral("UUT %1 (%2): %3")
+                             .arg(index + 1)
+                             .arg(serialNumber, diagnostic.message),
+                         diagnostic.suggestion);
+            }
+            continue;
+        }
+
+        if (anchorIndex < 0) {
+            anchorIndex = index;
+            result.route = candidate;
+            continue;
+        }
+
+        if (!sameFilePath(candidate.sequencePath, result.route.sequencePath) ||
+            !sameFilePath(candidate.stationPath, result.route.stationPath)) {
+            addError(
+                result.errors,
+                QStringLiteral("serialNumbers[%1]").arg(index),
+                QStringLiteral("UUT %1 (%2) matched project '%3', but this batch is locked to '%4'")
+                    .arg(index + 1)
+                    .arg(serialNumber,
+                         candidate.projectName,
+                         result.route.projectName),
+                QStringLiteral("Scan an SN routed to the same Sequence and Station, or clear the batch"));
+        }
+    }
+
+    if (anchorIndex < 0) {
+        addError(result.errors,
+                 QStringLiteral("serialNumbers"),
+                 QStringLiteral("At least one SN is required to resolve a product batch"));
+        return result;
+    }
+    if (!result.errors.isEmpty()) {
+        return result;
+    }
+
+    const auto station = loadStationConfigFile(result.route.stationPath);
+    if (!station.ok()) {
+        for (const auto& diagnostic : station.errors) {
+            addError(result.errors,
+                     diagnostic.path.isEmpty()
+                         ? QStringLiteral("station")
+                         : QStringLiteral("station.%1").arg(diagnostic.path),
+                     diagnostic.message,
+                     diagnostic.suggestion);
+        }
+        return result;
+    }
+    result.uutCount = qBound(1, station.config.uutCount, 64);
+
+    for (int index = result.uutCount; index < serialNumbers.size(); ++index) {
+        if (!serialNumbers[index].trimmed().isEmpty()) {
+            addError(
+                result.errors,
+                QStringLiteral("serialNumbers[%1]").arg(index),
+                QStringLiteral("UUT %1 exceeds the %2 slots configured by project '%3'")
+                    .arg(index + 1)
+                    .arg(result.uutCount)
+                    .arg(result.route.projectName),
+                QStringLiteral("Clear the extra SN or select a project with more UUT slots"));
+        }
+    }
     return result;
 }
 

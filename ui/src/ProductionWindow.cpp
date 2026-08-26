@@ -8,6 +8,7 @@
 #include "OperatorPromptPresenter.h"
 #include "ParserActualDelegate.h"
 #include "ProductRoutingDialog.h"
+#include "ProductRoutingScanSupport.h"
 #include "PicoATE/Core/ProductRouting.h"
 #include "PicoATE/Core/StationConfig.h"
 #include "RunnerModels.h"
@@ -155,36 +156,6 @@ QString compactDuration(qint64 milliseconds)
         .arg(milliseconds / 60000, 2, 10, QLatin1Char('0'))
         .arg(milliseconds / 1000 % 60, 2, 10, QLatin1Char('0'))
         .arg(milliseconds % 1000, 3, 10, QLatin1Char('0'));
-}
-
-int autoRoutingUutCount(const QString& routingPath)
-{
-    const auto routing = PicoATE::Core::loadProductRoutingFile(routingPath);
-    if (!routing.ok()) {
-        return 1;
-    }
-
-    QSet<int> counts;
-    for (const auto& route : routing.config.routes) {
-        if (!route.enabled) {
-            continue;
-        }
-        QString stationPath;
-        if (!route.projectPath.isEmpty()) {
-            const auto project = PicoATE::Core::inspectProductProject(
-                route.projectPath);
-            if (project.ok()) {
-                stationPath = project.stationPath;
-            }
-        } else if (!route.sequencePath.isEmpty()) {
-            stationPath = StartupSupport::stationPathForSequence(
-                route.sequencePath);
-        }
-        if (!stationPath.isEmpty()) {
-            counts.insert(StartupSupport::stationUutCount(stationPath, 1));
-        }
-    }
-    return counts.size() == 1 ? *counts.cbegin() : 1;
 }
 
 } // namespace
@@ -1055,40 +1026,25 @@ void ProductionWindow::beginAutoRoutedRunBatch(
         showRoutingError(details.join(QStringLiteral("\n")));
         return;
     }
-    const auto route = PicoATE::Core::resolveProductRoute(
-        routing.config, sns.first());
-    if (!route.ok()) {
+    const auto batch = PicoATE::Core::resolveProductBatchRoute(
+        routing.config, sns);
+    if (!batch.ok()) {
         QStringList details;
-        for (const auto& error : route.errors) {
+        for (const auto& error : batch.errors) {
             details.push_back(error.message);
         }
         showRoutingError(details.join(QStringLiteral("\n")));
         return;
     }
-
-    for (int index = 1; index < sns.size(); ++index) {
-        const auto candidate = PicoATE::Core::resolveProductRoute(
-            routing.config, sns[index]);
-        if (!candidate.ok()) {
-            QStringList details;
-            for (const auto& error : candidate.errors) {
-                details.push_back(error.message);
-            }
-            showRoutingError(
-                tr("UUT %1 (%2): %3")
-                    .arg(index + 1)
-                    .arg(sns[index], details.join(QStringLiteral("; "))));
-            return;
-        }
-        if (candidate.sequencePath != route.sequencePath ||
-            candidate.stationPath != route.stationPath) {
-            showRoutingError(
-                tr("All UUTs in one batch must resolve to the same project. "
-                   "UUT 1 and UUT %1 matched different projects.")
-                    .arg(index + 1));
-            return;
-        }
+    if (sns.size() != batch.uutCount) {
+        showRoutingError(
+            tr("Project %1 requires %2 UUT SN(s), but %3 were scanned")
+                .arg(batch.route.projectName)
+                .arg(batch.uutCount)
+                .arg(sns.size()));
+        return;
     }
+    const auto& route = batch.route;
 
     m_pendingSerialNumbers = sns;
     m_runPreparationPending = true;
@@ -1291,10 +1247,35 @@ void ProductionWindow::showScanDialogWhenReady()
     }
     m_scanDialog->setValidationRules(
         autoRouting ? SnValidationRules{} : m_selection.snValidationRules);
-    const int uutCount = autoRouting
-        ? autoRoutingUutCount(m_selection.productRoutingPath)
-        : StartupSupport::stationUutCount(m_selection.stationPath, 1);
-    m_scanDialog->setSlotCount(uutCount);
+    if (autoRouting) {
+        const auto routing = PicoATE::Core::loadProductRoutingFile(
+            m_selection.productRoutingPath);
+        if (routing.ok()) {
+            m_scanDialog->setSubmissionValidator(
+                [config = routing.config](const QStringList& proposed,
+                                          int currentSlot) {
+                    return validateAutoRoutedScan(config, proposed,
+                                                  currentSlot);
+                });
+        } else {
+            QStringList details;
+            for (const auto& error : routing.errors) {
+                details.push_back(error.path.isEmpty()
+                    ? error.message
+                    : QStringLiteral("%1: %2").arg(error.path, error.message));
+            }
+            const auto message = details.join(QStringLiteral("\n"));
+            m_scanDialog->setSubmissionValidator(
+                [message](const QStringList&, int) {
+                    return ScanSubmissionDecision{false, message, 0, {}};
+                });
+        }
+        m_scanDialog->setSlotCount(1);
+    } else {
+        m_scanDialog->setSubmissionValidator({});
+        m_scanDialog->setSlotCount(
+            StartupSupport::stationUutCount(m_selection.stationPath, 1));
+    }
     QTimer::singleShot(0, m_scanDialog, [dialog = m_scanDialog] {
         dialog->showForNextScan();
     });

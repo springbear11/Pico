@@ -74,8 +74,44 @@ QString runtimeEventKindName(RuntimeEventKind kind)
         return "OperatorPromptRequested";
     case RuntimeEventKind::OperatorPromptClosed:
         return "OperatorPromptClosed";
+    case RuntimeEventKind::PeriodicTaskStateChanged:
+        return "PeriodicTaskStateChanged";
+    case RuntimeEventKind::ResourceStateChanged:
+        return "ResourceStateChanged";
     case RuntimeEventKind::ModuleLog:
         return "ModuleLog";
+    }
+    return "Unknown";
+}
+
+QString periodicTaskStateName(PeriodicTaskState state)
+{
+    switch (state) {
+    case PeriodicTaskState::Waiting:
+        return "Waiting";
+    case PeriodicTaskState::Running:
+        return "Running";
+    case PeriodicTaskState::Passed:
+        return "Passed";
+    case PeriodicTaskState::Failed:
+        return "Failed";
+    case PeriodicTaskState::Stopped:
+        return "Stopped";
+    }
+    return "Unknown";
+}
+
+QString resourceRuntimeStateName(ResourceRuntimeState state)
+{
+    switch (state) {
+    case ResourceRuntimeState::Waiting:
+        return "Waiting";
+    case ResourceRuntimeState::Acquired:
+        return "Acquired";
+    case ResourceRuntimeState::Released:
+        return "Released";
+    case ResourceRuntimeState::Cancelled:
+        return "Cancelled";
     }
     return "Unknown";
 }

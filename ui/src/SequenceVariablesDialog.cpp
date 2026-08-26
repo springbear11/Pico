@@ -10,9 +10,11 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollBar>
 #include <QSet>
 #include <QStyle>
 #include <QTableWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -113,6 +115,19 @@ SequenceVariablesDialog::SequenceVariablesDialog(QJsonArray variables,
                                                  QWidget* parent)
     : QDialog(parent)
 {
+    for (const auto& value : variables) {
+        if (value.isObject()) {
+            m_uutColumnCount = qBound(
+                DefaultUutColumnCount,
+                qMax(m_uutColumnCount,
+                     value.toObject()
+                         .value(QStringLiteral("values"))
+                         .toArray()
+                         .size()),
+                MaximumUutColumnCount);
+        }
+    }
+
     setObjectName(QStringLiteral("sequenceVariablesDialog"));
     setWindowTitle(tr("Sequence Variables"));
     resize(1120, 520);
@@ -130,20 +145,29 @@ SequenceVariablesDialog::SequenceVariablesDialog(QJsonArray variables,
     auto* removeButton = new QPushButton(
         style()->standardIcon(QStyle::SP_TrashIcon), tr("Remove"), this);
     removeButton->setObjectName(QStringLiteral("removeSequenceVariableButton"));
+    m_addUutButton = new QPushButton(tr("+ UUT"), this);
+    m_addUutButton->setObjectName(QStringLiteral("addSequenceUutButton"));
+    m_addUutButton->setToolTip(tr("Add another Per UUT value column"));
     toolbar->addWidget(addButton);
     toolbar->addWidget(removeButton);
+    toolbar->addWidget(m_addUutButton);
     toolbar->addStretch();
     layout->addLayout(toolbar);
 
     m_table = new QTableWidget(this);
     m_table->setObjectName(QStringLiteral("sequenceVariablesTable"));
-    m_table->setColumnCount(ColumnCount);
-    m_table->setHorizontalHeaderLabels(
-        {tr("Name"), tr("Type"), tr("Scope"), tr("Shared Value"),
-         tr("UUT1"), tr("UUT2"), tr("UUT3"), tr("UUT4"),
-         tr("Description")});
+    m_table->setColumnCount(tableColumnCount());
+    QStringList headers = {tr("Name"), tr("Type"), tr("Scope"),
+                           tr("Shared Value")};
+    for (int index = 0; index < m_uutColumnCount; ++index) {
+        headers.push_back(tr("UUT%1").arg(index + 1));
+    }
+    headers.push_back(tr("Description"));
+    m_table->setHorizontalHeaderLabels(headers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_table->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_table->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_table->setAlternatingRowColors(true);
     m_table->verticalHeader()->setVisible(false);
     m_table->verticalHeader()->setDefaultSectionSize(34);
@@ -153,7 +177,8 @@ SequenceVariablesDialog::SequenceVariablesDialog(QJsonArray variables,
     m_table->setColumnWidth(NameColumn, 145);
     m_table->setColumnWidth(TypeColumn, 124);
     m_table->setColumnWidth(ScopeColumn, 132);
-    for (int column = SharedValueColumn; column <= Uut4Column; ++column) {
+    for (int column = SharedValueColumn;
+         column < descriptionColumn(); ++column) {
         m_table->setColumnWidth(column, 105);
     }
     layout->addWidget(m_table, 1);
@@ -179,6 +204,8 @@ SequenceVariablesDialog::SequenceVariablesDialog(QJsonArray variables,
             this, [this] { appendVariable(); });
     connect(removeButton, &QPushButton::clicked,
             this, &SequenceVariablesDialog::removeSelectedVariables);
+    connect(m_addUutButton, &QPushButton::clicked,
+            this, &SequenceVariablesDialog::appendUutColumn);
     connect(m_table, &QTableWidget::itemChanged, this, [this] {
         m_errorLabel->hide();
     });
@@ -188,6 +215,7 @@ SequenceVariablesDialog::SequenceVariablesDialog(QJsonArray variables,
             appendVariable(value.toObject());
         }
     }
+    m_addUutButton->setEnabled(m_uutColumnCount < MaximumUutColumnCount);
 }
 
 QJsonArray SequenceVariablesDialog::variables() const
@@ -248,13 +276,13 @@ void SequenceVariablesDialog::appendVariable(const QJsonObject& variable)
     m_table->setItem(row, SharedValueColumn,
                      new QTableWidgetItem(displayValue(variable.value(QStringLiteral("value")))));
     const auto values = variable.value(QStringLiteral("values")).toArray();
-    for (int index = 0; index < 4; ++index) {
+    for (int index = 0; index < m_uutColumnCount; ++index) {
         m_table->setItem(row, Uut1Column + index,
                          new QTableWidgetItem(index < values.size()
                                                   ? displayValue(values[index])
                                                   : QString{}));
     }
-    m_table->setItem(row, DescriptionColumn,
+    m_table->setItem(row, descriptionColumn(),
                      new QTableWidgetItem(variable.value(QStringLiteral("description")).toString()));
 
     connect(scope, &QComboBox::currentIndexChanged,
@@ -263,6 +291,32 @@ void SequenceVariablesDialog::appendVariable(const QJsonObject& variable)
             this, [this] { m_errorLabel->hide(); });
     updateRowAvailability(row);
     m_table->setCurrentCell(row, NameColumn);
+}
+
+void SequenceVariablesDialog::appendUutColumn()
+{
+    if (m_uutColumnCount >= MaximumUutColumnCount) {
+        return;
+    }
+
+    const int column = descriptionColumn();
+    m_table->insertColumn(column);
+    ++m_uutColumnCount;
+    m_table->setHorizontalHeaderItem(
+        column,
+        new QTableWidgetItem(tr("UUT%1").arg(m_uutColumnCount)));
+    m_table->setColumnWidth(column, 105);
+    for (int row = 0; row < m_table->rowCount(); ++row) {
+        m_table->setItem(row, column, new QTableWidgetItem);
+        updateRowAvailability(row);
+    }
+    m_addUutButton->setEnabled(m_uutColumnCount < MaximumUutColumnCount);
+    m_errorLabel->hide();
+
+    QTimer::singleShot(0, m_table, [table = m_table] {
+        table->horizontalScrollBar()->setValue(
+            table->horizontalScrollBar()->maximum());
+    });
 }
 
 void SequenceVariablesDialog::removeSelectedVariables()
@@ -283,7 +337,8 @@ void SequenceVariablesDialog::updateRowAvailability(int row)
 {
     const auto* scope = comboFor(m_table, row, ScopeColumn);
     const bool perUut = scope && scope->currentData().toString() == QStringLiteral("perUut");
-    for (int column = SharedValueColumn; column <= Uut4Column; ++column) {
+    for (int column = SharedValueColumn;
+         column < descriptionColumn(); ++column) {
         auto* item = m_table->item(row, column);
         if (!item) {
             continue;
@@ -340,7 +395,8 @@ bool SequenceVariablesDialog::buildVariables(QJsonArray& result,
         variable.insert(QStringLiteral("name"), name);
         variable.insert(QStringLiteral("type"), type);
         variable.insert(QStringLiteral("scope"), scope);
-        const auto description = m_table->item(row, DescriptionColumn)->text().trimmed();
+        const auto description =
+            m_table->item(row, descriptionColumn())->text().trimmed();
         if (!description.isEmpty()) {
             variable.insert(QStringLiteral("description"), description);
         }
@@ -358,7 +414,7 @@ bool SequenceVariablesDialog::buildVariables(QJsonArray& result,
         } else {
             QJsonArray values;
             bool hasValue = false;
-            for (int index = 0; index < 4; ++index) {
+            for (int index = 0; index < m_uutColumnCount; ++index) {
                 const auto text = m_table->item(row, Uut1Column + index)->text();
                 if (text.trimmed().isEmpty()) {
                     values.push_back(QJsonValue::Null);
@@ -387,6 +443,16 @@ bool SequenceVariablesDialog::buildVariables(QJsonArray& result,
         result.push_back(variable);
     }
     return true;
+}
+
+int SequenceVariablesDialog::descriptionColumn() const
+{
+    return Uut1Column + m_uutColumnCount;
+}
+
+int SequenceVariablesDialog::tableColumnCount() const
+{
+    return descriptionColumn() + 1;
 }
 
 } // namespace PicoATE::Ui

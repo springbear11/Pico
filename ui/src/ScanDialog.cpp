@@ -163,14 +163,21 @@ void ScanDialog::setValidationRules(SnValidationRules rules)
     m_validationRules = std::move(rules);
 }
 
+void ScanDialog::setSubmissionValidator(ScanSubmissionValidator validator)
+{
+    m_submissionValidator = std::move(validator);
+}
+
 void ScanDialog::setSlotCount(int count)
 {
     count = qBound(1, count, 64);
+    m_configuredSlotCount = count;
     if (count == m_barcodes.size()) {
         return;
     }
     m_barcodes = QStringList(count, QString{});
     m_history.clear();
+    m_batchContext.clear();
     m_currentSlot = 0;
     updateUi();
 }
@@ -264,6 +271,21 @@ void ScanDialog::submitBarcode()
         }
     }
 
+    if (m_submissionValidator) {
+        auto proposedBarcodes = m_barcodes;
+        proposedBarcodes[m_currentSlot] = barcode;
+        const auto decision = m_submissionValidator(
+            proposedBarcodes, m_currentSlot);
+        if (!decision.accepted) {
+            showSubmissionError(decision.errorMessage);
+            return;
+        }
+        if (decision.requiredSlotCount > 0) {
+            resizeSlotsPreservingValues(decision.requiredSlotCount);
+        }
+        m_batchContext = decision.batchContext.trimmed();
+    }
+
     if (m_barcodes[m_currentSlot] != barcode) {
         m_history.push_back({m_currentSlot, m_barcodes[m_currentSlot]});
         m_barcodes[m_currentSlot] = barcode;
@@ -318,8 +340,9 @@ void ScanDialog::clearBatch()
 
 void ScanDialog::resetBatch()
 {
-    std::fill(m_barcodes.begin(), m_barcodes.end(), QString{});
+    m_barcodes = QStringList(m_configuredSlotCount, QString{});
     m_history.clear();
+    m_batchContext.clear();
     m_currentSlot = 0;
     m_errorLabel->hide();
     updateUi();
@@ -355,8 +378,12 @@ void ScanDialog::updateUi()
     const int completed = static_cast<int>(std::count_if(
         m_barcodes.cbegin(), m_barcodes.cend(),
         [](const QString& value) { return !value.isEmpty(); }));
-    m_progressLabel->setText(
-        tr("%1 / %2 scanned").arg(completed).arg(m_barcodes.size()));
+    auto progressText =
+        tr("%1 / %2 scanned").arg(completed).arg(m_barcodes.size());
+    if (!m_batchContext.isEmpty()) {
+        progressText = tr("%1  |  %2").arg(m_batchContext, progressText);
+    }
+    m_progressLabel->setText(progressText);
     m_previousButton->setEnabled(m_currentSlot > 0);
     m_nextButton->setEnabled(m_currentSlot + 1 < m_barcodes.size());
     m_undoButton->setEnabled(!m_history.isEmpty());
@@ -376,6 +403,34 @@ void ScanDialog::focusBarcodeEdit()
         edit->setCursorPosition(0);
         edit->setFocus(Qt::OtherFocusReason);
     });
+}
+
+void ScanDialog::resizeSlotsPreservingValues(int count)
+{
+    count = qBound(1, count, 64);
+    if (count == m_barcodes.size()) {
+        return;
+    }
+    m_barcodes.resize(count);
+    m_history.erase(
+        std::remove_if(m_history.begin(), m_history.end(),
+                       [count](const ScanChange& change) {
+                           return change.slot >= count;
+                       }),
+        m_history.end());
+    m_currentSlot = qBound(0, m_currentSlot, count - 1);
+}
+
+void ScanDialog::showSubmissionError(const QString& message)
+{
+    const auto text = message.trimmed().isEmpty()
+        ? tr("This SN cannot be added to the current batch")
+        : message.trimmed();
+    m_errorLabel->setText(text);
+    m_errorLabel->setToolTip(text);
+    m_errorLabel->show();
+    m_barcodeEdit->selectAll();
+    m_barcodeEdit->setFocus(Qt::OtherFocusReason);
 }
 
 int ScanDialog::nextEmptySlot(int afterSlot) const

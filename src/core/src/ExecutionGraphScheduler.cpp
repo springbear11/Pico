@@ -221,6 +221,15 @@ ExecutionGraphScheduler::ExecutionGraphScheduler(const ExecutionPlan& plan,
           plan,
           executionControl ? &executionControl->operatorPrompts() : nullptr)
 {
+    m_resources.setTransitionHandler(
+        [this](const ResourceTransition& transition) {
+            publishResourceEvent(transition);
+        });
+}
+
+ExecutionGraphScheduler::~ExecutionGraphScheduler()
+{
+    m_resources.setTransitionHandler({});
 }
 
 bool ExecutionGraphScheduler::hasPendingRequests() const
@@ -334,6 +343,13 @@ SchedulerStepResult ExecutionGraphScheduler::pumpPeriodicTaskOnce()
         attempt, invocation->frameId);
     context.logSink = m_events ? &moduleLogSink : nullptr;
 
+    publishPeriodicTaskEvent(execution,
+                             *node,
+                             invocation->frameId,
+                             invocation->taskId,
+                             PeriodicTaskState::Running,
+                             invocation->invocationIndex + 1,
+                             invocation->counterValue);
     publishAttemptEvent(RuntimeEventKind::AttemptStarted, *execution, *node, attempt,
                         QStringLiteral("periodic task tick"),
                         true,
@@ -363,6 +379,21 @@ SchedulerStepResult ExecutionGraphScheduler::pumpPeriodicTaskOnce()
         m_resources.release(lease.leaseId);
     }
     m_periodicTasks.complete(*invocation, result);
+    const bool tickStopped = result.outcome == NodeOutcome::Cancelled;
+    const auto nextDueAtUtc = m_periodicTasks.nextDueAtUtc(invocation->taskId);
+    publishPeriodicTaskEvent(
+        execution,
+        *node,
+        invocation->frameId,
+        invocation->taskId,
+        tickStopped || !nextDueAtUtc ? PeriodicTaskState::Stopped
+                                     : PeriodicTaskState::Waiting,
+        invocation->invocationIndex + 1,
+        invocation->counterValue,
+        result.outcome,
+        result.errorCode,
+        result.errorMessage,
+        nextDueAtUtc.value_or(QDateTime{}));
 
     step.progressed = true;
     step.nodeId = node->id;
@@ -378,6 +409,14 @@ bool ExecutionGraphScheduler::stopAllPeriodicTasks()
     bool hadError = false;
     for (const auto& summary : m_periodicTasks.stopAll()) {
         hadError = hadError || summary.failureCount > 0;
+        if (const auto* node = m_plan.node(summary.nodeId)) {
+            publishPeriodicTaskEvent(summary.execution,
+                                     *node,
+                                     summary.frameId,
+                                     summary.taskId,
+                                     PeriodicTaskState::Stopped,
+                                     summary.executionCount);
+        }
     }
     return hadError;
 }
@@ -387,6 +426,14 @@ bool ExecutionGraphScheduler::stopPeriodicTasksForUut(const UutId& uutId)
     bool hadError = false;
     for (const auto& summary : m_periodicTasks.stopForUut(uutId)) {
         hadError = hadError || summary.failureCount > 0;
+        if (const auto* node = m_plan.node(summary.nodeId)) {
+            publishPeriodicTaskEvent(summary.execution,
+                                     *node,
+                                     summary.frameId,
+                                     summary.taskId,
+                                     PeriodicTaskState::Stopped,
+                                     summary.executionCount);
+        }
     }
     return hadError;
 }
@@ -1691,6 +1738,21 @@ NodeResult ExecutionGraphScheduler::registerPeriodicTask(
                      activation.state,
                      result.outcome,
                      result.errorMessage);
+    publishPeriodicTaskEvent(
+        &uut,
+        node,
+        frameId,
+        taskInstanceId,
+        result.outcome == NodeOutcome::Passed ? PeriodicTaskState::Waiting
+                                              : PeriodicTaskState::Stopped,
+        0,
+        node.periodic.counterStart,
+        result.outcome,
+        result.errorCode,
+        result.errorMessage,
+        result.outcome == NodeOutcome::Passed
+            ? m_periodicTasks.nextDueAtUtc(taskInstanceId).value_or(QDateTime{})
+            : QDateTime{});
     return result;
 }
 
@@ -3118,6 +3180,10 @@ void ExecutionGraphScheduler::publishNodeEvent(RuntimeEventKind kind,
     event.details.insert("maxAttempts", qMax(1, node.retry.maxAttempts));
     event.details.insert("executionScope",
                          nodeExecutionScopeName(node.executionScope));
+    if (node.periodic.enabled) {
+        event.details.insert("periodicTask", true);
+        event.details.insert("periodicIntervalMs", node.periodic.intervalMs);
+    }
     const auto activation = uut.activations.constFind(node.id);
     if (activation != uut.activations.constEnd()) {
         event.frameId = activation->frameId;
@@ -3178,6 +3244,10 @@ void ExecutionGraphScheduler::publishAttemptEvent(RuntimeEventKind kind,
     event.details.insert("maxAttempts", qMax(1, node.retry.maxAttempts));
     event.details.insert("executionScope",
                          nodeExecutionScopeName(node.executionScope));
+    if (node.periodic.enabled) {
+        event.details.insert("periodicTask", true);
+        event.details.insert("periodicIntervalMs", node.periodic.intervalMs);
+    }
     if (periodicInvocation) {
         event.details.insert("periodicInvocation", true);
         event.details.insert("periodicIndex", periodicIndex);
@@ -3201,6 +3271,124 @@ void ExecutionGraphScheduler::publishAttemptEvent(RuntimeEventKind kind,
         event.details.insert(
             "retryAttemptIndex",
             qMax(1, attempt.attemptIndex - activation->retryAttemptBase + 1));
+    }
+    m_events->publish(event);
+}
+
+void ExecutionGraphScheduler::publishPeriodicTaskEvent(
+    const UutExecution* execution,
+    const ExecNode& node,
+    const FrameId& frameId,
+    const QString& taskInstanceId,
+    PeriodicTaskState state,
+    int invocationIndex,
+    qint64 counter,
+    NodeOutcome outcome,
+    const QString& errorCode,
+    const QString& message,
+    const QDateTime& nextDueAtUtc)
+{
+    if (!m_events) {
+        return;
+    }
+
+    const auto phase = executionPhaseOf(node);
+    const bool shared = node.executionScope == NodeExecutionScope::OncePerBatch ||
+                        phase == ExecutionPhase::Setup;
+    RuntimeEvent event;
+    event.kind = RuntimeEventKind::PeriodicTaskStateChanged;
+    if (!shared && execution) {
+        event.uutId = execution->uutId;
+    }
+    event.nodeId = node.id;
+    event.nodeLocalId = node.localId.isEmpty() ? node.id : node.localId;
+    if (const auto parent = m_plan.structuralParentOf(node.id)) {
+        event.parentNodeId = *parent;
+    }
+    event.nodeDisplayName = node.displayName;
+    event.nodeKind = node.kind;
+    event.nodePhase = phase;
+    event.frameId = frameId;
+    event.outcome = outcome;
+    event.errorCode = errorCode;
+    event.message = message;
+    event.periodicTaskState = state;
+    event.periodicTaskId = taskInstanceId;
+    event.periodicTaskShared = shared;
+    event.periodicIntervalMs = node.periodic.intervalMs;
+    event.periodicInvocationIndex = invocationIndex;
+    event.periodicCounter = counter;
+    event.periodicNextDueAtUtc = nextDueAtUtc;
+    event.details.insert("periodicTask", true);
+    event.details.insert("executionScope",
+                         nodeExecutionScopeName(node.executionScope));
+    if (execution) {
+        event.details.insert("executorUutId", execution->uutId);
+    }
+    m_events->publish(event);
+}
+
+void ExecutionGraphScheduler::publishResourceEvent(
+    const ResourceTransition& transition)
+{
+    if (!m_events) {
+        return;
+    }
+
+    RuntimeEvent event;
+    event.kind = RuntimeEventKind::ResourceStateChanged;
+    event.uutId = transition.uutId;
+    event.nodeId = transition.nodeId;
+    event.frameId = transition.frameId;
+    event.requestId = transition.requestId;
+    event.resourceLeaseId = transition.leaseId;
+    event.resourceBlockingUutIds = transition.blockingUutIds;
+    event.resourceWaitingSinceUtc = transition.waitingSinceUtc;
+    for (const auto& requirement : transition.requirements) {
+        if (!event.resourceIds.contains(requirement.resourceId)) {
+            event.resourceIds.push_back(requirement.resourceId);
+        }
+    }
+
+    if (const auto* node = m_plan.node(transition.nodeId)) {
+        event.nodeLocalId = node->localId.isEmpty() ? node->id : node->localId;
+        event.nodeDisplayName = node->displayName;
+        event.nodeKind = node->kind;
+        event.nodePhase = executionPhaseOf(*node);
+        event.resourceShared =
+            node->executionScope == NodeExecutionScope::OncePerBatch ||
+            event.nodePhase == ExecutionPhase::Setup;
+        event.details.insert("executionScope",
+                             nodeExecutionScopeName(node->executionScope));
+    }
+
+    switch (transition.kind) {
+    case ResourceTransitionKind::Waiting:
+        event.resourceState = ResourceRuntimeState::Waiting;
+        break;
+    case ResourceTransitionKind::Acquired:
+        event.resourceState = ResourceRuntimeState::Acquired;
+        break;
+    case ResourceTransitionKind::Released:
+        event.resourceState = ResourceRuntimeState::Released;
+        break;
+    case ResourceTransitionKind::Cancelled:
+        event.resourceState = ResourceRuntimeState::Cancelled;
+        break;
+    }
+
+    const auto resources = QStringList(event.resourceIds.cbegin(),
+                                       event.resourceIds.cend())
+                               .join(QStringLiteral(", "));
+    event.message = QStringLiteral("%1 resource%2 %3")
+                        .arg(resourceRuntimeStateName(event.resourceState).toLower(),
+                             event.resourceIds.size() == 1 ? QString{} : QStringLiteral("s"),
+                             resources);
+    if (!event.resourceBlockingUutIds.isEmpty()) {
+        event.message += QStringLiteral(" (held by %1)")
+                             .arg(QStringList(event.resourceBlockingUutIds.cbegin(),
+                                              event.resourceBlockingUutIds.cend())
+                                      .join(QStringLiteral(", ")));
     }
     m_events->publish(event);
 }

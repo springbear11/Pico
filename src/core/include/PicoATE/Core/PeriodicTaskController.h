@@ -3,6 +3,7 @@
 #include "PicoATE/Core/RuntimeTypes.h"
 #include "PicoATE/Core/TimerService.h"
 
+#include <QDateTime>
 #include <QHash>
 #include <QVector>
 
@@ -57,6 +58,7 @@ public:
     QVector<PeriodicTaskSummary> stopAll();
     bool hasActiveTasks() const;
     int activeTaskCount() const;
+    std::optional<QDateTime> nextDueAtUtc(const QString& taskId) const;
 
 private:
     struct ActiveTask {
@@ -65,6 +67,7 @@ private:
         bool inFlight = false;
         int executionCount = 0;
         int failureCount = 0;
+        QDateTime nextDueAtUtc;
     };
 
     bool schedule(ActiveTask& task, int delayMs);

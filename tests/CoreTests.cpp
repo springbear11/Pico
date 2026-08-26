@@ -858,6 +858,7 @@ private slots:
     void productRoutingLoadsRelativeSequencesAndMatchesExactlyOneRoute();
     void productRoutingRejectsMissingAndAmbiguousMatches();
     void productRoutingSupportsWildcardFormsAndRouteSnRules();
+    void productRoutingResolvesHomogeneousBatchAndStationUutCount();
     void nodeRunnerRunsRegisteredModuleAndMapsModuleResult();
     void nodeRunnerReportsMissingModule();
     void dataParserDecodesBinaryAndModbusValues();
@@ -1562,6 +1563,11 @@ void CoreTests::stationRuntimeLoadsStationConfig()
 void CoreTests::resourceManagerSerializesWaiters()
 {
     ResourceManager resources;
+    QVector<ResourceTransition> transitions;
+    resources.setTransitionHandler(
+        [&transitions](const ResourceTransition& transition) {
+            transitions.push_back(transition);
+        });
 
     ResourceRequirement dmm;
     dmm.resourceId = "Instrument.DMM1";
@@ -1580,18 +1586,49 @@ void CoreTests::resourceManagerSerializesWaiters()
 
     auto firstLease = resources.tryAcquire(first);
     QVERIFY(firstLease.has_value());
+    QCOMPARE(transitions.size(), 1);
+    QCOMPARE(transitions.last().kind, ResourceTransitionKind::Acquired);
+    QCOMPARE(transitions.last().uutId, QString("uut-1"));
+    QCOMPARE(transitions.last().requirements.first().resourceId,
+             QString("Instrument.DMM1"));
 
     auto secondLease = resources.tryAcquire(second);
     QVERIFY(!secondLease.has_value());
     QCOMPARE(resources.waiterCount(), 1);
+    QCOMPARE(transitions.size(), 2);
+    QCOMPARE(transitions.last().kind, ResourceTransitionKind::Waiting);
+    QCOMPARE(transitions.last().blockingUutIds,
+             QVector<UutId>{QString("uut-1")});
+
+    QVERIFY(!resources.tryAcquire(second).has_value());
+    QCOMPARE(transitions.size(), 2);
 
     const auto snapshot = resources.snapshot();
     QCOMPARE(snapshot.waiters.size(), 1);
     QCOMPARE(snapshot.waiters.first().requestId, QString("req-2"));
 
     resources.release(firstLease->leaseId);
+    QCOMPARE(transitions.size(), 3);
+    QCOMPARE(transitions.last().kind, ResourceTransitionKind::Released);
     secondLease = resources.tryAcquire(second);
     QVERIFY(secondLease.has_value());
+    QCOMPARE(resources.waiterCount(), 0);
+    QCOMPARE(transitions.size(), 4);
+    QCOMPARE(transitions.last().kind, ResourceTransitionKind::Acquired);
+    QCOMPARE(transitions.last().uutId, QString("uut-2"));
+
+    ResourceRequest third = first;
+    third.requestId = QStringLiteral("req-3");
+    third.uutId = QStringLiteral("uut-3");
+    QVERIFY(!resources.tryAcquire(third).has_value());
+    QCOMPARE(transitions.size(), 5);
+    QCOMPARE(transitions.last().blockingUutIds,
+             QVector<UutId>{QString("uut-2")});
+    QVERIFY(!resources.tryAcquire(third).has_value());
+    QCOMPARE(transitions.size(), 5);
+    resources.cancelRequest(third.requestId);
+    QCOMPARE(transitions.size(), 6);
+    QCOMPARE(transitions.last().kind, ResourceTransitionKind::Cancelled);
     QCOMPARE(resources.waiterCount(), 0);
 }
 
@@ -2316,6 +2353,69 @@ void CoreTests::productRoutingSupportsWildcardFormsAndRouteSnRules()
     QVERIFY(!duplicateRoutes.ok());
     QVERIFY(duplicateRoutes.errors.first().message.contains(
         QStringLiteral("duplicates"), Qt::CaseInsensitive));
+}
+
+void CoreTests::productRoutingResolvesHomogeneousBatchAndStationUutCount()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    const auto projectA = directory.filePath(QStringLiteral("projects/A"));
+    const auto projectB = directory.filePath(QStringLiteral("projects/B"));
+    QVERIFY(QDir().mkpath(projectA));
+    QVERIFY(QDir().mkpath(projectB));
+
+    QFile sequenceA(QDir(projectA).filePath(QStringLiteral("a_sequence.json")));
+    QVERIFY(sequenceA.open(QIODevice::WriteOnly));
+    sequenceA.write(R"({"id":"a","name":"A","groups":[]})");
+    sequenceA.close();
+    QFile stationA(QDir(projectA).filePath(QStringLiteral("StationSystem.json")));
+    QVERIFY(stationA.open(QIODevice::WriteOnly));
+    stationA.write(R"({"stationId":"a","uutCount":4,"snAllowedRegex":"^[A-Z0-9-]+$","devices":[]})");
+    stationA.close();
+
+    QFile sequenceB(QDir(projectB).filePath(QStringLiteral("b_sequence.json")));
+    QVERIFY(sequenceB.open(QIODevice::WriteOnly));
+    sequenceB.write(R"({"id":"b","name":"B","groups":[]})");
+    sequenceB.close();
+    QFile stationB(QDir(projectB).filePath(QStringLiteral("StationSystem.json")));
+    QVERIFY(stationB.open(QIODevice::WriteOnly));
+    stationB.write(R"({"stationId":"b","uutCount":2,"snAllowedRegex":"^[A-Z0-9-]+$","devices":[]})");
+    stationB.close();
+
+    ProductRoutingConfig config;
+    config.routes = {
+        ProductRoute{QStringLiteral("Product A"), QStringLiteral("A-*"),
+                     0, projectA, {}, true},
+        ProductRoute{QStringLiteral("Product B"), QStringLiteral("B-*"),
+                     0, projectB, {}, true}};
+
+    const auto first = resolveProductBatchRoute(
+        config, {QStringLiteral("A-001")});
+    QVERIFY2(first.ok(), first.errors.isEmpty()
+                             ? "batch route did not resolve"
+                             : qPrintable(first.errors.first().message));
+    QCOMPARE(first.uutCount, 4);
+    QCOMPARE(first.route.projectName, QStringLiteral("A"));
+
+    const auto homogeneous = resolveProductBatchRoute(
+        config, {QStringLiteral("A-001"), QStringLiteral("A-002")});
+    QVERIFY(homogeneous.ok());
+    QCOMPARE(homogeneous.uutCount, 4);
+
+    const auto mixed = resolveProductBatchRoute(
+        config, {QStringLiteral("A-001"), QStringLiteral("B-002")});
+    QVERIFY(!mixed.ok());
+    QCOMPARE(mixed.errors.first().path, QStringLiteral("serialNumbers[1]"));
+    QVERIFY(mixed.errors.first().message.contains(QStringLiteral("locked")));
+
+    const auto tooMany = resolveProductBatchRoute(
+        config,
+        {QStringLiteral("A-001"), QStringLiteral("A-002"),
+         QStringLiteral("A-003"), QStringLiteral("A-004"),
+         QStringLiteral("A-005")});
+    QVERIFY(!tooMany.ok());
+    QCOMPARE(tooMany.errors.last().path, QStringLiteral("serialNumbers[4]"));
 }
 
 void CoreTests::nodeRunnerRunsRegisteredModuleAndMapsModuleResult()
@@ -4896,7 +4996,8 @@ void CoreTests::executionSessionKeepsResourceAcrossUutTransaction()
     plan.entryNodeId = "transaction-start";
     plan.exitNodeId = "transaction-end";
 
-    ExecutionSession session(plan);
+    CollectingRuntimeEventSink resourceEvents;
+    ExecutionSession session(plan, {}, &resourceEvents);
     auto module = std::make_shared<MultiUutLifecycleModule>();
     QVERIFY(session.registerModule(module));
     for (int index = 1; index <= 4; ++index) {
@@ -4911,6 +5012,34 @@ void CoreTests::executionSessionKeepsResourceAcrossUutTransaction()
                                "start:UUT-2", "body:UUT-2", "end:UUT-2",
                                "start:UUT-3", "body:UUT-3", "end:UUT-3",
                                "start:UUT-4", "body:UUT-4", "end:UUT-4"}));
+
+    bool sawUut1Acquire = false;
+    bool sawUut1Release = false;
+    bool sawUut2WaitingForUut1 = false;
+    bool sawUut2Acquire = false;
+    for (const auto& event : resourceEvents.records()) {
+        if (event.kind != RuntimeEventKind::ResourceStateChanged ||
+            !event.resourceIds.contains(QStringLiteral("CAN1"))) {
+            continue;
+        }
+        sawUut1Acquire = sawUut1Acquire ||
+            (event.uutId == QStringLiteral("UUT-1") &&
+             event.resourceState == ResourceRuntimeState::Acquired);
+        sawUut1Release = sawUut1Release ||
+            (event.uutId == QStringLiteral("UUT-1") &&
+             event.resourceState == ResourceRuntimeState::Released);
+        sawUut2WaitingForUut1 = sawUut2WaitingForUut1 ||
+            (event.uutId == QStringLiteral("UUT-2") &&
+             event.resourceState == ResourceRuntimeState::Waiting &&
+             event.resourceBlockingUutIds.contains(QStringLiteral("UUT-1")));
+        sawUut2Acquire = sawUut2Acquire ||
+            (event.uutId == QStringLiteral("UUT-2") &&
+             event.resourceState == ResourceRuntimeState::Acquired);
+    }
+    QVERIFY(sawUut1Acquire);
+    QVERIFY(sawUut1Release);
+    QVERIFY(sawUut2WaitingForUut1);
+    QVERIFY(sawUut2Acquire);
 }
 
 void CoreTests::executionSessionReleasesResourceRegionAfterUutFailure()
@@ -11988,7 +12117,48 @@ void CoreTests::periodicActionRunsOncePerBatchFromMain()
     }
 
     bool cleanupStarted = false;
+    bool sawWaiting = false;
+    bool sawRunning = false;
+    bool sawPassedResult = false;
+    bool sawStopped = false;
+    QString sharedTaskId;
     for (const auto& event : events.records()) {
+        if (event.kind == RuntimeEventKind::PeriodicTaskStateChanged &&
+            event.nodeId == QStringLiteral("heartbeat")) {
+            QVERIFY(event.periodicTaskShared);
+            QVERIFY(event.uutId.isEmpty());
+            QVERIFY(!event.periodicTaskId.isEmpty());
+            if (sharedTaskId.isEmpty()) {
+                sharedTaskId = event.periodicTaskId;
+            }
+            QCOMPARE(event.periodicTaskId, sharedTaskId);
+            QCOMPARE(event.periodicIntervalMs, 10);
+            switch (event.periodicTaskState) {
+            case PeriodicTaskState::Waiting:
+                sawWaiting = true;
+                QVERIFY(event.periodicNextDueAtUtc.isValid());
+                if (event.periodicInvocationIndex > 0 &&
+                    event.outcome == NodeOutcome::Passed) {
+                    sawPassedResult = true;
+                    const auto remainingMs = event.timestampUtc.msecsTo(
+                        event.periodicNextDueAtUtc);
+                    QVERIFY(remainingMs >= 0);
+                    QVERIFY(remainingMs <= event.periodicIntervalMs);
+                }
+                break;
+            case PeriodicTaskState::Running:
+                sawRunning = true;
+                QVERIFY(event.periodicInvocationIndex > 0);
+                break;
+            case PeriodicTaskState::Passed:
+                QFAIL("PASS must be reported as the last result, not lifecycle state");
+            case PeriodicTaskState::Stopped:
+                sawStopped = true;
+                break;
+            case PeriodicTaskState::Failed:
+                QFAIL("FAIL must be reported as the last result, not lifecycle state");
+            }
+        }
         if (event.nodeId == QStringLiteral("cleanup-done") &&
             event.kind == RuntimeEventKind::NodeStateChanged &&
             event.activationState == ActivationState::Running) {
@@ -12002,6 +12172,10 @@ void CoreTests::periodicActionRunsOncePerBatchFromMain()
         }
     }
     QVERIFY(cleanupStarted);
+    QVERIFY(sawWaiting);
+    QVERIFY(sawRunning);
+    QVERIFY(sawPassedResult);
+    QVERIFY(sawStopped);
 
     const auto countAtCompletion = module->requestIds.size();
     QTest::qWait(40);
@@ -12040,7 +12214,8 @@ void CoreTests::periodicActionRunsIndependentlyPerUutFromMain()
 
     auto module = std::make_shared<PeriodicRecordingModule>();
     module->clock.start();
-    ExecutionSession session(compiled.plan);
+    CollectingRuntimeEventSink events;
+    ExecutionSession session(compiled.plan, {}, &events);
     QVERIFY(session.registerModule(module));
     for (int index = 1; index <= 4; ++index) {
         session.addUut(QStringLiteral("UUT-%1").arg(index));
@@ -12098,6 +12273,42 @@ void CoreTests::periodicActionRunsIndependentlyPerUutFromMain()
     }
     QCOMPARE(taskInstanceIds.size(), 4);
 
+    QSet<UutId> eventUuts;
+    bool sawWaiting = false;
+    bool sawRunning = false;
+    bool sawPassedResult = false;
+    bool sawStopped = false;
+    for (const auto& event : events.records()) {
+        if (event.kind != RuntimeEventKind::PeriodicTaskStateChanged ||
+            event.nodeId != QStringLiteral("heartbeat")) {
+            continue;
+        }
+        QVERIFY(!event.periodicTaskShared);
+        QVERIFY(!event.uutId.isEmpty());
+        eventUuts.insert(event.uutId);
+        switch (event.periodicTaskState) {
+        case PeriodicTaskState::Waiting:
+            sawWaiting = true;
+            if (event.periodicInvocationIndex > 0 &&
+                event.outcome == NodeOutcome::Passed) {
+                sawPassedResult = true;
+                QVERIFY(event.periodicNextDueAtUtc.isValid());
+            }
+            break;
+        case PeriodicTaskState::Running: sawRunning = true; break;
+        case PeriodicTaskState::Passed:
+            QFAIL("PASS must be reported as the last result, not lifecycle state");
+        case PeriodicTaskState::Stopped: sawStopped = true; break;
+        case PeriodicTaskState::Failed:
+            QFAIL("FAIL must be reported as the last result, not lifecycle state");
+        }
+    }
+    QCOMPARE(eventUuts.size(), 4);
+    QVERIFY(sawWaiting);
+    QVERIFY(sawRunning);
+    QVERIFY(sawPassedResult);
+    QVERIFY(sawStopped);
+
     const auto countAtCompletion = module->requestIds.size();
     QTest::qWait(40);
     QCOMPARE(module->requestIds.size(), countAtCompletion);
@@ -12133,6 +12344,11 @@ void CoreTests::periodicTaskControllerStopsOnlyCompletedUutTasks()
     QVERIFY(controller.registerTask(
         registrationFor(QStringLiteral("batch:root:heartbeat"), &uut1, false)));
     QCOMPARE(controller.activeTaskCount(), 3);
+    const auto uut1NextDue = controller.nextDueAtUtc(
+        QStringLiteral("UUT-1:root:heartbeat"));
+    QVERIFY(uut1NextDue.has_value());
+    QVERIFY(uut1NextDue->isValid());
+    QVERIFY(*uut1NextDue > QDateTime::currentDateTimeUtc());
 
     const auto uut1Summaries = controller.stopForUut(uut1.uutId);
     QCOMPARE(uut1Summaries.size(), 1);

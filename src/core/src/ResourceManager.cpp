@@ -1,5 +1,8 @@
 #include "PicoATE/Core/ResourceManager.h"
 
+#include <algorithm>
+#include <utility>
+
 namespace PicoATE::Core {
 
 namespace {
@@ -13,10 +16,36 @@ bool resourceIdsOverlap(const ResourceId& left, const ResourceId& right)
 
 } // namespace
 
+void ResourceManager::setTransitionHandler(ResourceTransitionHandler handler)
+{
+    m_transitionHandler = std::move(handler);
+}
+
 std::optional<ResourceLease> ResourceManager::tryAcquire(const ResourceRequest& request)
 {
     if (!canAcquire(request)) {
-        enqueueWaiter(request);
+        const auto blockers = blockingUutIds(request);
+        if (enqueueWaiter(request, blockers)) {
+            auto waitingSince = request.enqueuedAt;
+            const auto existing = std::find_if(
+                m_waiters.cbegin(), m_waiters.cend(),
+                [&request](const ResourceRequest& waiter) {
+                    return waiter.requestId == request.requestId;
+                });
+            if (existing != m_waiters.cend()) {
+                waitingSince = existing->enqueuedAt;
+            }
+            ResourceTransition transition;
+            transition.kind = ResourceTransitionKind::Waiting;
+            transition.requestId = request.requestId;
+            transition.uutId = request.uutId;
+            transition.frameId = request.frameId;
+            transition.nodeId = request.nodeId;
+            transition.requirements = request.requirements;
+            transition.blockingUutIds = blockers;
+            transition.waitingSinceUtc = waitingSince;
+            publishTransition(transition);
+        }
         return std::nullopt;
     }
 
@@ -28,26 +57,72 @@ std::optional<ResourceLease> ResourceManager::tryAcquire(const ResourceRequest& 
     lease.nodeId = request.nodeId;
     lease.requirements = request.requirements;
     m_activeLeases.insert(lease.leaseId, lease);
+    auto waitingSince = request.enqueuedAt;
     for (qsizetype i = m_waiters.size() - 1; i >= 0; --i) {
         if (m_waiters[i].requestId == request.requestId) {
+            waitingSince = m_waiters[i].enqueuedAt;
             m_waiters.removeAt(i);
         }
     }
+    m_waiterBlockers.remove(request.requestId);
+
+    ResourceTransition transition;
+    transition.kind = ResourceTransitionKind::Acquired;
+    transition.requestId = request.requestId;
+    transition.leaseId = lease.leaseId;
+    transition.uutId = request.uutId;
+    transition.frameId = request.frameId;
+    transition.nodeId = request.nodeId;
+    transition.requirements = request.requirements;
+    transition.waitingSinceUtc = waitingSince;
+    publishTransition(transition);
     return lease;
 }
 
 void ResourceManager::release(const ResourceLeaseId& leaseId)
 {
-    m_activeLeases.remove(leaseId);
+    const auto leaseIt = m_activeLeases.find(leaseId);
+    if (leaseIt == m_activeLeases.end()) {
+        return;
+    }
+    const auto lease = leaseIt.value();
+    m_activeLeases.erase(leaseIt);
+
+    ResourceTransition transition;
+    transition.kind = ResourceTransitionKind::Released;
+    transition.requestId = lease.requestId;
+    transition.leaseId = lease.leaseId;
+    transition.uutId = lease.uutId;
+    transition.frameId = lease.frameId;
+    transition.nodeId = lease.nodeId;
+    transition.requirements = lease.requirements;
+    publishTransition(transition);
 }
 
 void ResourceManager::cancelRequest(const ResourceRequestId& requestId)
 {
+    std::optional<ResourceRequest> cancelled;
     for (qsizetype index = m_waiters.size() - 1; index >= 0; --index) {
         if (m_waiters[index].requestId == requestId) {
+            cancelled = m_waiters[index];
             m_waiters.removeAt(index);
         }
     }
+    const auto blockers = m_waiterBlockers.take(requestId);
+    if (!cancelled) {
+        return;
+    }
+
+    ResourceTransition transition;
+    transition.kind = ResourceTransitionKind::Cancelled;
+    transition.requestId = cancelled->requestId;
+    transition.uutId = cancelled->uutId;
+    transition.frameId = cancelled->frameId;
+    transition.nodeId = cancelled->nodeId;
+    transition.requirements = cancelled->requirements;
+    transition.blockingUutIds = blockers;
+    transition.waitingSinceUtc = cancelled->enqueuedAt;
+    publishTransition(transition);
 }
 
 void ResourceManager::releaseByNode(const UutId& uutId,
@@ -63,7 +138,7 @@ void ResourceManager::releaseByNode(const UutId& uutId,
     }
 
     for (const auto& leaseId : toRemove) {
-        m_activeLeases.remove(leaseId);
+        release(leaseId);
     }
 }
 
@@ -110,6 +185,7 @@ ResourceSnapshot ResourceManager::snapshot() const
 void ResourceManager::restoreWaiters(const ResourceSnapshot& snapshot)
 {
     m_waiters.clear();
+    m_waiterBlockers.clear();
     for (const auto& waiterSnapshot : snapshot.waiters) {
         ResourceRequest request;
         request.requestId = waiterSnapshot.requestId;
@@ -120,6 +196,19 @@ void ResourceManager::restoreWaiters(const ResourceSnapshot& snapshot)
         request.enqueuedAt = waiterSnapshot.enqueuedAt;
         request.priority = waiterSnapshot.priority;
         m_waiters.push_back(request);
+        const auto blockers = blockingUutIds(request);
+        m_waiterBlockers.insert(request.requestId, blockers);
+
+        ResourceTransition transition;
+        transition.kind = ResourceTransitionKind::Waiting;
+        transition.requestId = request.requestId;
+        transition.uutId = request.uutId;
+        transition.frameId = request.frameId;
+        transition.nodeId = request.nodeId;
+        transition.requirements = request.requirements;
+        transition.blockingUutIds = blockers;
+        transition.waitingSinceUtc = request.enqueuedAt;
+        publishTransition(transition);
     }
 }
 
@@ -147,14 +236,50 @@ bool ResourceManager::canAcquire(const ResourceRequest& request) const
     return true;
 }
 
-void ResourceManager::enqueueWaiter(const ResourceRequest& request)
+QVector<UutId> ResourceManager::blockingUutIds(
+    const ResourceRequest& request) const
+{
+    QVector<UutId> blockers;
+    for (const auto& requested : request.requirements) {
+        for (const auto& lease : m_activeLeases) {
+            const bool blocked = std::any_of(
+                lease.requirements.cbegin(), lease.requirements.cend(),
+                [this, &requested](const ResourceRequirement& held) {
+                    return conflicts(requested, held);
+                });
+            if (blocked && !lease.uutId.isEmpty() &&
+                !blockers.contains(lease.uutId)) {
+                blockers.push_back(lease.uutId);
+            }
+        }
+    }
+    std::sort(blockers.begin(), blockers.end());
+    return blockers;
+}
+
+bool ResourceManager::enqueueWaiter(const ResourceRequest& request,
+                                    const QVector<UutId>& blockers)
 {
     for (const auto& waiter : m_waiters) {
         if (waiter.requestId == request.requestId) {
-            return;
+            if (m_waiterBlockers.value(request.requestId) == blockers) {
+                return false;
+            }
+            m_waiterBlockers.insert(request.requestId, blockers);
+            return true;
         }
     }
     m_waiters.push_back(request);
+    m_waiterBlockers.insert(request.requestId, blockers);
+    return true;
+}
+
+void ResourceManager::publishTransition(
+    const ResourceTransition& transition) const
+{
+    if (m_transitionHandler) {
+        m_transitionHandler(transition);
+    }
 }
 
 bool ResourceManager::conflicts(const ResourceRequirement& requested,

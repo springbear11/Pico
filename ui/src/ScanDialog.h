@@ -6,6 +6,8 @@
 #include <QStringList>
 #include <QVector>
 
+#include <functional>
+
 class QCloseEvent;
 class QEvent;
 class QLabel;
@@ -15,6 +17,17 @@ class QToolButton;
 
 namespace PicoATE::Ui {
 
+struct ScanSubmissionDecision {
+    bool accepted = true;
+    QString errorMessage;
+    int requiredSlotCount = 0;
+    QString batchContext;
+};
+
+using ScanSubmissionValidator = std::function<ScanSubmissionDecision(
+    const QStringList& proposedBarcodes,
+    int currentSlot)>;
+
 class ScanDialog final : public QDialog
 {
     Q_OBJECT
@@ -23,6 +36,7 @@ public:
     explicit ScanDialog(QWidget* parent = nullptr);
 
     void setValidationRules(SnValidationRules rules);
+    void setSubmissionValidator(ScanSubmissionValidator validator);
     void setSlotCount(int count);
     int slotCount() const;
     QStringList barcodes() const;
@@ -55,6 +69,8 @@ private:
     void showSlot(int slot);
     void updateUi();
     void focusBarcodeEdit();
+    void resizeSlotsPreservingValues(int count);
+    void showSubmissionError(const QString& message);
     int nextEmptySlot(int afterSlot) const;
     bool batchComplete() const;
 
@@ -67,8 +83,11 @@ private:
     QPushButton* m_undoButton = nullptr;
     QPushButton* m_clearButton = nullptr;
     SnValidationRules m_validationRules;
+    ScanSubmissionValidator m_submissionValidator;
     QStringList m_barcodes{QString{}};
     QVector<ScanChange> m_history;
+    QString m_batchContext;
+    int m_configuredSlotCount = 1;
     int m_currentSlot = 0;
     bool m_replaceOnNextInput = false;
     bool m_updatingEdit = false;

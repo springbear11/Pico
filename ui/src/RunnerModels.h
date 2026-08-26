@@ -36,6 +36,34 @@ struct UutOverviewRecentStep {
     PicoATE::Core::NodeOutcome outcome = PicoATE::Core::NodeOutcome::Unknown;
 };
 
+struct PeriodicTaskOverviewEntry {
+    QString taskInstanceId;
+    PicoATE::Core::NodeId nodeId;
+    QString displayName;
+    PicoATE::Core::PeriodicTaskState state =
+        PicoATE::Core::PeriodicTaskState::Waiting;
+    PicoATE::Core::NodeOutcome lastOutcome =
+        PicoATE::Core::NodeOutcome::Unknown;
+    int intervalMs = 0;
+    int invocationIndex = 0;
+    qint64 counter = 0;
+    QDateTime nextDueAtUtc;
+    QDateTime updatedAtUtc;
+    QString errorCode;
+    QString message;
+};
+
+struct ResourceUsageOverviewEntry {
+    PicoATE::Core::ResourceRequestId requestId;
+    PicoATE::Core::ResourceLeaseId leaseId;
+    PicoATE::Core::UutId uutId;
+    PicoATE::Core::NodeId nodeId;
+    QVector<PicoATE::Core::ResourceId> resourceIds;
+    QVector<PicoATE::Core::UutId> blockingUutIds;
+    QDateTime waitingSinceUtc;
+    QDateTime updatedAtUtc;
+};
+
 struct UutOverviewEntry {
     PicoATE::Core::UutId uutId;
     QString serialNumber;
@@ -57,6 +85,9 @@ struct UutOverviewEntry {
     int retryAttempt = 0;
     int retryMaxAttempts = 0;
     QVector<UutOverviewRecentStep> recentSteps;
+    QVector<PeriodicTaskOverviewEntry> periodicTasks;
+    QVector<ResourceUsageOverviewEntry> heldResources;
+    QVector<ResourceUsageOverviewEntry> waitingResources;
     qint64 durationMs = 0;
 };
 
@@ -111,6 +142,13 @@ public:
     void clear();
     int rowForUut(const PicoATE::Core::UutId& uutId) const;
     std::optional<UutOverviewEntry> entryAt(int row) const;
+    QVector<PeriodicTaskOverviewEntry> sharedPeriodicTasks() const;
+    QVector<ResourceUsageOverviewEntry> sharedHeldResources() const;
+    QVector<ResourceUsageOverviewEntry> sharedWaitingResources() const;
+
+signals:
+    void sharedPeriodicTasksChanged();
+    void sharedResourcesChanged();
 
 private:
     struct Row {
@@ -127,6 +165,9 @@ private:
 
     QVector<Row> m_rows;
     QHash<PicoATE::Core::UutId, qint64> m_terminalElapsedMs;
+    QVector<PeriodicTaskOverviewEntry> m_sharedPeriodicTasks;
+    QVector<ResourceUsageOverviewEntry> m_sharedHeldResources;
+    QVector<ResourceUsageOverviewEntry> m_sharedWaitingResources;
     int m_previewStepCount = 0;
     qint64 m_sessionElapsedMs = -1;
 };

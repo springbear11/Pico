@@ -21,8 +21,10 @@
 #include <QShowEvent>
 #include <QSpacerItem>
 #include <QStyle>
+#include <QTimer>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <functional>
@@ -78,6 +80,13 @@ QString compactDuration(qint64 durationMs)
         .arg(milliseconds % 1000, 3, 10, QLatin1Char('0'));
 }
 
+void setTextIfChanged(QLabel* label, const QString& text)
+{
+    if (label && label->text() != text) {
+        label->setText(text);
+    }
+}
+
 QString recentStepStateText(PicoATE::Core::ActivationState state)
 {
     using PicoATE::Core::ActivationState;
@@ -106,6 +115,507 @@ QColor recentStepStateColor(PicoATE::Core::ActivationState state)
     default: return QColor(QStringLiteral("#667680"));
     }
 }
+
+int periodicTaskPriority(PicoATE::Core::PeriodicTaskState state)
+{
+    using PicoATE::Core::PeriodicTaskState;
+    switch (state) {
+    case PeriodicTaskState::Running: return 5;
+    case PeriodicTaskState::Waiting: return 3;
+    case PeriodicTaskState::Passed:
+    case PeriodicTaskState::Failed:
+        return 3;
+    case PeriodicTaskState::Stopped: return 1;
+    }
+    return 0;
+}
+
+QString periodicStateText(const PeriodicTaskOverviewEntry& task)
+{
+    using PicoATE::Core::PeriodicTaskState;
+    switch (task.state) {
+    case PeriodicTaskState::Waiting: return QStringLiteral("WAITING");
+    case PeriodicTaskState::Running: return QStringLiteral("RUNNING");
+    case PeriodicTaskState::Passed:
+    case PeriodicTaskState::Failed:
+        return QStringLiteral("WAITING");
+    case PeriodicTaskState::Stopped: return QStringLiteral("STOPPED");
+    }
+    return QStringLiteral("WAITING");
+}
+
+QColor periodicStateColor(PicoATE::Core::PeriodicTaskState state)
+{
+    using PicoATE::Core::PeriodicTaskState;
+    switch (state) {
+    case PeriodicTaskState::Running: return QColor(QStringLiteral("#a87500"));
+    case PeriodicTaskState::Passed:
+    case PeriodicTaskState::Failed:
+        return QColor(QStringLiteral("#35677f"));
+    case PeriodicTaskState::Stopped: return QColor(QStringLiteral("#667680"));
+    case PeriodicTaskState::Waiting: return QColor(QStringLiteral("#35677f"));
+    }
+    return QColor(QStringLiteral("#667680"));
+}
+
+QString compactCountdown(qint64 remainingMs)
+{
+    remainingMs = qMax<qint64>(0, remainingMs);
+    if (remainingMs < 60000) {
+        return QStringLiteral("%1 s").arg(remainingMs / 1000.0, 0, 'f', 1);
+    }
+    const auto tenths = (remainingMs % 1000) / 100;
+    const auto totalSeconds = remainingMs / 1000;
+    const auto seconds = totalSeconds % 60;
+    const auto minutes = totalSeconds / 60;
+    return QStringLiteral("%1:%2.%3")
+        .arg(minutes, 2, 10, QLatin1Char('0'))
+        .arg(seconds, 2, 10, QLatin1Char('0'))
+        .arg(tenths);
+}
+
+QString periodicResultText(PicoATE::Core::NodeOutcome outcome)
+{
+    using PicoATE::Core::NodeOutcome;
+    switch (outcome) {
+    case NodeOutcome::Passed: return QStringLiteral("LAST PASS");
+    case NodeOutcome::Failed:
+    case NodeOutcome::Error:
+    case NodeOutcome::Timeout:
+        return QStringLiteral("LAST FAIL");
+    default:
+        return {};
+    }
+}
+
+QColor periodicResultColor(PicoATE::Core::NodeOutcome outcome)
+{
+    return outcome == PicoATE::Core::NodeOutcome::Passed
+        ? QColor(QStringLiteral("#2f7548"))
+        : QColor(QStringLiteral("#a43838"));
+}
+
+class PeriodicTaskStatusPanel final : public QFrame
+{
+public:
+    explicit PeriodicTaskStatusPanel(bool shared, QWidget* parent = nullptr)
+        : QFrame(parent)
+    {
+        setObjectName(shared ? QStringLiteral("sharedPeriodicTaskPanel")
+                             : QStringLiteral("uutOverviewPeriodicPanel"));
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setFrameShape(QFrame::NoFrame);
+
+        auto* root = new QVBoxLayout(this);
+        root->setContentsMargins(shared ? 12 : 9, shared ? 7 : 5,
+                                 shared ? 12 : 9, shared ? 7 : 5);
+        root->setSpacing(3);
+        m_captionLabel = new QLabel(
+            shared ? tr("SHARED PERIODIC TASK") : tr("PERIODIC TASK"), this);
+        m_captionLabel->setObjectName(QStringLiteral("periodicTaskCaption"));
+        root->addWidget(m_captionLabel);
+
+        auto* row = new QHBoxLayout;
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(8);
+        m_nameLabel = new QLabel(this);
+        m_nameLabel->setObjectName(shared
+            ? QStringLiteral("sharedPeriodicTaskName")
+            : QStringLiteral("uutOverviewPeriodicName"));
+        m_nameLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        m_stateLabel = new QLabel(this);
+        m_stateLabel->setObjectName(shared
+            ? QStringLiteral("sharedPeriodicTaskState")
+            : QStringLiteral("uutOverviewPeriodicState"));
+        m_stateLabel->setAlignment(Qt::AlignCenter);
+        m_resultLabel = new QLabel(this);
+        m_resultLabel->setObjectName(shared
+            ? QStringLiteral("sharedPeriodicTaskResult")
+            : QStringLiteral("uutOverviewPeriodicResult"));
+        m_resultLabel->setAlignment(Qt::AlignCenter);
+        m_detailLabel = new QLabel(this);
+        m_detailLabel->setObjectName(shared
+            ? QStringLiteral("sharedPeriodicTaskCountdown")
+            : QStringLiteral("uutOverviewPeriodicCountdown"));
+        m_detailLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_detailLabel->setMinimumWidth(92);
+        row->addWidget(m_nameLabel, 1);
+        row->addWidget(m_stateLabel);
+        row->addWidget(m_resultLabel);
+        row->addWidget(m_detailLabel);
+        root->addLayout(row);
+
+        setStyleSheet(QStringLiteral(
+            "QFrame#sharedPeriodicTaskPanel,QFrame#uutOverviewPeriodicPanel{"
+            "background:#eef3f6;border:1px solid #d4dde2;border-radius:5px;}"
+            "QLabel#periodicTaskCaption{color:#718089;font-size:9px;"
+            "font-weight:700;}"
+            "QLabel#sharedPeriodicTaskName,QLabel#uutOverviewPeriodicName{"
+            "color:#263139;font-weight:650;}"
+            "QLabel#sharedPeriodicTaskCountdown,QLabel#uutOverviewPeriodicCountdown{"
+            "color:#52636d;font-size:10px;font-weight:700;}"));
+        hide();
+    }
+
+    void setTasks(QVector<PeriodicTaskOverviewEntry> tasks)
+    {
+        m_tasks = std::move(tasks);
+        m_featuredIndex = -1;
+        for (int index = 0; index < m_tasks.size(); ++index) {
+            if (m_featuredIndex < 0 ||
+                periodicTaskPriority(m_tasks[index].state) >
+                    periodicTaskPriority(m_tasks[m_featuredIndex].state) ||
+                (periodicTaskPriority(m_tasks[index].state) ==
+                     periodicTaskPriority(m_tasks[m_featuredIndex].state) &&
+                 m_tasks[index].updatedAtUtc >
+                     m_tasks[m_featuredIndex].updatedAtUtc)) {
+                m_featuredIndex = index;
+            }
+        }
+
+        setVisible(m_featuredIndex >= 0);
+        if (m_featuredIndex < 0) {
+            return;
+        }
+
+        const auto& task = m_tasks.at(m_featuredIndex);
+        auto name = task.displayName.trimmed().isEmpty() ? task.nodeId
+                                                        : task.displayName;
+        if (m_tasks.size() > 1) {
+            name += tr("  +%1").arg(m_tasks.size() - 1);
+        }
+        setTextIfChanged(m_nameLabel, name);
+        setTextIfChanged(m_stateLabel, periodicStateText(task));
+        const auto color = periodicStateColor(task.state);
+        m_stateLabel->setStyleSheet(QStringLiteral(
+            "background:%1;color:white;border-radius:3px;"
+            "font-size:9px;font-weight:700;padding:2px 5px;")
+            .arg(color.name()));
+        const auto resultText = periodicResultText(task.lastOutcome);
+        setTextIfChanged(m_resultLabel, resultText);
+        m_resultLabel->setVisible(!resultText.isEmpty());
+        if (!resultText.isEmpty()) {
+            m_resultLabel->setStyleSheet(QStringLiteral(
+                "background:%1;color:white;border-radius:3px;"
+                "font-size:9px;font-weight:700;padding:2px 5px;")
+                .arg(periodicResultColor(task.lastOutcome).name()));
+        }
+        setToolTip(task.message.trimmed().isEmpty()
+            ? task.errorCode
+            : QStringLiteral("%1%2%3")
+                  .arg(task.errorCode,
+                       task.errorCode.isEmpty() ? QString{} : QStringLiteral(" | "),
+                       task.message));
+        refreshCountdown();
+    }
+
+    void refreshCountdown()
+    {
+        if (m_featuredIndex < 0 || m_featuredIndex >= m_tasks.size()) {
+            return;
+        }
+        const auto& task = m_tasks.at(m_featuredIndex);
+        QString detail;
+        if (task.state == PicoATE::Core::PeriodicTaskState::Running) {
+            detail = task.counter != 0
+                ? tr("COUNT %1").arg(task.counter)
+                : tr("RUN %1").arg(qMax(1, task.invocationIndex));
+        } else if (task.nextDueAtUtc.isValid()) {
+            const auto remainingMs =
+                QDateTime::currentDateTimeUtc().msecsTo(task.nextDueAtUtc);
+            detail = remainingMs <= 0
+                ? tr("DUE")
+                : tr("NEXT IN %1").arg(compactCountdown(remainingMs));
+        }
+        setTextIfChanged(m_detailLabel, detail);
+    }
+
+private:
+    QVector<PeriodicTaskOverviewEntry> m_tasks;
+    int m_featuredIndex = -1;
+    QLabel* m_captionLabel = nullptr;
+    QLabel* m_nameLabel = nullptr;
+    QLabel* m_stateLabel = nullptr;
+    QLabel* m_resultLabel = nullptr;
+    QLabel* m_detailLabel = nullptr;
+};
+
+QString compactResourceIds(
+    const QVector<ResourceUsageOverviewEntry>& entries)
+{
+    QStringList ids;
+    for (const auto& entry : entries) {
+        for (const auto& resourceId : entry.resourceIds) {
+            if (!ids.contains(resourceId)) {
+                ids.push_back(resourceId);
+            }
+        }
+    }
+    ids.sort();
+    constexpr int maximumVisible = 3;
+    const int hidden = qMax(0, ids.size() - maximumVisible);
+    if (hidden > 0) {
+        ids = ids.mid(0, maximumVisible);
+        ids.push_back(QObject::tr("+%1").arg(hidden));
+    }
+    return ids.join(QStringLiteral("  |  "));
+}
+
+QString compactResourceBadgeText(
+    const QVector<ResourceUsageOverviewEntry>& entries)
+{
+    QStringList ids;
+    for (const auto& entry : entries) {
+        for (const auto& resourceId : entry.resourceIds) {
+            if (!resourceId.isEmpty() && !ids.contains(resourceId)) {
+                ids.push_back(resourceId);
+            }
+        }
+    }
+    ids.sort();
+    if (ids.isEmpty()) {
+        return {};
+    }
+    auto text = ids.front();
+    if (ids.size() > 1) {
+        text += QObject::tr(" +%1").arg(ids.size() - 1);
+    }
+    return text;
+}
+
+QString compactUutIds(const QVector<ResourceUsageOverviewEntry>& entries,
+                      bool blockers)
+{
+    QStringList ids;
+    for (const auto& entry : entries) {
+        const auto values = blockers ? entry.blockingUutIds
+                                     : QVector<PicoATE::Core::UutId>{entry.uutId};
+        for (const auto& uutId : values) {
+            if (!uutId.isEmpty() && !ids.contains(uutId)) {
+                ids.push_back(uutId);
+            }
+        }
+    }
+    ids.sort();
+    return ids.join(QStringLiteral(", "));
+}
+
+class ResourceStatusPanel final : public QFrame
+{
+public:
+    explicit ResourceStatusPanel(bool shared, QWidget* parent = nullptr)
+        : QFrame(parent)
+        , m_shared(shared)
+    {
+        setObjectName(shared ? QStringLiteral("sharedResourcePanel")
+                             : QStringLiteral("uutOverviewResourcePanel"));
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setFrameShape(QFrame::NoFrame);
+
+        auto* root = new QVBoxLayout(this);
+        root->setContentsMargins(shared ? 12 : 9, shared ? 7 : 5,
+                                 shared ? 12 : 9, shared ? 7 : 5);
+        root->setSpacing(3);
+        auto* caption = new QLabel(
+            shared ? tr("SHARED RESOURCES") : tr("RESOURCES"), this);
+        caption->setObjectName(QStringLiteral("resourceStatusCaption"));
+        root->addWidget(caption);
+
+        const auto addRow = [this, root](const QString& badgeText,
+                                        const QString& badgeObject,
+                                        const QString& detailObject,
+                                        QLabel*& row,
+                                        QLabel*& detail) {
+            row = new QLabel(this);
+            auto* layout = new QHBoxLayout(row);
+            layout->setContentsMargins(0, 0, 0, 0);
+            layout->setSpacing(8);
+            auto* badge = new QLabel(badgeText, row);
+            badge->setObjectName(badgeObject);
+            badge->setAlignment(Qt::AlignCenter);
+            badge->setFixedWidth(58);
+            detail = new QLabel(row);
+            detail->setObjectName(detailObject);
+            detail->setSizePolicy(QSizePolicy::Expanding,
+                                  QSizePolicy::Preferred);
+            layout->addWidget(badge);
+            layout->addWidget(detail, 1);
+            root->addWidget(row);
+        };
+        addRow(tr("USING"), QStringLiteral("resourceUsingBadge"),
+               shared ? QStringLiteral("sharedResourceUsing")
+                      : QStringLiteral("uutOverviewResourceUsing"),
+               m_usingRow, m_usingLabel);
+        addRow(tr("WAIT"), QStringLiteral("resourceWaitingBadge"),
+               shared ? QStringLiteral("sharedResourceWaiting")
+                      : QStringLiteral("uutOverviewResourceWaiting"),
+               m_waitingRow, m_waitingLabel);
+
+        setStyleSheet(QStringLiteral(
+            "QFrame#sharedResourcePanel,QFrame#uutOverviewResourcePanel{"
+            "background:#eef3f6;border:1px solid #d4dde2;border-radius:5px;}"
+            "QLabel#resourceStatusCaption{color:#718089;font-size:9px;"
+            "font-weight:700;}"
+            "QLabel#resourceUsingBadge{background:#35677f;color:white;"
+            "border-radius:3px;font-size:9px;font-weight:700;padding:2px 4px;}"
+            "QLabel#resourceWaitingBadge{background:#a87500;color:white;"
+            "border-radius:3px;font-size:9px;font-weight:700;padding:2px 4px;}"
+            "QLabel#sharedResourceUsing,QLabel#uutOverviewResourceUsing,"
+            "QLabel#sharedResourceWaiting,QLabel#uutOverviewResourceWaiting{"
+            "color:#34434c;font-size:10px;font-weight:650;}"));
+        hide();
+    }
+
+    void setResources(QVector<ResourceUsageOverviewEntry> held,
+                      QVector<ResourceUsageOverviewEntry> waiting)
+    {
+        m_held = std::move(held);
+        m_waiting = std::move(waiting);
+        m_usingRow->setVisible(!m_held.isEmpty());
+        m_waitingRow->setVisible(!m_waiting.isEmpty());
+        setVisible(!m_held.isEmpty() || !m_waiting.isEmpty());
+
+        auto usingText = compactResourceIds(m_held);
+        if (m_shared) {
+            const auto executors = compactUutIds(m_held, false);
+            if (!executors.isEmpty()) {
+                usingText += tr("  |  EXECUTOR %1").arg(executors);
+            }
+        }
+        setTextIfChanged(m_usingLabel, usingText);
+        refreshWaitDuration();
+    }
+
+    void refreshWaitDuration()
+    {
+        if (m_waiting.isEmpty()) {
+            return;
+        }
+        auto waitingText = compactResourceIds(m_waiting);
+        const auto blockers = compactUutIds(m_waiting, true);
+        if (!blockers.isEmpty()) {
+            waitingText += tr("  |  HELD BY %1").arg(blockers);
+        }
+        QDateTime oldest;
+        for (const auto& entry : m_waiting) {
+            if (entry.waitingSinceUtc.isValid() &&
+                (!oldest.isValid() || entry.waitingSinceUtc < oldest)) {
+                oldest = entry.waitingSinceUtc;
+            }
+        }
+        if (oldest.isValid()) {
+            const auto elapsed = qMax<qint64>(
+                0, oldest.msecsTo(QDateTime::currentDateTimeUtc()));
+            waitingText += tr("  |  %1 s").arg(elapsed / 1000.0, 0, 'f', 1);
+        }
+        setTextIfChanged(m_waitingLabel, waitingText);
+    }
+
+private:
+    bool m_shared = false;
+    QVector<ResourceUsageOverviewEntry> m_held;
+    QVector<ResourceUsageOverviewEntry> m_waiting;
+    QLabel* m_usingRow = nullptr;
+    QLabel* m_waitingRow = nullptr;
+    QLabel* m_usingLabel = nullptr;
+    QLabel* m_waitingLabel = nullptr;
+};
+
+class ResourceStatusBadge final : public QFrame
+{
+public:
+    explicit ResourceStatusBadge(QWidget* parent = nullptr)
+        : QFrame(parent)
+    {
+        setObjectName(QStringLiteral("uutOverviewResourceBadge"));
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setFrameShape(QFrame::NoFrame);
+        setFixedSize(118, 48);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+
+        auto* layout = new QVBoxLayout(this);
+        layout->setContentsMargins(7, 4, 7, 4);
+        layout->setSpacing(1);
+
+        m_usingLabel = new QLabel(this);
+        m_usingLabel->setObjectName(
+            QStringLiteral("uutOverviewResourceUsing"));
+        m_usingLabel->setAlignment(Qt::AlignCenter);
+        m_waitingLabel = new QLabel(this);
+        m_waitingLabel->setObjectName(
+            QStringLiteral("uutOverviewResourceWaiting"));
+        m_waitingLabel->setAlignment(Qt::AlignCenter);
+        layout->addWidget(m_usingLabel);
+        layout->addWidget(m_waitingLabel);
+
+        setStyleSheet(QStringLiteral(
+            "QFrame#uutOverviewResourceBadge{background:#eef3f6;"
+            "border:1px solid #cbd8df;border-radius:4px;}"
+            "QLabel#uutOverviewResourceUsing{color:#35677f;font-size:9px;"
+            "font-weight:700;}"
+            "QLabel#uutOverviewResourceWaiting{color:#a87500;font-size:9px;"
+            "font-weight:700;}"));
+        hide();
+    }
+
+    void setResources(QVector<ResourceUsageOverviewEntry> held,
+                      QVector<ResourceUsageOverviewEntry> waiting)
+    {
+        m_held = std::move(held);
+        m_waiting = std::move(waiting);
+        m_usingLabel->setVisible(!m_held.isEmpty());
+        m_waitingLabel->setVisible(!m_waiting.isEmpty());
+        setTextIfChanged(
+            m_usingLabel,
+            m_held.isEmpty()
+                ? QString{}
+                : tr("USE  %1").arg(compactResourceBadgeText(m_held)));
+        setTextIfChanged(
+            m_waitingLabel,
+            m_waiting.isEmpty()
+                ? QString{}
+                : tr("WAIT  %1").arg(compactResourceBadgeText(m_waiting)));
+        setVisible(!m_held.isEmpty() || !m_waiting.isEmpty());
+        refreshWaitDuration();
+    }
+
+    void refreshWaitDuration()
+    {
+        QStringList details;
+        if (!m_held.isEmpty()) {
+            details.push_back(tr("USING: %1").arg(compactResourceIds(m_held)));
+        }
+        if (!m_waiting.isEmpty()) {
+            auto waitingText =
+                tr("WAITING: %1").arg(compactResourceIds(m_waiting));
+            const auto blockers = compactUutIds(m_waiting, true);
+            if (!blockers.isEmpty()) {
+                waitingText += tr("\nHELD BY: %1").arg(blockers);
+            }
+            QDateTime oldest;
+            for (const auto& entry : m_waiting) {
+                if (entry.waitingSinceUtc.isValid() &&
+                    (!oldest.isValid() || entry.waitingSinceUtc < oldest)) {
+                    oldest = entry.waitingSinceUtc;
+                }
+            }
+            if (oldest.isValid()) {
+                const auto elapsed = qMax<qint64>(
+                    0, oldest.msecsTo(QDateTime::currentDateTimeUtc()));
+                waitingText +=
+                    tr("\nWAIT TIME: %1 s").arg(elapsed / 1000.0, 0, 'f', 1);
+            }
+            details.push_back(waitingText);
+        }
+        setToolTip(details.join(QStringLiteral("\n")));
+    }
+
+private:
+    QVector<ResourceUsageOverviewEntry> m_held;
+    QVector<ResourceUsageOverviewEntry> m_waiting;
+    QLabel* m_usingLabel = nullptr;
+    QLabel* m_waitingLabel = nullptr;
+};
 
 QString promptPresentationKey(const PicoATE::Core::RuntimeEvent& event)
 {
@@ -452,7 +962,7 @@ public:
         setObjectName(QStringLiteral("uutOverviewCard"));
         setCursor(Qt::PointingHandCursor);
         setCheckable(true);
-        setMinimumSize(300, 238);
+        setMinimumSize(300, 260);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         setAttribute(Qt::WA_Hover);
 
@@ -478,6 +988,8 @@ public:
         m_stateLabel->setFont(stateFont);
         heading->addWidget(m_uutLabel);
         heading->addStretch(1);
+        m_resourceBadge = new ResourceStatusBadge(this);
+        heading->addWidget(m_resourceBadge, 0, Qt::AlignVCenter);
         heading->addWidget(m_stateLabel);
         layout->addLayout(heading);
 
@@ -547,6 +1059,9 @@ public:
         stepRow->addLayout(progressBlock);
         layout->addLayout(stepRow, 1);
 
+        m_periodicPanel = new PeriodicTaskStatusPanel(false, this);
+        layout->addWidget(m_periodicPanel);
+
         m_progress = new QProgressBar(this);
         m_progress->setObjectName(QStringLiteral("uutOverviewProgress"));
         m_progress->setRange(0, 100);
@@ -608,7 +1123,7 @@ public:
         setSizePolicy(QSizePolicy::Expanding,
                       centered ? QSizePolicy::Preferred
                                : QSizePolicy::Expanding);
-        setMaximumHeight(centered ? 280 : QWIDGETSIZE_MAX);
+        setMaximumHeight(centered ? 305 : QWIDGETSIZE_MAX);
     }
 
     void showOperatorPrompt(
@@ -847,6 +1362,9 @@ public:
             QStringLiteral("%1 / %2")
                 .arg(entry.completedSteps)
                 .arg(entry.totalSteps));
+        m_periodicPanel->setTasks(entry.periodicTasks);
+        m_resourceBadge->setResources(entry.heldResources,
+                                      entry.waitingResources);
         const bool terminal = entry.state == UutOverviewState::Passed ||
                                entry.state == UutOverviewState::Failed ||
                                entry.state == UutOverviewState::Stopped;
@@ -889,6 +1407,16 @@ public:
                 : QStringLiteral("color:#6b7780;font-weight:600;"));
         m_initialized = true;
         update();
+    }
+
+    void refreshPeriodicCountdown()
+    {
+        if (m_resourceBadge) {
+            m_resourceBadge->refreshWaitDuration();
+        }
+        if (m_periodicPanel) {
+            m_periodicPanel->refreshCountdown();
+        }
     }
 
     PicoATE::Core::UutId uutId() const { return m_entry.uutId; }
@@ -947,6 +1475,8 @@ private:
     std::array<QLabel*, 2> m_recentStepLabels{};
     QLabel* m_progressPercentLabel = nullptr;
     QLabel* m_retryLabel = nullptr;
+    ResourceStatusBadge* m_resourceBadge = nullptr;
+    PeriodicTaskStatusPanel* m_periodicPanel = nullptr;
     QProgressBar* m_progress = nullptr;
     QLabel* m_completedCaptionLabel = nullptr;
     QLabel* m_progressLabel = nullptr;
@@ -996,6 +1526,12 @@ MultiUutOverviewWidget::MultiUutOverviewWidget(QWidget* parent)
     header->addWidget(m_summaryLabel);
     root->addLayout(header);
 
+    m_sharedResourcePanel = new ResourceStatusPanel(true, this);
+    root->addWidget(m_sharedResourcePanel);
+
+    m_sharedPeriodicPanel = new PeriodicTaskStatusPanel(true, this);
+    root->addWidget(m_sharedPeriodicPanel);
+
     auto* scroll = new QScrollArea(this);
     scroll->setObjectName(QStringLiteral("multiUutOverviewScroll"));
     scroll->setWidgetResizable(true);
@@ -1011,6 +1547,12 @@ MultiUutOverviewWidget::MultiUutOverviewWidget(QWidget* parent)
     m_cardsLayout->setColumnStretch(1, 1);
     scroll->setWidget(m_cardsHost);
     root->addWidget(scroll, 1);
+
+    m_periodicRefreshTimer = new QTimer(this);
+    m_periodicRefreshTimer->setInterval(250);
+    connect(m_periodicRefreshTimer, &QTimer::timeout,
+            this, &MultiUutOverviewWidget::refreshPeriodicCountdowns);
+    m_periodicRefreshTimer->start();
 
     setStyleSheet(QStringLiteral(
         "QWidget#multiUutOverview{background:#f4f6f7;}"
@@ -1047,6 +1589,10 @@ void MultiUutOverviewWidget::setModel(UutOverviewModel* model)
                        const QModelIndex& bottomRight) {
                     refreshCardRange(topLeft.row(), bottomRight.row());
                 });
+        connect(m_model, &UutOverviewModel::sharedPeriodicTasksChanged,
+                this, &MultiUutOverviewWidget::refreshSharedPeriodicTasks);
+        connect(m_model, &UutOverviewModel::sharedResourcesChanged,
+                this, &MultiUutOverviewWidget::refreshSharedResources);
     }
     rebuildCards();
 }
@@ -1257,6 +1803,8 @@ void MultiUutOverviewWidget::rebuildCards()
     m_gridColumnCount = 0;
     if (!m_model) {
         updateSummary();
+        refreshSharedPeriodicTasks();
+        refreshSharedResources();
         return;
     }
     const int cardCount = m_model->rowCount();
@@ -1310,6 +1858,8 @@ void MultiUutOverviewWidget::rebuildCards()
     m_gridColumnCount = columns;
     restoreBatchOperatorPrompt();
     updateSummary();
+    refreshSharedPeriodicTasks();
+    refreshSharedResources();
 }
 
 void MultiUutOverviewWidget::refreshCards()
@@ -1343,6 +1893,45 @@ void MultiUutOverviewWidget::refreshCardRange(int firstRow, int lastRow)
         card->setChecked(entry->uutId == m_selectedUutId);
     }
     updateSummary();
+}
+
+void MultiUutOverviewWidget::refreshPeriodicCountdowns()
+{
+    if (m_sharedPeriodicPanel) {
+        static_cast<PeriodicTaskStatusPanel*>(m_sharedPeriodicPanel)
+            ->refreshCountdown();
+    }
+    if (m_sharedResourcePanel) {
+        static_cast<ResourceStatusPanel*>(m_sharedResourcePanel)
+            ->refreshWaitDuration();
+    }
+    for (auto* button : std::as_const(m_cards)) {
+        if (auto* card = static_cast<UutOverviewCard*>(button)) {
+            card->refreshPeriodicCountdown();
+        }
+    }
+}
+
+void MultiUutOverviewWidget::refreshSharedPeriodicTasks()
+{
+    if (!m_sharedPeriodicPanel) {
+        return;
+    }
+    static_cast<PeriodicTaskStatusPanel*>(m_sharedPeriodicPanel)
+        ->setTasks(m_model ? m_model->sharedPeriodicTasks()
+                           : QVector<PeriodicTaskOverviewEntry>{});
+}
+
+void MultiUutOverviewWidget::refreshSharedResources()
+{
+    if (!m_sharedResourcePanel) {
+        return;
+    }
+    static_cast<ResourceStatusPanel*>(m_sharedResourcePanel)
+        ->setResources(m_model ? m_model->sharedHeldResources()
+                              : QVector<ResourceUsageOverviewEntry>{},
+                       m_model ? m_model->sharedWaitingResources()
+                               : QVector<ResourceUsageOverviewEntry>{});
 }
 
 bool MultiUutOverviewWidget::eventFilter(QObject* watched, QEvent* event)

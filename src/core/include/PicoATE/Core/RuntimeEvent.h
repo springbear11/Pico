@@ -30,7 +30,24 @@ enum class RuntimeEventKind {
     DebugStepCompleted,
     OperatorPromptRequested,
     OperatorPromptClosed,
+    PeriodicTaskStateChanged,
+    ResourceStateChanged,
     ModuleLog
+};
+
+enum class PeriodicTaskState {
+    Waiting,
+    Running,
+    Passed,
+    Failed,
+    Stopped
+};
+
+enum class ResourceRuntimeState {
+    Waiting,
+    Acquired,
+    Released,
+    Cancelled
 };
 
 struct RuntimeEvent {
@@ -60,6 +77,19 @@ struct RuntimeEvent {
     QString message;
     QVariantMap details;
     ExecutionPhase nodePhase = ExecutionPhase::Main;
+    PeriodicTaskState periodicTaskState = PeriodicTaskState::Waiting;
+    QString periodicTaskId;
+    bool periodicTaskShared = false;
+    int periodicIntervalMs = 0;
+    int periodicInvocationIndex = 0;
+    qint64 periodicCounter = 0;
+    QDateTime periodicNextDueAtUtc;
+    ResourceRuntimeState resourceState = ResourceRuntimeState::Waiting;
+    ResourceLeaseId resourceLeaseId;
+    QVector<ResourceId> resourceIds;
+    QVector<UutId> resourceBlockingUutIds;
+    QDateTime resourceWaitingSinceUtc;
+    bool resourceShared = false;
 };
 
 class IRuntimeEventSink {
@@ -83,5 +113,7 @@ private:
 };
 
 QString runtimeEventKindName(RuntimeEventKind kind);
+QString periodicTaskStateName(PeriodicTaskState state);
+QString resourceRuntimeStateName(ResourceRuntimeState state);
 
 } // namespace PicoATE::Core

@@ -278,6 +278,10 @@ QString eventStateText(const PicoATE::Core::RuntimeEvent& event)
         return QStringLiteral("Waiting for operator");
     case RuntimeEventKind::OperatorPromptClosed:
         return QStringLiteral("Closed");
+    case RuntimeEventKind::PeriodicTaskStateChanged:
+        return PicoATE::Core::periodicTaskStateName(event.periodicTaskState);
+    case RuntimeEventKind::ResourceStateChanged:
+        return PicoATE::Core::resourceRuntimeStateName(event.resourceState);
     case RuntimeEventKind::UutRegistered:
     case RuntimeEventKind::ModuleLog:
         return {};
@@ -329,6 +333,10 @@ QString eventTypeText(const PicoATE::Core::RuntimeEvent& event)
     case RuntimeEventKind::OperatorPromptRequested:
     case RuntimeEventKind::OperatorPromptClosed:
         return QStringLiteral("PROMPT");
+    case RuntimeEventKind::PeriodicTaskStateChanged:
+        return QStringLiteral("PERIODIC");
+    case RuntimeEventKind::ResourceStateChanged:
+        return QStringLiteral("RESOURCE");
     default:
         return QStringLiteral("FLOW");
     }
@@ -737,6 +745,138 @@ bool overviewTracksNodeEvent(PicoATE::Core::RuntimeEventKind kind)
     }
 }
 
+bool applyPeriodicTaskEvent(
+    QVector<PeriodicTaskOverviewEntry>& tasks,
+    const PicoATE::Core::RuntimeEvent& event)
+{
+    auto taskId = event.periodicTaskId.trimmed();
+    if (taskId.isEmpty()) {
+        taskId = event.nodeId;
+    }
+    if (taskId.isEmpty()) {
+        return false;
+    }
+
+    auto task = std::find_if(
+        tasks.begin(), tasks.end(), [&taskId](const auto& candidate) {
+            return candidate.taskInstanceId == taskId;
+        });
+    if (task == tasks.end()) {
+        PeriodicTaskOverviewEntry created;
+        created.taskInstanceId = taskId;
+        tasks.push_back(std::move(created));
+        task = std::prev(tasks.end());
+    }
+
+    task->nodeId = event.nodeId;
+    task->displayName = event.nodeDisplayName.trimmed().isEmpty()
+        ? (event.nodeLocalId.trimmed().isEmpty() ? event.nodeId
+                                                : event.nodeLocalId)
+        : event.nodeDisplayName;
+    task->state =
+        event.periodicTaskState == PicoATE::Core::PeriodicTaskState::Passed ||
+                event.periodicTaskState == PicoATE::Core::PeriodicTaskState::Failed
+            ? PicoATE::Core::PeriodicTaskState::Waiting
+            : event.periodicTaskState;
+    task->intervalMs = event.periodicIntervalMs;
+    task->invocationIndex = event.periodicInvocationIndex;
+    task->counter = event.periodicCounter;
+    task->nextDueAtUtc = event.periodicNextDueAtUtc;
+    task->updatedAtUtc = event.timestampUtc.isValid()
+        ? event.timestampUtc
+        : QDateTime::currentDateTimeUtc();
+
+    if (event.outcome == PicoATE::Core::NodeOutcome::Passed ||
+        event.outcome == PicoATE::Core::NodeOutcome::Failed ||
+        event.outcome == PicoATE::Core::NodeOutcome::Error ||
+        event.outcome == PicoATE::Core::NodeOutcome::Timeout) {
+        task->lastOutcome = event.outcome;
+    }
+    if (event.outcome == PicoATE::Core::NodeOutcome::Passed) {
+        task->errorCode.clear();
+        task->message.clear();
+    } else if (!event.errorCode.trimmed().isEmpty() ||
+               !event.message.trimmed().isEmpty()) {
+        task->errorCode = event.errorCode;
+        task->message = event.message;
+    }
+    return true;
+}
+
+bool removeResourceEntry(QVector<ResourceUsageOverviewEntry>& entries,
+                         const PicoATE::Core::ResourceRequestId& requestId,
+                         const PicoATE::Core::ResourceLeaseId& leaseId)
+{
+    bool changed = false;
+    for (qsizetype index = entries.size() - 1; index >= 0; --index) {
+        const auto& entry = entries.at(index);
+        const bool requestMatches = !requestId.isEmpty() &&
+                                    entry.requestId == requestId;
+        const bool leaseMatches = !leaseId.isEmpty() &&
+                                  entry.leaseId == leaseId;
+        if (requestMatches || leaseMatches) {
+            entries.removeAt(index);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+bool upsertResourceEntry(QVector<ResourceUsageOverviewEntry>& entries,
+                         const PicoATE::Core::RuntimeEvent& event)
+{
+    auto found = std::find_if(
+        entries.begin(), entries.end(), [&event](const auto& entry) {
+            if (!event.resourceLeaseId.isEmpty()) {
+                return entry.leaseId == event.resourceLeaseId;
+            }
+            return entry.requestId == event.requestId;
+        });
+    if (found == entries.end()) {
+        entries.push_back({});
+        found = std::prev(entries.end());
+    }
+    found->requestId = event.requestId;
+    found->leaseId = event.resourceLeaseId;
+    found->uutId = event.uutId;
+    found->nodeId = event.nodeId;
+    found->resourceIds = event.resourceIds;
+    found->blockingUutIds = event.resourceBlockingUutIds;
+    found->waitingSinceUtc = event.resourceWaitingSinceUtc;
+    found->updatedAtUtc = event.timestampUtc.isValid()
+        ? event.timestampUtc
+        : QDateTime::currentDateTimeUtc();
+    return true;
+}
+
+bool applyResourceEvent(QVector<ResourceUsageOverviewEntry>& held,
+                        QVector<ResourceUsageOverviewEntry>& waiting,
+                        const PicoATE::Core::RuntimeEvent& event)
+{
+    bool changed = false;
+    switch (event.resourceState) {
+    case PicoATE::Core::ResourceRuntimeState::Waiting:
+        changed = removeResourceEntry(held, event.requestId,
+                                      event.resourceLeaseId) || changed;
+        changed = upsertResourceEntry(waiting, event) || changed;
+        break;
+    case PicoATE::Core::ResourceRuntimeState::Acquired:
+        changed = removeResourceEntry(waiting, event.requestId,
+                                      event.resourceLeaseId) || changed;
+        changed = upsertResourceEntry(held, event) || changed;
+        break;
+    case PicoATE::Core::ResourceRuntimeState::Released:
+        changed = removeResourceEntry(held, event.requestId,
+                                      event.resourceLeaseId) || changed;
+        break;
+    case PicoATE::Core::ResourceRuntimeState::Cancelled:
+        changed = removeResourceEntry(waiting, event.requestId,
+                                      event.resourceLeaseId) || changed;
+        break;
+    }
+    return changed;
+}
+
 } // namespace
 
 QString uutOverviewStateName(UutOverviewState state)
@@ -838,6 +978,9 @@ void UutOverviewModel::resetForRun(
     beginResetModel();
     m_rows.clear();
     m_terminalElapsedMs.clear();
+    m_sharedPeriodicTasks.clear();
+    m_sharedHeldResources.clear();
+    m_sharedWaitingResources.clear();
     m_sessionElapsedMs = 0;
     m_previewStepCount = preview.uuts.isEmpty()
         ? 0
@@ -884,6 +1027,8 @@ void UutOverviewModel::setReport(const PicoATE::Core::ExecutionReport& report)
     }
     beginResetModel();
     m_rows.clear();
+    m_sharedHeldResources.clear();
+    m_sharedWaitingResources.clear();
     for (const auto& uut : report.uuts) {
         Row row;
         row.entry.uutId = uut.uutId;
@@ -900,6 +1045,7 @@ void UutOverviewModel::setReport(const PicoATE::Core::ExecutionReport& report)
             row.entry.errorCode = previous->errorCode;
             row.entry.message = previous->message;
             row.entry.recentSteps = previous->recentSteps;
+            row.entry.periodicTasks = previous->periodicTasks;
             if (!uut.completed) {
                 row.entry.retryActive = previous->retryActive;
                 row.entry.retryAttempt = previous->retryAttempt;
@@ -955,6 +1101,8 @@ void UutOverviewModel::applyRuntimeEvents(
     const QVector<PicoATE::Core::RuntimeEvent>& events)
 {
     QSet<int> dirtyRows;
+    bool sharedPeriodicChanged = false;
+    bool sharedResourceStateChanged = false;
     const auto clearFailure = [](Row& row) {
         row.entry.failedStep.clear();
         row.entry.failedNodeId.clear();
@@ -1088,6 +1236,42 @@ void UutOverviewModel::applyRuntimeEvents(
     };
 
     for (const auto& event : events) {
+        if (event.kind == PicoATE::Core::RuntimeEventKind::ResourceStateChanged) {
+            if (event.resourceShared) {
+                sharedResourceStateChanged =
+                    applyResourceEvent(m_sharedHeldResources,
+                                       m_sharedWaitingResources,
+                                       event) || sharedResourceStateChanged;
+            } else if (!event.uutId.isEmpty()) {
+                const int rowIndex = ensureUut(event.uutId);
+                auto& entry = m_rows[rowIndex].entry;
+                if (applyResourceEvent(entry.heldResources,
+                                       entry.waitingResources,
+                                       event)) {
+                    dirtyRows.insert(rowIndex);
+                }
+            }
+            continue;
+        }
+        if (event.kind ==
+            PicoATE::Core::RuntimeEventKind::PeriodicTaskStateChanged) {
+            if (event.periodicTaskShared) {
+                sharedPeriodicChanged =
+                    applyPeriodicTaskEvent(m_sharedPeriodicTasks, event) ||
+                    sharedPeriodicChanged;
+            } else if (!event.uutId.isEmpty()) {
+                const int rowIndex = ensureUut(event.uutId);
+                if (applyPeriodicTaskEvent(m_rows[rowIndex].entry.periodicTasks,
+                                           event)) {
+                    dirtyRows.insert(rowIndex);
+                }
+            }
+            continue;
+        }
+        if (event.details.value(QStringLiteral("periodicTask")).toBool() ||
+            event.details.value(QStringLiteral("periodicInvocation")).toBool()) {
+            continue;
+        }
         if (event.kind == PicoATE::Core::RuntimeEventKind::SessionStateChanged) {
             if (event.executionState == PicoATE::Core::ExecutionState::Paused) {
                 for (int row = 0; row < m_rows.size(); ++row) {
@@ -1100,6 +1284,27 @@ void UutOverviewModel::applyRuntimeEvents(
                 for (int row = 0; row < m_rows.size(); ++row) {
                     if (m_rows[row].entry.state == UutOverviewState::Paused) {
                         m_rows[row].entry.state = UutOverviewState::Running;
+                        dirtyRows.insert(row);
+                    }
+                }
+            } else if (event.executionState ==
+                           PicoATE::Core::ExecutionState::Completed ||
+                       event.executionState ==
+                           PicoATE::Core::ExecutionState::CompletedWithError ||
+                       event.executionState ==
+                           PicoATE::Core::ExecutionState::Aborted) {
+                if (!m_sharedHeldResources.isEmpty() ||
+                    !m_sharedWaitingResources.isEmpty()) {
+                    m_sharedHeldResources.clear();
+                    m_sharedWaitingResources.clear();
+                    sharedResourceStateChanged = true;
+                }
+                for (int row = 0; row < m_rows.size(); ++row) {
+                    auto& entry = m_rows[row].entry;
+                    if (!entry.heldResources.isEmpty() ||
+                        !entry.waitingResources.isEmpty()) {
+                        entry.heldResources.clear();
+                        entry.waitingResources.clear();
                         dirtyRows.insert(row);
                     }
                 }
@@ -1138,6 +1343,8 @@ void UutOverviewModel::applyRuntimeEvents(
             row.entry.retryActive = false;
             row.entry.retryAttempt = 0;
             row.entry.retryMaxAttempts = 0;
+            row.entry.heldResources.clear();
+            row.entry.waitingResources.clear();
             row.retryNodeId.clear();
             updateDerivedValues(row);
             dirtyRows.insert(rowIndex);
@@ -1172,6 +1379,8 @@ void UutOverviewModel::applyRuntimeEvents(
             row.entry.retryActive = false;
             row.entry.retryAttempt = 0;
             row.entry.retryMaxAttempts = 0;
+            row.entry.heldResources.clear();
+            row.entry.waitingResources.clear();
             row.retryNodeId.clear();
             updateDerivedValues(row);
             const auto terminalElapsed = qMax<qint64>(0, m_sessionElapsedMs);
@@ -1195,14 +1404,32 @@ void UutOverviewModel::applyRuntimeEvents(
     for (const int row : orderedRows) {
         emitRowChanged(row);
     }
+    if (sharedPeriodicChanged) {
+        emit sharedPeriodicTasksChanged();
+    }
+    if (sharedResourceStateChanged) {
+        emit sharedResourcesChanged();
+    }
 }
 
 void UutOverviewModel::clear()
 {
+    const bool hadSharedPeriodicTasks = !m_sharedPeriodicTasks.isEmpty();
+    const bool hadSharedResources = !m_sharedHeldResources.isEmpty() ||
+                                    !m_sharedWaitingResources.isEmpty();
+    m_sharedPeriodicTasks.clear();
+    m_sharedHeldResources.clear();
+    m_sharedWaitingResources.clear();
     m_terminalElapsedMs.clear();
     m_previewStepCount = 0;
     m_sessionElapsedMs = -1;
     if (m_rows.isEmpty()) {
+        if (hadSharedPeriodicTasks) {
+            emit sharedPeriodicTasksChanged();
+        }
+        if (hadSharedResources) {
+            emit sharedResourcesChanged();
+        }
         return;
     }
     beginResetModel();
@@ -1226,6 +1453,21 @@ std::optional<UutOverviewEntry> UutOverviewModel::entryAt(int row) const
         return std::nullopt;
     }
     return m_rows[row].entry;
+}
+
+QVector<PeriodicTaskOverviewEntry> UutOverviewModel::sharedPeriodicTasks() const
+{
+    return m_sharedPeriodicTasks;
+}
+
+QVector<ResourceUsageOverviewEntry> UutOverviewModel::sharedHeldResources() const
+{
+    return m_sharedHeldResources;
+}
+
+QVector<ResourceUsageOverviewEntry> UutOverviewModel::sharedWaitingResources() const
+{
+    return m_sharedWaitingResources;
 }
 
 int UutOverviewModel::ensureUut(const PicoATE::Core::UutId& uutId)
@@ -3003,6 +3245,8 @@ void RuntimeTimelineModel::appendEventRows(
         append(QStringLiteral("RUN_RESULT:%1").arg(resultText()), resultStyle());
         break;
     case RuntimeEventKind::UutRegistered:
+    case RuntimeEventKind::PeriodicTaskStateChanged:
+    case RuntimeEventKind::ResourceStateChanged:
         break;
     }
 

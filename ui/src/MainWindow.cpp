@@ -12,6 +12,7 @@
 #include "PluginCatalog.h"
 #include "PluginFunctionModel.h"
 #include "ProductRoutingDialog.h"
+#include "ProductRoutingScanSupport.h"
 #include "ProportionalHeaderView.h"
 #include "ReportExporter.h"
 #include "ReportHistoryStore.h"
@@ -3525,39 +3526,25 @@ void MainWindow::runScannedUuts(const QStringList& serialNumbers)
             showProductRoutingError(details.join(QStringLiteral("\n")));
             return;
         }
-        const auto route = PicoATE::Core::resolveProductRoute(
-            routing.config, sns.first());
-        if (!route.ok()) {
+        const auto batch = PicoATE::Core::resolveProductBatchRoute(
+            routing.config, sns);
+        if (!batch.ok()) {
             QStringList details;
-            for (const auto& error : route.errors) {
+            for (const auto& error : batch.errors) {
                 details.push_back(error.message);
             }
             showProductRoutingError(details.join(QStringLiteral("\n")));
             return;
         }
-        for (int index = 1; index < sns.size(); ++index) {
-            const auto candidate = PicoATE::Core::resolveProductRoute(
-                routing.config, sns[index]);
-            if (!candidate.ok()) {
-                QStringList details;
-                for (const auto& error : candidate.errors) {
-                    details.push_back(error.message);
-                }
-                showProductRoutingError(
-                    tr("UUT %1 (%2): %3")
-                        .arg(index + 1)
-                        .arg(sns[index], details.join(QStringLiteral("; "))));
-                return;
-            }
-            if (candidate.sequencePath != route.sequencePath ||
-                candidate.stationPath != route.stationPath) {
-                showProductRoutingError(
-                    tr("All UUTs in one batch must resolve to the same project. "
-                       "UUT 1 and UUT %1 matched different projects.")
-                        .arg(index + 1));
-                return;
-            }
+        if (sns.size() != batch.uutCount) {
+            showProductRoutingError(
+                tr("Project %1 requires %2 UUT SN(s), but %3 were scanned")
+                    .arg(batch.route.projectName)
+                    .arg(batch.uutCount)
+                    .arg(sns.size()));
+            return;
         }
+        const auto& route = batch.route;
 
         const auto currentPath = m_sequenceDocument &&
                                  !m_sequenceDocument->filePath().isEmpty()
@@ -3812,9 +3799,36 @@ void MainWindow::toggleScanDialog()
                                  .toString().trimmed();
     }
     m_scanDialog->setValidationRules(std::move(rules));
-    m_scanDialog->setSlotCount(m_uutCount
-                                   ? qMax(1, m_uutCount->value())
-                                   : 1);
+    if (m_autoRouteBySn) {
+        const auto routing = PicoATE::Core::loadProductRoutingFile(
+            m_productRoutingPath);
+        if (routing.ok()) {
+            m_scanDialog->setSubmissionValidator(
+                [config = routing.config](const QStringList& proposed,
+                                          int currentSlot) {
+                    return validateAutoRoutedScan(config, proposed,
+                                                  currentSlot);
+                });
+        } else {
+            QStringList details;
+            for (const auto& error : routing.errors) {
+                details.push_back(error.path.isEmpty()
+                    ? error.message
+                    : QStringLiteral("%1: %2").arg(error.path, error.message));
+            }
+            const auto message = details.join(QStringLiteral("\n"));
+            m_scanDialog->setSubmissionValidator(
+                [message](const QStringList&, int) {
+                    return ScanSubmissionDecision{false, message, 0, {}};
+                });
+        }
+        m_scanDialog->setSlotCount(1);
+    } else {
+        m_scanDialog->setSubmissionValidator({});
+        m_scanDialog->setSlotCount(m_uutCount
+                                       ? qMax(1, m_uutCount->value())
+                                       : 1);
+    }
     m_scanDialog->showForNextScan();
 }
 

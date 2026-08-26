@@ -12,6 +12,7 @@ class QEvent;
 class QLabel;
 class QGridLayout;
 class QShowEvent;
+class QTimer;
 
 namespace PicoATE::Ui {
 
@@ -51,6 +52,9 @@ private:
     void rebuildCards();
     void refreshCards();
     void refreshCardRange(int firstRow, int lastRow);
+    void refreshPeriodicCountdowns();
+    void refreshSharedPeriodicTasks();
+    void refreshSharedResources();
     void updateSummary();
     void restoreOperatorPrompt(QAbstractButton* card);
     void restoreBatchOperatorPrompt();
@@ -65,6 +69,9 @@ private:
     QLabel* m_summaryLabel = nullptr;
     QWidget* m_cardsHost = nullptr;
     QGridLayout* m_cardsLayout = nullptr;
+    QWidget* m_sharedPeriodicPanel = nullptr;
+    QWidget* m_sharedResourcePanel = nullptr;
+    QTimer* m_periodicRefreshTimer = nullptr;
     QVector<QAbstractButton*> m_cards;
     QHash<QString, ActivePrompt> m_activePrompts;
     QHash<PicoATE::Core::UutId, QString> m_currentPromptByUut;

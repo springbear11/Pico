@@ -410,6 +410,7 @@ private slots:
     void productionFieldDeviceDialogDefersScannerUntilClosed();
     void scanDialogAcceptsRepeatedBarcodeAndHasNoWindowButtons();
     void scanDialogCollectsCarouselBatchAndSupportsReplacement();
+    void scanDialogExpandsValidatedBatchAndRejectsCurrentSlot();
     void adminStartsOnProductionDashboardAndOpensScannerOnDemand();
     void adminScannerRunsFourExplicitUuts();
     void productionWindowPreloadsFlowAndRunsWithoutScanner();
@@ -2196,10 +2197,21 @@ void MainWindowLifecycleTests::sequenceVariablesToolbarEditsPerUutValuesAndFeeds
         QVERIFY(dialog);
         auto* add = dialog->findChild<QPushButton*>(
             QStringLiteral("addSequenceVariableButton"));
+        auto* addUut = dialog->findChild<QPushButton*>(
+            QStringLiteral("addSequenceUutButton"));
         auto* table = dialog->findChild<QTableWidget*>(
             QStringLiteral("sequenceVariablesTable"));
         QVERIFY(add);
+        QVERIFY(addUut);
         QVERIFY(table);
+        QCOMPARE(table->columnCount(), 9);
+        addUut->click();
+        addUut->click();
+        QCOMPARE(table->columnCount(), 11);
+        QCOMPARE(table->horizontalHeaderItem(8)->text(), QStringLiteral("UUT5"));
+        QCOMPARE(table->horizontalHeaderItem(9)->text(), QStringLiteral("UUT6"));
+        QCOMPARE(table->horizontalHeaderItem(10)->text(),
+                 QStringLiteral("Description"));
         add->click();
         QCOMPARE(table->rowCount(), 1);
         table->item(0, 0)->setText(QStringLiteral("CAN_ID"));
@@ -2215,7 +2227,12 @@ void MainWindowLifecycleTests::sequenceVariablesToolbarEditsPerUutValuesAndFeeds
         table->item(0, 5)->setText(QStringLiteral("0x102"));
         table->item(0, 6)->setText(QStringLiteral("0x103"));
         table->item(0, 7)->setText(QStringLiteral("0x104"));
-        table->item(0, 8)->setText(QStringLiteral("CAN identifier by fixture slot"));
+        table->item(0, 8)->setText(QStringLiteral("0x105"));
+        table->item(0, 9)->setText(QStringLiteral("0x106"));
+        table->item(0, 10)->setText(
+            QStringLiteral("CAN identifier by fixture slot"));
+        QCoreApplication::processEvents();
+        QVERIFY(table->horizontalScrollBar()->maximum() > 0);
         handled = true;
         dialog->accept();
     });
@@ -2228,8 +2245,19 @@ void MainWindowLifecycleTests::sequenceVariablesToolbarEditsPerUutValuesAndFeeds
     const auto variable = document->sequenceVariables().first().toObject();
     QCOMPARE(variable.value("name").toString(), QString("CAN_ID"));
     QCOMPARE(variable.value("scope").toString(), QString("perUut"));
-    QCOMPARE(variable.value("values").toArray().size(), 4);
+    QCOMPARE(variable.value("values").toArray().size(), 6);
+    QCOMPARE(variable.value("values").toArray().at(5).toString(),
+             QStringLiteral("0x106"));
     QVERIFY(document->isModified());
+
+    SequenceVariablesDialog reloaded(document->sequenceVariables());
+    auto* reloadedTable = reloaded.findChild<QTableWidget*>(
+        QStringLiteral("sequenceVariablesTable"));
+    QVERIFY(reloadedTable);
+    QCOMPARE(reloadedTable->columnCount(), 11);
+    QCOMPARE(reloadedTable->horizontalHeaderItem(9)->text(),
+             QStringLiteral("UUT6"));
+    QCOMPARE(reloadedTable->item(0, 9)->text(), QStringLiteral("0x106"));
 
     StepPropertyEditor editor(document);
     editor.setCurrentItem(SequenceItemPath{0, {0}});
@@ -4153,6 +4181,135 @@ void MainWindowLifecycleTests::multiUutOverviewShowsRetryAndRecentSteps()
     QCOMPARE(latestRecent->text(), QStringLiteral("Configure Device"));
     QCOMPARE(earlierRecent->text(), QStringLiteral("Open Device"));
 
+    RuntimeEvent sharedPeriodic;
+    sharedPeriodic.kind = RuntimeEventKind::PeriodicTaskStateChanged;
+    sharedPeriodic.nodeId = QStringLiteral("shared-heartbeat");
+    sharedPeriodic.nodeDisplayName = QStringLiteral("Shared Heartbeat");
+    sharedPeriodic.periodicTaskId = QStringLiteral("shared-heartbeat:batch");
+    sharedPeriodic.periodicTaskShared = true;
+    sharedPeriodic.periodicTaskState = PeriodicTaskState::Waiting;
+    sharedPeriodic.periodicIntervalMs = 5000;
+    sharedPeriodic.periodicNextDueAtUtc =
+        QDateTime::currentDateTimeUtc().addSecs(5);
+
+    RuntimeEvent uutPeriodic = sharedPeriodic;
+    uutPeriodic.uutId = QStringLiteral("UUT-1");
+    uutPeriodic.nodeId = QStringLiteral("uut-heartbeat");
+    uutPeriodic.nodeDisplayName = QStringLiteral("UUT Heartbeat");
+    uutPeriodic.periodicTaskId = QStringLiteral("uut-heartbeat:UUT-1");
+    uutPeriodic.periodicTaskShared = false;
+    uutPeriodic.periodicTaskState = PeriodicTaskState::Running;
+    uutPeriodic.periodicInvocationIndex = 2;
+    uutPeriodic.periodicCounter = 2;
+    uutPeriodic.periodicNextDueAtUtc = {};
+    model.applyRuntimeEvents({sharedPeriodic, uutPeriodic});
+
+    auto* sharedPeriodicPanel = overview.findChild<QWidget*>(
+        QStringLiteral("sharedPeriodicTaskPanel"));
+    auto* sharedPeriodicState = overview.findChild<QLabel*>(
+        QStringLiteral("sharedPeriodicTaskState"));
+    auto* sharedPeriodicResult = overview.findChild<QLabel*>(
+        QStringLiteral("sharedPeriodicTaskResult"));
+    auto* sharedPeriodicCountdown = overview.findChild<QLabel*>(
+        QStringLiteral("sharedPeriodicTaskCountdown"));
+    auto* uutPeriodicPanel = card->findChild<QWidget*>(
+        QStringLiteral("uutOverviewPeriodicPanel"));
+    auto* uutPeriodicState = card->findChild<QLabel*>(
+        QStringLiteral("uutOverviewPeriodicState"));
+    auto* uutPeriodicCountdown = card->findChild<QLabel*>(
+        QStringLiteral("uutOverviewPeriodicCountdown"));
+    QVERIFY(sharedPeriodicPanel);
+    QVERIFY(sharedPeriodicState);
+    QVERIFY(sharedPeriodicResult);
+    QVERIFY(sharedPeriodicCountdown);
+    QVERIFY(uutPeriodicPanel);
+    QVERIFY(uutPeriodicState);
+    QVERIFY(uutPeriodicCountdown);
+    QTRY_VERIFY(sharedPeriodicPanel->isVisible());
+    QTRY_VERIFY(uutPeriodicPanel->isVisible());
+    QCOMPARE(sharedPeriodicState->text(), QStringLiteral("WAITING"));
+    QVERIFY(sharedPeriodicCountdown->text().startsWith(
+        QStringLiteral("NEXT IN ")));
+    QVERIFY(!sharedPeriodicResult->isVisible());
+    QCOMPARE(uutPeriodicState->text(), QStringLiteral("RUNNING"));
+    QCOMPARE(uutPeriodicCountdown->text(), QStringLiteral("COUNT 2"));
+    QCOMPARE(caption->text(), QStringLiteral("RETRYING CURRENT STEP"));
+    QCOMPARE(currentStep->text(), QStringLiteral("Read Registers"));
+
+    RuntimeEvent acquiredResource;
+    acquiredResource.kind = RuntimeEventKind::ResourceStateChanged;
+    acquiredResource.uutId = QStringLiteral("UUT-1");
+    acquiredResource.nodeId = QStringLiteral("main.third");
+    acquiredResource.requestId = QStringLiteral("resource-uut-1");
+    acquiredResource.resourceLeaseId = QStringLiteral("lease-uut-1");
+    acquiredResource.resourceState = ResourceRuntimeState::Acquired;
+    acquiredResource.resourceIds = {QStringLiteral("MODBUS1"),
+                                    QStringLiteral("CAN1")};
+    acquiredResource.timestampUtc = QDateTime::currentDateTimeUtc();
+
+    RuntimeEvent waitingResource = acquiredResource;
+    waitingResource.requestId = QStringLiteral("resource-wait-uut-1");
+    waitingResource.resourceLeaseId.clear();
+    waitingResource.resourceState = ResourceRuntimeState::Waiting;
+    waitingResource.resourceIds = {QStringLiteral("DMM1")};
+    waitingResource.resourceBlockingUutIds = {QStringLiteral("UUT-2")};
+    waitingResource.resourceWaitingSinceUtc =
+        QDateTime::currentDateTimeUtc().addMSecs(-2300);
+
+    RuntimeEvent sharedResource = acquiredResource;
+    sharedResource.resourceShared = true;
+    sharedResource.requestId = QStringLiteral("resource-shared");
+    sharedResource.resourceLeaseId = QStringLiteral("lease-shared");
+    sharedResource.resourceIds = {QStringLiteral("PSU1")};
+    model.applyRuntimeEvents(
+        {acquiredResource, waitingResource, sharedResource});
+
+    auto* resourcePanel = card->findChild<QWidget*>(
+        QStringLiteral("uutOverviewResourceBadge"));
+    auto* resourceUsing = card->findChild<QLabel*>(
+        QStringLiteral("uutOverviewResourceUsing"));
+    auto* resourceWaiting = card->findChild<QLabel*>(
+        QStringLiteral("uutOverviewResourceWaiting"));
+    auto* sharedResourcePanel = overview.findChild<QWidget*>(
+        QStringLiteral("sharedResourcePanel"));
+    auto* sharedResourceUsing = overview.findChild<QLabel*>(
+        QStringLiteral("sharedResourceUsing"));
+    QVERIFY(resourcePanel);
+    QVERIFY(resourceUsing);
+    QVERIFY(resourceWaiting);
+    QVERIFY(sharedResourcePanel);
+    QVERIFY(sharedResourceUsing);
+    QTRY_VERIFY(resourcePanel->isVisible());
+    QTRY_VERIFY(sharedResourcePanel->isVisible());
+    QVERIFY(resourceUsing->text().contains(QStringLiteral("CAN1")));
+    QVERIFY(resourceUsing->text().contains(QStringLiteral("+1")));
+    QVERIFY(resourceWaiting->text().contains(QStringLiteral("DMM1")));
+    QVERIFY(resourcePanel->toolTip().contains(QStringLiteral("MODBUS1")));
+    QVERIFY(resourcePanel->toolTip().contains(QStringLiteral("HELD BY: UUT-2")));
+    QVERIFY(sharedResourceUsing->text().contains(QStringLiteral("PSU1")));
+    QVERIFY(sharedResourceUsing->text().contains(QStringLiteral("EXECUTOR UUT-1")));
+
+    RuntimeEvent releasedResource = acquiredResource;
+    releasedResource.resourceState = ResourceRuntimeState::Released;
+    RuntimeEvent cancelledResource = waitingResource;
+    cancelledResource.resourceState = ResourceRuntimeState::Cancelled;
+    RuntimeEvent releasedSharedResource = sharedResource;
+    releasedSharedResource.resourceState = ResourceRuntimeState::Released;
+    model.applyRuntimeEvents(
+        {releasedResource, cancelledResource, releasedSharedResource});
+    QTRY_VERIFY(!resourcePanel->isVisible());
+    QTRY_VERIFY(!sharedResourcePanel->isVisible());
+
+    RuntimeEvent sharedPeriodicCompleted = sharedPeriodic;
+    sharedPeriodicCompleted.periodicInvocationIndex = 1;
+    sharedPeriodicCompleted.outcome = NodeOutcome::Passed;
+    sharedPeriodicCompleted.periodicNextDueAtUtc =
+        QDateTime::currentDateTimeUtc().addSecs(5);
+    model.applyRuntimeEvents({sharedPeriodicCompleted});
+    QTRY_COMPARE(sharedPeriodicState->text(), QStringLiteral("WAITING"));
+    QTRY_COMPARE(sharedPeriodicResult->text(), QStringLiteral("LAST PASS"));
+    QVERIFY(sharedPeriodicResult->isVisible());
+
     RuntimeEvent finalFailedAttempt = retry;
     finalFailedAttempt.kind = RuntimeEventKind::AttemptCompleted;
     finalFailedAttempt.activationState = ActivationState::Failed;
@@ -4173,6 +4330,9 @@ void MainWindowLifecycleTests::multiUutOverviewShowsRetryAndRecentSteps()
     QCOMPARE(currentState->text(), QStringLiteral("RUN"));
     QCOMPARE(currentStep->text(), QStringLiteral("Close Shared Device"));
 
+    model.applyRuntimeEvents({acquiredResource});
+    QTRY_VERIFY(resourcePanel->isVisible());
+
     RuntimeEvent failedUut;
     failedUut.kind = RuntimeEventKind::UutCompleted;
     failedUut.uutId = QStringLiteral("UUT-1");
@@ -4182,6 +4342,7 @@ void MainWindowLifecycleTests::multiUutOverviewShowsRetryAndRecentSteps()
     QTRY_COMPARE(caption->text(), QStringLiteral("FAILED STEP"));
     QCOMPARE(currentState->text(), QStringLiteral("FAIL"));
     QCOMPARE(currentStep->text(), QStringLiteral("Read Registers"));
+    QTRY_VERIFY(!resourcePanel->isVisible());
 }
 
 void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetails()
@@ -4470,6 +4631,7 @@ void MainWindowLifecycleTests::persistsLayoutAndRecentFiles()
                            + QStringLiteral("/examples/stations/basic_station.json"),
                        stationPath));
 
+    bool uutCountControlVisible = false;
     {
         MainWindow window;
         QVERIFY(window.openSequenceFile(sequencePath));
@@ -4490,7 +4652,7 @@ void MainWindowLifecycleTests::persistsLayoutAndRecentFiles()
         QVERIFY(detailsTabs);
         QVERIFY(runSplitter);
         QVERIFY(uutCount);
-        QVERIFY(uutCount->isHidden());
+        uutCountControlVisible = !uutCount->isHidden();
         workspaceTabs->setCurrentIndex(2);
         detailsTabs->setCurrentIndex(3);
         runSplitter->setSizes({320, 720});
@@ -4511,7 +4673,9 @@ void MainWindowLifecycleTests::persistsLayoutAndRecentFiles()
              QFileInfo(stationPath).absoluteFilePath());
     QCOMPARE(saved.value(QStringLiteral("MainWindow/WorkspaceTab")).toInt(), 2);
     QCOMPARE(saved.value(QStringLiteral("MainWindow/RunDetailsTab")).toInt(), 3);
-    QCOMPARE(saved.value(QStringLiteral("MainWindow/UutCount")).toInt(), 1);
+    const int savedUutCount = saved.value(
+        QStringLiteral("MainWindow/UutCount")).toInt();
+    QCOMPARE(savedUutCount, uutCountControlVisible ? 3 : 1);
 
     MainWindow restored;
     restored.show();
@@ -4538,8 +4702,8 @@ void MainWindowLifecycleTests::persistsLayoutAndRecentFiles()
     auto* restoredUutCount = restored.findChild<QSpinBox*>(
         QStringLiteral("uutCountSpinBox"));
     QVERIFY(restoredUutCount);
-    QVERIFY(restoredUutCount->isHidden());
-    QCOMPARE(restoredUutCount->value(), 1);
+    QCOMPARE(restoredUutCount->isHidden(), !uutCountControlVisible);
+    QCOMPARE(restoredUutCount->value(), savedUutCount);
     QCOMPARE(recentSequences->actions().size(), 1);
     QCOMPARE(recentStations->actions().size(), 1);
     QCOMPARE(recentSequences->actions().first()->toolTip(),
@@ -5880,6 +6044,72 @@ void MainWindowLifecycleTests::scanDialogCollectsCarouselBatchAndSupportsReplace
     QCOMPARE(progress->text(), QStringLiteral("0 / 4 scanned"));
 }
 
+void MainWindowLifecycleTests::scanDialogExpandsValidatedBatchAndRejectsCurrentSlot()
+{
+    ScanDialog dialog;
+    dialog.setAttribute(Qt::WA_DontShowOnScreen);
+    dialog.setSlotCount(1);
+    dialog.setSubmissionValidator(
+        [](const QStringList& proposed, int currentSlot) {
+            for (const auto& barcode : proposed) {
+                if (!barcode.isEmpty() &&
+                    !barcode.startsWith(QStringLiteral("A-"))) {
+                    return ScanSubmissionDecision{
+                        false,
+                        QStringLiteral("UUT %1 belongs to another project")
+                            .arg(currentSlot + 1),
+                        0,
+                        {}};
+                }
+            }
+            return ScanSubmissionDecision{
+                true, {}, 3, QStringLiteral("Product A")};
+        });
+
+    auto* barcode = dialog.findChild<QLineEdit*>(QStringLiteral("barcodeEdit"));
+    auto* title = dialog.findChild<QLabel*>(QStringLiteral("scanTitleLabel"));
+    auto* progress = dialog.findChild<QLabel*>(
+        QStringLiteral("scanProgressLabel"));
+    auto* error = dialog.findChild<QLabel*>(QStringLiteral("scanErrorLabel"));
+    QVERIFY(barcode);
+    QVERIFY(title);
+    QVERIFY(progress);
+    QVERIFY(error);
+    QSignalSpy batchSpy(&dialog, &ScanDialog::barcodesAccepted);
+
+    const auto submit = [&](const QString& value) {
+        barcode->setText(value);
+        QVERIFY(QMetaObject::invokeMethod(&dialog, "submitBarcode"));
+    };
+
+    dialog.showForNextScan();
+    QCOMPARE(dialog.slotCount(), 1);
+    submit(QStringLiteral("A-001"));
+    QCOMPARE(dialog.slotCount(), 3);
+    QCOMPARE(dialog.barcodes().at(0), QStringLiteral("A-001"));
+    QCOMPARE(title->text(), QStringLiteral("Scan UUT 2 SN"));
+    QCOMPARE(progress->text(), QStringLiteral("Product A  |  1 / 3 scanned"));
+
+    submit(QStringLiteral("B-002"));
+    QVERIFY(error->isVisible());
+    QVERIFY(error->text().contains(QStringLiteral("UUT 2")));
+    QVERIFY(dialog.barcodes().at(1).isEmpty());
+    QCOMPARE(title->text(), QStringLiteral("Scan UUT 2 SN"));
+
+    submit(QStringLiteral("A-002"));
+    submit(QStringLiteral("A-003"));
+    QCOMPARE(batchSpy.count(), 1);
+    QCOMPARE(batchSpy.first().first().toStringList(),
+             QStringList({QStringLiteral("A-001"),
+                          QStringLiteral("A-002"),
+                          QStringLiteral("A-003")}));
+    QVERIFY(dialog.isHidden());
+
+    dialog.showForNextScan();
+    QCOMPARE(dialog.slotCount(), 1);
+    QCOMPARE(dialog.barcodes(), QStringList{QString{}});
+}
+
 void MainWindowLifecycleTests::adminStartsOnProductionDashboardAndOpensScannerOnDemand()
 {
     QSettings().clear();
@@ -6339,20 +6569,44 @@ void MainWindowLifecycleTests::productionWindowRoutesScannedSnBeforeCompiling()
     QVERIFY(station.open(QIODevice::WriteOnly));
     station.write(R"({
         "stationId":"auto-test","scanDialogEnabled":false,
+        "uutCount":4,
         "snLength":99,"snPattern":"STATION-ONLY-*",
         "snAllowedRegex":"^[A-Z0-9-]+$","devices":[]
     })");
     station.close();
+    const auto otherProjectPath = directory.filePath(
+        QStringLiteral("projects/OtherProduct"));
+    QVERIFY(QDir().mkpath(otherProjectPath));
+    const auto otherSequencePath = QDir(otherProjectPath).filePath(
+        QStringLiteral("other_product_sequence.json"));
+    QVERIFY(QFile::copy(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+                           + QStringLiteral("/examples/simple_sequence.json"),
+                       otherSequencePath));
+    const auto otherStationPath = QDir(otherProjectPath).filePath(
+        QStringLiteral("StationSystem.json"));
+    QFile otherStation(otherStationPath);
+    QVERIFY(otherStation.open(QIODevice::WriteOnly));
+    otherStation.write(R"({
+        "stationId":"other-test","uutCount":2,
+        "snAllowedRegex":"^[A-Z0-9-]+$","devices":[]
+    })");
+    otherStation.close();
     const auto routingPath = directory.filePath(QStringLiteral("ProductRouting.json"));
     QFile routing(routingPath);
     QVERIFY(routing.open(QIODevice::WriteOnly));
     routing.write(R"({
         "allowManualInTest":false,
         "projectRoot":"projects",
-        "routes":[{
-            "name":"Auto product","pattern":"AUTO-*","snLength":9,
-            "project":"AutoProduct"
-        }]
+        "routes":[
+            {
+                "name":"Auto product","pattern":"AUTO-*","snLength":9,
+                "project":"AutoProduct"
+            },
+            {
+                "name":"Other product","pattern":"OTHER-*","snLength":10,
+                "project":"OtherProduct"
+            }
+        ]
     })");
     routing.close();
 
@@ -6382,18 +6636,55 @@ void MainWindowLifecycleTests::productionWindowRoutesScannedSnBeforeCompiling()
     QVERIFY(routingAction->isEnabled());
     QVERIFY(!deviceAction->isVisible());
     auto* barcode = scan->findChild<QLineEdit*>(QStringLiteral("barcodeEdit"));
+    auto* scanError = scan->findChild<QLabel*>(QStringLiteral("scanErrorLabel"));
     QVERIFY(barcode);
+    QVERIFY(scanError);
+    QSignalSpy acceptedSpy(scan, &ScanDialog::barcodesAccepted);
     QTRY_VERIFY_WITH_TIMEOUT(scan->isVisible(), 1000);
-    barcode->setText(QStringLiteral("AUTO-0001"));
-    QVERIFY(QMetaObject::invokeMethod(scan, "submitBarcode"));
+    QCOMPARE(scan->slotCount(), 1);
+
+    const auto submit = [&](const QString& value) {
+        barcode->setText(value);
+        QVERIFY(QMetaObject::invokeMethod(scan, "submitBarcode"));
+    };
+    submit(QStringLiteral("AUTO-0001"));
+    QCOMPARE(scan->slotCount(), 4);
+    QCOMPARE(scan->barcodes().first(), QStringLiteral("AUTO-0001"));
+    QCOMPARE(acceptedSpy.count(), 0);
+
+    submit(QStringLiteral("OTHER-0002"));
+    QVERIFY(scanError->isVisible());
+    QVERIFY(scanError->text().contains(QStringLiteral("UUT 2")));
+    QVERIFY(scanError->text().contains(QStringLiteral("batch"),
+                                       Qt::CaseInsensitive));
+    QCOMPARE(scan->barcodes().at(1), QString{});
+    QCOMPARE(scan->barcodes().first(), QStringLiteral("AUTO-0001"));
+    QCOMPARE(acceptedSpy.count(), 0);
+
+    submit(QStringLiteral("AUTO-0002"));
+    submit(QStringLiteral("AUTO-0003"));
+    submit(QStringLiteral("AUTO-0004"));
+    QCOMPARE(acceptedSpy.count(), 1);
+    QCOMPARE(acceptedSpy.first().first().toStringList(),
+             QStringList({QStringLiteral("AUTO-0001"),
+                          QStringLiteral("AUTO-0002"),
+                          QStringLiteral("AUTO-0003"),
+                          QStringLiteral("AUTO-0004")}));
     QTRY_VERIFY_WITH_TIMEOUT(viewModel->state() == UiRunState::Completed ||
                              viewModel->state() == UiRunState::Failed,
-                             4000);
+                             8000);
     QCOMPARE(viewModel->state(), UiRunState::Completed);
     QCOMPARE(viewModel->sequencePath(), QFileInfo(sequencePath).absoluteFilePath());
     QCOMPARE(viewModel->stationPath(), QFileInfo(stationPath).absoluteFilePath());
     QCOMPARE(title->text(), QFileInfo(sequencePath).fileName());
-    QCOMPARE(viewModel->report().uuts.first().uutId, QStringLiteral("AUTO-0001"));
+    const auto& report = viewModel->report();
+    QCOMPARE(report.uuts.size(), 4);
+    for (int index = 0; index < report.uuts.size(); ++index) {
+        QCOMPARE(report.uuts[index].uutId,
+                 QStringLiteral("UUT-%1").arg(index + 1));
+        QCOMPARE(report.uuts[index].serialNumber,
+                 QStringLiteral("AUTO-000%1").arg(index + 1));
+    }
     QVERIFY(window.close());
 }
 
@@ -6415,7 +6706,7 @@ void MainWindowLifecycleTests::adminWindowRoutesScannedSnBeforeCompiling()
     QFile station(stationPath);
     QVERIFY(station.open(QIODevice::WriteOnly));
     station.write(R"({
-        "stationId":"auto-admin","snLength":99,
+        "stationId":"auto-admin","uutCount":2,"snLength":99,
         "snPattern":"STATION-ONLY-*","snAllowedRegex":"^[A-Z0-9-]+$",
         "devices":[]
     })");
@@ -6459,18 +6750,32 @@ void MainWindowLifecycleTests::adminWindowRoutesScannedSnBeforeCompiling()
     auto* barcode = scan->findChild<QLineEdit*>(QStringLiteral("barcodeEdit"));
     QVERIFY(barcode);
     QSignalSpy acceptedSpy(scan, &ScanDialog::barcodesAccepted);
+    QCOMPARE(scan->slotCount(), 1);
     barcode->setText(QStringLiteral("ADMIN-0001"));
+    QVERIFY(QMetaObject::invokeMethod(scan, "submitBarcode"));
+    QCOMPARE(scan->slotCount(), 2);
+    QCOMPARE(acceptedSpy.count(), 0);
+    QCOMPARE(scan->barcodes().first(), QStringLiteral("ADMIN-0001"));
+    barcode->setText(QStringLiteral("ADMIN-0002"));
     QVERIFY(QMetaObject::invokeMethod(scan, "submitBarcode"));
     QCOMPARE(acceptedSpy.count(), 1);
     QCOMPARE(acceptedSpy.first().first().toStringList(),
-             QStringList{QStringLiteral("ADMIN-0001")});
+             QStringList({QStringLiteral("ADMIN-0001"),
+                          QStringLiteral("ADMIN-0002")}));
     QTRY_VERIFY_WITH_TIMEOUT(viewModel->state() == UiRunState::Completed ||
                              viewModel->state() == UiRunState::Failed,
-                             4000);
+                             6000);
     QCOMPARE(viewModel->state(), UiRunState::Completed);
     QCOMPARE(viewModel->sequencePath(), QFileInfo(sequencePath).absoluteFilePath());
     QCOMPARE(viewModel->stationPath(), QFileInfo(stationPath).absoluteFilePath());
-    QCOMPARE(viewModel->report().uuts.first().uutId, QStringLiteral("ADMIN-0001"));
+    const auto& report = viewModel->report();
+    QCOMPARE(report.uuts.size(), 2);
+    for (int index = 0; index < report.uuts.size(); ++index) {
+        QCOMPARE(report.uuts[index].uutId,
+                 QStringLiteral("UUT-%1").arg(index + 1));
+        QCOMPARE(report.uuts[index].serialNumber,
+                 QStringLiteral("ADMIN-000%1").arg(index + 1));
+    }
     QVERIFY(window.close());
 }
 

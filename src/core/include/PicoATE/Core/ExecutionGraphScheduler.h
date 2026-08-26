@@ -53,6 +53,7 @@ public:
                             RuntimeEventEmitter* events = nullptr,
                             ExecutionControl* executionControl = nullptr,
                             StopToken* stopToken = nullptr);
+    ~ExecutionGraphScheduler();
 
     SchedulerResult run(UutExecution& uut, const FrameId& frameId = "root");
     SchedulerStepResult pumpOnce(UutExecution& uut,
@@ -212,6 +213,18 @@ private:
                              bool periodicInvocation = false,
                              int periodicIndex = 0,
                              qint64 periodicCounter = 0);
+    void publishPeriodicTaskEvent(const UutExecution* execution,
+                                  const ExecNode& node,
+                                  const FrameId& frameId,
+                                  const QString& taskInstanceId,
+                                  PeriodicTaskState state,
+                                  int invocationIndex = 0,
+                                  qint64 counter = 0,
+                                  NodeOutcome outcome = NodeOutcome::Unknown,
+                                  const QString& errorCode = {},
+                                  const QString& message = {},
+                                  const QDateTime& nextDueAtUtc = {});
+    void publishResourceEvent(const ResourceTransition& transition);
     void closeOperatorPromptsForNode(const UutExecution& uut,
                                      const ExecNode& completedNode,
                                      const NodeResult& result);
