@@ -882,6 +882,7 @@ private slots:
     void persistentQProcessTransportReusesHostStateAcrossCalls();
     void persistentInstrumentHostReportsHealthReconnectAndShutdown();
     void moduleRuntimeServicesInvokesTransportDeviceSession();
+    void moduleRuntimeServicesRejectsOutOfRangeCanIdentifiersBeforeTransport();
     void deviceSessionOpenAndCloseForwardAttemptLogContext();
     void stationPluginBindingRunsLogicalDeviceThroughNativeHost();
     void executionSessionRunsActionThroughQProcessTransport();
@@ -967,6 +968,7 @@ private slots:
     void sequenceCompilerRejectsInvalidSequenceVariables();
     void operatorPromptRuntimeCompletesInputResponse();
     void operatorPromptRuntimeTracksNoticeClosures();
+    void operatorPromptDefaultCloseTargetFollowsTestItemControlEdge();
     void operatorPromptsConfirmAndCloseOnCompletedStep();
     void operatorPromptJudgmentMapsPassAndFail();
     void operatorPromptInputFeedsLaterStep();
@@ -3579,6 +3581,46 @@ void CoreTests::moduleRuntimeServicesInvokesTransportDeviceSession()
     QVERIFY(manager.session("DMM1"));
     QVERIFY(manager.session("DMM1")->state() != DeviceConnectionState::Connected);
     transport->shutdown();
+}
+
+void CoreTests::moduleRuntimeServicesRejectsOutOfRangeCanIdentifiersBeforeTransport()
+{
+    DeviceSessionManager manager;
+    auto transport = std::make_shared<FakeModuleTransport>();
+    transport->response.outcome = ModuleOutcome::Passed;
+    QVERIFY(manager.registerFactory(
+        std::make_shared<TransportDeviceSessionFactory>(
+            "fake.can", transport, 3000)));
+
+    DeviceSessionConfig config;
+    config.deviceId = QStringLiteral("CAN1.CH1");
+    config.deviceType = QStringLiteral("CAN");
+    config.driverId = QStringLiteral("fake.can");
+    QVERIFY(manager.configureDevice(config));
+
+    ModuleRuntimeServices services(manager);
+    ModuleExecutionContext context;
+    context.uutId = QStringLiteral("UUT-1");
+
+    const auto invalidId = services.invokeDevice(
+        config.deviceId, QStringLiteral("write"),
+        {{QStringLiteral("id"), QStringLiteral("0x20000000")},
+         {QStringLiteral("extended"), true}},
+        context);
+    QCOMPARE(invalidId.outcome, ModuleOutcome::Error);
+    QCOMPARE(invalidId.errorCode, QStringLiteral("InvalidCanFrame"));
+    QVERIFY(invalidId.errorMessage.contains(QStringLiteral("0x20000000")));
+    QVERIFY(invalidId.errorMessage.contains(QStringLiteral("0x1FFFFFFF")));
+    QCOMPARE(transport->callCount, 0);
+
+    const auto invalidFilter = services.invokeDevice(
+        config.deviceId, QStringLiteral("read"),
+        {{QStringLiteral("filterId"), QStringLiteral("536870912")}},
+        context);
+    QCOMPARE(invalidFilter.outcome, ModuleOutcome::Error);
+    QCOMPARE(invalidFilter.errorCode, QStringLiteral("InvalidCanFilter"));
+    QVERIFY(invalidFilter.errorMessage.contains(QStringLiteral("536870912")));
+    QCOMPARE(transport->callCount, 0);
 }
 
 void CoreTests::deviceSessionOpenAndCloseForwardAttemptLogContext()
@@ -11134,6 +11176,63 @@ void CoreTests::operatorPromptRuntimeTracksNoticeClosures()
     QCOMPARE(closures.first().reason, QStringLiteral("target-completed"));
     QVERIFY(runtime.takeClosuresForNode(
                 QStringLiteral("UUT-1"), target, completed).isEmpty());
+}
+
+void CoreTests::operatorPromptDefaultCloseTargetFollowsTestItemControlEdge()
+{
+    const auto json = R"json({
+      "id":"prompt-test-item-default-close",
+      "name":"Prompt TestItem Default Close",
+      "groups":[{
+        "id":"main","kind":"main","steps":[{
+          "id":"inspection","kind":"testItem","steps":[
+            {"id":"notice","kind":"operatorPrompt","prompt":{
+              "mode":"notice","message":"Operate the product"
+            }},
+            {"id":"verify","kind":"wait","name":"Verify operation","ms":1}
+          ]
+        }]
+      }]
+    })json";
+
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(
+        QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty()
+                                           ? QString()
+                                           : compiled.errors.first().message));
+
+    const auto serialEdge = std::find_if(
+        compiled.plan.edges.cbegin(), compiled.plan.edges.cend(),
+        [](const ExecEdge& edge) {
+            return edge.from == QStringLiteral("inspection.notice") &&
+                   edge.to == QStringLiteral("inspection.verify");
+        });
+    QVERIFY(serialEdge != compiled.plan.edges.cend());
+    QCOMPARE(serialEdge->kind, EdgeKind::Control);
+    QCOMPARE(serialEdge->trigger, EdgeTrigger::Finally);
+
+    auto control = std::make_shared<ExecutionControl>();
+    control->operatorPrompts().setResponderAvailable(true);
+    OperatorPromptResponderSink events(control);
+    ExecutionSession session(compiled.plan, {}, &events, control);
+    session.addUut(QStringLiteral("UUT-1"));
+
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(!run.hasError);
+
+    const auto records = events.records();
+    const auto closed = std::find_if(
+        records.cbegin(), records.cend(), [](const RuntimeEvent& event) {
+            return event.kind == RuntimeEventKind::OperatorPromptClosed &&
+                   event.nodeId == QStringLiteral("inspection.notice") &&
+                   event.details.value(QStringLiteral("reason")).toString() ==
+                       QStringLiteral("target-completed");
+        });
+    QVERIFY(closed != records.cend());
+    QCOMPARE(closed->details.value(QStringLiteral("closedByStep")).toString(),
+             QStringLiteral("inspection.verify"));
 }
 
 void CoreTests::operatorPromptsConfirmAndCloseOnCompletedStep()

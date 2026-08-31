@@ -67,6 +67,14 @@ bool readUnsigned(const Plugin::Json& value, std::uint32_t& result)
     }
 }
 
+std::string jsonValueText(const Plugin::Json& value)
+{
+    if (value.is_string()) {
+        return value.get<std::string>();
+    }
+    return value.dump();
+}
+
 bool readData(const Plugin::Json& value,
               std::vector<std::uint8_t>& data,
               std::string& errorMessage)
@@ -157,8 +165,14 @@ OpenOptions optionsFromInputs(const Plugin::Json& input)
 bool frameFromInputs(const Plugin::Json& object, Frame& frame, std::string& errorMessage)
 {
     const auto id = object.find("id");
-    if (id == object.end() || !readUnsigned(*id, frame.id)) {
-        errorMessage = "id must be a standard or extended CAN identifier";
+    if (id == object.end()) {
+        errorMessage = "CAN id is missing; allowed range is 0x000 to 0x7FF "
+                       "or 0x00000000 to 0x1FFFFFFF for extended frames";
+        return false;
+    }
+    if (!readUnsigned(*id, frame.id) || frame.id > 0x1FFFFFFFU) {
+        errorMessage = "CAN id value " + jsonValueText(*id) +
+            " is invalid; allowed range is 0x00000000 to 0x1FFFFFFF";
         return false;
     }
     const auto inputData = object.find("data");
@@ -167,7 +181,9 @@ bool frameFromInputs(const Plugin::Json& object, Frame& frame, std::string& erro
     }
     frame.extended = Plugin::boolValue(object, "extended", frame.id > 0x7FF);
     if (!frame.extended && frame.id > 0x7FF) {
-        errorMessage = "standard CAN id must be in range 0x000..0x7FF; enable extended for 0x00000000..0x1FFFFFFF";
+        errorMessage = "CAN id value " + identifierText(frame.id, true) +
+            " is invalid for a standard frame; allowed range is 0x000 to 0x7FF "
+            "or enable Extended Frame";
         return false;
     }
     frame.remote = Plugin::boolValue(object, "remote", false);
@@ -325,11 +341,21 @@ Plugin::Json execute(const Plugin::Json& request)
     if (function == "read") {
         std::uint32_t filterId = 0;
         std::uint32_t filterMask = 0;
-        if (const auto value = input.find("filterId"); value != input.end() && !readUnsigned(*value, filterId)) {
-            return Plugin::errorResponse("InvalidCanFilter", "filterId is invalid");
+        if (const auto value = input.find("filterId"); value != input.end()) {
+            if (!readUnsigned(*value, filterId) || filterId > 0x1FFFFFFFU) {
+                return Plugin::errorResponse(
+                    "InvalidCanFilter",
+                    "filterId value " + jsonValueText(*value) +
+                        " is invalid; allowed range is 0x00000000 to 0x1FFFFFFF");
+            }
         }
-        if (const auto value = input.find("filterMask"); value != input.end() && !readUnsigned(*value, filterMask)) {
-            return Plugin::errorResponse("InvalidCanFilter", "filterMask is invalid");
+        if (const auto value = input.find("filterMask"); value != input.end()) {
+            if (!readUnsigned(*value, filterMask) || filterMask > 0x1FFFFFFFU) {
+                return Plugin::errorResponse(
+                    "InvalidCanFilter",
+                    "filterMask value " + jsonValueText(*value) +
+                        " is invalid; allowed range is 0x00000000 to 0x1FFFFFFF");
+            }
         }
         const auto timeoutMs = Plugin::numberValue(input, "timeoutMs", 1000);
         PicoATE_Log("CAN_RECV wait filterId=0x{:X} mask=0x{:X} timeoutMs={}",
@@ -366,13 +392,21 @@ Plugin::Json execute(const Plugin::Json& request)
         }
         std::uint32_t filterId = transmitFrame.id;
         std::uint32_t filterMask = transmitFrame.extended ? 0x1FFFFFFF : 0x7FF;
-        if (const auto value = input.find("rxId"); value != input.end() &&
-            !readUnsigned(*value, filterId)) {
-            return Plugin::errorResponse("InvalidCanFilter", "rxId must be in range 0x00000000..0x1FFFFFFF");
+        if (const auto value = input.find("rxId"); value != input.end()) {
+            if (!readUnsigned(*value, filterId) || filterId > 0x1FFFFFFFU) {
+                return Plugin::errorResponse(
+                    "InvalidCanFilter",
+                    "rxId value " + jsonValueText(*value) +
+                        " is invalid; allowed range is 0x00000000 to 0x1FFFFFFF");
+            }
         }
-        if (const auto value = input.find("rxMask"); value != input.end() &&
-            !readUnsigned(*value, filterMask)) {
-            return Plugin::errorResponse("InvalidCanFilter", "rxMask must be in range 0x00000000..0x1FFFFFFF");
+        if (const auto value = input.find("rxMask"); value != input.end()) {
+            if (!readUnsigned(*value, filterMask) || filterMask > 0x1FFFFFFFU) {
+                return Plugin::errorResponse(
+                    "InvalidCanFilter",
+                    "rxMask value " + jsonValueText(*value) +
+                        " is invalid; allowed range is 0x00000000 to 0x1FFFFFFF");
+            }
         }
         const auto result = can.receive(options,
                                         filterId,

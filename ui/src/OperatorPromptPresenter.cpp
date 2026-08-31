@@ -112,6 +112,8 @@ public:
     QPushButton* passButton() const { return m_passButton; }
     QPushButton* failButton() const { return m_failButton; }
     QString currentInstanceId() const { return m_currentInstanceId; }
+    QString inputText() const { return m_inputEdit->text(); }
+    bool responsePending() const { return m_responsePending; }
 
     bool inputValues(QVariantMap& values)
     {
@@ -209,6 +211,7 @@ public:
 
     void setResponsePending(bool pending)
     {
+        m_responsePending = pending;
         for (auto* button : {m_confirmButton, m_passButton, m_failButton}) {
             button->setEnabled(!pending);
         }
@@ -313,6 +316,7 @@ private:
     QString m_inputType = QStringLiteral("text");
     bool m_isInput = false;
     bool m_allowClose = false;
+    bool m_responsePending = false;
 };
 
 } // namespace
@@ -349,6 +353,7 @@ void OperatorPromptPresenter::closeAll()
             dialogs.insert(dialog.data());
         }
     }
+    m_activePromptEvents.clear();
     m_dialogs.clear();
     m_dialogsByKey.clear();
     for (auto* dialog : std::as_const(dialogs)) {
@@ -362,6 +367,43 @@ void OperatorPromptPresenter::setSequencePath(QString sequencePath)
     m_sequencePath = sequencePath.isEmpty()
         ? QString{}
         : QFileInfo(sequencePath).absoluteFilePath();
+}
+
+void OperatorPromptPresenter::rehostActivePromptsInOverview()
+{
+    if (!m_overviewHost || !m_overviewHost->isVisible()) {
+        return;
+    }
+
+    QVector<OperatorPromptDialog*> rehostedDialogs;
+    for (auto it = m_dialogs.constBegin(); it != m_dialogs.constEnd(); ++it) {
+        auto* dialog = static_cast<OperatorPromptDialog*>(it.value().data());
+        if (!dialog || dialog->currentInstanceId() != it.key()) {
+            continue;
+        }
+        const auto eventIt = m_activePromptEvents.constFind(it.key());
+        if (eventIt == m_activePromptEvents.constEnd()) {
+            continue;
+        }
+
+        auto event = eventIt.value();
+        if (event.details.value(QStringLiteral("mode")).toString() ==
+            QStringLiteral("input")) {
+            event.details.insert(QStringLiteral("defaultValue"),
+                                 dialog->inputText());
+        }
+        if (!m_overviewHost->presentOperatorPrompt(event, m_sequencePath)) {
+            continue;
+        }
+        m_overviewHost->setOperatorPromptResponsePending(
+            it.key(), dialog->responsePending());
+        rehostedDialogs.push_back(dialog);
+    }
+
+    for (auto* dialog : std::as_const(rehostedDialogs)) {
+        removeDialogMappings(dialog);
+        dialog->dismiss();
+    }
 }
 
 void OperatorPromptPresenter::setOverviewHost(
@@ -397,7 +439,11 @@ void OperatorPromptPresenter::setOverviewHost(
 void OperatorPromptPresenter::showPrompt(const PicoATE::Core::RuntimeEvent& event)
 {
     const auto instanceId = event.details.value("promptInstanceId").toString();
-    if (instanceId.isEmpty() || m_dialogs.contains(instanceId) ||
+    if (instanceId.isEmpty()) {
+        return;
+    }
+    m_activePromptEvents.insert(instanceId, event);
+    if (m_dialogs.contains(instanceId) ||
         (m_overviewHost && m_overviewHost->hasOperatorPrompt(instanceId))) {
         return;
     }
@@ -489,6 +535,7 @@ void OperatorPromptPresenter::showPrompt(const PicoATE::Core::RuntimeEvent& even
 
 void OperatorPromptPresenter::closePrompt(const QString& instanceId)
 {
+    m_activePromptEvents.remove(instanceId);
     if (m_overviewHost && m_overviewHost->closeOperatorPrompt(instanceId)) {
         return;
     }

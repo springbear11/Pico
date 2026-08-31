@@ -431,6 +431,7 @@ private slots:
     void flowEditorAddsAndLocksStandardSequenceGroups();
     void resourceRegionGutterTogglesBoundariesAndSelectsHardware();
     void sequenceVariablesToolbarEditsPerUutValuesAndFeedsFxMenu();
+    void sequenceVariablesDeleteUsesExplicitStableSelection();
     void ctrlSaveCommitsCurrentStepDraftWithoutPrompt();
     void deletingStepDiscardsItsInvalidPropertyDraft();
     void switchingStepsKeepsDraftWithoutPrompt();
@@ -452,6 +453,7 @@ private slots:
     void operatorPromptDialogValidatesInputMode();
     void operatorPromptDialogReusesKeyForJudgment();
     void operatorPromptsUseTheirMatchingOverviewCards();
+    void operatorPromptsReturnToCardsAfterOverviewNavigation();
     void oncePerBatchOperatorPromptCoversAllOverviewCards();
     void messageBoxPropertyEditorSwitchesConfirmationMode();
     void messageBoxPropertyEditorConfiguresJudgmentMode();
@@ -2297,6 +2299,54 @@ void MainWindowLifecycleTests::sequenceVariablesToolbarEditsPerUutValuesAndFeeds
     QCOMPARE(document->sequenceVariables().size(), 1);
     document->undoStack()->setClean();
     QVERIFY(window.close());
+}
+
+void MainWindowLifecycleTests::sequenceVariablesDeleteUsesExplicitStableSelection()
+{
+    const auto variables = QJsonDocument::fromJson(R"json({
+      "variables":[
+        {"name":"CAN_ID","type":"hex","scope":"shared","value":"0x101"},
+        {"name":"FILTER_ID","type":"hex","scope":"shared","value":"0x102"}
+      ]
+    })json").object().value(QStringLiteral("variables")).toArray();
+    SequenceVariablesDialog dialog(variables);
+    dialog.show();
+    QTest::qWait(20);
+
+    auto* table = dialog.findChild<QTableWidget*>(
+        QStringLiteral("sequenceVariablesTable"));
+    auto* remove = dialog.findChild<QPushButton*>(
+        QStringLiteral("removeSequenceVariableButton"));
+    QVERIFY(table);
+    QVERIFY(remove);
+    QCOMPARE(table->selectionMode(), QAbstractItemView::SingleSelection);
+    QVERIFY(!remove->isEnabled());
+
+    const auto firstCell = table->visualItemRect(table->item(0, 0)).center();
+    QTest::mouseClick(table->viewport(), Qt::LeftButton,
+                      Qt::NoModifier, firstCell);
+    QVERIFY(remove->isEnabled());
+    QCOMPARE(table->selectionModel()->selectedRows().first().row(), 0);
+
+    auto* secondType = qobject_cast<QComboBox*>(table->cellWidget(1, 1));
+    QVERIFY(secondType);
+    secondType->setFocus(Qt::MouseFocusReason);
+    QCoreApplication::processEvents();
+    QCOMPARE(table->selectionModel()->selectedRows().first().row(), 0);
+
+    QTimer::singleShot(0, [] {
+        auto* message = qobject_cast<QMessageBox*>(
+            QApplication::activeModalWidget());
+        QVERIFY(message);
+        auto* yes = message->button(QMessageBox::Yes);
+        QVERIFY(yes);
+        yes->click();
+    });
+    remove->click();
+    QCOMPARE(table->rowCount(), 1);
+    QCOMPARE(table->item(0, 0)->text(), QStringLiteral("FILTER_ID"));
+    QVERIFY(!remove->isEnabled());
+    QVERIFY(table->selectionModel()->selectedRows().isEmpty());
 }
 
 void MainWindowLifecycleTests::ctrlSaveCommitsCurrentStepDraftWithoutPrompt()
@@ -4376,6 +4426,12 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
         QStringLiteral("adminBackToUutOverview"));
     auto* runSidebar = window.findChild<QWidget*>(
         QStringLiteral("adminRunSidebar"));
+    auto* overviewSummary = window.findChild<QWidget*>(
+        QStringLiteral("adminOverviewSummary"));
+    auto* overviewSummaryState = window.findChild<QLabel*>(
+        QStringLiteral("adminOverviewSummaryState"));
+    auto* overviewYieldChart = window.findChild<QWidget*>(
+        QStringLiteral("adminOverviewYieldChart"));
     auto* serialCaption = window.findChild<QLabel*>(
         QStringLiteral("adminSerialCaption"));
     auto* serialLabel = window.findChild<QLabel*>(
@@ -4398,6 +4454,11 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
     QVERIFY(uutNavigation);
     QVERIFY(backButton);
     QVERIFY(runSidebar);
+    QVERIFY(overviewSummary);
+    QVERIFY(overviewSummaryState);
+    QVERIFY(overviewYieldChart);
+    QVERIFY(!window.findChild<QLabel*>(
+        QStringLiteral("adminOverviewYieldValue")));
     QVERIFY(serialCaption);
     QVERIFY(serialLabel);
     QVERIFY(progressPanel);
@@ -4453,6 +4514,11 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
     QVERIFY(backButton->isEnabled());
     QVERIFY(backButton->isChecked());
     QCOMPARE(runStack->currentWidget(), overviewPage);
+    QVERIFY(runSidebar->isHidden());
+    QVERIFY(overviewSummary->isVisible());
+    QVERIFY(overviewYieldChart->isVisible());
+    QVERIFY(overviewYieldChart->mapTo(overviewSummary, QPoint()).x() >
+            overviewSummaryState->mapTo(overviewSummary, QPoint()).x());
     QCOMPARE(overviewModel->rowCount(), 4);
     for (int row = 0; row < overviewModel->rowCount(); ++row) {
         const auto entry = overviewModel->entryAt(row);
@@ -4474,7 +4540,8 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
 
     QTRY_COMPARE_WITH_TIMEOUT(overviewModel->rowCount(), 4, 1000);
     QCOMPARE(runStack->currentWidget(), overviewPage);
-    QVERIFY(runSidebar->isVisible());
+    QVERIFY(runSidebar->isHidden());
+    QVERIFY(overviewSummary->isVisible());
     QVERIFY(serialCaption->isHidden());
     QVERIFY(serialLabel->isHidden());
     QVERIFY(backButton->isVisible());
@@ -4487,6 +4554,10 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
                              viewModel->state() == UiRunState::Failed,
                              5000);
     QCOMPARE(overallResult->text(), QStringLiteral("COMPLETED"));
+    QCOMPARE(overviewSummaryState->text(), QStringLiteral("COMPLETED"));
+    QCOMPARE(overviewYieldChart->property("passedCount").toInt() +
+                 overviewYieldChart->property("failedCount").toInt(),
+             4);
     const int overviewResultPointSize = overallResult->font().pointSize();
     QVERIFY(overviewResultPointSize <= 14);
     QCOMPARE(overviewModel->rowCount(), 4);
@@ -4546,6 +4617,8 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
                  ? QStringLiteral("PASS")
                  : QStringLiteral("FAIL"));
     QVERIFY(overallResult->font().pointSize() > overviewResultPointSize);
+    QVERIFY(runSidebar->isVisible());
+    QVERIFY(!overviewSummary->isVisible());
     QVERIFY(serialCaption->isVisible());
     QVERIFY(serialLabel->isVisible());
     QVERIFY(progressPanel->isVisible());
@@ -4574,6 +4647,8 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
 
     QTest::mouseClick(backButton, Qt::LeftButton);
     QCOMPARE(runStack->currentWidget(), overviewPage);
+    QVERIFY(runSidebar->isHidden());
+    QVERIFY(overviewSummary->isVisible());
     QVERIFY(serialCaption->isHidden());
     QVERIFY(serialLabel->isHidden());
     QVERIFY(progressPanel->isHidden());
@@ -4598,7 +4673,9 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
     QVERIFY(cardsHost);
     QVERIFY(firstPairCard);
     QVERIFY(secondPairCard);
-    QTRY_VERIFY_WITH_TIMEOUT(firstPairCard->height() <= 280, 500);
+    QTRY_VERIFY_WITH_TIMEOUT(firstPairCard->height() > 280, 500);
+    QVERIFY(firstPairCard->height() <= 460);
+    QCOMPARE(firstPairCard->height(), secondPairCard->height());
     QTRY_VERIFY_WITH_TIMEOUT(firstPairCard->y() > 0, 500);
     QCOMPARE(firstPairCard->y(), secondPairCard->y());
     const int cardCenterY = firstPairCard->geometry().center().y();
@@ -7426,6 +7503,127 @@ void MainWindowLifecycleTests::operatorPromptsUseTheirMatchingOverviewCards()
 
     presenter.closeAll();
     QVERIFY(!firstOverlay->isVisible());
+    viewModel.shutdown();
+}
+
+void MainWindowLifecycleTests::operatorPromptsReturnToCardsAfterOverviewNavigation()
+{
+    QWidget owner;
+    auto* layout = new QVBoxLayout(&owner);
+    auto* stack = new QStackedWidget(&owner);
+    auto* overview = new MultiUutOverviewWidget(stack);
+    auto* details = new QWidget(stack);
+    auto* model = new UutOverviewModel(&owner);
+    stack->addWidget(overview);
+    stack->addWidget(details);
+    layout->addWidget(stack);
+    overview->setModel(model);
+
+    QVector<RunRequest::UutInput> uuts;
+    for (int index = 1; index <= 2; ++index) {
+        RunRequest::UutInput input;
+        input.uutId = QStringLiteral("UUT-%1").arg(index);
+        input.variables.insert(
+            QStringLiteral("serialNumber"),
+            QStringLiteral("BTSN00000%1").arg(index));
+        uuts.push_back(std::move(input));
+    }
+    model->resetForRun({}, uuts);
+    owner.resize(980, 520);
+    owner.show();
+    QTRY_VERIFY(overview->isVisible());
+
+    ExecutionViewModel viewModel;
+    OperatorPromptPresenter presenter(&viewModel, &owner);
+    presenter.setOverviewHost(overview);
+
+    QVector<PicoATE::Core::RuntimeEvent> notices;
+    for (int index = 1; index <= 2; ++index) {
+        PicoATE::Core::RuntimeEvent notice;
+        notice.kind = PicoATE::Core::RuntimeEventKind::OperatorPromptRequested;
+        notice.uutId = QStringLiteral("UUT-%1").arg(index);
+        notice.details = {
+            {QStringLiteral("promptInstanceId"),
+             QStringLiteral("uut-%1-notice").arg(index)},
+            {QStringLiteral("mode"), QStringLiteral("notice")},
+            {QStringLiteral("message"),
+             QStringLiteral("Observe UUT-%1").arg(index)},
+        };
+        notices.push_back(std::move(notice));
+    }
+    presenter.applyRuntimeEvents(notices);
+
+    stack->setCurrentWidget(details);
+    QTRY_VERIFY(!overview->isVisible());
+
+    QVector<PicoATE::Core::RuntimeEvent> judgments;
+    for (int index = 1; index <= 2; ++index) {
+        auto judgment = notices.at(index - 1);
+        judgment.details.insert(
+            QStringLiteral("promptInstanceId"),
+            QStringLiteral("uut-%1-judgment").arg(index));
+        judgment.details.insert(QStringLiteral("mode"),
+                                QStringLiteral("judgment"));
+        judgment.details.insert(
+            QStringLiteral("message"),
+            QStringLiteral("Judge UUT-%1").arg(index));
+        judgments.push_back(std::move(judgment));
+    }
+    presenter.applyRuntimeEvents(judgments);
+    QTRY_COMPARE(owner.findChildren<QDialog*>(
+                     QStringLiteral("operatorPromptDialog")).size(),
+                 2);
+
+    stack->setCurrentWidget(overview);
+    presenter.rehostActivePromptsInOverview();
+    QTRY_VERIFY(overview->isVisible());
+    QTRY_VERIFY([&owner] {
+        const auto dialogs = owner.findChildren<QDialog*>(
+            QStringLiteral("operatorPromptDialog"));
+        return std::none_of(
+            dialogs.cbegin(), dialogs.cend(),
+            [](const QDialog* dialog) { return dialog->isVisible(); });
+    }());
+
+    for (int index = 1; index <= 2; ++index) {
+        auto* card = owner.findChild<QAbstractButton*>(
+            QStringLiteral("uutOverviewCard_%1").arg(index));
+        QVERIFY(card);
+        auto* overlay = card->findChild<QWidget*>(
+            QStringLiteral("uutOverviewPromptOverlay"));
+        QVERIFY(overlay);
+        QTRY_VERIFY(overlay->isVisible());
+        QCOMPARE(overlay->findChild<QLabel*>(
+                     QStringLiteral("uutOverviewPromptMessage"))->text(),
+                 QStringLiteral("Judge UUT-%1").arg(index));
+        QVERIFY(overlay->findChild<QPushButton*>(
+            QStringLiteral("uutOverviewPromptPassButton"))->isVisible());
+        QVERIFY(overlay->findChild<QPushButton*>(
+            QStringLiteral("uutOverviewPromptFailButton"))->isVisible());
+    }
+
+    QVector<PicoATE::Core::RuntimeEvent> noticeClosedEvents;
+    for (int index = 1; index <= 2; ++index) {
+        PicoATE::Core::RuntimeEvent closed;
+        closed.kind = PicoATE::Core::RuntimeEventKind::OperatorPromptClosed;
+        closed.details.insert(
+            QStringLiteral("promptInstanceId"),
+            QStringLiteral("uut-%1-notice").arg(index));
+        noticeClosedEvents.push_back(std::move(closed));
+    }
+    presenter.applyRuntimeEvents(noticeClosedEvents);
+    for (int index = 1; index <= 2; ++index) {
+        auto* card = owner.findChild<QAbstractButton*>(
+            QStringLiteral("uutOverviewCard_%1").arg(index));
+        auto* overlay = card->findChild<QWidget*>(
+            QStringLiteral("uutOverviewPromptOverlay"));
+        QVERIFY(overlay->isVisible());
+        QCOMPARE(overlay->findChild<QLabel*>(
+                     QStringLiteral("uutOverviewPromptMessage"))->text(),
+                 QStringLiteral("Judge UUT-%1").arg(index));
+    }
+
+    presenter.closeAll();
     viewModel.shutdown();
 }
 

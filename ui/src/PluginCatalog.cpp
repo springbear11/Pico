@@ -527,6 +527,161 @@ void validateParameterValue(const QJsonValue& value,
     }
 }
 
+struct SequenceVariableCandidate {
+    QJsonValue value;
+    QString location;
+};
+
+using SequenceVariableCandidates =
+    QHash<QString, QVector<SequenceVariableCandidate>>;
+
+SequenceVariableCandidates collectSequenceVariableCandidates(
+    const QJsonObject& sequence)
+{
+    SequenceVariableCandidates result;
+    const auto variables = sequence.value(QStringLiteral("variables")).toArray();
+    for (int index = 0; index < variables.size(); ++index) {
+        if (!variables[index].isObject()) {
+            continue;
+        }
+        const auto variable = variables[index].toObject();
+        const auto name = variable.value(QStringLiteral("name")).toString().trimmed();
+        if (name.isEmpty()) {
+            continue;
+        }
+        QVector<SequenceVariableCandidate> candidates;
+        if (variable.value(QStringLiteral("scope")).toString() ==
+            QStringLiteral("perUut")) {
+            const auto values = variable.value(QStringLiteral("values")).toArray();
+            for (int valueIndex = 0; valueIndex < values.size(); ++valueIndex) {
+                if (!values[valueIndex].isUndefined() &&
+                    !values[valueIndex].isNull()) {
+                    candidates.push_back({
+                        values[valueIndex],
+                        QStringLiteral("%1 (UUT%2)").arg(name).arg(valueIndex + 1),
+                    });
+                }
+            }
+        } else if (variable.contains(QStringLiteral("value"))) {
+            candidates.push_back({variable.value(QStringLiteral("value")), name});
+        }
+        result.insert(name, std::move(candidates));
+    }
+    return result;
+}
+
+std::optional<QString> exactSequenceVariableName(const QJsonValue& value)
+{
+    if (!value.isString()) {
+        return std::nullopt;
+    }
+    static const QRegularExpression pattern(
+        QStringLiteral(R"(^\$\{var\.([A-Za-z_][A-Za-z0-9_]*)\}$)"));
+    const auto match = pattern.match(value.toString().trimmed());
+    return match.hasMatch()
+        ? std::optional<QString>(match.captured(1))
+        : std::nullopt;
+}
+
+QString jsonValueText(const QJsonValue& value)
+{
+    if (value.isString()) {
+        return value.toString();
+    }
+    if (value.isDouble()) {
+        return QString::number(value.toDouble(), 'g', 16);
+    }
+    if (value.isBool()) {
+        return value.toBool() ? QStringLiteral("true")
+                              : QStringLiteral("false");
+    }
+    return QString::fromUtf8(
+        QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact))
+        .mid(1).chopped(1);
+}
+
+bool parseCanIdentifier(const QJsonValue& value, quint32& identifier)
+{
+    if (value.isDouble()) {
+        const double number = value.toDouble(-1.0);
+        if (!std::isfinite(number) || number < 0.0 ||
+            std::floor(number) != number ||
+            number > static_cast<double>(0x1FFFFFFF)) {
+            return false;
+        }
+        identifier = static_cast<quint32>(number);
+        return true;
+    }
+    if (!value.isString()) {
+        return false;
+    }
+    const auto text = value.toString().trimmed();
+    bool ok = false;
+    const auto number = text.startsWith(QStringLiteral("0x"),
+                                        Qt::CaseInsensitive)
+        ? text.mid(2).toULongLong(&ok, 16)
+        : text.toULongLong(&ok, 10);
+    if (!ok || number > 0x1FFFFFFFULL) {
+        return false;
+    }
+    identifier = static_cast<quint32>(number);
+    return true;
+}
+
+void validateCanIdentifierInput(
+    const QJsonObject& inputs,
+    const QString& key,
+    const QString& inputPath,
+    const SequenceVariableCandidates& variables,
+    QVector<PluginBindingDiagnostic>& diagnostics)
+{
+    if (!inputs.contains(key)) {
+        return;
+    }
+
+    const auto configured = inputs.value(key);
+    QVector<SequenceVariableCandidate> candidates;
+    if (const auto variableName = exactSequenceVariableName(configured)) {
+        const auto iterator = variables.constFind(*variableName);
+        if (iterator == variables.constEnd()) {
+            return;
+        }
+        candidates = iterator.value();
+    } else if (isRuntimeExpression(configured)) {
+        return;
+    } else {
+        candidates.push_back({configured, {}});
+    }
+
+    const auto displayName = key == QStringLiteral("id")
+        ? QStringLiteral("CAN ID")
+        : (key == QStringLiteral("filterId")
+               ? QStringLiteral("Filter ID")
+               : QStringLiteral("Filter Mask"));
+    const bool standardFrame = key == QStringLiteral("id") &&
+        !inputs.value(QStringLiteral("extended")).toBool(false);
+    const quint32 maximum = standardFrame ? 0x7FFU : 0x1FFFFFFFU;
+    const auto range = standardFrame
+        ? QStringLiteral("0x000 to 0x7FF (Extended Frame is OFF)")
+        : QStringLiteral("0x00000000 to 0x1FFFFFFF");
+
+    for (const auto& candidate : candidates) {
+        quint32 parsed = 0;
+        if (parseCanIdentifier(candidate.value, parsed) && parsed <= maximum) {
+            continue;
+        }
+        const auto source = candidate.location.isEmpty()
+            ? QString{}
+            : QStringLiteral(" from variable %1").arg(candidate.location);
+        addBindingDiagnostic(
+            diagnostics,
+            inputPath,
+            QStringLiteral("%1 value %2%3 is outside the allowed range %4")
+                .arg(displayName, jsonValueText(candidate.value), source, range),
+            QStringLiteral("Correct the configured value before running this sequence"));
+    }
+}
+
 const PluginManifest* findPlugin(const QVector<PluginManifest>& plugins,
                                  const QString& moduleId)
 {
@@ -561,6 +716,7 @@ void validateStepPluginInputs(
     const QString& path,
     const QVector<PluginManifest>& plugins,
     const QHash<QString, QJsonObject>& stationDevices,
+    const SequenceVariableCandidates& variables,
     QVector<PluginBindingDiagnostic>& diagnostics)
 {
     const auto moduleId = step.value(QStringLiteral("moduleId"))
@@ -642,6 +798,18 @@ void validateStepPluginInputs(
         }
         validateParameterValue(value, inputPath, definition, diagnostics);
     }
+
+    if (plugin->category.compare(QStringLiteral("CAN"),
+                                 Qt::CaseInsensitive) == 0) {
+        for (const auto& key : {QStringLiteral("id"),
+                                QStringLiteral("filterId"),
+                                QStringLiteral("filterMask")}) {
+            validateCanIdentifierInput(
+                inputs, key,
+                QStringLiteral("%1.inputs.%2").arg(path, key),
+                variables, diagnostics);
+        }
+    }
 }
 
 void validateStepArray(
@@ -650,6 +818,7 @@ void validateStepArray(
     bool parentEnabled,
     const QVector<PluginManifest>& plugins,
     const QHash<QString, QJsonObject>& stationDevices,
+    const SequenceVariableCandidates& variables,
     QVector<PluginBindingDiagnostic>& diagnostics)
 {
     for (int index = 0; index < steps.size(); ++index) {
@@ -664,12 +833,12 @@ void validateStepArray(
             continue;
         }
         validateStepPluginInputs(
-            step, stepPath, plugins, stationDevices, diagnostics);
+            step, stepPath, plugins, stationDevices, variables, diagnostics);
         const auto children = step.value(QStringLiteral("steps"));
         if (children.isArray()) {
             validateStepArray(
                 children.toArray(), stepPath + QStringLiteral(".steps"),
-                enabled, plugins, stationDevices, diagnostics);
+                enabled, plugins, stationDevices, variables, diagnostics);
         }
     }
 }
@@ -1075,6 +1244,7 @@ QVector<PluginBindingDiagnostic> PluginCatalog::validateSequenceInputs(
     const QJsonObject& station)
 {
     QVector<PluginBindingDiagnostic> result;
+    const auto variables = collectSequenceVariableCandidates(sequence);
     QHash<QString, QJsonObject> devices;
     for (const auto& value : station.value(QStringLiteral("devices")).toArray()) {
         if (!value.isObject()) {
@@ -1102,7 +1272,7 @@ QVector<PluginBindingDiagnostic> PluginCatalog::validateSequenceInputs(
             validateStepArray(
                 steps.toArray(),
                 QStringLiteral("groups[%1].steps").arg(index),
-                enabled, plugins, devices, result);
+                enabled, plugins, devices, variables, result);
         }
     }
     return result;

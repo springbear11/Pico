@@ -26,6 +26,7 @@ public:
 
     void applyRuntimeEvents(const QVector<PicoATE::Core::RuntimeEvent>& events);
     void closeAll();
+    void rehostActivePromptsInOverview();
     void setSequencePath(QString sequencePath);
     void setOverviewHost(MultiUutOverviewWidget* overviewHost);
 
@@ -39,6 +40,7 @@ private:
     QWidget* m_owner = nullptr;
     QPointer<MultiUutOverviewWidget> m_overviewHost;
     QString m_sequencePath;
+    QHash<QString, PicoATE::Core::RuntimeEvent> m_activePromptEvents;
     QHash<QString, QPointer<QDialog>> m_dialogs;
     QHash<QString, QPointer<QDialog>> m_dialogsByKey;
 };

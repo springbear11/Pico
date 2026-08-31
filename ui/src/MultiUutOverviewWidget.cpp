@@ -34,6 +34,10 @@ namespace PicoATE::Ui {
 
 namespace {
 
+constexpr int PairCardMinimumHeight = 280;
+constexpr int PairCardMaximumHeight = 460;
+constexpr double PairCardHeightRatio = 0.82;
+
 struct CardPalette {
     QColor background;
     QColor border;
@@ -624,6 +628,32 @@ QString promptPresentationKey(const PicoATE::Core::RuntimeEvent& event)
         .trimmed();
 }
 
+QString promptMode(const PicoATE::Core::RuntimeEvent& event)
+{
+    return event.details.value(QStringLiteral("mode"))
+        .toString()
+        .trimmed()
+        .toLower();
+}
+
+bool mayReplaceDisplayedPrompt(
+    const PicoATE::Core::RuntimeEvent& current,
+    const PicoATE::Core::RuntimeEvent& next)
+{
+    const auto currentKey = promptPresentationKey(current);
+    const auto nextKey = promptPresentationKey(next);
+    if (!currentKey.isEmpty() && currentKey == nextKey) {
+        return true;
+    }
+
+    // A condition-close notice does not require an operator response. If the
+    // same UUT reaches an interactive prompt before its close event is
+    // presented, the interactive prompt must take over the card instead of
+    // falling back to a window-level dialog.
+    return promptMode(current) == QStringLiteral("notice") &&
+           promptMode(next) != QStringLiteral("notice");
+}
+
 bool isOncePerBatchPrompt(const PicoATE::Core::RuntimeEvent& event)
 {
     auto scope = event.details.value(QStringLiteral("executionScope"))
@@ -1121,9 +1151,27 @@ public:
     void setCenteredRow(bool centered)
     {
         setSizePolicy(QSizePolicy::Expanding,
-                      centered ? QSizePolicy::Preferred
+                      centered ? QSizePolicy::Fixed
                                : QSizePolicy::Expanding);
-        setMaximumHeight(centered ? 305 : QWIDGETSIZE_MAX);
+        if (!centered) {
+            setMinimumHeight(260);
+            setMaximumHeight(QWIDGETSIZE_MAX);
+        }
+    }
+
+    void setPairLayoutHeight(int availableHeight)
+    {
+        const int targetHeight = qBound(
+            PairCardMinimumHeight,
+            qRound(qMax(0, availableHeight) * PairCardHeightRatio),
+            PairCardMaximumHeight);
+        if (minimumHeight() == targetHeight &&
+            maximumHeight() == targetHeight) {
+            return;
+        }
+        setMinimumHeight(targetHeight);
+        setMaximumHeight(targetHeight);
+        updateGeometry();
     }
 
     void showOperatorPrompt(
@@ -1628,12 +1676,8 @@ bool MultiUutOverviewWidget::presentOperatorPrompt(
         const auto currentId = m_currentBatchPromptId;
         if (!currentId.isEmpty() && currentId != instanceId) {
             const auto current = m_activePrompts.constFind(currentId);
-            const auto currentKey = current == m_activePrompts.constEnd()
-                ? QString{}
-                : promptPresentationKey(current->event);
-            const auto nextKey = promptPresentationKey(event);
-            if (currentKey.isEmpty() || nextKey.isEmpty() ||
-                currentKey != nextKey) {
+            if (current == m_activePrompts.constEnd() ||
+                !mayReplaceDisplayedPrompt(current->event, event)) {
                 return false;
             }
         }
@@ -1681,11 +1725,8 @@ bool MultiUutOverviewWidget::presentOperatorPrompt(
     const auto currentId = m_currentPromptByUut.value(event.uutId);
     if (!currentId.isEmpty() && currentId != instanceId) {
         const auto current = m_activePrompts.constFind(currentId);
-        const auto currentKey = current == m_activePrompts.constEnd()
-            ? QString{}
-            : promptPresentationKey(current->event);
-        const auto nextKey = promptPresentationKey(event);
-        if (currentKey.isEmpty() || nextKey.isEmpty() || currentKey != nextKey) {
+        if (current == m_activePrompts.constEnd() ||
+            !mayReplaceDisplayedPrompt(current->event, event)) {
             return false;
         }
     }
@@ -1856,6 +1897,7 @@ void MultiUutOverviewWidget::rebuildCards()
     }
     m_gridRowCount = centeredPair ? 3 : gridRows;
     m_gridColumnCount = columns;
+    updatePairCardHeights();
     restoreBatchOperatorPrompt();
     updateSummary();
     refreshSharedPeriodicTasks();
@@ -1940,6 +1982,9 @@ bool MultiUutOverviewWidget::eventFilter(QObject* watched, QEvent* event)
         (event->type() == QEvent::Resize || event->type() == QEvent::Show ||
          event->type() == QEvent::LayoutRequest)) {
         updateBatchPromptGeometry();
+        if (event->type() == QEvent::Resize || event->type() == QEvent::Show) {
+            updatePairCardHeights();
+        }
     }
     return QWidget::eventFilter(watched, event);
 }
@@ -1953,6 +1998,19 @@ void MultiUutOverviewWidget::showEvent(QShowEvent* event)
         refreshCards();
     }
     updateBatchPromptGeometry();
+    updatePairCardHeights();
+}
+
+void MultiUutOverviewWidget::updatePairCardHeights()
+{
+    if (!m_cardsHost || m_cards.size() != 2) {
+        return;
+    }
+    const int availableHeight = m_cardsHost->height();
+    for (auto* button : std::as_const(m_cards)) {
+        static_cast<UutOverviewCard*>(button)->setPairLayoutHeight(
+            availableHeight);
+    }
 }
 
 void MultiUutOverviewWidget::updateSummary()

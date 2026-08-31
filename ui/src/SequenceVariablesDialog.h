@@ -5,6 +5,7 @@
 #include <QJsonObject>
 
 class QLabel;
+class QEvent;
 class QPushButton;
 class QTableWidget;
 
@@ -22,6 +23,9 @@ public:
 
     void accept() override;
 
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private:
     enum Column {
         NameColumn,
@@ -34,9 +38,14 @@ private:
     static constexpr int DefaultUutColumnCount = 4;
     static constexpr int MaximumUutColumnCount = 64;
 
-    void appendVariable(const QJsonObject& variable = {});
+    void appendVariable(const QJsonObject& variable = {},
+                        bool selectNewRow = true);
     void appendUutColumn();
     void removeSelectedVariables();
+    void selectVariableRow(int row);
+    void restoreSelectedVariableRow();
+    int selectedVariableRow() const;
+    void updateRemoveButton();
     void updateRowAvailability(int row);
     bool buildVariables(QJsonArray& result, QString& errorMessage) const;
     int descriptionColumn() const;
@@ -45,7 +54,9 @@ private:
     QTableWidget* m_table = nullptr;
     QLabel* m_errorLabel = nullptr;
     QPushButton* m_addUutButton = nullptr;
+    QPushButton* m_removeButton = nullptr;
     int m_uutColumnCount = DefaultUutColumnCount;
+    int m_selectedVariableRow = -1;
 };
 
 } // namespace PicoATE::Ui

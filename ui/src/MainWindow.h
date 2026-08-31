@@ -37,6 +37,7 @@ class QTreeView;
 namespace PicoATE::Ui {
 
 class AttemptModel;
+class AdminOverviewSummaryWidget;
 class DebugSnapshotModel;
 class DiagnosticModel;
 class DeviceStatusModel;
@@ -182,6 +183,7 @@ private:
     void updateAdminProgress();
     void updateAdminYield();
     void updateAdminElapsed();
+    void updateAdminOverviewSummary();
     void showAdminUutOverview();
     void showAdminUutDetails(const PicoATE::Core::UutId& uutId);
     void rebuildAdminUutButtons();
@@ -291,6 +293,8 @@ private:
     QStackedWidget* m_adminRunStack = nullptr;
     QWidget* m_adminRunOverviewPage = nullptr;
     QWidget* m_adminRunDetailPage = nullptr;
+    QWidget* m_adminRunSidebar = nullptr;
+    AdminOverviewSummaryWidget* m_adminOverviewSummary = nullptr;
     MultiUutOverviewWidget* m_adminUutOverview = nullptr;
     QPushButton* m_adminBackToOverview = nullptr;
     QWidget* m_adminUutNavigationLead = nullptr;

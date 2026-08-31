@@ -407,9 +407,10 @@ NodeId OperatorPromptRuntimeCoordinator::closeTargetForNode(
                   return left.priority > right.priority;
               });
     for (const auto& edge : edges) {
-        if (edge.kind != EdgeKind::Finally &&
+        if (edge.kind == EdgeKind::Control &&
             (edge.trigger == EdgeTrigger::OnSuccess ||
-             edge.trigger == EdgeTrigger::Always)) {
+             edge.trigger == EdgeTrigger::Always ||
+             edge.trigger == EdgeTrigger::Finally)) {
             return edge.to;
         }
     }

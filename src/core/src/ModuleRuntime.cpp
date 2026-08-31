@@ -2,6 +2,7 @@
 #include "PicoATE/Core/ExecutionRequest.h"
 
 #include <QUuid>
+#include <optional>
 #include <utility>
 
 namespace PicoATE::Core {
@@ -72,6 +73,94 @@ QString normalizedFunction(QString value)
     return value;
 }
 
+QString canIdentifierValueText(const QVariant& value)
+{
+    if (!value.isValid() || value.isNull()) {
+        return QStringLiteral("<unset>");
+    }
+    const auto text = value.toString().trimmed();
+    return text.isEmpty() ? QStringLiteral("<empty>") : text;
+}
+
+bool parseCanIdentifier(const QVariant& value, quint64& identifier)
+{
+    const auto text = value.toString().trimmed();
+    if (text.isEmpty() || text.startsWith('-')) {
+        return false;
+    }
+    bool ok = false;
+    identifier = text.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive)
+        ? text.mid(2).toULongLong(&ok, 16)
+        : text.toULongLong(&ok, 10);
+    return ok;
+}
+
+std::optional<ModuleResult> validateCanIdentifier(
+    const QVariantMap& inputs,
+    const QString& key,
+    const QString& displayName,
+    quint64 maximum,
+    const QString& errorCode)
+{
+    if (!inputs.contains(key)) {
+        return std::nullopt;
+    }
+    const auto value = inputs.value(key);
+    quint64 identifier = 0;
+    if (parseCanIdentifier(value, identifier) && identifier <= maximum) {
+        return std::nullopt;
+    }
+
+    ModuleResult result;
+    result.outcome = ModuleOutcome::Error;
+    result.errorCode = errorCode;
+    result.errorMessage = QStringLiteral(
+        "%1 value %2 is invalid; allowed range is %3")
+        .arg(displayName,
+             canIdentifierValueText(value),
+             maximum == 0x7FFULL
+                 ? QStringLiteral("0x000 to 0x7FF (Extended Frame is OFF)")
+                 : QStringLiteral("0x00000000 to 0x1FFFFFFF"));
+    return result;
+}
+
+std::optional<ModuleResult> validateCanInputs(const QVariantMap& inputs)
+{
+    const bool extended = inputs.value(QStringLiteral("extended"), false)
+                              .toBool();
+    if (auto error = validateCanIdentifier(
+            inputs, QStringLiteral("id"), QStringLiteral("CAN ID"),
+            extended ? 0x1FFFFFFFULL : 0x7FFULL,
+            QStringLiteral("InvalidCanFrame"))) {
+        return error;
+    }
+    for (const auto& field : {
+             std::pair{QStringLiteral("filterId"), QStringLiteral("Filter ID")},
+             std::pair{QStringLiteral("filterMask"), QStringLiteral("Filter Mask")},
+             std::pair{QStringLiteral("rxId"), QStringLiteral("Receive ID")},
+             std::pair{QStringLiteral("rxMask"), QStringLiteral("Receive Mask")},
+         }) {
+        if (auto error = validateCanIdentifier(
+                inputs, field.first, field.second, 0x1FFFFFFFULL,
+                QStringLiteral("InvalidCanFilter"))) {
+            return error;
+        }
+    }
+
+    const auto transmit = inputs.value(QStringLiteral("tx")).toMap();
+    if (!transmit.isEmpty()) {
+        const bool transmitExtended = transmit.value(
+            QStringLiteral("extended"), false).toBool();
+        if (auto error = validateCanIdentifier(
+                transmit, QStringLiteral("id"), QStringLiteral("Transmit CAN ID"),
+                transmitExtended ? 0x1FFFFFFFULL : 0x7FFULL,
+                QStringLiteral("InvalidCanFrame"))) {
+            return error;
+        }
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 ModuleRuntimeServices::ModuleRuntimeServices(DeviceSessionManager& devices)
@@ -103,6 +192,14 @@ ModuleResult ModuleRuntimeServices::invokeDevice(const DeviceId& deviceId,
                                                  const QVariantMap& inputs,
                                                  const ModuleExecutionContext& context)
 {
+    const auto config = m_devices.deviceConfig(deviceId);
+    if (config && config->deviceType.compare(
+                      QStringLiteral("CAN"), Qt::CaseInsensitive) == 0) {
+        if (auto validationError = validateCanInputs(inputs)) {
+            return *validationError;
+        }
+    }
+
     const auto open = m_devices.openSession(deviceId, &context);
     if (!open.ok()) {
         return moduleResultFromDeviceError(open.error);

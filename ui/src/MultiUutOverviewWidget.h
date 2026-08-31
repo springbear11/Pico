@@ -55,6 +55,7 @@ private:
     void refreshPeriodicCountdowns();
     void refreshSharedPeriodicTasks();
     void refreshSharedResources();
+    void updatePairCardHeights();
     void updateSummary();
     void restoreOperatorPrompt(QAbstractButton* card);
     void restoreBatchOperatorPrompt();

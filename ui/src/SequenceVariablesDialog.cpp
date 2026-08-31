@@ -4,10 +4,12 @@
 #include <QBrush>
 #include <QColor>
 #include <QDialogButtonBox>
+#include <QEvent>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QJsonObject>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollBar>
@@ -142,14 +144,14 @@ SequenceVariablesDialog::SequenceVariablesDialog(QJsonArray variables,
     auto* addButton = new QPushButton(
         style()->standardIcon(QStyle::SP_FileIcon), tr("Add Variable"), this);
     addButton->setObjectName(QStringLiteral("addSequenceVariableButton"));
-    auto* removeButton = new QPushButton(
+    m_removeButton = new QPushButton(
         style()->standardIcon(QStyle::SP_TrashIcon), tr("Remove"), this);
-    removeButton->setObjectName(QStringLiteral("removeSequenceVariableButton"));
+    m_removeButton->setObjectName(QStringLiteral("removeSequenceVariableButton"));
     m_addUutButton = new QPushButton(tr("+ UUT"), this);
     m_addUutButton->setObjectName(QStringLiteral("addSequenceUutButton"));
     m_addUutButton->setToolTip(tr("Add another Per UUT value column"));
     toolbar->addWidget(addButton);
-    toolbar->addWidget(removeButton);
+    toolbar->addWidget(m_removeButton);
     toolbar->addWidget(m_addUutButton);
     toolbar->addStretch();
     layout->addLayout(toolbar);
@@ -165,7 +167,11 @@ SequenceVariablesDialog::SequenceVariablesDialog(QJsonArray variables,
     headers.push_back(tr("Description"));
     m_table->setHorizontalHeaderLabels(headers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_table->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_table->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_table->setEditTriggers(QAbstractItemView::DoubleClicked |
+                             QAbstractItemView::EditKeyPressed |
+                             QAbstractItemView::SelectedClicked);
+    m_table->setMouseTracking(false);
     m_table->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_table->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_table->setAlternatingRowColors(true);
@@ -202,20 +208,46 @@ SequenceVariablesDialog::SequenceVariablesDialog(QJsonArray variables,
 
     connect(addButton, &QPushButton::clicked,
             this, [this] { appendVariable(); });
-    connect(removeButton, &QPushButton::clicked,
+    connect(m_removeButton, &QPushButton::clicked,
             this, &SequenceVariablesDialog::removeSelectedVariables);
     connect(m_addUutButton, &QPushButton::clicked,
             this, &SequenceVariablesDialog::appendUutColumn);
     connect(m_table, &QTableWidget::itemChanged, this, [this] {
         m_errorLabel->hide();
     });
+    connect(m_table, &QTableWidget::itemPressed, this,
+            [this](QTableWidgetItem* item) {
+                if (item) {
+                    selectVariableRow(item->row());
+                }
+            });
 
     for (const auto& value : variables) {
         if (value.isObject()) {
-            appendVariable(value.toObject());
+            appendVariable(value.toObject(), false);
         }
     }
+    m_table->clearSelection();
+    m_table->setCurrentItem(nullptr);
+    updateRemoveButton();
     m_addUutButton->setEnabled(m_uutColumnCount < MaximumUutColumnCount);
+}
+
+bool SequenceVariablesDialog::eventFilter(QObject* watched, QEvent* event)
+{
+    const bool preserveSelection =
+        watched->property("preserveVariableSelection").toBool();
+    const bool mayRetargetRow = event &&
+        (event->type() == QEvent::Enter ||
+         event->type() == QEvent::FocusIn ||
+         event->type() == QEvent::MouseButtonPress ||
+         event->type() == QEvent::MouseButtonRelease);
+    if (preserveSelection && mayRetargetRow) {
+        restoreSelectedVariableRow();
+        QTimer::singleShot(0, this,
+                           &SequenceVariablesDialog::restoreSelectedVariableRow);
+    }
+    return QDialog::eventFilter(watched, event);
 }
 
 QJsonArray SequenceVariablesDialog::variables() const
@@ -238,7 +270,8 @@ void SequenceVariablesDialog::accept()
     QDialog::accept();
 }
 
-void SequenceVariablesDialog::appendVariable(const QJsonObject& variable)
+void SequenceVariablesDialog::appendVariable(const QJsonObject& variable,
+                                             bool selectNewRow)
 {
     const int row = m_table->rowCount();
     m_table->insertRow(row);
@@ -260,6 +293,8 @@ void SequenceVariablesDialog::appendVariable(const QJsonObject& variable)
     const auto requestedType = variable.value(QStringLiteral("type"))
                                    .toString(QStringLiteral("string"));
     type->setCurrentIndex(qMax(0, type->findData(requestedType)));
+    type->setProperty("preserveVariableSelection", true);
+    type->installEventFilter(this);
     m_table->setCellWidget(row, TypeColumn, type);
     fitComboColumn(m_table, type, TypeColumn, 124);
 
@@ -270,6 +305,8 @@ void SequenceVariablesDialog::appendVariable(const QJsonObject& variable)
     const auto requestedScope = variable.value(QStringLiteral("scope"))
                                     .toString(QStringLiteral("shared"));
     scope->setCurrentIndex(qMax(0, scope->findData(requestedScope)));
+    scope->setProperty("preserveVariableSelection", true);
+    scope->installEventFilter(this);
     m_table->setCellWidget(row, ScopeColumn, scope);
     fitComboColumn(m_table, scope, ScopeColumn, 132);
 
@@ -290,7 +327,9 @@ void SequenceVariablesDialog::appendVariable(const QJsonObject& variable)
     connect(type, &QComboBox::currentIndexChanged,
             this, [this] { m_errorLabel->hide(); });
     updateRowAvailability(row);
-    m_table->setCurrentCell(row, NameColumn);
+    if (selectNewRow) {
+        selectVariableRow(row);
+    }
 }
 
 void SequenceVariablesDialog::appendUutColumn()
@@ -321,16 +360,61 @@ void SequenceVariablesDialog::appendUutColumn()
 
 void SequenceVariablesDialog::removeSelectedVariables()
 {
-    QSet<int> rows;
-    for (const auto& index : m_table->selectionModel()->selectedRows()) {
-        rows.insert(index.row());
+    const int row = selectedVariableRow();
+    if (row < 0) {
+        return;
     }
-    QList<int> ordered = rows.values();
-    std::sort(ordered.begin(), ordered.end(), std::greater<int>());
-    for (int row : ordered) {
-        m_table->removeRow(row);
+    const auto name = m_table->item(row, NameColumn)->text().trimmed();
+    if (QMessageBox::question(
+            this,
+            tr("Delete Variable"),
+            tr("Delete variable '%1'?").arg(name),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes) {
+        restoreSelectedVariableRow();
+        return;
     }
+    m_table->removeRow(row);
+    m_selectedVariableRow = -1;
+    m_table->clearSelection();
+    m_table->setCurrentItem(nullptr);
+    updateRemoveButton();
     m_errorLabel->hide();
+}
+
+void SequenceVariablesDialog::selectVariableRow(int row)
+{
+    if (!m_table || row < 0 || row >= m_table->rowCount()) {
+        return;
+    }
+    m_selectedVariableRow = row;
+    m_table->selectRow(row);
+    updateRemoveButton();
+}
+
+void SequenceVariablesDialog::restoreSelectedVariableRow()
+{
+    if (selectedVariableRow() >= 0) {
+        m_table->selectRow(m_selectedVariableRow);
+    } else if (m_table) {
+        m_table->clearSelection();
+        m_table->setCurrentItem(nullptr);
+    }
+}
+
+int SequenceVariablesDialog::selectedVariableRow() const
+{
+    return m_table && m_selectedVariableRow >= 0 &&
+                   m_selectedVariableRow < m_table->rowCount()
+        ? m_selectedVariableRow
+        : -1;
+}
+
+void SequenceVariablesDialog::updateRemoveButton()
+{
+    if (m_removeButton) {
+        m_removeButton->setEnabled(selectedVariableRow() >= 0);
+    }
 }
 
 void SequenceVariablesDialog::updateRowAvailability(int row)

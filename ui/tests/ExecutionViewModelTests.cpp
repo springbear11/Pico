@@ -414,6 +414,7 @@ private slots:
     void pluginCatalogScansNativeDllThroughHost();
     void pluginCatalogValidatesStationBindings();
     void pluginCatalogValidatesNestedSequenceInputs();
+    void pluginCatalogValidatesCanVariableIdentifiers();
     void coreServiceRejectsUntouchedRequiredPluginInputs();
     void pluginFunctionModelBuildsHierarchyAndDropsGeneratedStep();
     void stepOutputExpressionsUsePreviousScopedPluginOutputs();
@@ -1389,6 +1390,55 @@ void ExecutionViewModelTests::pluginCatalogValidatesNestedSequenceInputs()
         "groups[0].steps[0].steps[1].inputs.data")));
     QVERIFY(!hasPath(QStringLiteral("groups[0].steps[1].inputs.address")));
     QVERIFY(!hasPath(QStringLiteral("groups[0].steps[2].inputs.data")));
+}
+
+void ExecutionViewModelTests::pluginCatalogValidatesCanVariableIdentifiers()
+{
+    const auto parsed = PluginCatalog::parseDescription(
+        R"json({
+          "name":"CAN Validation","category":"CAN","functions":[
+            {"id":"write","name":"Write","inputs":[
+              {"key":"id","name":"CAN ID","type":"string","required":true},
+              {"key":"extended","name":"Extended","type":"boolean","default":true}
+            ]},
+            {"id":"read","name":"Read","inputs":[
+              {"key":"filterId","name":"Filter ID","type":"string"}
+            ]}
+          ]
+        })json",
+        QStringLiteral("PicoATE.CAN.Validation.dll"), 1);
+    QVERIFY(parsed.ok());
+
+    const auto sequence = QJsonDocument::fromJson(R"json({
+      "variables":[
+        {"name":"CAN_ID","type":"hex","scope":"shared",
+         "value":"0x20000000"},
+        {"name":"FILTER_ID","type":"hex","scope":"perUut",
+         "values":["0x123","0x20000001"]}
+      ],
+      "groups":[{"id":"main","kind":"main","steps":[
+        {"id":"001","kind":"action","moduleId":"device","function":"write",
+         "inputs":{"deviceId":"CAN1","id":"${var.CAN_ID}","extended":true}},
+        {"id":"002","kind":"action","moduleId":"device","function":"read",
+         "inputs":{"deviceId":"CAN1","filterId":"${var.FILTER_ID}"}}
+      ]}]
+    })json").object();
+    const auto station = QJsonDocument::fromJson(R"json({
+      "devices":[{"deviceId":"CAN1","deviceType":"CAN",
+                  "driverId":"plugin.can.validation","enabled":true}]
+    })json").object();
+
+    const auto diagnostics = PluginCatalog::validateSequenceInputs(
+        sequence, {parsed.manifest}, station);
+    QCOMPARE(diagnostics.size(), 2);
+    QCOMPARE(diagnostics[0].path,
+             QStringLiteral("groups[0].steps[0].inputs.id"));
+    QVERIFY(diagnostics[0].message.contains(QStringLiteral("0x20000000")));
+    QVERIFY(diagnostics[0].message.contains(QStringLiteral("CAN_ID")));
+    QCOMPARE(diagnostics[1].path,
+             QStringLiteral("groups[0].steps[1].inputs.filterId"));
+    QVERIFY(diagnostics[1].message.contains(QStringLiteral("0x20000001")));
+    QVERIFY(diagnostics[1].message.contains(QStringLiteral("UUT2")));
 }
 
 void ExecutionViewModelTests::coreServiceRejectsUntouchedRequiredPluginInputs()
