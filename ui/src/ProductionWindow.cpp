@@ -14,6 +14,7 @@
 #include "RunnerModels.h"
 #include "RunArtifactWriter.h"
 #include "ScanDialog.h"
+#include "UutSlotConfigurationDialog.h"
 #include "YieldDonutWidget.h"
 
 #include <QAction>
@@ -190,7 +191,10 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
         m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn
             ? SnValidationRules{}
             : m_selection.snValidationRules);
+    synchronizeUutSlotCount(
+        StartupSupport::stationUutCount(m_selection.stationPath, 1));
     buildUi();
+    updateUutSlotAction();
     QTimer::singleShot(0, this, [this] { applyResponsiveLayout(); });
 
     connect(m_viewModel, &ExecutionViewModel::stateChanged,
@@ -206,7 +210,12 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
     connect(m_viewModel, &ExecutionViewModel::runtimeEventsReady,
             this, &ProductionWindow::applyRuntimeEvents);
     connect(m_scanDialog, &ScanDialog::barcodesAccepted,
-            this, &ProductionWindow::beginRunBatch);
+            this, [this](const QStringList& barcodes) {
+                m_uutSlotEnabled = normalizeUutSlotEnabledStates(
+                    barcodes.size(), m_scanDialog->slotEnabledStates());
+                updateUutSlotAction();
+                beginRunBatch(barcodes);
+            });
     if (m_selection.sequenceLoadMode == SequenceLoadMode::Manual) {
         m_viewModel->setStationPath(m_selection.stationPath);
         m_viewModel->setSequencePath(m_selection.sequencePath);
@@ -347,6 +356,12 @@ void ProductionWindow::buildUi()
     m_stopAction = toolbar->addAction(
         productionToolbarIcon("square"), tr("Stop"));
     m_stopAction->setObjectName(QStringLiteral("productionStopAction"));
+    m_uutSlotsAction = toolbar->addAction(
+        productionToolbarIcon("circle-check"), tr("UUT Slots"));
+    m_uutSlotsAction->setObjectName(
+        QStringLiteral("productionUutSlotsAction"));
+    m_uutSlotsAction->setToolTip(
+        tr("Enable or disable physical UUT stations"));
     toolbar->addSeparator();
     m_fieldDeviceAction = toolbar->addAction(
         productionToolbarIcon("cable"), tr("Devices"));
@@ -359,6 +374,8 @@ void ProductionWindow::buildUi()
         tr("Configure SN patterns and their test sequences"));
     connect(m_startAction, &QAction::triggered,
             this, &ProductionWindow::beginManualRun);
+    connect(m_uutSlotsAction, &QAction::triggered,
+            this, &ProductionWindow::configureUutSlots);
     connect(m_pauseAction, &QAction::triggered,
             m_viewModel, &ExecutionViewModel::pause);
     connect(m_resumeAction, &QAction::triggered,
@@ -732,6 +749,9 @@ void ProductionWindow::updateCommands()
     m_pauseAction->setEnabled(m_viewModel->canPause());
     m_resumeAction->setEnabled(m_viewModel->canResume());
     m_stopAction->setEnabled(m_viewModel->canStop());
+    const int slotCount = qMax(1, m_uutSlotEnabled.size());
+    m_uutSlotsAction->setVisible(slotCount > 1);
+    m_uutSlotsAction->setEnabled(slotCount > 1 && configurationAvailable);
     m_fieldDeviceAction->setVisible(manualMode);
     m_fieldDeviceAction->setEnabled(manualMode && configurationAvailable);
     m_productRoutingAction->setVisible(!manualMode);
@@ -807,6 +827,7 @@ void ProductionWindow::updateCompileSummary()
             m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn &&
             m_runPreparationPending;
         m_pendingSerialNumbers.clear();
+        m_pendingUutSlotEnabled.clear();
         m_runPreparationPending = false;
         if (routedCompile) {
             QStringList details;
@@ -828,6 +849,8 @@ void ProductionWindow::updateCompileSummary()
         }
         return;
     }
+    synchronizeUutSlotCount(
+        StartupSupport::stationUutCount(m_selection.stationPath, 1));
     m_previewReport = summary.previewReport;
     m_totalNodes = qMax(1, summary.nodeCount);
     resetPreviewForUut({});
@@ -980,10 +1003,18 @@ void ProductionWindow::beginRunBatch(const QStringList& serialNumbers)
         return;
     }
     m_pendingSerialNumbers.clear();
+    m_pendingSerialNumbers.reserve(serialNumbers.size());
     for (const auto& serialNumber : serialNumbers) {
-        const auto sn = serialNumber.trimmed();
-        if (!sn.isEmpty()) {
-            m_pendingSerialNumbers.push_back(sn);
+        m_pendingSerialNumbers.push_back(serialNumber.trimmed());
+    }
+    const int slotCount = m_pendingSerialNumbers.isEmpty()
+        ? StartupSupport::stationUutCount(m_selection.stationPath, 1)
+        : m_pendingSerialNumbers.size();
+    synchronizeUutSlotCount(slotCount);
+    m_pendingUutSlotEnabled = m_uutSlotEnabled;
+    for (int slot = 0; slot < m_pendingSerialNumbers.size(); ++slot) {
+        if (!m_pendingUutSlotEnabled[slot]) {
+            m_pendingSerialNumbers[slot].clear();
         }
     }
     m_runPreparationPending = true;
@@ -1000,13 +1031,23 @@ void ProductionWindow::beginAutoRoutedRunBatch(
     const QStringList& serialNumbers)
 {
     QStringList sns;
+    sns.reserve(serialNumbers.size());
     for (const auto& serialNumber : serialNumbers) {
-        const auto sn = serialNumber.trimmed();
-        if (!sn.isEmpty()) {
-            sns.push_back(sn);
+        sns.push_back(serialNumber.trimmed());
+    }
+    m_uutSlotEnabled = normalizeUutSlotEnabledStates(
+        sns.size(), m_uutSlotEnabled);
+    bool hasActiveSerialNumber = false;
+    for (int slot = 0; slot < sns.size(); ++slot) {
+        if (!m_uutSlotEnabled[slot]) {
+            sns[slot].clear();
+            continue;
+        }
+        if (m_uutSlotEnabled[slot] && !sns[slot].isEmpty()) {
+            hasActiveSerialNumber = true;
         }
     }
-    if (sns.isEmpty()) {
+    if (!hasActiveSerialNumber) {
         return;
     }
     if (!m_viewModel->canChangeSources()) {
@@ -1038,7 +1079,7 @@ void ProductionWindow::beginAutoRoutedRunBatch(
     }
     if (sns.size() != batch.uutCount) {
         showRoutingError(
-            tr("Project %1 requires %2 UUT SN(s), but %3 were scanned")
+            tr("Project %1 provides %2 UUT slot(s), but the scanner has %3")
                 .arg(batch.route.projectName)
                 .arg(batch.uutCount)
                 .arg(sns.size()));
@@ -1046,7 +1087,9 @@ void ProductionWindow::beginAutoRoutedRunBatch(
     }
     const auto& route = batch.route;
 
+    synchronizeUutSlotCount(batch.uutCount);
     m_pendingSerialNumbers = sns;
+    m_pendingUutSlotEnabled = m_uutSlotEnabled;
     m_runPreparationPending = true;
     m_selection.projectName = route.projectName;
     m_selection.projectPath = route.projectPath;
@@ -1068,8 +1111,8 @@ void ProductionWindow::beginAutoRoutedRunBatch(
     m_viewModel->setSequencePath(route.sequencePath);
     m_viewModel->compile();
     statusBar()->showMessage(
-        tr("%1 UUT SN(s) matched %2. Loading %3...")
-            .arg(sns.size())
+        tr("%1 active UUT SN(s) matched %2. Loading %3...")
+            .arg(enabledUutSlotCount(m_uutSlotEnabled))
             .arg(route.routeName, QFileInfo(route.sequencePath).fileName()));
 }
 
@@ -1092,11 +1135,20 @@ void ProductionWindow::startResolvedRun()
         return;
     }
     auto serialNumbers = std::exchange(m_pendingSerialNumbers, QStringList{});
+    auto enabledStates = std::exchange(
+        m_pendingUutSlotEnabled, QVector<bool>{});
     m_runPreparationPending = false;
     int uutCount = serialNumbers.size();
     if (uutCount == 0) {
         uutCount = StartupSupport::stationUutCount(m_selection.stationPath, 1);
         serialNumbers = QStringList(uutCount, QString{});
+    }
+    enabledStates = normalizeUutSlotEnabledStates(
+        uutCount,
+        enabledStates.isEmpty() ? m_uutSlotEnabled : enabledStates);
+    if (enabledUutSlotCount(enabledStates) == 0) {
+        statusBar()->showMessage(tr("Enable at least one UUT station"), 4000);
+        return;
     }
 
     QVector<RunRequest::UutInput> inputs;
@@ -1107,21 +1159,69 @@ void ProductionWindow::startResolvedRun()
         input.uutId = uutCount == 1 && !sn.isEmpty()
             ? sn
             : QStringLiteral("UUT-%1").arg(index + 1);
+        input.slotIndex = index;
+        input.enabled = enabledStates[index];
         input.variables.insert(QStringLiteral("sn"), sn);
         input.variables.insert(QStringLiteral("serialNumber"), sn);
         inputs.push_back(std::move(input));
     }
 
-    m_activeSerialNumber = serialNumbers.value(0).trimmed();
-    m_activeUutId = inputs.first().uutId;
+    const auto active = std::find_if(
+        inputs.cbegin(), inputs.cend(),
+        [](const RunRequest::UutInput& input) { return input.enabled; });
+    m_activeSerialNumber = active->variables.value(
+        QStringLiteral("serialNumber")).toString().trimmed();
+    m_activeUutId = active->uutId;
+    const int activeCount = enabledUutSlotCount(enabledStates);
     m_serialLabel->setText(m_activeSerialNumber.isEmpty()
                                ? tr("--")
-                               : uutCount > 1
+                               : activeCount > 1
                                ? tr("%1  (+%2)").arg(m_activeSerialNumber)
-                                                  .arg(uutCount - 1)
+                                                  .arg(activeCount - 1)
                                : m_activeSerialNumber);
     m_resultModel->setVisibleUutId(m_activeUutId);
     m_viewModel->runUuts(inputs);
+}
+
+void ProductionWindow::configureUutSlots()
+{
+    const int slotCount = StartupSupport::stationUutCount(
+        m_selection.stationPath, qMax(1, m_uutSlotEnabled.size()));
+    synchronizeUutSlotCount(slotCount);
+    const auto selected = showUutSlotConfigurationDialog(
+        this, slotCount, m_uutSlotEnabled);
+    if (!selected) {
+        return;
+    }
+    m_uutSlotEnabled = *selected;
+    m_scanDialog->setSlotCount(slotCount);
+    m_scanDialog->setSlotEnabledStates(m_uutSlotEnabled);
+    updateUutSlotAction();
+    updateCommands();
+}
+
+void ProductionWindow::synchronizeUutSlotCount(int slotCount)
+{
+    m_uutSlotEnabled = normalizeUutSlotEnabledStates(
+        slotCount, m_uutSlotEnabled);
+    if (enabledUutSlotCount(m_uutSlotEnabled) == 0) {
+        m_uutSlotEnabled[0] = true;
+    }
+    updateUutSlotAction();
+}
+
+void ProductionWindow::updateUutSlotAction()
+{
+    if (!m_uutSlotsAction) {
+        return;
+    }
+    const int slotCount = qMax(1, m_uutSlotEnabled.size());
+    const int activeCount = enabledUutSlotCount(m_uutSlotEnabled);
+    m_uutSlotsAction->setText(
+        tr("UUT Slots %1/%2").arg(activeCount).arg(slotCount));
+    m_uutSlotsAction->setToolTip(
+        tr("%1 active UUT station(s); physical slot numbers are preserved")
+            .arg(activeCount));
 }
 
 void ProductionWindow::openFieldDeviceConfiguration()
@@ -1270,11 +1370,18 @@ void ProductionWindow::showScanDialogWhenReady()
                     return ScanSubmissionDecision{false, message, 0, {}};
                 });
         }
-        m_scanDialog->setSlotCount(1);
+        const int initialSlotCount = StartupSupport::stationUutCount(
+            m_selection.stationPath, qMax(1, m_uutSlotEnabled.size()));
+        synchronizeUutSlotCount(initialSlotCount);
+        m_scanDialog->setSlotCount(initialSlotCount);
+        m_scanDialog->setSlotEnabledStates(m_uutSlotEnabled);
     } else {
         m_scanDialog->setSubmissionValidator({});
-        m_scanDialog->setSlotCount(
-            StartupSupport::stationUutCount(m_selection.stationPath, 1));
+        const int slotCount = StartupSupport::stationUutCount(
+            m_selection.stationPath, 1);
+        synchronizeUutSlotCount(slotCount);
+        m_scanDialog->setSlotCount(slotCount);
+        m_scanDialog->setSlotEnabledStates(m_uutSlotEnabled);
     }
     QTimer::singleShot(0, m_scanDialog, [dialog = m_scanDialog] {
         dialog->showForNextScan();

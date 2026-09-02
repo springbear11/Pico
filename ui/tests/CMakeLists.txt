@@ -64,6 +64,8 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/ParserActualDelegate.h
     ../src/ScanDialog.cpp
     ../src/ScanDialog.h
+    ../src/UutSlotConfigurationDialog.cpp
+    ../src/UutSlotConfigurationDialog.h
     ../src/SequenceEditorTreeView.cpp
     ../src/SequenceEditorTreeView.h
     ../src/SequenceVariablesDialog.cpp

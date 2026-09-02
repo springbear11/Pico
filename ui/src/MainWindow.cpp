@@ -19,6 +19,7 @@
 #include "RunnerModels.h"
 #include "RunArtifactWriter.h"
 #include "ScanDialog.h"
+#include "UutSlotConfigurationDialog.h"
 #include "SequenceDocument.h"
 #include "SequenceEditorTreeView.h"
 #include "SequenceTreeModel.h"
@@ -1376,7 +1377,12 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_scanDialog,
             &ScanDialog::barcodesAccepted,
             this,
-            &MainWindow::runScannedUuts);
+            [this](const QStringList& barcodes) {
+                m_adminUutSlotEnabled = normalizeUutSlotEnabledStates(
+                    barcodes.size(), m_scanDialog->slotEnabledStates());
+                updateAdminUutSlotAction();
+                runScannedUuts(barcodes);
+            });
     connect(m_viewModel,
             &ExecutionViewModel::deviceConnectionTestStarted,
             this,
@@ -3690,20 +3696,29 @@ void MainWindow::runSequence()
 
 void MainWindow::runScannedUut(const QString& serialNumber)
 {
+    m_adminUutSlotEnabled = {true};
     runScannedUuts({serialNumber});
 }
 
 void MainWindow::runScannedUuts(const QStringList& serialNumbers)
 {
-    QStringList sns;
-    sns.reserve(serialNumbers.size());
-    for (const auto& serialNumber : serialNumbers) {
-        const auto sn = serialNumber.trimmed();
-        if (!sn.isEmpty()) {
-            sns.push_back(sn);
+    QStringList sns = serialNumbers;
+    for (auto& serialNumber : sns) {
+        serialNumber = serialNumber.trimmed();
+    }
+    m_adminUutSlotEnabled = normalizeUutSlotEnabledStates(
+        sns.size(), m_adminUutSlotEnabled);
+    bool hasActiveSerialNumber = false;
+    for (int slot = 0; slot < sns.size(); ++slot) {
+        if (!m_adminUutSlotEnabled[slot]) {
+            sns[slot].clear();
+            continue;
+        }
+        if (m_adminUutSlotEnabled[slot] && !sns[slot].isEmpty()) {
+            hasActiveSerialNumber = true;
         }
     }
-    if (sns.isEmpty()) {
+    if (!hasActiveSerialNumber) {
         return;
     }
     if (m_autoRouteBySn) {
@@ -3736,11 +3751,14 @@ void MainWindow::runScannedUuts(const QStringList& serialNumbers)
         }
         if (sns.size() != batch.uutCount) {
             showProductRoutingError(
-                tr("Project %1 requires %2 UUT SN(s), but %3 were scanned")
+                tr("Project %1 provides %2 UUT slot(s), but the scanner has %3")
                     .arg(batch.route.projectName)
                     .arg(batch.uutCount)
                     .arg(sns.size()));
             return;
+        }
+        if (m_uutCount && m_uutCount->value() != batch.uutCount) {
+            m_uutCount->setValue(batch.uutCount);
         }
         const auto& route = batch.route;
 
@@ -3781,14 +3799,58 @@ void MainWindow::runScannedUuts(const QStringList& serialNumbers)
         }
         m_pendingRoutedSerialNumbers = sns;
         statusBar()->showMessage(
-            tr("%1 UUT SN(s) matched %2. Loading project %3...")
-                .arg(sns.size())
+            tr("%1 active UUT SN(s) matched %2. Loading project %3...")
+                .arg(enabledUutSlotCount(m_adminUutSlotEnabled))
                 .arg(route.routeName, route.projectName));
         compileSequence();
         return;
     }
 
     startAdminRunWithSerials(sns);
+}
+
+void MainWindow::configureAdminUutSlots()
+{
+    const int slotCount = m_uutCount ? qMax(1, m_uutCount->value()) : 1;
+    synchronizeAdminUutSlotCount(slotCount);
+    const auto selected = showUutSlotConfigurationDialog(
+        this, slotCount, m_adminUutSlotEnabled);
+    if (!selected) {
+        return;
+    }
+    m_adminUutSlotEnabled = *selected;
+    m_scanDialog->setSlotCount(slotCount);
+    m_scanDialog->setSlotEnabledStates(m_adminUutSlotEnabled);
+    updateAdminUutSlotAction();
+    updateCompilePreview();
+}
+
+void MainWindow::synchronizeAdminUutSlotCount(int slotCount)
+{
+    m_adminUutSlotEnabled = normalizeUutSlotEnabledStates(
+        slotCount, m_adminUutSlotEnabled);
+    if (enabledUutSlotCount(m_adminUutSlotEnabled) == 0) {
+        m_adminUutSlotEnabled[0] = true;
+    }
+    updateAdminUutSlotAction();
+}
+
+void MainWindow::updateAdminUutSlotAction()
+{
+    if (!m_uutSlotsAction) {
+        return;
+    }
+    const int slotCount = m_uutCount ? qMax(1, m_uutCount->value()) : 1;
+    const auto states = normalizeUutSlotEnabledStates(
+        slotCount, m_adminUutSlotEnabled);
+    const int activeCount = enabledUutSlotCount(states);
+    m_uutSlotsAction->setVisible(
+        ShowAdminUutCountControl && slotCount > 1);
+    m_uutSlotsAction->setText(
+        tr("UUT Slots %1/%2").arg(activeCount).arg(slotCount));
+    m_uutSlotsAction->setToolTip(
+        tr("%1 active UUT station(s); physical slot numbers are preserved")
+            .arg(activeCount));
 }
 
 void MainWindow::startAdminRunWithSerial(const QString& serialNumber)
@@ -3806,28 +3868,41 @@ void MainWindow::startAdminRunWithSerial(const QString& serialNumber)
     const int uutCount = m_uutCount
         ? qMax(1, m_uutCount->value())
         : 1;
+    synchronizeAdminUutSlotCount(uutCount);
+    QVector<RunRequest::UutInput> inputs;
+    inputs.reserve(uutCount);
+    for (int slot = 0; slot < uutCount; ++slot) {
+        RunRequest::UutInput input;
+        input.uutId = uutCount > 1
+            ? QStringLiteral("UUT-%1").arg(slot + 1)
+            : QStringLiteral("UUT-%1").arg(
+                  QDateTime::currentDateTime().toString(
+                      QStringLiteral("yyyyMMdd-HHmmss-zzz")));
+        input.slotIndex = slot;
+        input.enabled = m_adminUutSlotEnabled[slot];
+        input.variables.insert(QStringLiteral("sn"), QString{});
+        input.variables.insert(QStringLiteral("serialNumber"), QString{});
+        inputs.push_back(std::move(input));
+    }
+    const auto active = std::find_if(
+        inputs.cbegin(), inputs.cend(),
+        [](const RunRequest::UutInput& input) { return input.enabled; });
+    if (active == inputs.cend()) {
+        statusBar()->showMessage(tr("Enable at least one UUT station"), 4000);
+        return;
+    }
     m_activeAdminSerialNumber.clear();
-    m_activeAdminUutId = uutCount > 1
-        ? QStringLiteral("UUT-1")
-        : QStringLiteral("UUT-%1").arg(
-              QDateTime::currentDateTime().toString(
-                  QStringLiteral("yyyyMMdd-HHmmss-zzz")));
+    m_activeAdminUutId = active->uutId;
     m_viewModel->setBreakpoints(m_sequenceTreeModel->breakpointSpecs());
     m_sequenceTreeModel->setCurrentDebugNodePath({});
     m_adminSerialLabel->setText(tr("--"));
     ApplicationDiagnostics::recordAction(
         QStringLiteral("RUN_REQUESTED"),
-        QStringLiteral("uutCount=%1; firstUut=%2")
+        QStringLiteral("uutSlots=%1; activeUuts=%2; firstUut=%3")
             .arg(uutCount)
+            .arg(enabledUutSlotCount(m_adminUutSlotEnabled))
             .arg(m_activeAdminUutId));
-    if (uutCount > 1) {
-        m_viewModel->run(uutCount);
-    } else {
-        QVariantMap variables;
-        variables.insert(QStringLiteral("sn"), QString{});
-        variables.insert(QStringLiteral("serialNumber"), QString{});
-        m_viewModel->runUut(m_activeAdminUutId, variables);
-    }
+    m_viewModel->runUuts(inputs);
     showRunPage();
 }
 
@@ -3839,6 +3914,7 @@ void MainWindow::startAdminRunWithSerials(const QStringList& serialNumbers)
         return;
     }
 
+    synchronizeAdminUutSlotCount(serialNumbers.size());
     QVector<RunRequest::UutInput> inputs;
     inputs.reserve(serialNumbers.size());
     for (int index = 0; index < serialNumbers.size(); ++index) {
@@ -3847,20 +3923,31 @@ void MainWindow::startAdminRunWithSerials(const QStringList& serialNumbers)
         input.uutId = serialNumbers.size() == 1
             ? sn
             : QStringLiteral("UUT-%1").arg(index + 1);
+        input.slotIndex = index;
+        input.enabled = m_adminUutSlotEnabled[index];
         input.variables.insert(QStringLiteral("sn"), sn);
         input.variables.insert(QStringLiteral("serialNumber"), sn);
         inputs.push_back(std::move(input));
     }
 
-    m_activeAdminSerialNumber = serialNumbers.first().trimmed();
-    m_activeAdminUutId = inputs.first().uutId;
+    const auto active = std::find_if(
+        inputs.cbegin(), inputs.cend(),
+        [](const RunRequest::UutInput& input) { return input.enabled; });
+    if (active == inputs.cend()) {
+        statusBar()->showMessage(tr("Enable at least one UUT station"), 4000);
+        return;
+    }
+    m_activeAdminSerialNumber = active->variables.value(
+        QStringLiteral("serialNumber")).toString().trimmed();
+    m_activeAdminUutId = active->uutId;
     m_viewModel->setBreakpoints(m_sequenceTreeModel->breakpointSpecs());
     m_sequenceTreeModel->setCurrentDebugNodePath({});
     m_adminSerialLabel->setText(m_activeAdminSerialNumber);
     ApplicationDiagnostics::recordAction(
         QStringLiteral("RUN_REQUESTED"),
-        QStringLiteral("uutCount=%1; firstUut=%2")
+        QStringLiteral("uutSlots=%1; activeUuts=%2; firstUut=%3")
             .arg(inputs.size())
+            .arg(enabledUutSlotCount(m_adminUutSlotEnabled))
             .arg(m_activeAdminUutId));
     m_viewModel->runUuts(inputs);
     showRunPage();
@@ -3935,6 +4022,7 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
         uut.outcome = PicoATE::Core::NodeOutcome::Unknown;
         preview.uuts.push_back(std::move(uut));
     }
+    m_adminUutOverview->resetRuntimeState();
     m_uutOverviewModel->resetForRun(m_adminPreviewReport, activeUuts);
     m_selectedAdminUutId = activeUuts.isEmpty()
         ? PicoATE::Core::UutId{}
@@ -4020,12 +4108,20 @@ void MainWindow::toggleScanDialog()
                     return ScanSubmissionDecision{false, message, 0, {}};
                 });
         }
-        m_scanDialog->setSlotCount(1);
+        const int initialSlotCount = m_uutCount
+            ? qMax(1, m_uutCount->value())
+            : 1;
+        synchronizeAdminUutSlotCount(initialSlotCount);
+        m_scanDialog->setSlotCount(initialSlotCount);
+        m_scanDialog->setSlotEnabledStates(m_adminUutSlotEnabled);
     } else {
         m_scanDialog->setSubmissionValidator({});
-        m_scanDialog->setSlotCount(m_uutCount
-                                       ? qMax(1, m_uutCount->value())
-                                       : 1);
+        const int slotCount = m_uutCount
+            ? qMax(1, m_uutCount->value())
+            : 1;
+        synchronizeAdminUutSlotCount(slotCount);
+        m_scanDialog->setSlotCount(slotCount);
+        m_scanDialog->setSlotEnabledStates(m_adminUutSlotEnabled);
     }
     m_scanDialog->showForNextScan();
 }
@@ -5518,8 +5614,24 @@ void MainWindow::buildActions()
         toolbarIcon("square"),
         tr("Stop"),
         this);
+    m_stopAction->setObjectName(QStringLiteral("adminStopAction"));
     m_stopAction->setToolTip(tr("Request graceful stop"));
-    connect(m_stopAction, &QAction::triggered, this, [this] { m_viewModel->stop(); });
+    connect(m_stopAction, &QAction::triggered, this, [this] {
+        if (!m_viewModel->canStop()) {
+            return;
+        }
+        m_stopAction->setEnabled(false);
+        if (m_adminUutOverview) {
+            m_adminUutOverview->beginStopTransition();
+        }
+        QTimer::singleShot(16, this, [this] {
+            if (m_viewModel->canStop()) {
+                m_viewModel->stop();
+            } else if (m_adminUutOverview) {
+                m_adminUutOverview->resetRuntimeState();
+            }
+        });
+    });
 
     m_scanAction = new QAction(
         toolbarIcon("scan-barcode"),
@@ -5528,6 +5640,12 @@ void MainWindow::buildActions()
     m_scanAction->setObjectName(QStringLiteral("adminScanAction"));
     m_scanAction->setToolTip(tr("Open or cancel the barcode dialog"));
     connect(m_scanAction, &QAction::triggered, this, &MainWindow::toggleScanDialog);
+
+    m_uutSlotsAction = new QAction(
+        toolbarIcon("circle-check"), tr("UUT Slots"), this);
+    m_uutSlotsAction->setObjectName(QStringLiteral("adminUutSlotsAction"));
+    connect(m_uutSlotsAction, &QAction::triggered,
+            this, &MainWindow::configureAdminUutSlots);
 
     m_productRoutingAction = new QAction(
         toolbarIcon("list-restart"),
@@ -5595,6 +5713,7 @@ void MainWindow::buildActions()
     runMenu->addAction(m_stopAction);
     runMenu->addSeparator();
     runMenu->addAction(m_scanAction);
+    runMenu->addAction(m_uutSlotsAction);
     toolsMenu->addAction(m_productRoutingAction);
     toolsMenu->addAction(m_scanPluginsAction);
     toolsMenu->addAction(m_importRegisterConfigAction);
@@ -5613,11 +5732,20 @@ void MainWindow::buildActions()
     m_uutCount->setToolTip(tr("Number of UUTs in this run"));
     if (ShowAdminUutCountControl) {
         mainToolbar->addWidget(m_uutCount);
+        mainToolbar->addAction(m_uutSlotsAction);
         mainToolbar->addSeparator();
     } else {
         m_uutCount->setValue(1);
         m_uutCount->hide();
+        m_uutSlotsAction->setVisible(false);
     }
+    synchronizeAdminUutSlotCount(m_uutCount->value());
+    connect(m_uutCount, &QSpinBox::valueChanged, this, [this](int value) {
+        synchronizeAdminUutSlotCount(value);
+        if (m_viewModel->compileSummary().success) {
+            updateCompilePreview();
+        }
+    });
     mainToolbar->addAction(m_compileAction);
     mainToolbar->addAction(m_runAction);
     mainToolbar->addAction(m_pauseAction);
@@ -6665,6 +6793,9 @@ void MainWindow::updateCommandState()
     m_productRoutingAction->setEnabled(canChangeSources);
     m_uutCount->setEnabled(
         ShowAdminUutCountControl && canChangeSources);
+    m_uutSlotsAction->setEnabled(
+        ShowAdminUutCountControl && canChangeSources &&
+        m_uutCount->value() > 1);
 
     const bool hasDocument = m_sequenceDocument && !m_sequenceDocument->isEmpty();
     const auto selectedPath = m_sequenceTreeView
@@ -6847,10 +6978,15 @@ void MainWindow::updateCompilePreview()
 
     QVector<RunRequest::UutInput> previewUuts;
     const int uutCount = m_uutCount ? qMax(1, m_uutCount->value()) : 1;
+    synchronizeAdminUutSlotCount(uutCount);
     previewUuts.reserve(uutCount);
     for (int index = 1; index <= uutCount; ++index) {
+        if (!m_adminUutSlotEnabled[index - 1]) {
+            continue;
+        }
         RunRequest::UutInput input;
         input.uutId = QStringLiteral("UUT-%1").arg(index);
+        input.slotIndex = index - 1;
         input.variables.insert(QStringLiteral("sn"), QString{});
         input.variables.insert(QStringLiteral("serialNumber"), QString{});
         previewUuts.push_back(std::move(input));
@@ -6874,6 +7010,7 @@ void MainWindow::updateCompilePreview()
         preview.uuts.push_back(std::move(uut));
     }
 
+    m_adminUutOverview->resetRuntimeState();
     m_uutOverviewModel->resetForRun(preview, previewUuts);
     m_selectedAdminUutId = previewUuts.isEmpty()
         ? PicoATE::Core::UutId{}
@@ -7451,6 +7588,7 @@ void MainWindow::applyRuntimeEvents(
         m_uutOverviewModel->setSessionElapsedMs(m_adminElapsed.elapsed());
     }
     m_uutOverviewModel->applyRuntimeEvents(events);
+    m_adminUutOverview->applyRuntimeEvents(events);
     updateAdminOverviewSummary();
     m_uutStepModel->applyRuntimeEvents(events);
     m_deviceStatusModel->applyRuntimeEvents(events);

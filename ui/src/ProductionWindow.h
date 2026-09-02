@@ -59,6 +59,9 @@ private:
     void beginAutoRoutedRun(const QString& serialNumber);
     void beginAutoRoutedRunBatch(const QStringList& serialNumbers);
     void startResolvedRun();
+    void configureUutSlots();
+    void synchronizeUutSlotCount(int slotCount);
+    void updateUutSlotAction();
     void showRoutingError(const QString& message);
     void updateStationSummary();
     void beginManualRun();
@@ -82,6 +85,7 @@ private:
     QAction* m_pauseAction = nullptr;
     QAction* m_resumeAction = nullptr;
     QAction* m_stopAction = nullptr;
+    QAction* m_uutSlotsAction = nullptr;
     QAction* m_fieldDeviceAction = nullptr;
     QAction* m_productRoutingAction = nullptr;
     QLabel* m_sequenceLabel = nullptr;
@@ -117,6 +121,8 @@ private:
     QString m_activeUutId;
     QString m_activeSerialNumber;
     QStringList m_pendingSerialNumbers;
+    QVector<bool> m_uutSlotEnabled;
+    QVector<bool> m_pendingUutSlotEnabled;
     bool m_runPreparationPending = false;
     bool m_currentRunCounted = false;
     bool m_fieldDeviceDialogOpen = false;

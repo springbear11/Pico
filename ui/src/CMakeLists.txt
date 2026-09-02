@@ -115,6 +115,8 @@ qt_add_executable(PicoATEUi WIN32
     ProportionalHeaderView.h
     ScanDialog.cpp
     ScanDialog.h
+    UutSlotConfigurationDialog.cpp
+    UutSlotConfigurationDialog.h
     SequenceEditorTreeView.cpp
     SequenceEditorTreeView.h
     SequenceVariablesDialog.cpp

@@ -38,7 +38,9 @@ public:
     void setValidationRules(SnValidationRules rules);
     void setSubmissionValidator(ScanSubmissionValidator validator);
     void setSlotCount(int count);
+    void setSlotEnabledStates(const QVector<bool>& enabledStates);
     int slotCount() const;
+    QVector<bool> slotEnabledStates() const;
     QStringList barcodes() const;
     void showForNextScan();
     void cancelCurrentScan();
@@ -58,6 +60,7 @@ private slots:
     void showNextSlot();
     void undoLastScan();
     void clearBatch();
+    void toggleCurrentSlotEnabled(bool enabled);
 
 private:
     struct ScanChange {
@@ -71,11 +74,13 @@ private:
     void focusBarcodeEdit();
     void resizeSlotsPreservingValues(int count);
     void showSubmissionError(const QString& message);
+    void acceptCompletedBatch();
     int nextEmptySlot(int afterSlot) const;
     bool batchComplete() const;
 
     QLabel* m_titleLabel = nullptr;
     QLabel* m_progressLabel = nullptr;
+    QPushButton* m_slotEnabledButton = nullptr;
     QLineEdit* m_barcodeEdit = nullptr;
     QLabel* m_errorLabel = nullptr;
     QToolButton* m_previousButton = nullptr;
@@ -85,6 +90,7 @@ private:
     SnValidationRules m_validationRules;
     ScanSubmissionValidator m_submissionValidator;
     QStringList m_barcodes{QString{}};
+    QVector<bool> m_slotEnabledStates{true};
     QVector<ScanChange> m_history;
     QString m_batchContext;
     int m_configuredSlotCount = 1;

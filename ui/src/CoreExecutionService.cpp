@@ -268,6 +268,7 @@ RunServiceResult CoreExecutionService::run(
         for (int index = 1; index <= request.uutCount; ++index) {
             RunRequest::UutInput input;
             input.uutId = QStringLiteral("%1-%2").arg(prefix).arg(index);
+            input.slotIndex = index - 1;
             input.variables.insert(QStringLiteral("sn"), QString{});
             input.variables.insert(QStringLiteral("serialNumber"), QString{});
             uutInputs.push_back(std::move(input));
@@ -275,7 +276,10 @@ RunServiceResult CoreExecutionService::run(
     }
 
     QSet<PicoATE::Core::UutId> registeredUuts;
-    for (auto& input : uutInputs) {
+    QSet<int> registeredSlots;
+    int enabledUutCount = 0;
+    for (int index = 0; index < uutInputs.size(); ++index) {
+        auto& input = uutInputs[index];
         input.uutId = input.uutId.trimmed();
         if (input.uutId.isEmpty()) {
             result.diagnostics.push_back(error("uuts", "UUT ID cannot be empty"));
@@ -287,7 +291,29 @@ RunServiceResult CoreExecutionService::run(
             return result;
         }
         registeredUuts.insert(input.uutId);
-
+        const int slotIndex = input.slotIndex >= 0 ? input.slotIndex : index;
+        if (slotIndex < 0 || slotIndex >= 64) {
+            result.diagnostics.push_back(error(
+                QStringLiteral("uuts[%1].slotIndex").arg(index),
+                QStringLiteral("UUT slot index must be between 0 and 63")));
+            return result;
+        }
+        if (registeredSlots.contains(slotIndex)) {
+            result.diagnostics.push_back(error(
+                QStringLiteral("uuts[%1].slotIndex").arg(index),
+                QStringLiteral("Duplicate UUT slot index: %1").arg(slotIndex)));
+            return result;
+        }
+        registeredSlots.insert(slotIndex);
+        if (input.enabled) {
+            ++enabledUutCount;
+        }
+    }
+    if (enabledUutCount == 0) {
+        result.diagnostics.push_back(error(
+            QStringLiteral("uuts"),
+            QStringLiteral("At least one UUT slot must be enabled")));
+        return result;
     }
 
     auto runStation = m_compiled->station;
@@ -369,8 +395,12 @@ RunServiceResult CoreExecutionService::run(
 
     for (int index = 0; index < uutInputs.size(); ++index) {
         const auto& input = uutInputs[index];
+        if (!input.enabled) {
+            continue;
+        }
+        const int slotIndex = input.slotIndex >= 0 ? input.slotIndex : index;
         const auto binding = PicoATE::Core::bindSequenceVariablesForUut(
-            m_compiled->plan.variables, index, input.uutId, input.variables);
+            m_compiled->plan.variables, slotIndex, input.uutId, input.variables);
         for (const auto& diagnostic : binding.errors) {
             result.diagnostics.push_back(error(
                 diagnostic.variableName.isEmpty()

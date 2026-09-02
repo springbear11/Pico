@@ -406,6 +406,7 @@ private slots:
     void deviceConnectionTestRunsOffUiThreadAndCancels();
     void coreServiceCompilesAndRunsSimpleSequence();
     void coreServiceRunsExplicitScannedUut();
+    void coreServiceSkipsDisabledUutAndPreservesPhysicalSlotVariables();
     void startupSupportDiscoversSequencesAndValidatesDailyPassword();
     void newProjectTemplatesUseProductionDefaults();
     void pluginCatalogParsesGcanManifestAndCreatesSteps();
@@ -897,6 +898,70 @@ void ExecutionViewModelTests::coreServiceRunsExplicitScannedUut()
     QVERIFY(!duplicate.executed);
     QVERIFY(!duplicate.diagnostics.isEmpty());
     QCOMPARE(duplicate.diagnostics.first().path, QStringLiteral("uuts"));
+}
+
+void ExecutionViewModelTests::coreServiceSkipsDisabledUutAndPreservesPhysicalSlotVariables()
+{
+    CoreExecutionService service;
+    CompileRequest compileRequest;
+    compileRequest.requestId = 84;
+    compileRequest.sequencePath = QStringLiteral("disabled-uut-slot-test.json");
+    compileRequest.sequenceJson = R"json({
+      "id":"disabled-uut-slot-test","name":"Disabled UUT Slot Test",
+      "variables":[
+        {"name":"SLOT_VALUE","type":"integer","scope":"perUut",
+         "values":[1,2,999,4]}
+      ],
+      "groups":[
+        {"id":"setup","name":"Setup","kind":"setup","steps":[]},
+        {"id":"main","name":"Main","kind":"main","steps":[
+          {"id":"slot-limit","name":"Check Physical Slot","kind":"limit",
+           "inputs":{"actual":"${var.SLOT_VALUE}"},
+           "parameters":{"comparison":"lessOrEqual","expected":10}}
+        ]},
+        {"id":"cleanup","name":"Cleanup","kind":"cleanup","steps":[]}
+      ]
+    })json";
+    const auto compileResult = service.compile(compileRequest);
+    QVERIFY2(compileResult.success,
+             qPrintable(compileResult.diagnostics.isEmpty()
+                            ? QStringLiteral("Compile failed without diagnostics")
+                            : compileResult.diagnostics.first().message));
+
+    RunRequest request;
+    request.requestId = 85;
+    for (int index = 0; index < 4; ++index) {
+        RunRequest::UutInput input;
+        input.uutId = QStringLiteral("UUT-%1").arg(index + 1);
+        input.slotIndex = index;
+        input.enabled = index != 2;
+        request.uuts.push_back(std::move(input));
+    }
+
+    const auto runResult = service.run(
+        request, std::make_shared<PicoATE::Core::StopToken>());
+    QVERIFY(runResult.executed);
+    QVERIFY2(!runResult.report.hasError,
+             qPrintable(runResult.diagnostics.isEmpty()
+                            ? QStringLiteral("A disabled physical slot was executed or remapped")
+                            : runResult.diagnostics.first().message));
+    QCOMPARE(runResult.report.uuts.size(), 3);
+    QCOMPARE(runResult.report.uuts[0].uutId, QStringLiteral("UUT-1"));
+    QCOMPARE(runResult.report.uuts[1].uutId, QStringLiteral("UUT-2"));
+    QCOMPARE(runResult.report.uuts[2].uutId, QStringLiteral("UUT-4"));
+
+    RunRequest singleSlotRequest;
+    singleSlotRequest.requestId = 86;
+    RunRequest::UutInput fourthSlot;
+    fourthSlot.uutId = QStringLiteral("UUT-4");
+    fourthSlot.slotIndex = 3;
+    singleSlotRequest.uuts.push_back(std::move(fourthSlot));
+    const auto fourthSlotRun = service.run(
+        singleSlotRequest, std::make_shared<PicoATE::Core::StopToken>());
+    QVERIFY(fourthSlotRun.executed);
+    QVERIFY(!fourthSlotRun.report.hasError);
+    QCOMPARE(fourthSlotRun.report.uuts.size(), 1);
+    QCOMPARE(fourthSlotRun.report.uuts.first().uutId, QStringLiteral("UUT-4"));
 }
 
 void ExecutionViewModelTests::startupSupportDiscoversSequencesAndValidatesDailyPassword()

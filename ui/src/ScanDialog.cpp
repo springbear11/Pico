@@ -1,5 +1,7 @@
 #include "ScanDialog.h"
 
+#include "UutSlotConfigurationDialog.h"
+
 #include <QCloseEvent>
 #include <QEvent>
 #include <QHBoxLayout>
@@ -9,6 +11,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -99,6 +102,13 @@ ScanDialog::ScanDialog(QWidget* parent)
 
     auto* commands = new QHBoxLayout;
     commands->setSpacing(8);
+    m_slotEnabledButton = new QPushButton(this);
+    m_slotEnabledButton->setObjectName(
+        QStringLiteral("scanSlotEnabledButton"));
+    m_slotEnabledButton->setCheckable(true);
+    m_slotEnabledButton->setToolTip(
+        tr("Enable or disable the current UUT station"));
+    commands->addWidget(m_slotEnabledButton);
     m_progressLabel = new QLabel(this);
     m_progressLabel->setObjectName(QStringLiteral("scanProgressLabel"));
     m_progressLabel->setStyleSheet(
@@ -132,7 +142,14 @@ ScanDialog::ScanDialog(QWidget* parent)
         "QPushButton#scanUndoButton { font-weight: 600; }"
         "QPushButton#scanClearButton { font-weight: 600; }"
         "QPushButton#scanUndoButton:hover, QPushButton#scanClearButton:hover {"
-        " background: #eaf3f8; }"));
+        " background: #eaf3f8; }"
+        "QPushButton#scanSlotEnabledButton {"
+        " min-height: 28px; min-width: 76px; padding: 1px 10px;"
+        " border: 1px solid #b9c3c9; border-radius: 5px;"
+        " background: #ffffff; color: #69747b; font-weight: 700; }"
+        "QPushButton#scanSlotEnabledButton:checked {"
+        " border-color: #252a2f; background: #252a2f; color: #ffffff; }"
+        "QPushButton#scanSlotEnabledButton:hover { border-color: #52616b; }"));
 
     connect(m_barcodeEdit, &QLineEdit::returnPressed,
             this, &ScanDialog::submitBarcode);
@@ -152,6 +169,8 @@ ScanDialog::ScanDialog(QWidget* parent)
             this, &ScanDialog::undoLastScan);
     connect(m_clearButton, &QPushButton::clicked,
             this, &ScanDialog::clearBatch);
+    connect(m_slotEnabledButton, &QPushButton::toggled,
+            this, &ScanDialog::toggleCurrentSlotEnabled);
     updateUi();
 }
 
@@ -173,18 +192,39 @@ void ScanDialog::setSlotCount(int count)
     count = qBound(1, count, 64);
     m_configuredSlotCount = count;
     if (count == m_barcodes.size()) {
+        m_slotEnabledStates = normalizeUutSlotEnabledStates(
+            count, m_slotEnabledStates);
+        updateUi();
         return;
     }
     m_barcodes = QStringList(count, QString{});
+    m_slotEnabledStates = normalizeUutSlotEnabledStates(
+        count, m_slotEnabledStates);
     m_history.clear();
     m_batchContext.clear();
     m_currentSlot = 0;
     updateUi();
 }
 
+void ScanDialog::setSlotEnabledStates(const QVector<bool>& enabledStates)
+{
+    auto normalized = normalizeUutSlotEnabledStates(
+        m_barcodes.size(), enabledStates);
+    if (enabledUutSlotCount(normalized) == 0) {
+        normalized[0] = true;
+    }
+    m_slotEnabledStates = std::move(normalized);
+    updateUi();
+}
+
 int ScanDialog::slotCount() const
 {
     return m_barcodes.size();
+}
+
+QVector<bool> ScanDialog::slotEnabledStates() const
+{
+    return m_slotEnabledStates;
 }
 
 QStringList ScanDialog::barcodes() const
@@ -249,6 +289,9 @@ void ScanDialog::reject()
 
 void ScanDialog::submitBarcode()
 {
+    if (!m_slotEnabledStates.value(m_currentSlot, true)) {
+        return;
+    }
     const auto barcode = m_barcodeEdit->text().trimmed();
     const auto validation = StartupSupport::validateSerialNumber(
         barcode, m_validationRules);
@@ -261,6 +304,7 @@ void ScanDialog::submitBarcode()
     }
     for (int slot = 0; slot < m_barcodes.size(); ++slot) {
         if (slot != m_currentSlot &&
+            m_slotEnabledStates.value(slot, true) &&
             m_barcodes[slot].compare(barcode, Qt::CaseSensitive) == 0) {
             m_errorLabel->setText(
                 tr("This SN is already assigned to UUT %1").arg(slot + 1));
@@ -294,12 +338,7 @@ void ScanDialog::submitBarcode()
     updateUi();
 
     if (batchComplete()) {
-        const auto completedBarcodes = m_barcodes;
-        hide();
-        emit barcodesAccepted(completedBarcodes);
-        if (completedBarcodes.size() == 1) {
-            emit barcodeAccepted(completedBarcodes.first());
-        }
+        acceptCompletedBatch();
         return;
     }
 
@@ -338,12 +377,49 @@ void ScanDialog::clearBatch()
     focusBarcodeEdit();
 }
 
+void ScanDialog::toggleCurrentSlotEnabled(bool enabled)
+{
+    if (m_currentSlot < 0 || m_currentSlot >= m_slotEnabledStates.size()) {
+        return;
+    }
+    if (!enabled && enabledUutSlotCount(m_slotEnabledStates) <= 1) {
+        const QSignalBlocker blocker(m_slotEnabledButton);
+        m_slotEnabledButton->setChecked(true);
+        showSubmissionError(tr("At least one UUT station must remain active"));
+        return;
+    }
+
+    m_slotEnabledStates[m_currentSlot] = enabled;
+    m_errorLabel->hide();
+    updateUi();
+    if (batchComplete()) {
+        acceptCompletedBatch();
+        return;
+    }
+    if (!enabled) {
+        const int nextSlot = nextEmptySlot(m_currentSlot);
+        if (nextSlot >= 0) {
+            showSlot(nextSlot);
+        }
+    } else {
+        focusBarcodeEdit();
+    }
+}
+
 void ScanDialog::resetBatch()
 {
     m_barcodes = QStringList(m_configuredSlotCount, QString{});
+    m_slotEnabledStates = normalizeUutSlotEnabledStates(
+        m_configuredSlotCount, m_slotEnabledStates);
+    if (enabledUutSlotCount(m_slotEnabledStates) == 0) {
+        m_slotEnabledStates[0] = true;
+    }
     m_history.clear();
     m_batchContext.clear();
-    m_currentSlot = 0;
+    m_currentSlot = nextEmptySlot(-1);
+    if (m_currentSlot < 0) {
+        m_currentSlot = 0;
+    }
     m_errorLabel->hide();
     updateUi();
 }
@@ -366,20 +442,36 @@ void ScanDialog::updateUi()
     }
     m_currentSlot = qBound(0, m_currentSlot, m_barcodes.size() - 1);
     const auto stored = m_barcodes[m_currentSlot];
+    const bool slotEnabled = m_slotEnabledStates.value(m_currentSlot, true);
     m_updatingEdit = true;
     m_barcodeEdit->setText(stored);
     m_updatingEdit = false;
-    m_replaceOnNextInput = !stored.isEmpty();
-    applyBarcodeEditAppearance(m_barcodeEdit, !stored.isEmpty());
+    m_barcodeEdit->setEnabled(slotEnabled);
+    m_barcodeEdit->setPlaceholderText(
+        slotEnabled ? tr("Scan SN and press Enter") : tr("UUT disabled"));
+    m_replaceOnNextInput = slotEnabled && !stored.isEmpty();
+    applyBarcodeEditAppearance(m_barcodeEdit,
+                               slotEnabled && !stored.isEmpty());
     const bool batchMode = m_barcodes.size() > 1;
     m_titleLabel->setText(batchMode
-                              ? tr("Scan UUT %1 SN").arg(m_currentSlot + 1)
+                              ? slotEnabled
+                                    ? tr("Scan UUT %1 SN").arg(m_currentSlot + 1)
+                                    : tr("UUT %1 Disabled").arg(m_currentSlot + 1)
                               : tr("Scan SN"));
-    const int completed = static_cast<int>(std::count_if(
-        m_barcodes.cbegin(), m_barcodes.cend(),
-        [](const QString& value) { return !value.isEmpty(); }));
+    int completed = 0;
+    for (int slot = 0; slot < m_barcodes.size(); ++slot) {
+        if (m_slotEnabledStates.value(slot, true) &&
+            !m_barcodes[slot].isEmpty()) {
+            ++completed;
+        }
+    }
+    const int activeSlots = enabledUutSlotCount(m_slotEnabledStates);
+    const int disabledSlots = m_barcodes.size() - activeSlots;
     auto progressText =
-        tr("%1 / %2 scanned").arg(completed).arg(m_barcodes.size());
+        tr("%1 / %2 scanned").arg(completed).arg(activeSlots);
+    if (disabledSlots > 0) {
+        progressText += tr("  |  %1 disabled").arg(disabledSlots);
+    }
     if (!m_batchContext.isEmpty()) {
         progressText = tr("%1  |  %2").arg(m_batchContext, progressText);
     }
@@ -388,15 +480,25 @@ void ScanDialog::updateUi()
     m_nextButton->setEnabled(m_currentSlot + 1 < m_barcodes.size());
     m_undoButton->setEnabled(!m_history.isEmpty());
     m_clearButton->setEnabled(completed > 0);
+    {
+        const QSignalBlocker blocker(m_slotEnabledButton);
+        m_slotEnabledButton->setChecked(slotEnabled);
+        m_slotEnabledButton->setText(slotEnabled ? tr("ACTIVE")
+                                                 : tr("DISABLED"));
+    }
     m_previousButton->setVisible(batchMode);
     m_nextButton->setVisible(batchMode);
     m_progressLabel->setVisible(batchMode);
     m_undoButton->setVisible(batchMode);
     m_clearButton->setVisible(batchMode);
+    m_slotEnabledButton->setVisible(batchMode);
 }
 
 void ScanDialog::focusBarcodeEdit()
 {
+    if (!m_barcodeEdit->isEnabled()) {
+        return;
+    }
     m_barcodeEdit->setCursorPosition(0);
     m_barcodeEdit->setFocus(Qt::OtherFocusReason);
     QTimer::singleShot(0, m_barcodeEdit, [edit = m_barcodeEdit] {
@@ -412,6 +514,8 @@ void ScanDialog::resizeSlotsPreservingValues(int count)
         return;
     }
     m_barcodes.resize(count);
+    m_slotEnabledStates = normalizeUutSlotEnabledStates(
+        count, m_slotEnabledStates);
     m_history.erase(
         std::remove_if(m_history.begin(), m_history.end(),
                        [count](const ScanChange& change) {
@@ -419,6 +523,21 @@ void ScanDialog::resizeSlotsPreservingValues(int count)
                        }),
         m_history.end());
     m_currentSlot = qBound(0, m_currentSlot, count - 1);
+}
+
+void ScanDialog::acceptCompletedBatch()
+{
+    auto completedBarcodes = m_barcodes;
+    for (int slot = 0; slot < completedBarcodes.size(); ++slot) {
+        if (!m_slotEnabledStates.value(slot, true)) {
+            completedBarcodes[slot].clear();
+        }
+    }
+    hide();
+    emit barcodesAccepted(completedBarcodes);
+    if (completedBarcodes.size() == 1) {
+        emit barcodeAccepted(completedBarcodes.first());
+    }
 }
 
 void ScanDialog::showSubmissionError(const QString& message)
@@ -436,12 +555,14 @@ void ScanDialog::showSubmissionError(const QString& message)
 int ScanDialog::nextEmptySlot(int afterSlot) const
 {
     for (int slot = afterSlot + 1; slot < m_barcodes.size(); ++slot) {
-        if (m_barcodes[slot].isEmpty()) {
+        if (m_slotEnabledStates.value(slot, true) &&
+            m_barcodes[slot].isEmpty()) {
             return slot;
         }
     }
     for (int slot = 0; slot <= afterSlot && slot < m_barcodes.size(); ++slot) {
-        if (m_barcodes[slot].isEmpty()) {
+        if (m_slotEnabledStates.value(slot, true) &&
+            m_barcodes[slot].isEmpty()) {
             return slot;
         }
     }
@@ -450,8 +571,16 @@ int ScanDialog::nextEmptySlot(int afterSlot) const
 
 bool ScanDialog::batchComplete() const
 {
-    return std::all_of(m_barcodes.cbegin(), m_barcodes.cend(),
-                       [](const QString& value) { return !value.isEmpty(); });
+    if (enabledUutSlotCount(m_slotEnabledStates) == 0) {
+        return false;
+    }
+    for (int slot = 0; slot < m_barcodes.size(); ++slot) {
+        if (m_slotEnabledStates.value(slot, true) &&
+            m_barcodes[slot].isEmpty()) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace PicoATE::Ui

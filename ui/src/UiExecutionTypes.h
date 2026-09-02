@@ -71,6 +71,10 @@ struct RunRequest {
     struct UutInput {
         PicoATE::Core::UutId uutId;
         QVariantMap variables;
+        // Physical fixture slot, zero based. Disabled slots remain in the
+        // request so later UUTs keep their original per-UUT variable index.
+        int slotIndex = -1;
+        bool enabled = true;
     };
 
     quint64 requestId = 0;

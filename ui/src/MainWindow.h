@@ -138,6 +138,9 @@ private:
     QString effectiveProductRoutingPath() const;
     void runScannedUut(const QString& serialNumber);
     void runScannedUuts(const QStringList& serialNumbers);
+    void configureAdminUutSlots();
+    void synchronizeAdminUutSlotCount(int slotCount);
+    void updateAdminUutSlotAction();
     void startAdminRunWithSerial(const QString& serialNumber);
     void startAdminRunWithSerials(const QStringList& serialNumbers);
     void showProductRoutingError(const QString& message);
@@ -277,6 +280,7 @@ private:
     QAction* m_stepOverAction = nullptr;
     QAction* m_stopAction = nullptr;
     QAction* m_scanAction = nullptr;
+    QAction* m_uutSlotsAction = nullptr;
     QAction* m_productRoutingAction = nullptr;
     QAction* m_scanPluginsAction = nullptr;
     QAction* m_resetLayoutAction = nullptr;
@@ -353,6 +357,7 @@ private:
     QString m_productRoutingPath;
     QString m_newProjectRootPath;
     QStringList m_pendingRoutedSerialNumbers;
+    QVector<bool> m_adminUutSlotEnabled;
     QString m_activeAdminUutId;
     QString m_activeAdminSerialNumber;
     PicoATE::Core::UutId m_selectedAdminUutId;

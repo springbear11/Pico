@@ -392,6 +392,7 @@ private slots:
     void runTestBreakpointGutterControlsExecutionBreakpoints();
     void runPopulatesRuntimeTimeline();
     void multiUutOverviewShowsRetryAndRecentSteps();
+    void multiUutOverviewShowsDelayedCleanupOverlay();
     void adminMultiUutRunShowsOverviewAndNavigatesToDetails();
     void persistsLayoutAndRecentFiles();
     void invalidOrOffscreenGeometryFallsBackToPrimaryScreen();
@@ -410,6 +411,7 @@ private slots:
     void productionFieldDeviceDialogDefersScannerUntilClosed();
     void scanDialogAcceptsRepeatedBarcodeAndHasNoWindowButtons();
     void scanDialogCollectsCarouselBatchAndSupportsReplacement();
+    void scanDialogSkipsDisabledSlotWithoutCollapsingBatchPositions();
     void scanDialogExpandsValidatedBatchAndRejectsCurrentSlot();
     void adminStartsOnProductionDashboardAndOpensScannerOnDemand();
     void adminScannerRunsFourExplicitUuts();
@@ -4395,6 +4397,91 @@ void MainWindowLifecycleTests::multiUutOverviewShowsRetryAndRecentSteps()
     QTRY_VERIFY(!resourcePanel->isVisible());
 }
 
+void MainWindowLifecycleTests::multiUutOverviewShowsDelayedCleanupOverlay()
+{
+    using namespace PicoATE::Core;
+
+    RunRequest::UutInput first;
+    first.uutId = QStringLiteral("UUT-1");
+    RunRequest::UutInput second;
+    second.uutId = QStringLiteral("UUT-2");
+    UutOverviewModel model;
+    model.resetForRun({}, {first, second});
+
+    MultiUutOverviewWidget overview;
+    overview.resize(1000, 620);
+    overview.setModel(&model);
+    overview.show();
+    QTest::qWait(20);
+
+    auto* overlay = overview.findChild<QWidget*>(
+        QStringLiteral("multiUutCleanupOverlay"));
+    auto* spinnerWidget = overview.findChild<QWidget*>(
+        QStringLiteral("multiUutCleanupSpinner"));
+    auto* stepLabel = overview.findChild<QLabel*>(
+        QStringLiteral("multiUutCleanupStep"));
+    auto* titleLabel = overview.findChild<QLabel*>(
+        QStringLiteral("multiUutCleanupTitle"));
+    auto* statusLabel = overview.findChild<QLabel*>(
+        QStringLiteral("multiUutCleanupStatus"));
+    QVERIFY(overlay);
+    QVERIFY(spinnerWidget);
+    QVERIFY(stepLabel);
+    QVERIFY(titleLabel);
+    QVERIFY(statusLabel);
+    auto* spinner = static_cast<LoadingSpinner*>(spinnerWidget);
+    QVERIFY(!overlay->isVisible());
+    QVERIFY(!spinner->isRunning());
+
+    RuntimeEvent prompt;
+    prompt.kind = RuntimeEventKind::OperatorPromptRequested;
+    prompt.uutId = QStringLiteral("UUT-1");
+    prompt.details = {
+        {QStringLiteral("promptInstanceId"), QStringLiteral("stop-prompt")},
+        {QStringLiteral("mode"), QStringLiteral("confirm")},
+        {QStringLiteral("title"), QStringLiteral("Operator Check")},
+        {QStringLiteral("message"), QStringLiteral("Confirm the product state")},
+    };
+    QVERIFY(overview.presentOperatorPrompt(prompt, {}));
+
+    overview.beginStopTransition();
+    QVERIFY(overlay->isVisible());
+    QVERIFY(spinner->isRunning());
+    QCOMPARE(titleLabel->text(), QStringLiteral("STOPPING"));
+    QCOMPARE(statusLabel->text(),
+             QStringLiteral("Stopping active work before cleanup..."));
+    overview.resetRuntimeState();
+    overview.clearOperatorPrompts();
+    QVERIFY(!overlay->isVisible());
+    QVERIFY(!spinner->isRunning());
+
+    RuntimeEvent cleaningUp;
+    cleaningUp.kind = RuntimeEventKind::SessionStateChanged;
+    cleaningUp.executionState = ExecutionState::CleaningUp;
+    overview.applyRuntimeEvents({cleaningUp});
+    QTest::qWait(180);
+    QVERIFY(!overlay->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(overlay->isVisible(), 400);
+    QVERIFY(spinner->isRunning());
+    QCOMPARE(titleLabel->text(), QStringLiteral("CLEANING UP"));
+
+    RuntimeEvent cleanupStep;
+    cleanupStep.kind = RuntimeEventKind::NodeStateChanged;
+    cleanupStep.nodeId = QStringLiteral("cleanup.close-shared-modbus");
+    cleanupStep.nodeDisplayName = QStringLiteral("Close Shared Modbus");
+    cleanupStep.nodePhase = ExecutionPhase::Cleanup;
+    cleanupStep.activationState = ActivationState::Running;
+    overview.applyRuntimeEvents({cleanupStep});
+    QCOMPARE(stepLabel->text(), QStringLiteral("Current: Close Shared Modbus"));
+
+    RuntimeEvent completed;
+    completed.kind = RuntimeEventKind::SessionStateChanged;
+    completed.executionState = ExecutionState::Completed;
+    overview.applyRuntimeEvents({completed});
+    QVERIFY(!overlay->isVisible());
+    QVERIFY(!spinner->isRunning());
+}
+
 void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetails()
 {
     QSettings().clear();
@@ -6119,6 +6206,71 @@ void MainWindowLifecycleTests::scanDialogCollectsCarouselBatchAndSupportsReplace
     QCOMPARE(dialog.barcodes(), QStringList(4, QString{}));
     QCOMPARE(titleLabel->text(), QStringLiteral("Scan UUT 1 SN"));
     QCOMPARE(progress->text(), QStringLiteral("0 / 4 scanned"));
+}
+
+void MainWindowLifecycleTests::scanDialogSkipsDisabledSlotWithoutCollapsingBatchPositions()
+{
+    ScanDialog dialog;
+    dialog.setAttribute(Qt::WA_DontShowOnScreen);
+    dialog.setSlotCount(4);
+    dialog.setSlotEnabledStates({true, true, false, true});
+
+    QCOMPARE(dialog.slotEnabledStates(), QVector<bool>({true, true, false, true}));
+    QSignalSpy batchSpy(&dialog, &ScanDialog::barcodesAccepted);
+    auto* barcode = dialog.findChild<QLineEdit*>(QStringLiteral("barcodeEdit"));
+    auto* title = dialog.findChild<QLabel*>(QStringLiteral("scanTitleLabel"));
+    auto* progress = dialog.findChild<QLabel*>(QStringLiteral("scanProgressLabel"));
+    auto* active = dialog.findChild<QPushButton*>(
+        QStringLiteral("scanSlotEnabledButton"));
+    auto* previous = dialog.findChild<QToolButton*>(
+        QStringLiteral("scanPreviousButton"));
+    QVERIFY(barcode);
+    QVERIFY(title);
+    QVERIFY(progress);
+    QVERIFY(active);
+    QVERIFY(previous);
+
+    const auto submit = [&](const QString& value) {
+        barcode->setText(value);
+        QVERIFY(QMetaObject::invokeMethod(&dialog, "submitBarcode"));
+    };
+
+    dialog.showForNextScan();
+    QCOMPARE(title->text(), QStringLiteral("Scan UUT 1 SN"));
+    QCOMPARE(progress->text(), QStringLiteral("0 / 3 scanned  |  1 disabled"));
+    submit(QStringLiteral("SN-001"));
+    QCOMPARE(title->text(), QStringLiteral("Scan UUT 2 SN"));
+    submit(QStringLiteral("SN-002"));
+    QCOMPARE(title->text(), QStringLiteral("Scan UUT 4 SN"));
+    submit(QStringLiteral("SN-004"));
+
+    QCOMPARE(batchSpy.count(), 1);
+    const auto accepted = batchSpy.first().first().toStringList();
+    QCOMPARE(accepted.size(), 4);
+    QCOMPARE(accepted[0], QStringLiteral("SN-001"));
+    QCOMPARE(accepted[1], QStringLiteral("SN-002"));
+    QVERIFY(accepted[2].isEmpty());
+    QCOMPARE(accepted[3], QStringLiteral("SN-004"));
+
+    dialog.setSlotEnabledStates({true, true, true, true});
+    dialog.showForNextScan();
+    submit(QStringLiteral("SN-A"));
+    submit(QStringLiteral("SN-B"));
+    submit(QStringLiteral("SN-C"));
+    QCOMPARE(title->text(), QStringLiteral("Scan UUT 4 SN"));
+    previous->click();
+    QCOMPARE(title->text(), QStringLiteral("Scan UUT 3 SN"));
+    active->click();
+    QCOMPARE(title->text(), QStringLiteral("Scan UUT 4 SN"));
+    submit(QStringLiteral("SN-C"));
+
+    QCOMPARE(batchSpy.count(), 2);
+    const auto replaced = batchSpy.last().first().toStringList();
+    QCOMPARE(replaced,
+             QStringList({QStringLiteral("SN-A"),
+                          QStringLiteral("SN-B"),
+                          QString{},
+                          QStringLiteral("SN-C")}));
 }
 
 void MainWindowLifecycleTests::scanDialogExpandsValidatedBatchAndRejectsCurrentSlot()

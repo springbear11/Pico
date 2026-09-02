@@ -1,5 +1,6 @@
 #include "MultiUutOverviewWidget.h"
 
+#include "LoadingSpinner.h"
 #include "ProjectResourcePaths.h"
 #include "RunnerModels.h"
 
@@ -665,6 +666,133 @@ bool isOncePerBatchPrompt(const PicoATE::Core::RuntimeEvent& event)
     scope.remove(QLatin1Char(' '));
     return scope == QStringLiteral("onceperbatch");
 }
+
+class CleanupProgressOverlay final : public QWidget
+{
+public:
+    enum class Stage {
+        Stopping,
+        CleaningUp
+    };
+
+    explicit CleanupProgressOverlay(QWidget* parent = nullptr)
+        : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("multiUutCleanupOverlay"));
+        setAttribute(Qt::WA_StyledBackground, true);
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+
+        auto* root = new QVBoxLayout(this);
+        root->setContentsMargins(20, 20, 20, 20);
+        root->addStretch(1);
+
+        auto* row = new QHBoxLayout;
+        row->addStretch(1);
+        auto* card = new QFrame(this);
+        card->setObjectName(QStringLiteral("multiUutCleanupCard"));
+        card->setMinimumSize(320, 150);
+        card->setMaximumSize(390, 174);
+        auto* cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(28, 22, 28, 22);
+        cardLayout->setSpacing(8);
+
+        m_spinner = new LoadingSpinner(card);
+        m_spinner->setObjectName(QStringLiteral("multiUutCleanupSpinner"));
+        m_spinner->setFixedSize(34, 34);
+        m_spinner->setColor(QColor(QStringLiteral("#3f4a54")));
+        cardLayout->addWidget(m_spinner, 0, Qt::AlignHCenter);
+
+        m_titleLabel = new QLabel(card);
+        m_titleLabel->setObjectName(QStringLiteral("multiUutCleanupTitle"));
+        m_titleLabel->setAlignment(Qt::AlignCenter);
+        cardLayout->addWidget(m_titleLabel);
+
+        m_statusLabel = new QLabel(card);
+        m_statusLabel->setObjectName(QStringLiteral("multiUutCleanupStatus"));
+        m_statusLabel->setAlignment(Qt::AlignCenter);
+        m_statusLabel->setWordWrap(true);
+        cardLayout->addWidget(m_statusLabel);
+
+        m_stepLabel = new QLabel(card);
+        m_stepLabel->setObjectName(QStringLiteral("multiUutCleanupStep"));
+        m_stepLabel->setAlignment(Qt::AlignCenter);
+        m_stepLabel->setWordWrap(true);
+        cardLayout->addWidget(m_stepLabel);
+        row->addWidget(card);
+        row->addStretch(1);
+        root->addLayout(row);
+        root->addStretch(1);
+
+        setStyleSheet(QStringLiteral(R"css(
+            QWidget#multiUutCleanupOverlay {
+                background: rgba(244, 247, 250, 235);
+            }
+            QFrame#multiUutCleanupCard {
+                background: #ffffff;
+                border: 1px solid #d6dfe8;
+                border-radius: 8px;
+            }
+            QLabel#multiUutCleanupTitle {
+                color: #263139;
+                font-size: 14px;
+                font-weight: 800;
+            }
+            QLabel#multiUutCleanupStatus {
+                color: #405160;
+                font-size: 10px;
+                font-weight: 600;
+            }
+            QLabel#multiUutCleanupStep {
+                color: #6a7881;
+                font-size: 9px;
+                font-weight: 600;
+            }
+        )css"));
+        setStage(Stage::CleaningUp);
+        hide();
+    }
+
+    void setStage(Stage stage)
+    {
+        m_stage = stage;
+        if (stage == Stage::Stopping) {
+            m_titleLabel->setText(tr("STOPPING"));
+            m_statusLabel->setText(
+                tr("Stopping active work before cleanup..."));
+        } else {
+            m_titleLabel->setText(tr("CLEANING UP"));
+            m_statusLabel->setText(
+                tr("Closing devices and releasing resources..."));
+        }
+        setCurrentStep(m_currentStep);
+    }
+
+    void setCurrentStep(const QString& currentStep)
+    {
+        const auto step = currentStep.trimmed();
+        m_currentStep = step;
+        m_stepLabel->setText(step.isEmpty()
+            ? (m_stage == Stage::Stopping
+                   ? tr("Preparing cleanup for all UUTs")
+                   : tr("Finalizing all UUTs"))
+            : tr("Current: %1").arg(step));
+        m_stepLabel->setToolTip(step);
+    }
+
+    void setRunning(bool running)
+    {
+        m_spinner->setRunning(running);
+        setVisible(running);
+    }
+
+private:
+    LoadingSpinner* m_spinner = nullptr;
+    QLabel* m_titleLabel = nullptr;
+    QLabel* m_statusLabel = nullptr;
+    QLabel* m_stepLabel = nullptr;
+    Stage m_stage = Stage::CleaningUp;
+    QString m_currentStep;
+};
 
 class UutOverviewPromptOverlay final : public QWidget
 {
@@ -1594,13 +1722,25 @@ MultiUutOverviewWidget::MultiUutOverviewWidget(QWidget* parent)
     m_cardsLayout->setColumnStretch(0, 1);
     m_cardsLayout->setColumnStretch(1, 1);
     scroll->setWidget(m_cardsHost);
+    m_cleanupOverlayHost = scroll->viewport();
+    m_cleanupOverlayHost->installEventFilter(this);
+    m_cleanupOverlay = new CleanupProgressOverlay(m_cleanupOverlayHost);
     root->addWidget(scroll, 1);
 
     m_periodicRefreshTimer = new QTimer(this);
     m_periodicRefreshTimer->setInterval(250);
     connect(m_periodicRefreshTimer, &QTimer::timeout,
-            this, &MultiUutOverviewWidget::refreshPeriodicCountdowns);
+             this, &MultiUutOverviewWidget::refreshPeriodicCountdowns);
     m_periodicRefreshTimer->start();
+
+    m_cleanupOverlayDelayTimer = new QTimer(this);
+    m_cleanupOverlayDelayTimer->setSingleShot(true);
+    m_cleanupOverlayDelayTimer->setInterval(300);
+    connect(m_cleanupOverlayDelayTimer, &QTimer::timeout, this, [this] {
+        m_cleanupDelayElapsed = true;
+        updateCleanupOverlayVisibility();
+    });
+    updateCleanupOverlayGeometry();
 
     setStyleSheet(QStringLiteral(
         "QWidget#multiUutOverview{background:#f4f6f7;}"
@@ -1662,6 +1802,92 @@ PicoATE::Core::UutId MultiUutOverviewWidget::selectedUutId() const
     return m_selectedUutId;
 }
 
+void MultiUutOverviewWidget::applyRuntimeEvents(
+    const QVector<PicoATE::Core::RuntimeEvent>& events)
+{
+    bool cleanupActive = m_cleanupActive;
+    bool cleanupObserved = false;
+    bool terminalSession = false;
+    auto currentStep = m_cleanupCurrentStep;
+
+    for (const auto& event : events) {
+        if (event.kind == PicoATE::Core::RuntimeEventKind::SessionStateChanged) {
+            switch (event.executionState) {
+            case PicoATE::Core::ExecutionState::CleaningUp:
+                cleanupActive = true;
+                cleanupObserved = true;
+                break;
+            case PicoATE::Core::ExecutionState::Completed:
+            case PicoATE::Core::ExecutionState::CompletedWithError:
+            case PicoATE::Core::ExecutionState::Aborted:
+                terminalSession = true;
+                break;
+            case PicoATE::Core::ExecutionState::Idle:
+            case PicoATE::Core::ExecutionState::Starting:
+                cleanupActive = false;
+                m_stopTransitionRequested = false;
+                currentStep.clear();
+                break;
+            default:
+                break;
+            }
+        }
+
+        const bool cleanupNode =
+            event.nodePhase == PicoATE::Core::ExecutionPhase::Cleanup &&
+            !event.nodeId.isEmpty();
+        if (event.kind == PicoATE::Core::RuntimeEventKind::CleanupActivated ||
+            (cleanupNode &&
+             event.activationState != PicoATE::Core::ActivationState::Skipped)) {
+            cleanupActive = true;
+            cleanupObserved = true;
+        }
+        if (cleanupNode &&
+            event.activationState != PicoATE::Core::ActivationState::Skipped) {
+            currentStep = event.nodeDisplayName.trimmed();
+            if (currentStep.isEmpty()) {
+                currentStep = event.nodeLocalId.trimmed();
+            }
+            if (currentStep.isEmpty()) {
+                currentStep = event.nodeId;
+            }
+        }
+    }
+
+    if (terminalSession) {
+        cleanupActive = false;
+        m_stopTransitionRequested = false;
+        currentStep.clear();
+    }
+    if (cleanupObserved) {
+        if (auto* overlay = static_cast<CleanupProgressOverlay*>(
+                m_cleanupOverlay)) {
+            overlay->setStage(CleanupProgressOverlay::Stage::CleaningUp);
+        }
+    }
+    setCleanupActive(cleanupActive, currentStep);
+}
+
+void MultiUutOverviewWidget::beginStopTransition()
+{
+    m_stopTransitionRequested = true;
+    if (auto* overlay = static_cast<CleanupProgressOverlay*>(
+            m_cleanupOverlay)) {
+        overlay->setStage(CleanupProgressOverlay::Stage::Stopping);
+    }
+    setCleanupActive(true, {}, true);
+}
+
+void MultiUutOverviewWidget::resetRuntimeState()
+{
+    m_stopTransitionRequested = false;
+    setCleanupActive(false);
+    if (auto* overlay = static_cast<CleanupProgressOverlay*>(
+            m_cleanupOverlay)) {
+        overlay->setStage(CleanupProgressOverlay::Stage::CleaningUp);
+    }
+}
+
 bool MultiUutOverviewWidget::presentOperatorPrompt(
     const PicoATE::Core::RuntimeEvent& event,
     const QString& sequencePath)
@@ -1684,6 +1910,7 @@ bool MultiUutOverviewWidget::presentOperatorPrompt(
 
         m_activePrompts.insert(instanceId, ActivePrompt{event, sequencePath});
         m_currentBatchPromptId = instanceId;
+        updateCleanupOverlayVisibility();
         if (!m_batchPromptOverlay) {
             m_batchPromptOverlay = new UutOverviewPromptOverlay(
                 m_cardsHost,
@@ -1733,6 +1960,7 @@ bool MultiUutOverviewWidget::presentOperatorPrompt(
 
     m_activePrompts.insert(instanceId, ActivePrompt{event, sequencePath});
     m_currentPromptByUut.insert(event.uutId, instanceId);
+    updateCleanupOverlayVisibility();
     card->showOperatorPrompt(
         event,
         sequencePath,
@@ -1755,6 +1983,7 @@ bool MultiUutOverviewWidget::closeOperatorPrompt(const QString& instanceId)
     const bool batchPrompt = isOncePerBatchPrompt(prompt->event);
     const auto uutId = prompt->event.uutId;
     m_activePrompts.erase(prompt);
+    updateCleanupOverlayVisibility();
     if (batchPrompt) {
         if (m_currentBatchPromptId != instanceId) {
             return true;
@@ -1815,6 +2044,7 @@ void MultiUutOverviewWidget::clearOperatorPrompts()
     for (auto* button : std::as_const(m_cards)) {
         static_cast<UutOverviewCard*>(button)->clearOperatorPrompt();
     }
+    updateCleanupOverlayVisibility();
 }
 
 void MultiUutOverviewWidget::rebuildCards()
@@ -1902,6 +2132,8 @@ void MultiUutOverviewWidget::rebuildCards()
     updateSummary();
     refreshSharedPeriodicTasks();
     refreshSharedResources();
+    updateCleanupOverlayGeometry();
+    updateCleanupOverlayVisibility();
 }
 
 void MultiUutOverviewWidget::refreshCards()
@@ -1978,6 +2210,10 @@ void MultiUutOverviewWidget::refreshSharedResources()
 
 bool MultiUutOverviewWidget::eventFilter(QObject* watched, QEvent* event)
 {
+    if (watched == m_cleanupOverlayHost &&
+        (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
+        updateCleanupOverlayGeometry();
+    }
     if (watched == m_cardsHost &&
         (event->type() == QEvent::Resize || event->type() == QEvent::Show ||
          event->type() == QEvent::LayoutRequest)) {
@@ -1997,6 +2233,8 @@ void MultiUutOverviewWidget::showEvent(QShowEvent* event)
     } else if (m_refreshPending) {
         refreshCards();
     }
+    updateCleanupOverlayGeometry();
+    updateCleanupOverlayVisibility();
     updateBatchPromptGeometry();
     updatePairCardHeights();
 }
@@ -2104,6 +2342,77 @@ void MultiUutOverviewWidget::restoreBatchOperatorPrompt()
     updateBatchPromptGeometry();
     overlay->show();
     overlay->raise();
+}
+
+void MultiUutOverviewWidget::setCleanupActive(
+    bool active,
+    const QString& currentStep,
+    bool showImmediately)
+{
+    const auto normalizedStep = currentStep.trimmed();
+    const bool stateChanged = m_cleanupActive != active;
+    m_cleanupActive = active;
+    m_cleanupCurrentStep = active ? normalizedStep : QString{};
+
+    if (auto* overlay = static_cast<CleanupProgressOverlay*>(
+            m_cleanupOverlay)) {
+        overlay->setCurrentStep(m_cleanupCurrentStep);
+    }
+
+    if (!active) {
+        if (m_cleanupOverlayDelayTimer) {
+            m_cleanupOverlayDelayTimer->stop();
+        }
+        m_cleanupDelayElapsed = false;
+        updateCleanupOverlayVisibility();
+        return;
+    }
+
+    if (showImmediately) {
+        if (m_cleanupOverlayDelayTimer) {
+            m_cleanupOverlayDelayTimer->stop();
+        }
+        m_cleanupDelayElapsed = true;
+    } else if (stateChanged) {
+        m_cleanupDelayElapsed = false;
+        if (m_cleanupOverlayDelayTimer) {
+            m_cleanupOverlayDelayTimer->start();
+        }
+    }
+    updateCleanupOverlayVisibility();
+}
+
+void MultiUutOverviewWidget::updateCleanupOverlayVisibility()
+{
+    auto* overlay = static_cast<CleanupProgressOverlay*>(m_cleanupOverlay);
+    if (!overlay) {
+        return;
+    }
+    const bool promptAllowsOverlay = m_stopTransitionRequested ||
+                                     m_activePrompts.isEmpty();
+    const bool showOverlay = m_cleanupActive && m_cleanupDelayElapsed &&
+                             promptAllowsOverlay && isVisible();
+    overlay->setRunning(showOverlay);
+    if (!showOverlay) {
+        return;
+    }
+    updateCleanupOverlayGeometry();
+    overlay->raise();
+    if (!m_stopTransitionRequested && m_batchPromptOverlay &&
+        m_batchPromptOverlay->isVisible()) {
+        m_batchPromptOverlay->raise();
+    }
+}
+
+void MultiUutOverviewWidget::updateCleanupOverlayGeometry()
+{
+    if (!m_cleanupOverlay || !m_cleanupOverlayHost) {
+        return;
+    }
+    m_cleanupOverlay->setGeometry(m_cleanupOverlayHost->rect());
+    if (m_cleanupOverlay->isVisible()) {
+        m_cleanupOverlay->raise();
+    }
 }
 
 void MultiUutOverviewWidget::updateBatchPromptGeometry()

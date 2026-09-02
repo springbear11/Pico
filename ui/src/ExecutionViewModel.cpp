@@ -292,6 +292,7 @@ void ExecutionViewModel::runUut(const QString& uutId, const QVariantMap& variabl
     RunRequest::UutInput input;
     input.uutId = uutId.trimmed();
     input.variables = variables;
+    input.slotIndex = 0;
     runUuts({input});
 }
 
@@ -305,7 +306,14 @@ void ExecutionViewModel::runUuts(const QVector<RunRequest::UutInput>& uuts)
 QVector<RunRequest::UutInput> ExecutionViewModel::activeRunUuts() const
 {
     if (!m_activeRunRequest.uuts.isEmpty()) {
-        return m_activeRunRequest.uuts;
+        QVector<RunRequest::UutInput> active;
+        active.reserve(m_activeRunRequest.uuts.size());
+        for (const auto& input : m_activeRunRequest.uuts) {
+            if (input.enabled) {
+                active.push_back(input);
+            }
+        }
+        return active;
     }
 
     QVector<RunRequest::UutInput> uuts;
@@ -317,6 +325,7 @@ QVector<RunRequest::UutInput> ExecutionViewModel::activeRunUuts() const
     for (int index = 1; index <= count; ++index) {
         RunRequest::UutInput input;
         input.uutId = QStringLiteral("%1-%2").arg(prefix).arg(index);
+        input.slotIndex = index - 1;
         input.variables.insert(QStringLiteral("sn"), QString{});
         input.variables.insert(QStringLiteral("serialNumber"), QString{});
         uuts.push_back(std::move(input));
