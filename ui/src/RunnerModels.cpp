@@ -690,7 +690,8 @@ bool failedActivation(PicoATE::Core::ActivationState state)
 
 bool terminalOverviewState(UutOverviewState state)
 {
-    return state == UutOverviewState::Passed ||
+    return state == UutOverviewState::Disabled ||
+           state == UutOverviewState::Passed ||
            state == UutOverviewState::Failed ||
            state == UutOverviewState::Stopped;
 }
@@ -882,6 +883,7 @@ bool applyResourceEvent(QVector<ResourceUsageOverviewEntry>& held,
 QString uutOverviewStateName(UutOverviewState state)
 {
     switch (state) {
+    case UutOverviewState::Disabled: return QStringLiteral("Disabled");
     case UutOverviewState::Waiting: return QStringLiteral("Waiting");
     case UutOverviewState::Running: return QStringLiteral("Running");
     case UutOverviewState::Paused: return QStringLiteral("Paused");
@@ -928,6 +930,7 @@ QVariant UutOverviewModel::data(const QModelIndex& index, int role) const
     case RetryActiveRole: return entry.retryActive;
     case RetryAttemptRole: return entry.retryAttempt;
     case RetryMaxAttemptsRole: return entry.retryMaxAttempts;
+    case EnabledRole: return entry.enabled;
     default:
         break;
     }
@@ -988,10 +991,14 @@ void UutOverviewModel::resetForRun(
 
     auto append = [this](const PicoATE::Core::UutId& uutId,
                          const QString& serialNumber,
-                         int totalSteps) {
+                         int totalSteps,
+                         bool enabled) {
         Row row;
         row.entry.uutId = uutId;
         row.entry.serialNumber = serialNumber;
+        row.entry.enabled = enabled;
+        row.entry.state = enabled ? UutOverviewState::Waiting
+                                  : UutOverviewState::Disabled;
         row.entry.totalSteps = totalSteps > 0 ? totalSteps : m_previewStepCount;
         m_rows.push_back(std::move(row));
     };
@@ -1004,11 +1011,11 @@ void UutOverviewModel::resetForRun(
                 serialNumber = uut.variables.value(
                     QStringLiteral("sn")).toString().trimmed();
             }
-            append(uut.uutId, serialNumber, m_previewStepCount);
+            append(uut.uutId, serialNumber, m_previewStepCount, uut.enabled);
         }
     } else {
         for (const auto& uut : preview.uuts) {
-            append(uut.uutId, uut.serialNumber, totalStepCount(uut.steps));
+            append(uut.uutId, uut.serialNumber, totalStepCount(uut.steps), true);
         }
     }
     endResetModel();
@@ -1022,20 +1029,27 @@ void UutOverviewModel::setSessionElapsedMs(qint64 elapsedMs)
 void UutOverviewModel::setReport(const PicoATE::Core::ExecutionReport& report)
 {
     QHash<PicoATE::Core::UutId, UutOverviewEntry> previousEntries;
+    QVector<UutOverviewEntry> previousOrder;
+    previousOrder.reserve(m_rows.size());
     for (const auto& row : std::as_const(m_rows)) {
         previousEntries.insert(row.entry.uutId, row.entry);
+        previousOrder.push_back(row.entry);
     }
     beginResetModel();
     m_rows.clear();
     m_sharedHeldResources.clear();
     m_sharedWaitingResources.clear();
+    QSet<PicoATE::Core::UutId> reportedUutIds;
     for (const auto& uut : report.uuts) {
         Row row;
         row.entry.uutId = uut.uutId;
         row.entry.serialNumber = uut.serialNumber;
         row.entry.totalSteps = totalStepCount(uut.steps);
+        row.entry.enabled = true;
+        reportedUutIds.insert(uut.uutId);
         const auto previous = previousEntries.constFind(uut.uutId);
         if (previous != previousEntries.constEnd()) {
+            row.entry.enabled = previous->enabled;
             row.entry.currentStep = previous->currentStep;
             row.entry.currentNodeId = previous->currentNodeId;
             row.entry.currentPhase = previous->currentPhase;
@@ -1093,6 +1107,35 @@ void UutOverviewModel::setReport(const PicoATE::Core::ExecutionReport& report)
         }
         updateDerivedValues(row);
         m_rows.push_back(std::move(row));
+    }
+    for (int previousIndex = 0; previousIndex < previousOrder.size();
+         ++previousIndex) {
+        const auto& previous = previousOrder.at(previousIndex);
+        if (previous.enabled || reportedUutIds.contains(previous.uutId)) {
+            continue;
+        }
+        Row disabled;
+        disabled.entry = previous;
+        disabled.entry.enabled = false;
+        disabled.entry.state = UutOverviewState::Disabled;
+        disabled.entry.currentStep.clear();
+        disabled.entry.currentNodeId.clear();
+        disabled.entry.failedStep.clear();
+        disabled.entry.failedNodeId.clear();
+        disabled.entry.errorCode.clear();
+        disabled.entry.message.clear();
+        disabled.entry.completedSteps = 0;
+        disabled.entry.progress = 0;
+        disabled.entry.retryActive = false;
+        disabled.entry.retryAttempt = 0;
+        disabled.entry.retryMaxAttempts = 0;
+        disabled.entry.recentSteps.clear();
+        disabled.entry.periodicTasks.clear();
+        disabled.entry.heldResources.clear();
+        disabled.entry.waitingResources.clear();
+        disabled.entry.durationMs = 0;
+        m_rows.insert(qMin(previousIndex, m_rows.size()),
+                      std::move(disabled));
     }
     endResetModel();
 }
@@ -1245,6 +1288,9 @@ void UutOverviewModel::applyRuntimeEvents(
             } else if (!event.uutId.isEmpty()) {
                 const int rowIndex = ensureUut(event.uutId);
                 auto& entry = m_rows[rowIndex].entry;
+                if (!entry.enabled) {
+                    continue;
+                }
                 if (applyResourceEvent(entry.heldResources,
                                        entry.waitingResources,
                                        event)) {
@@ -1261,6 +1307,9 @@ void UutOverviewModel::applyRuntimeEvents(
                     sharedPeriodicChanged;
             } else if (!event.uutId.isEmpty()) {
                 const int rowIndex = ensureUut(event.uutId);
+                if (!m_rows[rowIndex].entry.enabled) {
+                    continue;
+                }
                 if (applyPeriodicTaskEvent(m_rows[rowIndex].entry.periodicTasks,
                                            event)) {
                     dirtyRows.insert(rowIndex);
@@ -1320,6 +1369,9 @@ void UutOverviewModel::applyRuntimeEvents(
                 const bool periodicInvocation = event.details.value(
                     QStringLiteral("periodicInvocation")).toBool();
                 for (int rowIndex = 0; rowIndex < m_rows.size(); ++rowIndex) {
+                    if (!m_rows[rowIndex].entry.enabled) {
+                        continue;
+                    }
                     if (periodicInvocation &&
                         terminalOverviewState(m_rows[rowIndex].entry.state)) {
                         continue;
@@ -1332,6 +1384,9 @@ void UutOverviewModel::applyRuntimeEvents(
 
         const int rowIndex = ensureUut(event.uutId);
         auto& row = m_rows[rowIndex];
+        if (!row.entry.enabled) {
+            continue;
+        }
 
         if (event.kind == PicoATE::Core::RuntimeEventKind::UutRegistered) {
             row.entry.state = UutOverviewState::Waiting;
@@ -1489,6 +1544,13 @@ int UutOverviewModel::ensureUut(const PicoATE::Core::UutId& uutId)
 
 void UutOverviewModel::updateDerivedValues(Row& row)
 {
+    if (!row.entry.enabled) {
+        row.entry.state = UutOverviewState::Disabled;
+        row.entry.completedSteps = 0;
+        row.entry.progress = 0;
+        row.entry.durationMs = 0;
+        return;
+    }
     row.entry.completedSteps = qMax(
         row.entry.completedSteps, static_cast<int>(row.terminalNodes.size()));
     if (row.entry.totalSteps <= 0) {

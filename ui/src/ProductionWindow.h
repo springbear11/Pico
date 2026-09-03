@@ -13,21 +13,31 @@
 #include <memory>
 
 class QAction;
+class QButtonGroup;
 class QEvent;
+class QHBoxLayout;
 class QLabel;
 class QProgressBar;
+class QPushButton;
 class QResizeEvent;
+class QSpinBox;
+class QStackedWidget;
 class QTableView;
 class QTimer;
 class QTreeView;
+class QWidget;
 
 namespace PicoATE::Ui {
 
 class ExecutionViewModel;
+class MultiUutOverviewWidget;
 class OperatorPromptPresenter;
+class ProductionOverviewSummaryWidget;
 class RuntimeTimelineModel;
 class RunArtifactWriter;
 class ScanDialog;
+class UutOverviewModel;
+class UutRuntimeTimelineProxyModel;
 class UutStepModel;
 class YieldDonutWidget;
 
@@ -60,6 +70,7 @@ private:
     void beginAutoRoutedRunBatch(const QStringList& serialNumbers);
     void startResolvedRun();
     void configureUutSlots();
+    int configuredUutCount() const;
     void synchronizeUutSlotCount(int slotCount);
     void updateUutSlotAction();
     void showRoutingError(const QString& message);
@@ -68,23 +79,32 @@ private:
     void openFieldDeviceConfiguration();
     void openProductRoutingConfiguration();
     void beginRunIteration(int iteration, int totalIterations);
-    void resetPreviewForUut(const QString& uutId);
+    void resetPreviewForUuts(const QVector<RunRequest::UutInput>& inputs,
+                             bool preferOverview);
+    QVector<RunRequest::UutInput> configuredPreviewUuts() const;
+    void rebuildUutNavigation();
+    void showUutOverview();
+    void showUutDetails(const PicoATE::Core::UutId& uutId);
     void showScanDialogWhenReady();
     void updateElapsedTime();
     void updateProgress();
     void updateYieldStatistics();
+    void updateOverviewSummary();
 
     StartupSelection m_selection;
     ExecutionViewModel* m_viewModel = nullptr;
     OperatorPromptPresenter* m_operatorPromptPresenter = nullptr;
     UutStepModel* m_resultModel = nullptr;
+    UutOverviewModel* m_overviewModel = nullptr;
     RuntimeTimelineModel* m_logModel = nullptr;
+    UutRuntimeTimelineProxyModel* m_logProxy = nullptr;
     std::unique_ptr<RunArtifactWriter> m_runArtifactWriter;
     ScanDialog* m_scanDialog = nullptr;
     QAction* m_startAction = nullptr;
     QAction* m_pauseAction = nullptr;
     QAction* m_resumeAction = nullptr;
     QAction* m_stopAction = nullptr;
+    QSpinBox* m_uutCount = nullptr;
     QAction* m_uutSlotsAction = nullptr;
     QAction* m_fieldDeviceAction = nullptr;
     QAction* m_productRoutingAction = nullptr;
@@ -103,9 +123,20 @@ private:
     QLabel* m_totalCountLabel = nullptr;
     QLabel* m_averageTimeLabel = nullptr;
     YieldDonutWidget* m_yieldChart = nullptr;
+    QWidget* m_runSidebar = nullptr;
+    QWidget* m_runNavigation = nullptr;
+    QPushButton* m_overviewButton = nullptr;
+    QButtonGroup* m_uutNavigationGroup = nullptr;
+    QHBoxLayout* m_uutNavigationLayout = nullptr;
+    QStackedWidget* m_runStack = nullptr;
+    QWidget* m_overviewPage = nullptr;
+    QWidget* m_detailPage = nullptr;
+    ProductionOverviewSummaryWidget* m_overviewSummary = nullptr;
+    MultiUutOverviewWidget* m_uutOverview = nullptr;
     QTreeView* m_resultView = nullptr;
     QTableView* m_logView = nullptr;
     QProgressBar* m_progress = nullptr;
+    QWidget* m_progressPanel = nullptr;
     QTimer* m_elapsedTimer = nullptr;
     PicoATE::Core::ExecutionReport m_previewReport;
     QSet<PicoATE::Core::NodeId> m_terminalNodes;
@@ -119,12 +150,15 @@ private:
     PicoATE::Core::NodeId m_lastAutoFollowNodeId;
     qint64 m_totalCompletedDurationMs = 0;
     QString m_activeUutId;
+    QString m_selectedUutId;
     QString m_activeSerialNumber;
+    QVector<RunRequest::UutInput> m_runUutInputs;
     QStringList m_pendingSerialNumbers;
     QVector<bool> m_uutSlotEnabled;
     QVector<bool> m_pendingUutSlotEnabled;
     bool m_runPreparationPending = false;
     bool m_currentRunCounted = false;
+    bool m_stopRequested = false;
     bool m_fieldDeviceDialogOpen = false;
     int m_responsiveLayoutMode = -1;
 };

@@ -20,6 +20,7 @@
 namespace PicoATE::Ui {
 
 enum class UutOverviewState {
+    Disabled,
     Waiting,
     Running,
     Paused,
@@ -67,6 +68,7 @@ struct ResourceUsageOverviewEntry {
 struct UutOverviewEntry {
     PicoATE::Core::UutId uutId;
     QString serialNumber;
+    bool enabled = true;
     UutOverviewState state = UutOverviewState::Waiting;
     QString currentStep;
     PicoATE::Core::NodeId currentNodeId;
@@ -122,7 +124,8 @@ public:
         DurationMsRole,
         RetryActiveRole,
         RetryAttemptRole,
-        RetryMaxAttemptsRole
+        RetryMaxAttemptsRole,
+        EnabledRole
     };
 
     explicit UutOverviewModel(QObject* parent = nullptr);

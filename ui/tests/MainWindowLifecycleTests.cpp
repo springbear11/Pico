@@ -45,6 +45,7 @@
 #include <QDate>
 #include <QDoubleSpinBox>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -417,6 +418,7 @@ private slots:
     void adminScannerRunsFourExplicitUuts();
     void productionWindowPreloadsFlowAndRunsWithoutScanner();
     void productionScannerRunsFourExplicitUutsAndCountsYield();
+    void productionUutControlsConfigureRuntimeSlots();
     void productionWindowRoutesScannedSnBeforeCompiling();
     void adminWindowRoutesScannedSnBeforeCompiling();
     void productionStoppedRunCountsAsFailure();
@@ -4517,6 +4519,10 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
         QStringLiteral("adminOverviewSummary"));
     auto* overviewSummaryState = window.findChild<QLabel*>(
         QStringLiteral("adminOverviewSummaryState"));
+    auto* overviewCustomerId = window.findChild<QLabel*>(
+        QStringLiteral("adminOverviewCustomerIdValue"));
+    auto* overviewJig = window.findChild<QLabel*>(
+        QStringLiteral("adminOverviewJigValue"));
     auto* overviewYieldChart = window.findChild<QWidget*>(
         QStringLiteral("adminOverviewYieldChart"));
     auto* serialCaption = window.findChild<QLabel*>(
@@ -4543,7 +4549,11 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
     QVERIFY(runSidebar);
     QVERIFY(overviewSummary);
     QVERIFY(overviewSummaryState);
+    QVERIFY(overviewCustomerId);
+    QVERIFY(overviewJig);
     QVERIFY(overviewYieldChart);
+    QVERIFY(overviewSummaryState->styleSheet().contains(
+        QStringLiteral("border:1px solid")));
     QVERIFY(!window.findChild<QLabel*>(
         QStringLiteral("adminOverviewYieldValue")));
     QVERIFY(serialCaption);
@@ -6777,6 +6787,183 @@ void MainWindowLifecycleTests::productionScannerRunsFourExplicitUutsAndCountsYie
     QCOMPARE(passCount->text(), QStringLiteral("PASS 4"));
     QCOMPARE(failCount->text(), QStringLiteral("FAIL 0"));
     QCOMPARE(totalCount->text(), QStringLiteral("TOTAL 4"));
+    QVERIFY(window.close());
+}
+
+void MainWindowLifecycleTests::productionUutControlsConfigureRuntimeSlots()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(
+        QStringLiteral("runtime_uut_slots_sequence.json"));
+    QVERIFY(QFile::copy(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+                           + QStringLiteral("/examples/simple_sequence.json"),
+                       sequencePath));
+    const auto stationPath = directory.filePath(
+        QStringLiteral("StationSystem.json"));
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(R"({"stationId":"runtime-slots","uutCount":2,"scanDialogEnabled":false,"devices":[]})");
+    station.close();
+
+    StartupSelection selection;
+    selection.mode = UiMode::Test;
+    selection.sequencePath = sequencePath;
+    selection.stationPath = stationPath;
+    selection.scanDialogEnabled = false;
+    ProductionWindow window(selection);
+    window.show();
+
+    auto* viewModel = window.findChild<ExecutionViewModel*>();
+    auto* uutCount = window.findChild<QSpinBox*>(
+        QStringLiteral("productionUutCountSpinBox"));
+    auto* slotAction = window.findChild<QAction*>(
+        QStringLiteral("productionUutSlotsAction"));
+    auto* start = window.findChild<QAction*>(
+        QStringLiteral("productionStartAction"));
+    auto* scan = window.findChild<ScanDialog*>();
+    QVERIFY(viewModel);
+    QVERIFY(uutCount);
+    QVERIFY(slotAction);
+    QVERIFY(start);
+    QVERIFY(scan);
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 3000);
+    QCOMPARE(uutCount->value(), 2);
+    QVERIFY(slotAction->isVisible());
+    QCOMPARE(slotAction->text(), QStringLiteral("UUT Slots 2/2"));
+
+    uutCount->setValue(4);
+    QCOMPARE(scan->slotCount(), 4);
+    QCOMPARE(slotAction->text(), QStringLiteral("UUT Slots 4/4"));
+    auto* overview = window.findChild<MultiUutOverviewWidget*>(
+        QStringLiteral("productionUutOverview"));
+    auto* stack = window.findChild<QStackedWidget*>(
+        QStringLiteral("productionRunStack"));
+    auto* overviewPage = window.findChild<QWidget*>(
+        QStringLiteral("productionRunOverviewPage"));
+    QVERIFY(overview);
+    QVERIFY(stack);
+    QVERIFY(overviewPage);
+    auto* overviewModel = overview->model();
+    QVERIFY(overviewModel);
+    QTRY_COMPARE(overviewModel->rowCount(), 4);
+    QCOMPARE(stack->currentWidget(), overviewPage);
+    auto* sidebar = window.findChild<QWidget*>(
+        QStringLiteral("productionSidebar"));
+    auto* overviewSummary = window.findChild<QWidget*>(
+        QStringLiteral("productionOverviewSummary"));
+    auto* overviewStatus = window.findChild<QLabel*>(
+        QStringLiteral("productionOverviewSummaryState"));
+    auto* overviewStation = window.findChild<QLabel*>(
+        QStringLiteral("productionOverviewStationValue"));
+    auto* overviewCustomerId = window.findChild<QLabel*>(
+        QStringLiteral("productionOverviewCustomerIdValue"));
+    auto* overviewJig = window.findChild<QLabel*>(
+        QStringLiteral("productionOverviewJigValue"));
+    auto* overviewWaiting = window.findChild<QLabel*>(
+        QStringLiteral("productionOverviewWaitingValue"));
+    QVERIFY(sidebar);
+    QVERIFY(overviewSummary);
+    QVERIFY(overviewStatus);
+    QVERIFY(overviewStation);
+    QVERIFY(overviewCustomerId);
+    QVERIFY(overviewJig);
+    QVERIFY(overviewWaiting);
+    QTRY_VERIFY(!sidebar->isVisible());
+    QVERIFY(overviewSummary->isVisible());
+    QCOMPARE(overviewStation->text(), QStringLiteral("runtime-slots"));
+    QCOMPARE(overviewWaiting->text(), QStringLiteral("4"));
+    QCOMPARE(overviewStatus->text(), QStringLiteral("READY"));
+    QVERIFY(overviewStatus->styleSheet().contains(
+        QStringLiteral("border:1px solid")));
+    auto* overviewButton = window.findChild<QPushButton*>(
+        QStringLiteral("productionOverviewButton"));
+    QVERIFY(overviewButton);
+    QVERIFY(overviewButton->isChecked());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        overviewButton->property("overviewIndicatorFill").toReal() > 0.99,
+        500);
+
+    bool configured = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = qobject_cast<QDialog*>(
+            QApplication::activeModalWidget());
+        if (!dialog || dialog->objectName() !=
+                QStringLiteral("uutSlotConfigurationDialog")) {
+            return;
+        }
+        auto* uut3 = dialog->findChild<QPushButton*>(
+            QStringLiteral("uutSlotToggle3"));
+        auto* buttons = dialog->findChild<QDialogButtonBox*>(
+            QStringLiteral("uutSlotConfigurationButtons"));
+        if (!uut3 || !buttons) {
+            dialog->reject();
+            return;
+        }
+        uut3->setChecked(false);
+        configured = true;
+        buttons->button(QDialogButtonBox::Ok)->click();
+    });
+    slotAction->trigger();
+    QVERIFY(configured);
+    QCOMPARE(slotAction->text(), QStringLiteral("UUT Slots 3/4"));
+    QCOMPARE(scan->slotEnabledStates(),
+             QVector<bool>({true, true, false, true}));
+    QTRY_COMPARE(overviewModel->rowCount(), 4);
+    const auto disabledPreview = overviewModel->entryAt(2);
+    QVERIFY(disabledPreview.has_value());
+    QCOMPARE(disabledPreview->uutId, QStringLiteral("UUT-3"));
+    QVERIFY(!disabledPreview->enabled);
+    QCOMPARE(disabledPreview->state, UutOverviewState::Disabled);
+    auto* disabledCard = window.findChild<QAbstractButton*>(
+        QStringLiteral("uutOverviewCard_3"));
+    auto* disabledButton = window.findChild<QPushButton*>(
+        QStringLiteral("productionUutButton_3"));
+    QVERIFY(disabledCard);
+    QVERIFY(disabledButton);
+    QVERIFY(!disabledCard->isEnabled());
+    QVERIFY(!disabledCard->isHidden());
+    QVERIFY(!disabledButton->isEnabled());
+    QVERIFY(!disabledButton->isHidden());
+
+    start->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(viewModel->state() == UiRunState::Completed ||
+                             viewModel->state() == UiRunState::Failed,
+                             5000);
+    QCOMPARE(viewModel->state(), UiRunState::Completed);
+    const auto report = viewModel->report();
+    QCOMPARE(report.uuts.size(), 3);
+    QCOMPARE(report.uuts[0].uutId, QStringLiteral("UUT-1"));
+    QCOMPARE(report.uuts[1].uutId, QStringLiteral("UUT-2"));
+    QCOMPARE(report.uuts[2].uutId, QStringLiteral("UUT-4"));
+    QCOMPARE(overviewModel->rowCount(), 4);
+    const auto disabledFinal = overviewModel->entryAt(2);
+    QVERIFY(disabledFinal.has_value());
+    QCOMPARE(disabledFinal->uutId, QStringLiteral("UUT-3"));
+    QCOMPARE(disabledFinal->state, UutOverviewState::Disabled);
+    QVERIFY(!disabledFinal->enabled);
+    QCOMPARE(stack->currentWidget(), overviewPage);
+
+    auto* uut2Button = window.findChild<QPushButton*>(
+        QStringLiteral("productionUutButton_2"));
+    auto* detailPage = window.findChild<QWidget*>(
+        QStringLiteral("productionRunDetailPage"));
+    QVERIFY(uut2Button);
+    QVERIFY(detailPage);
+    uut2Button->click();
+    QCOMPARE(stack->currentWidget(), detailPage);
+    QTRY_VERIFY(sidebar->isVisible());
+    QVERIFY(!overviewSummary->isVisible());
+    auto* resultModel = window.findChild<UutStepModel*>();
+    auto* logProxy = window.findChild<UutRuntimeTimelineProxyModel*>();
+    QVERIFY(resultModel);
+    QVERIFY(logProxy);
+    QCOMPARE(resultModel->visibleUutId(), QStringLiteral("UUT-2"));
+    QCOMPARE(logProxy->visibleUutId(), QStringLiteral("UUT-2"));
+    overviewButton->click();
+    QCOMPARE(stack->currentWidget(), overviewPage);
+    QTRY_VERIFY(!sidebar->isVisible());
+    QVERIFY(overviewSummary->isVisible());
     QVERIFY(window.close());
 }
 

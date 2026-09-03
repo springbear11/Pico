@@ -425,6 +425,7 @@ private slots:
     void uutStepModelResetsLoopAndRetryPresentation();
     void uutStepModelBuildsSingleUutPhaseLayout();
     void uutOverviewModelTracksIndependentRuntimeState();
+    void uutOverviewModelKeepsDisabledPhysicalSlots();
     void uutOverviewModelPreservesFailureAcrossSharedCleanup();
     void uutStepModelFiltersSelectedUutAndKeepsSessionPhases();
     void runtimeTimelineProxyFiltersSelectedUut();
@@ -2756,6 +2757,73 @@ void ExecutionViewModelTests::uutOverviewModelTracksIndependentRuntimeState()
     QCOMPARE(model.entryAt(0)->durationMs, qint64(5000));
     QCOMPARE(model.entryAt(1)->durationMs, qint64(7250));
     QVERIFY(!model.entryAt(0)->recentSteps.isEmpty());
+}
+
+void ExecutionViewModelTests::uutOverviewModelKeepsDisabledPhysicalSlots()
+{
+    using namespace PicoATE::Core;
+
+    StepReport step;
+    step.stepId = QStringLiteral("measure");
+    step.nodePath = QStringLiteral("main.measure");
+    step.displayName = QStringLiteral("Measure");
+    UutReport previewUut;
+    previewUut.uutId = QStringLiteral("UUT");
+    previewUut.steps = {step};
+    ExecutionReport preview;
+    preview.uuts = {previewUut};
+
+    QVector<RunRequest::UutInput> inputs;
+    for (int index = 1; index <= 4; ++index) {
+        RunRequest::UutInput input;
+        input.uutId = QStringLiteral("UUT-%1").arg(index);
+        input.slotIndex = index - 1;
+        input.enabled = index != 3;
+        inputs.push_back(input);
+    }
+
+    UutOverviewModel model;
+    QAbstractItemModelTester tester(
+        &model,
+        QAbstractItemModelTester::FailureReportingMode::QtTest);
+    model.resetForRun(preview, inputs);
+    QCOMPARE(model.rowCount(), 4);
+    QVERIFY(!model.entryAt(2)->enabled);
+    QCOMPARE(model.entryAt(2)->state, UutOverviewState::Disabled);
+
+    ExecutionReport finalReport;
+    finalReport.completed = true;
+    finalReport.state = ExecutionState::Completed;
+    for (const int index : {1, 2, 4}) {
+        UutReport uut = previewUut;
+        uut.uutId = QStringLiteral("UUT-%1").arg(index);
+        uut.completed = true;
+        uut.outcome = NodeOutcome::Passed;
+        finalReport.uuts.push_back(std::move(uut));
+    }
+    model.setReport(finalReport);
+
+    QCOMPARE(model.rowCount(), 4);
+    for (int row = 0; row < model.rowCount(); ++row) {
+        QCOMPARE(model.entryAt(row)->uutId,
+                 QStringLiteral("UUT-%1").arg(row + 1));
+    }
+    const auto disabled = model.entryAt(2);
+    QVERIFY(disabled.has_value());
+    QVERIFY(!disabled->enabled);
+    QCOMPARE(disabled->state, UutOverviewState::Disabled);
+    QCOMPARE(disabled->progress, 0);
+    QCOMPARE(disabled->durationMs, qint64(0));
+
+    RuntimeEvent sharedCleanup;
+    sharedCleanup.kind = RuntimeEventKind::NodeStateChanged;
+    sharedCleanup.nodeId = QStringLiteral("cleanup.close");
+    sharedCleanup.nodeDisplayName = QStringLiteral("Close Device");
+    sharedCleanup.nodePhase = ExecutionPhase::Cleanup;
+    sharedCleanup.activationState = ActivationState::Running;
+    model.applyRuntimeEvents({sharedCleanup});
+    QCOMPARE(model.entryAt(2)->state, UutOverviewState::Disabled);
+    QVERIFY(model.entryAt(2)->currentStep.isEmpty());
 }
 
 void ExecutionViewModelTests::uutOverviewModelPreservesFailureAcrossSharedCleanup()

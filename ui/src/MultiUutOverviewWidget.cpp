@@ -48,6 +48,10 @@ struct CardPalette {
 CardPalette paletteFor(UutOverviewState state)
 {
     switch (state) {
+    case UutOverviewState::Disabled:
+        return {QColor(QStringLiteral("#eef1f2")),
+                QColor(QStringLiteral("#c7ced2")),
+                QColor(QStringLiteral("#7d888f"))};
     case UutOverviewState::Running:
         return {QColor(QStringLiteral("#fff8df")),
                 QColor(QStringLiteral("#dfc36a")),
@@ -1413,6 +1417,10 @@ public:
                 : tr("RETRYING %1 STEP").arg(phaseName);
             stepFallback = tr("Preparing next attempt");
         } else switch (entry.state) {
+        case UutOverviewState::Disabled:
+            stepCaption = tr("UUT SLOT");
+            stepFallback = tr("Disabled for this run");
+            break;
         case UutOverviewState::Waiting:
             stepCaption = phaseName.isEmpty()
                 ? tr("WAITING FOR")
@@ -1456,6 +1464,10 @@ public:
             currentStateColor = QColor(QStringLiteral("#a87500"));
         } else {
             switch (entry.state) {
+            case UutOverviewState::Disabled:
+                currentStateText = QStringLiteral("OFF");
+                currentStateColor = QColor(QStringLiteral("#7d888f"));
+                break;
             case UutOverviewState::Waiting:
                 currentStateText = QStringLiteral("WAIT");
                 currentStateColor = QColor(QStringLiteral("#667680"));
@@ -1926,8 +1938,17 @@ bool MultiUutOverviewWidget::presentOperatorPrompt(
                                                       response,
                                                       values);
             });
-        const int participantCount = m_model ? m_model->rowCount()
-                                             : m_cards.size();
+        int participantCount = 0;
+        if (m_model) {
+            for (int row = 0; row < m_model->rowCount(); ++row) {
+                const auto entry = m_model->entryAt(row);
+                if (entry && entry->enabled) {
+                    ++participantCount;
+                }
+            }
+        } else {
+            participantCount = m_cards.size();
+        }
         overlay->configure(
             event,
             sequencePath,
@@ -2113,8 +2134,12 @@ void MultiUutOverviewWidget::rebuildCards()
         if (const auto entry = m_model->entryAt(row)) {
             card->setEntry(*entry);
             card->setChecked(entry->uutId == m_selectedUutId);
+            card->setEnabled(entry->enabled);
         }
         connect(card, &QAbstractButton::clicked, this, [this, card] {
+            if (!card->isEnabled()) {
+                return;
+            }
             m_selectedUutId = card->uutId();
             refreshCards();
             emit uutActivated(m_selectedUutId);
@@ -2123,6 +2148,7 @@ void MultiUutOverviewWidget::rebuildCards()
         m_cardsLayout->addWidget(card,
                                  firstCardRow + row / columns,
                                  row % columns);
+        card->show();
         m_cards.push_back(card);
     }
     m_gridRowCount = centeredPair ? 3 : gridRows;
@@ -2165,6 +2191,7 @@ void MultiUutOverviewWidget::refreshCardRange(int firstRow, int lastRow)
         }
         card->setEntry(*entry);
         card->setChecked(entry->uutId == m_selectedUutId);
+        card->setEnabled(entry->enabled);
     }
     updateSummary();
 }
@@ -2257,6 +2284,7 @@ void MultiUutOverviewWidget::updateSummary()
     int passed = 0;
     int failed = 0;
     int waiting = 0;
+    int disabled = 0;
     if (m_model) {
         for (int row = 0; row < m_model->rowCount(); ++row) {
             const auto entry = m_model->entryAt(row);
@@ -2268,6 +2296,7 @@ void MultiUutOverviewWidget::updateSummary()
                 continue;
             }
             switch (entry->state) {
+            case UutOverviewState::Disabled: ++disabled; break;
             case UutOverviewState::Running:
             case UutOverviewState::Paused: ++running; break;
             case UutOverviewState::Passed: ++passed; break;
@@ -2278,8 +2307,12 @@ void MultiUutOverviewWidget::updateSummary()
         }
     }
     m_summaryLabel->setText(
-        tr("RUNNING %1   PASS %2   FAIL %3   WAITING %4")
-            .arg(running).arg(passed).arg(failed).arg(waiting));
+        disabled > 0
+            ? tr("RUNNING %1   PASS %2   FAIL %3   WAITING %4   DISABLED %5")
+                  .arg(running).arg(passed).arg(failed).arg(waiting)
+                  .arg(disabled)
+            : tr("RUNNING %1   PASS %2   FAIL %3   WAITING %4")
+                  .arg(running).arg(passed).arg(failed).arg(waiting));
 }
 
 void MultiUutOverviewWidget::restoreOperatorPrompt(QAbstractButton* button)

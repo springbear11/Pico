@@ -1039,25 +1039,28 @@ public:
     {
         setObjectName(QStringLiteral("adminOverviewSummary"));
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        setMinimumHeight(76);
-        setMaximumHeight(88);
+        setMinimumHeight(94);
+        setMaximumHeight(108);
 
         auto* root = new QHBoxLayout(this);
-        root->setContentsMargins(18, 10, 18, 10);
-        root->setSpacing(16);
+        root->setContentsMargins(14, 10, 14, 10);
+        root->setSpacing(10);
 
         auto* stateArea = new QWidget(this);
         stateArea->setObjectName(QStringLiteral("adminOverviewSummaryStateArea"));
-        stateArea->setMinimumWidth(156);
+        stateArea->setMinimumWidth(128);
+        stateArea->setMaximumWidth(168);
         auto* stateLayout = new QVBoxLayout(stateArea);
         stateLayout->setContentsMargins(0, 0, 0, 0);
-        stateLayout->setSpacing(1);
+        stateLayout->setSpacing(3);
         auto* stateCaption = new QLabel(tr("BATCH STATUS"), stateArea);
         stateCaption->setObjectName(
             QStringLiteral("adminOverviewSummaryCaption"));
         m_stateLabel = new QLabel(tr("WAITING"), stateArea);
         m_stateLabel->setObjectName(
             QStringLiteral("adminOverviewSummaryState"));
+        m_stateLabel->setAlignment(Qt::AlignCenter);
+        m_stateLabel->setMinimumWidth(112);
         m_elapsedLabel = new QLabel(tr("Elapsed 00:00.000"), stateArea);
         m_elapsedLabel->setObjectName(
             QStringLiteral("adminOverviewSummaryElapsed"));
@@ -1071,19 +1074,30 @@ public:
         auto* stationArea = new QWidget(this);
         stationArea->setObjectName(
             QStringLiteral("adminOverviewSummaryStationArea"));
+        stationArea->setMinimumWidth(240);
         auto* stationLayout = new QGridLayout(stationArea);
         stationLayout->setContentsMargins(0, 0, 0, 0);
-        stationLayout->setHorizontalSpacing(20);
-        stationLayout->setVerticalSpacing(2);
-        m_stationLabel = addField(stationLayout, 0, tr("STATION"),
-                                  QStringLiteral("adminOverviewStationValue"));
-        m_modelLabel = addField(stationLayout, 1, tr("MODEL"),
-                                QStringLiteral("adminOverviewModelValue"));
-        m_orderLabel = addField(stationLayout, 2, tr("ORDER"),
-                                QStringLiteral("adminOverviewOrderValue"));
-        m_testerLabel = addField(stationLayout, 3, tr("TESTER"),
-                                 QStringLiteral("adminOverviewTesterValue"));
-        for (int column = 0; column < 4; ++column) {
+        stationLayout->setHorizontalSpacing(18);
+        stationLayout->setVerticalSpacing(1);
+        m_stationLabel = addField(
+            stationLayout, 0, 0, tr("STATION"),
+            QStringLiteral("adminOverviewStationValue"));
+        m_modelLabel = addField(
+            stationLayout, 0, 1, tr("MODEL"),
+            QStringLiteral("adminOverviewModelValue"));
+        m_customerIdLabel = addField(
+            stationLayout, 0, 2, tr("CUSTOMER ID"),
+            QStringLiteral("adminOverviewCustomerIdValue"));
+        m_orderLabel = addField(
+            stationLayout, 2, 0, tr("ORDER"),
+            QStringLiteral("adminOverviewOrderValue"));
+        m_testerLabel = addField(
+            stationLayout, 2, 1, tr("TESTER"),
+            QStringLiteral("adminOverviewTesterValue"));
+        m_jigLabel = addField(
+            stationLayout, 2, 2, tr("JIG NO."),
+            QStringLiteral("adminOverviewJigValue"));
+        for (int column = 0; column < 3; ++column) {
             stationLayout->setColumnStretch(column, 1);
         }
         root->addWidget(stationArea, 1);
@@ -1098,18 +1112,26 @@ public:
         countLayout->setHorizontalSpacing(14);
         countLayout->setVerticalSpacing(2);
         m_runningLabel = addField(
-            countLayout, 0, tr("RUNNING"),
+            countLayout, 0, 0, tr("RUNNING"),
             QStringLiteral("adminOverviewRunningValue"));
-        m_passLabel = addField(countLayout, 1, tr("PASS"),
+        m_passLabel = addField(countLayout, 0, 1, tr("PASS"),
                                QStringLiteral("adminOverviewPassValue"));
-        m_failLabel = addField(countLayout, 2, tr("FAIL"),
+        m_failLabel = addField(countLayout, 0, 2, tr("FAIL"),
                                QStringLiteral("adminOverviewFailValue"));
         m_waitingLabel = addField(
-            countLayout, 3, tr("WAITING"),
+            countLayout, 0, 3, tr("WAITING"),
             QStringLiteral("adminOverviewWaitingValue"));
         m_runningLabel->setProperty("summaryTone", "running");
         m_passLabel->setProperty("summaryTone", "pass");
         m_failLabel->setProperty("summaryTone", "fail");
+        m_waitingLabel->setProperty("summaryTone", "waiting");
+        for (auto* label : {m_runningLabel, m_passLabel,
+                            m_failLabel, m_waitingLabel}) {
+            label->setAlignment(Qt::AlignCenter);
+        }
+        for (int column = 0; column < 4; ++column) {
+            countLayout->setColumnStretch(column, 1);
+        }
         root->addWidget(countArea);
 
         root->addWidget(createDivider());
@@ -1117,66 +1139,100 @@ public:
         m_yieldChart = new YieldDonutWidget(this);
         m_yieldChart->setObjectName(
             QStringLiteral("adminOverviewYieldChart"));
-        m_yieldChart->setMinimumSize(128, 64);
-        m_yieldChart->setMaximumSize(148, 68);
+        m_yieldChart->setMinimumSize(105, 62);
+        m_yieldChart->setMaximumSize(126, 72);
         root->addWidget(m_yieldChart, 0, Qt::AlignVCenter);
     }
 
     void setRunState(UiRunState state, bool stopRequested)
     {
+        const int stateValue = static_cast<int>(state);
+        if (m_lastState == stateValue &&
+            m_lastStopRequested == stopRequested) {
+            return;
+        }
+        m_lastState = stateValue;
+        m_lastStopRequested = stopRequested;
         m_stateLabel->setText(adminOverviewStateText(state, stopRequested));
-        QString color = QStringLiteral("#344751");
+
+        QString background = QStringLiteral("#eef2f4");
+        QString foreground = QStringLiteral("#344751");
+        QString border = QStringLiteral("#bcc7cd");
         switch (state) {
         case UiRunState::Starting:
         case UiRunState::Running:
         case UiRunState::Pausing:
         case UiRunState::Stopping:
-            color = QStringLiteral("#9a6900");
+            background = QStringLiteral("#fff4d7");
+            foreground = QStringLiteral("#8a5d00");
+            border = QStringLiteral("#d7ac45");
             break;
         case UiRunState::Paused:
-            color = QStringLiteral("#315f78");
+            background = QStringLiteral("#e9f3f8");
+            foreground = QStringLiteral("#315f78");
+            border = QStringLiteral("#8fb4c6");
             break;
         case UiRunState::Completed:
-            color = stopRequested ? QStringLiteral("#9a3438")
-                                  : QStringLiteral("#287848");
+            background = stopRequested ? QStringLiteral("#fbe8e8")
+                                       : QStringLiteral("#e5f4e9");
+            foreground = stopRequested ? QStringLiteral("#a83237")
+                                       : QStringLiteral("#287848");
+            border = stopRequested ? QStringLiteral("#db9295")
+                                   : QStringLiteral("#87bd98");
             break;
         case UiRunState::Failed:
         case UiRunState::CompileFailed:
-            color = QStringLiteral("#a83237");
+            background = QStringLiteral("#fbe8e8");
+            foreground = QStringLiteral("#a83237");
+            border = QStringLiteral("#db9295");
             break;
         default:
             break;
         }
-        m_stateLabel->setStyleSheet(
-            QStringLiteral("color:%1;").arg(color));
+        m_stateLabel->setStyleSheet(QStringLiteral(
+            "background:%1;color:%2;border:1px solid %3;border-radius:5px;"
+            "padding:4px 10px;font-size:16px;font-weight:800;")
+                                         .arg(background, foreground, border));
     }
 
     void setElapsedText(const QString& elapsed)
     {
-        m_elapsedLabel->setText(tr("Elapsed %1").arg(elapsed));
+        const auto text = tr("Elapsed %1").arg(elapsed);
+        if (m_elapsedLabel->text() != text) {
+            m_elapsedLabel->setText(text);
+        }
     }
 
     void setStationDetails(const QString& station,
                            const QString& model,
+                           const QString& customerId,
                            const QString& order,
-                           const QString& tester)
+                           const QString& tester,
+                           const QString& jig)
     {
         setFieldText(m_stationLabel, station);
         setFieldText(m_modelLabel, model);
+        setFieldText(m_customerIdLabel, customerId);
         setFieldText(m_orderLabel, order);
         setFieldText(m_testerLabel, tester);
+        setFieldText(m_jigLabel, jig);
     }
 
     void setCounts(int running, int passed, int failed, int waiting)
     {
-        m_runningLabel->setText(QString::number(running));
-        m_passLabel->setText(QString::number(passed));
-        m_failLabel->setText(QString::number(failed));
-        m_waitingLabel->setText(QString::number(waiting));
+        setLabelText(m_runningLabel, QString::number(running));
+        setLabelText(m_passLabel, QString::number(passed));
+        setLabelText(m_failLabel, QString::number(failed));
+        setLabelText(m_waitingLabel, QString::number(waiting));
     }
 
     void setYieldCounts(int passed, int failed)
     {
+        if (m_yieldPassed == passed && m_yieldFailed == failed) {
+            return;
+        }
+        m_yieldPassed = passed;
+        m_yieldFailed = failed;
         m_yieldChart->setCounts(passed, failed);
     }
 
@@ -1191,7 +1247,7 @@ private:
         return divider;
     }
 
-    QLabel* addField(QGridLayout* layout, int column,
+    QLabel* addField(QGridLayout* layout, int row, int column,
                      const QString& caption, const QString& objectName)
     {
         auto* captionLabel = new QLabel(caption, this);
@@ -1200,11 +1256,11 @@ private:
         auto* valueLabel = new QLabel(tr("--"), this);
         valueLabel->setObjectName(objectName);
         valueLabel->setProperty("overviewSummaryValue", true);
-        valueLabel->setMinimumWidth(48);
+        valueLabel->setMinimumWidth(52);
         valueLabel->setSizePolicy(QSizePolicy::Preferred,
                                   QSizePolicy::Preferred);
-        layout->addWidget(captionLabel, 0, column);
-        layout->addWidget(valueLabel, 1, column);
+        layout->addWidget(captionLabel, row, column);
+        layout->addWidget(valueLabel, row + 1, column);
         return valueLabel;
     }
 
@@ -1212,8 +1268,17 @@ private:
     {
         const auto display = text.trimmed().isEmpty() ? tr("--")
                                                        : text.trimmed();
-        label->setText(display);
-        label->setToolTip(display);
+        if (label->text() != display) {
+            label->setText(display);
+            label->setToolTip(display);
+        }
+    }
+
+    void setLabelText(QLabel* label, const QString& text)
+    {
+        if (label->text() != text) {
+            label->setText(text);
+        }
     }
 
     QLabel* m_stateLabel = nullptr;
@@ -1221,12 +1286,18 @@ private:
     YieldDonutWidget* m_yieldChart = nullptr;
     QLabel* m_stationLabel = nullptr;
     QLabel* m_modelLabel = nullptr;
+    QLabel* m_customerIdLabel = nullptr;
     QLabel* m_orderLabel = nullptr;
     QLabel* m_testerLabel = nullptr;
+    QLabel* m_jigLabel = nullptr;
     QLabel* m_runningLabel = nullptr;
     QLabel* m_passLabel = nullptr;
     QLabel* m_failLabel = nullptr;
     QLabel* m_waitingLabel = nullptr;
+    int m_lastState = -1;
+    bool m_lastStopRequested = false;
+    int m_yieldPassed = -1;
+    int m_yieldFailed = -1;
 };
 
 MainWindow::MainWindow(QWidget* parent)
@@ -6630,20 +6701,18 @@ void MainWindow::buildLayout()
             min-width: 1px; max-width: 1px;
         }
         QLabel#adminOverviewSummaryCaption {
-            color: #74838c; font-size: 9px; font-weight: 700;
-        }
-        QLabel#adminOverviewSummaryState {
-            color: #344751; font-size: 17px; font-weight: 800;
+            color: #74838c; font-size: 10px; font-weight: 700;
         }
         QLabel#adminOverviewSummaryElapsed {
-            color: #72818a; font-size: 10px; font-weight: 600;
+            color: #64747d; font-size: 11px; font-weight: 600;
         }
         QLabel[overviewSummaryValue="true"] {
-            color: #253139; font-size: 12px; font-weight: 700;
+            color: #253139; font-size: 14px; font-weight: 700;
         }
-        QLabel[summaryTone="running"] { color: #9a6900; }
+        QLabel[summaryTone="running"] { color: #8a5d00; }
         QLabel[summaryTone="pass"] { color: #287848; }
         QLabel[summaryTone="fail"] { color: #a83237; }
+        QLabel[summaryTone="waiting"] { color: #52646e; }
         QWidget#adminUutDetailNavigation {
             background: #ffffff; border: 1px solid #d7dde1; border-radius: 6px;
         }
@@ -7161,7 +7230,8 @@ void MainWindow::updateAdminOverviewSummary()
     m_adminOverviewSummary->setElapsedText(labelText(m_adminElapsedLabel));
     m_adminOverviewSummary->setStationDetails(
         labelText(m_adminStationLabel), labelText(m_adminModelLabel),
-        labelText(m_adminOrderLabel), labelText(m_adminTesterLabel));
+        labelText(m_adminCustomerIdLabel), labelText(m_adminOrderLabel),
+        labelText(m_adminTesterLabel), labelText(m_adminJigLabel));
     m_adminOverviewSummary->setYieldCounts(
         m_adminPassedUnits, m_adminFailedUnits);
 
@@ -7176,6 +7246,8 @@ void MainWindow::updateAdminOverviewSummary()
                 continue;
             }
             switch (entry->state) {
+            case UutOverviewState::Disabled:
+                break;
             case UutOverviewState::Running:
             case UutOverviewState::Paused:
                 ++running;
@@ -7420,6 +7492,9 @@ void MainWindow::updateSelectedAdminUutSummary()
     }
     UiRunState displayState = UiRunState::Ready;
     switch (entry->state) {
+    case UutOverviewState::Disabled:
+        displayState = UiRunState::Ready;
+        break;
     case UutOverviewState::Running:
     case UutOverviewState::Paused:
         displayState = UiRunState::Running;
