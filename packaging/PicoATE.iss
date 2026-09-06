@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.0"
+  #define MyAppVersion "0.3.0"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\out\build\vs2022-qt6-all\portable\Release\PicoATE.UI"

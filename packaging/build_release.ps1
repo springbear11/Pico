@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.2.0',
+    [string]$Version = '0.3.0',
     [string]$RuntimeSource = '',
     [switch]$SkipTests,
     [switch]$SkipInstaller
@@ -59,21 +59,16 @@ try {
         }
     }
 
-    # Customer projects are deployed separately. Keep only maintained validation
-    # projects that are safe to ship with the framework release.
+    # Product and validation projects are deployed separately from the installer.
     $portableProjects = Join-Path $portableDirectory 'projects'
+    $resolvedProjects = [IO.Path]::GetFullPath($portableProjects)
+    $expectedProjects = [IO.Path]::GetFullPath((Join-Path $repoRoot `
+        'out\build\vs2022-qt6-all\portable\Release\PicoATE.UI\projects'))
+    if (-not $resolvedProjects.Equals($expectedProjects, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Unexpected package project directory: $resolvedProjects"
+    }
     Remove-Item -LiteralPath $portableProjects -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $portableProjects -Force | Out-Null
-    $bundledProjects = @('ModbusTcp4UutValidation')
-    foreach ($projectName in $bundledProjects) {
-        $source = Join-Path $repoRoot "examples\projects\$projectName"
-        if (-not (Test-Path -LiteralPath $source -PathType Container)) {
-            throw "Bundled validation project was not found: $source"
-        }
-        Copy-Item -LiteralPath $source `
-            -Destination (Join-Path $portableProjects $projectName) `
-            -Recurse -Force
-    }
 
     & (Join-Path $PSScriptRoot 'VerifyPortable.ps1') `
         -PortableDirectory $portableDirectory
