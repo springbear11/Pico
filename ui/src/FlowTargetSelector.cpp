@@ -1,4 +1,5 @@
 #include "FlowTargetSelector.h"
+#include "UiTextBinding.h"
 
 #include <QAction>
 #include <QFrame>
@@ -61,7 +62,7 @@ FlowTargetSelector::FlowTargetSelector(QWidget* parent)
     root->setContentsMargins(8, 6, 8, 6);
     root->setSpacing(6);
 
-    m_titleLabel = new QLabel(tr("Target Device"), this);
+    m_titleLabel = makeUiLabel("Target Device", this);
     m_titleLabel->setObjectName(QStringLiteral("flowTargetTitle"));
     root->addWidget(m_titleLabel);
 
@@ -77,7 +78,7 @@ FlowTargetSelector::FlowTargetSelector(QWidget* parent)
     auto* channelRoot = new QVBoxLayout(m_channelWidget);
     channelRoot->setContentsMargins(0, 0, 0, 0);
     channelRoot->setSpacing(3);
-    m_channelLabel = new QLabel(tr("Channel"), m_channelWidget);
+    m_channelLabel = makeUiLabel("Channel", m_channelWidget);
     channelRoot->addWidget(m_channelLabel);
     auto* channelButtons = new QWidget(m_channelWidget);
     m_channelLayout = new QHBoxLayout(channelButtons);

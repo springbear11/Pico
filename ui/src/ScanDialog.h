@@ -71,6 +71,7 @@ private:
     void resetBatch();
     void showSlot(int slot);
     void updateUi();
+    void retranslateUi();
     void focusBarcodeEdit();
     void resizeSlotsPreservingValues(int count);
     void showSubmissionError(const QString& message);

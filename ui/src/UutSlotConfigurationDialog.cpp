@@ -1,4 +1,5 @@
 #include "UutSlotConfigurationDialog.h"
+#include "UiTextBinding.h"
 
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -42,7 +43,7 @@ std::optional<QVector<bool>> showUutSlotConfigurationDialog(
 
     QDialog dialog(parent);
     dialog.setObjectName(QStringLiteral("uutSlotConfigurationDialog"));
-    dialog.setWindowTitle(QObject::tr("UUT Stations"));
+    bindUiText(&dialog, "windowTitle", "UUT Stations");
     dialog.setModal(true);
     dialog.setMinimumWidth(420);
     dialog.setMaximumWidth(520);
@@ -51,7 +52,7 @@ std::optional<QVector<bool>> showUutSlotConfigurationDialog(
     root->setContentsMargins(24, 20, 24, 18);
     root->setSpacing(14);
 
-    auto* title = new QLabel(QObject::tr("UUT STATIONS"), &dialog);
+    auto* title = makeUiLabel("UUT STATIONS", &dialog);
     title->setObjectName(QStringLiteral("uutSlotConfigurationTitle"));
     root->addWidget(title);
 
@@ -82,8 +83,12 @@ std::optional<QVector<bool>> showUutSlotConfigurationDialog(
         button->setCheckable(true);
         button->setChecked(states[index]);
         button->setMinimumSize(82, 38);
-        button->setToolTip(QObject::tr("Enable or disable UUT %1")
-                               .arg(index + 1));
+        const auto refreshTooltip = [button, index] {
+            button->setToolTip(uiText("Enable or disable UUT %1").arg(index + 1));
+        };
+        refreshTooltip();
+        QObject::connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
+                         button, refreshTooltip);
         grid->addWidget(button, index / columnCount, index % columnCount);
         slotButtons.push_back(button);
     }
@@ -95,15 +100,15 @@ std::optional<QVector<bool>> showUutSlotConfigurationDialog(
     root->addWidget(scroll);
 
     auto* commands = new QHBoxLayout;
-    auto* enableAll = new QPushButton(
-        QObject::tr("Enable All"), &dialog);
+    auto* enableAll = makeUiButton("Enable All", &dialog);
     enableAll->setObjectName(QStringLiteral("uutSlotEnableAllButton"));
     commands->addWidget(enableAll);
     commands->addStretch(1);
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Cancel | QDialogButtonBox::Ok, &dialog);
     buttons->setObjectName(QStringLiteral("uutSlotConfigurationButtons"));
-    buttons->button(QDialogButtonBox::Ok)->setText(QObject::tr("Apply"));
+    bindUiText(buttons->button(QDialogButtonBox::Ok), "text", "Apply");
+    bindUiText(buttons->button(QDialogButtonBox::Cancel), "text", "Cancel");
     commands->addWidget(buttons);
     root->addLayout(commands);
 
@@ -112,11 +117,13 @@ std::optional<QVector<bool>> showUutSlotConfigurationDialog(
             states[index] = slotButtons[index]->isChecked();
         }
         const int activeCount = enabledUutSlotCount(states);
-        summary->setText(QObject::tr("%1 / %2 active")
+        summary->setText(uiText("%1 / %2 active")
                              .arg(activeCount)
                              .arg(states.size()));
         buttons->button(QDialogButtonBox::Ok)->setEnabled(activeCount > 0);
     };
+    QObject::connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
+                     &dialog, refresh);
     for (auto* button : std::as_const(slotButtons)) {
         QObject::connect(button, &QPushButton::toggled, &dialog, refresh);
     }

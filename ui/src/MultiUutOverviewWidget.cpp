@@ -1,3 +1,4 @@
+#include "UiTextBinding.h"
 #include "MultiUutOverviewWidget.h"
 
 #include "LoadingSpinner.h"
@@ -30,6 +31,9 @@
 #include <cmath>
 #include <functional>
 #include <utility>
+
+using PicoATE::Ui::uiText;
+using PicoATE::Ui::uiStateText;
 
 namespace PicoATE::Ui {
 
@@ -100,13 +104,13 @@ QString recentStepStateText(PicoATE::Core::ActivationState state)
 {
     using PicoATE::Core::ActivationState;
     switch (state) {
-    case ActivationState::Passed: return QStringLiteral("PASS");
-    case ActivationState::Failed: return QStringLiteral("FAIL");
-    case ActivationState::Error: return QStringLiteral("ERROR");
-    case ActivationState::Timeout: return QStringLiteral("TIMEOUT");
-    case ActivationState::Cancelled: return QStringLiteral("STOP");
-    case ActivationState::Skipped: return QStringLiteral("SKIP");
-    default: return QStringLiteral("DONE");
+    case ActivationState::Passed: return uiText("PASS");
+    case ActivationState::Failed: return uiText("FAIL");
+    case ActivationState::Error: return uiText("ERROR");
+    case ActivationState::Timeout: return uiText("TIMEOUT");
+    case ActivationState::Cancelled: return uiText("STOP");
+    case ActivationState::Skipped: return uiText("SKIP");
+    default: return uiText("DONE");
     }
 }
 
@@ -143,14 +147,14 @@ QString periodicStateText(const PeriodicTaskOverviewEntry& task)
 {
     using PicoATE::Core::PeriodicTaskState;
     switch (task.state) {
-    case PeriodicTaskState::Waiting: return QStringLiteral("WAITING");
-    case PeriodicTaskState::Running: return QStringLiteral("RUNNING");
+    case PeriodicTaskState::Waiting: return uiText("WAITING");
+    case PeriodicTaskState::Running: return uiText("RUNNING");
     case PeriodicTaskState::Passed:
     case PeriodicTaskState::Failed:
-        return QStringLiteral("WAITING");
-    case PeriodicTaskState::Stopped: return QStringLiteral("STOPPED");
+        return uiText("WAITING");
+    case PeriodicTaskState::Stopped: return uiText("STOPPED");
     }
-    return QStringLiteral("WAITING");
+    return uiText("WAITING");
 }
 
 QColor periodicStateColor(PicoATE::Core::PeriodicTaskState state)
@@ -187,11 +191,11 @@ QString periodicResultText(PicoATE::Core::NodeOutcome outcome)
 {
     using PicoATE::Core::NodeOutcome;
     switch (outcome) {
-    case NodeOutcome::Passed: return QStringLiteral("LAST PASS");
+    case NodeOutcome::Passed: return uiText("LAST PASS");
     case NodeOutcome::Failed:
     case NodeOutcome::Error:
     case NodeOutcome::Timeout:
-        return QStringLiteral("LAST FAIL");
+        return uiText("LAST FAIL");
     default:
         return {};
     }
@@ -219,8 +223,8 @@ public:
         root->setContentsMargins(shared ? 12 : 9, shared ? 7 : 5,
                                  shared ? 12 : 9, shared ? 7 : 5);
         root->setSpacing(3);
-        m_captionLabel = new QLabel(
-            shared ? tr("SHARED PERIODIC TASK") : tr("PERIODIC TASK"), this);
+        m_captionLabel = makeUiLabel(
+            shared ? "SHARED PERIODIC TASK" : "PERIODIC TASK", this);
         m_captionLabel->setObjectName(QStringLiteral("periodicTaskCaption"));
         root->addWidget(m_captionLabel);
 
@@ -291,7 +295,7 @@ public:
         auto name = task.displayName.trimmed().isEmpty() ? task.nodeId
                                                         : task.displayName;
         if (m_tasks.size() > 1) {
-            name += tr("  +%1").arg(m_tasks.size() - 1);
+            name += uiText("  +%1").arg(m_tasks.size() - 1);
         }
         setTextIfChanged(m_nameLabel, name);
         setTextIfChanged(m_stateLabel, periodicStateText(task));
@@ -327,14 +331,14 @@ public:
         QString detail;
         if (task.state == PicoATE::Core::PeriodicTaskState::Running) {
             detail = task.counter != 0
-                ? tr("COUNT %1").arg(task.counter)
-                : tr("RUN %1").arg(qMax(1, task.invocationIndex));
+                ? uiText("COUNT %1").arg(task.counter)
+                : uiText("RUN %1").arg(qMax(1, task.invocationIndex));
         } else if (task.nextDueAtUtc.isValid()) {
             const auto remainingMs =
                 QDateTime::currentDateTimeUtc().msecsTo(task.nextDueAtUtc);
             detail = remainingMs <= 0
-                ? tr("DUE")
-                : tr("NEXT IN %1").arg(compactCountdown(remainingMs));
+                ? uiText("DUE")
+                : uiText("NEXT IN %1").arg(compactCountdown(remainingMs));
         }
         setTextIfChanged(m_detailLabel, detail);
     }
@@ -365,7 +369,7 @@ QString compactResourceIds(
     const int hidden = qMax(0, ids.size() - maximumVisible);
     if (hidden > 0) {
         ids = ids.mid(0, maximumVisible);
-        ids.push_back(QObject::tr("+%1").arg(hidden));
+        ids.push_back(uiText("+%1").arg(hidden));
     }
     return ids.join(QStringLiteral("  |  "));
 }
@@ -387,7 +391,7 @@ QString compactResourceBadgeText(
     }
     auto text = ids.front();
     if (ids.size() > 1) {
-        text += QObject::tr(" +%1").arg(ids.size() - 1);
+        text += uiText(" +%1").arg(ids.size() - 1);
     }
     return text;
 }
@@ -425,12 +429,12 @@ public:
         root->setContentsMargins(shared ? 12 : 9, shared ? 7 : 5,
                                  shared ? 12 : 9, shared ? 7 : 5);
         root->setSpacing(3);
-        auto* caption = new QLabel(
-            shared ? tr("SHARED RESOURCES") : tr("RESOURCES"), this);
+        auto* caption = makeUiLabel(
+            shared ? "SHARED RESOURCES" : "RESOURCES", this);
         caption->setObjectName(QStringLiteral("resourceStatusCaption"));
         root->addWidget(caption);
 
-        const auto addRow = [this, root](const QString& badgeText,
+        const auto addRow = [this, root](const char* badgeText,
                                         const QString& badgeObject,
                                         const QString& detailObject,
                                         QLabel*& row,
@@ -439,7 +443,7 @@ public:
             auto* layout = new QHBoxLayout(row);
             layout->setContentsMargins(0, 0, 0, 0);
             layout->setSpacing(8);
-            auto* badge = new QLabel(badgeText, row);
+            auto* badge = makeUiLabel(badgeText, row);
             badge->setObjectName(badgeObject);
             badge->setAlignment(Qt::AlignCenter);
             badge->setFixedWidth(58);
@@ -451,11 +455,11 @@ public:
             layout->addWidget(detail, 1);
             root->addWidget(row);
         };
-        addRow(tr("USING"), QStringLiteral("resourceUsingBadge"),
+        addRow("USING", QStringLiteral("resourceUsingBadge"),
                shared ? QStringLiteral("sharedResourceUsing")
                       : QStringLiteral("uutOverviewResourceUsing"),
                m_usingRow, m_usingLabel);
-        addRow(tr("WAIT"), QStringLiteral("resourceWaitingBadge"),
+        addRow("WAIT", QStringLiteral("resourceWaitingBadge"),
                shared ? QStringLiteral("sharedResourceWaiting")
                       : QStringLiteral("uutOverviewResourceWaiting"),
                m_waitingRow, m_waitingLabel);
@@ -488,7 +492,7 @@ public:
         if (m_shared) {
             const auto executors = compactUutIds(m_held, false);
             if (!executors.isEmpty()) {
-                usingText += tr("  |  EXECUTOR %1").arg(executors);
+                usingText += uiText("  |  EXECUTOR %1").arg(executors);
             }
         }
         setTextIfChanged(m_usingLabel, usingText);
@@ -503,7 +507,7 @@ public:
         auto waitingText = compactResourceIds(m_waiting);
         const auto blockers = compactUutIds(m_waiting, true);
         if (!blockers.isEmpty()) {
-            waitingText += tr("  |  HELD BY %1").arg(blockers);
+            waitingText += uiText("  |  HELD BY %1").arg(blockers);
         }
         QDateTime oldest;
         for (const auto& entry : m_waiting) {
@@ -515,7 +519,7 @@ public:
         if (oldest.isValid()) {
             const auto elapsed = qMax<qint64>(
                 0, oldest.msecsTo(QDateTime::currentDateTimeUtc()));
-            waitingText += tr("  |  %1 s").arg(elapsed / 1000.0, 0, 'f', 1);
+            waitingText += uiText("  |  %1 s").arg(elapsed / 1000.0, 0, 'f', 1);
         }
         setTextIfChanged(m_waitingLabel, waitingText);
     }
@@ -578,12 +582,12 @@ public:
             m_usingLabel,
             m_held.isEmpty()
                 ? QString{}
-                : tr("USE  %1").arg(compactResourceBadgeText(m_held)));
+                : uiText("USE  %1").arg(compactResourceBadgeText(m_held)));
         setTextIfChanged(
             m_waitingLabel,
             m_waiting.isEmpty()
                 ? QString{}
-                : tr("WAIT  %1").arg(compactResourceBadgeText(m_waiting)));
+                : uiText("WAIT  %1").arg(compactResourceBadgeText(m_waiting)));
         setVisible(!m_held.isEmpty() || !m_waiting.isEmpty());
         refreshWaitDuration();
     }
@@ -592,14 +596,14 @@ public:
     {
         QStringList details;
         if (!m_held.isEmpty()) {
-            details.push_back(tr("USING: %1").arg(compactResourceIds(m_held)));
+            details.push_back(uiText("USING: %1").arg(compactResourceIds(m_held)));
         }
         if (!m_waiting.isEmpty()) {
             auto waitingText =
-                tr("WAITING: %1").arg(compactResourceIds(m_waiting));
+                uiText("WAITING: %1").arg(compactResourceIds(m_waiting));
             const auto blockers = compactUutIds(m_waiting, true);
             if (!blockers.isEmpty()) {
-                waitingText += tr("\nHELD BY: %1").arg(blockers);
+                waitingText += uiText("\nHELD BY: %1").arg(blockers);
             }
             QDateTime oldest;
             for (const auto& entry : m_waiting) {
@@ -612,7 +616,7 @@ public:
                 const auto elapsed = qMax<qint64>(
                     0, oldest.msecsTo(QDateTime::currentDateTimeUtc()));
                 waitingText +=
-                    tr("\nWAIT TIME: %1 s").arg(elapsed / 1000.0, 0, 'f', 1);
+                    uiText("\nWAIT TIME: %1 s").arg(elapsed / 1000.0, 0, 'f', 1);
             }
             details.push_back(waitingText);
         }
@@ -753,6 +757,8 @@ public:
             }
         )css"));
         setStage(Stage::CleaningUp);
+        connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
+                this, [this] { setStage(m_stage); });
         hide();
     }
 
@@ -760,13 +766,13 @@ public:
     {
         m_stage = stage;
         if (stage == Stage::Stopping) {
-            m_titleLabel->setText(tr("STOPPING"));
+            m_titleLabel->setText(uiText("STOPPING"));
             m_statusLabel->setText(
-                tr("Stopping active work before cleanup..."));
+                uiText("Stopping active work before cleanup..."));
         } else {
-            m_titleLabel->setText(tr("CLEANING UP"));
+            m_titleLabel->setText(uiText("CLEANING UP"));
             m_statusLabel->setText(
-                tr("Closing devices and releasing resources..."));
+                uiText("Closing devices and releasing resources..."));
         }
         setCurrentStep(m_currentStep);
     }
@@ -777,9 +783,9 @@ public:
         m_currentStep = step;
         m_stepLabel->setText(step.isEmpty()
             ? (m_stage == Stage::Stopping
-                   ? tr("Preparing cleanup for all UUTs")
-                   : tr("Finalizing all UUTs"))
-            : tr("Current: %1").arg(step));
+                   ? uiText("Preparing cleanup for all UUTs")
+                   : uiText("Finalizing all UUTs"))
+            : uiText("Current: %1").arg(step));
         m_stepLabel->setToolTip(step);
     }
 
@@ -939,11 +945,45 @@ public:
         m_responseHandler = std::move(handler);
     }
 
+    void retranslatePrompt()
+    {
+        m_inputErrorLabel->setText(m_inputErrorSource
+            ? uiText(m_inputErrorSource) : QString{});
+        if (m_batchParticipantCount > 0) {
+            m_contextLabel->setText(uiText("ALL %1 UUTs  |  ONCE PER BATCH")
+                .arg(m_batchParticipantCount));
+        }
+        const auto buttonText = [this](const char* key, const char* fallback) {
+            const auto text = m_promptDetails.value(QString::fromLatin1(key),
+                                                    QString::fromLatin1(fallback)).toString();
+            return text == QString::fromLatin1(fallback) ? uiText(fallback) : text;
+        };
+        m_confirmButton->setText(buttonText("confirmText", m_isInput ? "Submit" : "OK"));
+        m_passButton->setText(buttonText("passText", "PASS"));
+        m_failButton->setText(buttonText("failText", "FAIL"));
+        const bool notice = m_promptDetails.value(QStringLiteral("mode"))
+                                .toString().trimmed().toLower() == QStringLiteral("notice");
+        m_statusLabel->setText(m_responsePending
+            ? uiText("Recording operator response...")
+            : (notice ? uiText("The test continues while this instruction is displayed.")
+                      : uiText("Select the observed result for this UUT.")));
+        if (m_promptDetails.value(QStringLiteral("title")).toString().trimmed().isEmpty()) {
+            m_titleLabel->setText(uiText("Operator Action"));
+        }
+    }
+
     void configure(const PicoATE::Core::RuntimeEvent& event,
                    const QString& sequencePath,
                    const QString& serialNumber,
-                   const QString& contextOverride = {})
+                   int batchParticipantCount = 0)
     {
+        m_promptDetails = event.details;
+        m_batchParticipantCount = batchParticipantCount;
+        if (!m_languageConnected) {
+            connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
+                    this, [this] { retranslatePrompt(); });
+            m_languageConnected = true;
+        }
         m_instanceId = event.details.value(
             QStringLiteral("promptInstanceId")).toString();
         m_presentationKey = promptPresentationKey(event);
@@ -958,15 +998,15 @@ public:
                               .trimmed()
                               .toLower();
 
-        m_contextLabel->setText(!contextOverride.trimmed().isEmpty()
-            ? contextOverride.trimmed()
+        m_contextLabel->setText(batchParticipantCount > 0
+            ? uiText("ALL %1 UUTs  |  ONCE PER BATCH").arg(batchParticipantCount)
             : (serialNumber.trimmed().isEmpty()
                    ? event.uutId
-                   : tr("%1  |  SN %2").arg(event.uutId,
+                   : uiText("%1  |  SN %2").arg(event.uutId,
                                                serialNumber.trimmed())));
         const auto title = event.details.value(
             QStringLiteral("title")).toString().trimmed();
-        m_titleLabel->setText(title.isEmpty() ? tr("Operator Action") : title);
+        m_titleLabel->setText(title.isEmpty() ? uiText("Operator Action") : title);
         m_messageLabel->setText(event.details.value(
             QStringLiteral("message"), event.message).toString());
         updateImage(event.details.value(QStringLiteral("image")).toString(),
@@ -987,14 +1027,15 @@ public:
             m_isInput ? QStringLiteral("Submit") : QStringLiteral("OK"))
                                      .toString());
         m_passButton->setText(event.details.value(
-            QStringLiteral("passText"), QStringLiteral("PASS")).toString());
+            QStringLiteral("passText"), uiText("PASS")).toString());
         m_failButton->setText(event.details.value(
-            QStringLiteral("failText"), QStringLiteral("FAIL")).toString());
+            QStringLiteral("failText"), uiText("FAIL")).toString());
         m_statusLabel->setVisible(notice || judgment);
         m_statusLabel->setText(notice
-            ? tr("The test continues while this instruction is displayed.")
-            : tr("Select the observed result for this UUT."));
+            ? uiText("The test continues while this instruction is displayed.")
+            : uiText("Select the observed result for this UUT."));
         setResponsePending(false);
+        retranslatePrompt();
     }
 
     QString currentInstanceId() const { return m_instanceId; }
@@ -1002,13 +1043,14 @@ public:
 
     void setResponsePending(bool pending)
     {
+        m_responsePending = pending;
         for (auto* button : {m_confirmButton, m_passButton, m_failButton}) {
             button->setEnabled(!pending);
         }
         m_inputEdit->setEnabled(!pending);
         if (pending) {
             m_statusLabel->show();
-            m_statusLabel->setText(tr("Recording operator response..."));
+            m_statusLabel->setText(uiText("Recording operator response..."));
         }
     }
 
@@ -1036,7 +1078,7 @@ private:
         }
         const auto text = m_inputEdit->text();
         if (text.trimmed().isEmpty()) {
-            setInputError(tr("Enter a value."));
+            setInputError("Enter a value.");
             return false;
         }
 
@@ -1045,7 +1087,7 @@ private:
             bool ok = false;
             const auto parsed = text.trimmed().toLongLong(&ok, 10);
             if (!ok) {
-                setInputError(tr("Enter a valid integer."));
+                setInputError("Enter a valid integer.");
                 return false;
             }
             value = parsed;
@@ -1053,7 +1095,7 @@ private:
             bool ok = false;
             const auto parsed = text.trimmed().toDouble(&ok);
             if (!ok || !std::isfinite(parsed)) {
-                setInputError(tr("Enter a valid number."));
+                setInputError("Enter a valid number.");
                 return false;
             }
             value = parsed;
@@ -1068,8 +1110,10 @@ private:
         return true;
     }
 
-    void setInputError(const QString& message)
+    void setInputError(const char* source)
     {
+        m_inputErrorSource = source;
+        const auto message = source ? uiText(source) : QString{};
         m_inputErrorLabel->setText(message);
         m_inputErrorLabel->setVisible(!message.isEmpty());
         m_inputEdit->setProperty("invalid", !message.isEmpty());
@@ -1090,7 +1134,7 @@ private:
         const auto path = ProjectResourcePaths::resolveImage(sequencePath, image);
         QPixmap pixmap(path);
         if (pixmap.isNull()) {
-            m_imageLabel->setText(tr("Image unavailable: %1").arg(image));
+            m_imageLabel->setText(uiText("Image unavailable: %1").arg(image));
             return;
         }
         m_imageLabel->setPixmap(pixmap.scaled(220, 80,
@@ -1113,6 +1157,11 @@ private:
     QString m_presentationKey;
     QString m_inputType = QStringLiteral("text");
     bool m_isInput = false;
+    bool m_responsePending = false;
+    bool m_languageConnected = false;
+    QVariantMap m_promptDetails;
+    const char* m_inputErrorSource = nullptr;
+    int m_batchParticipantCount = 0;
 };
 
 class UutOverviewCard final : public QAbstractButton
@@ -1235,17 +1284,17 @@ public:
         footer->setContentsMargins(0, 0, 0, 0);
         footer->setHorizontalSpacing(18);
         footer->setVerticalSpacing(2);
-        m_completedCaptionLabel = new QLabel(tr("COMPLETED STEPS"), this);
+        m_completedCaptionLabel = makeUiLabel("COMPLETED STEPS", this);
         m_completedCaptionLabel->setObjectName(
             QStringLiteral("uutOverviewCaption"));
         m_progressLabel = new QLabel(this);
         m_progressLabel->setObjectName(QStringLiteral("uutOverviewMetric"));
-        m_errorCaptionLabel = new QLabel(tr("ERROR CODE"), this);
+        m_errorCaptionLabel = makeUiLabel("ERROR CODE", this);
         m_errorCaptionLabel->setObjectName(
             QStringLiteral("uutOverviewCaption"));
         m_errorLabel = new QLabel(this);
         m_errorLabel->setObjectName(QStringLiteral("uutOverviewError"));
-        m_durationCaptionLabel = new QLabel(tr("DURATION"), this);
+        m_durationCaptionLabel = makeUiLabel("DURATION", this);
         m_durationCaptionLabel->setObjectName(
             QStringLiteral("uutOverviewCaption"));
         m_durationLabel = new QLabel(this);
@@ -1384,8 +1433,8 @@ public:
         setTextIfChanged(m_uutLabel, entry.uutId);
         setTextIfChanged(m_stateLabel,
                          entry.retryActive
-                             ? tr("RETRYING")
-                             : uutOverviewStateName(entry.state).toUpper());
+                             ? uiText("RETRYING")
+                             : uiStateText(uutOverviewStateName(entry.state).toUpper()));
         setTextIfChanged(
             m_serialLabel,
             QStringLiteral("SN  %1").arg(entry.serialNumber.isEmpty()
@@ -1401,9 +1450,9 @@ public:
         const auto phaseName = [displayedPhase] {
             switch (displayedPhase) {
             case PicoATE::Core::ExecutionPhase::Setup:
-                return QStringLiteral("SETUP");
+                return uiText("SETUP");
             case PicoATE::Core::ExecutionPhase::Cleanup:
-                return QStringLiteral("CLEANUP");
+                return uiText("CLEANUP");
             case PicoATE::Core::ExecutionPhase::Main:
                 return QString{};
             }
@@ -1413,42 +1462,42 @@ public:
         QString stepFallback;
         if (entry.retryActive) {
             stepCaption = phaseName.isEmpty()
-                ? tr("RETRYING CURRENT STEP")
-                : tr("RETRYING %1 STEP").arg(phaseName);
-            stepFallback = tr("Preparing next attempt");
+                ? uiText("RETRYING CURRENT STEP")
+                : uiText("RETRYING %1 STEP").arg(phaseName);
+            stepFallback = uiText("Preparing next attempt");
         } else switch (entry.state) {
         case UutOverviewState::Disabled:
-            stepCaption = tr("UUT SLOT");
-            stepFallback = tr("Disabled for this run");
+            stepCaption = uiText("UUT SLOT");
+            stepFallback = uiText("Disabled for this run");
             break;
         case UutOverviewState::Waiting:
             stepCaption = phaseName.isEmpty()
-                ? tr("WAITING FOR")
-                : tr("WAITING FOR %1 STEP").arg(phaseName);
-            stepFallback = tr("Waiting to start");
+                ? uiText("WAITING FOR")
+                : uiText("WAITING FOR %1 STEP").arg(phaseName);
+            stepFallback = uiText("Waiting to start");
             break;
         case UutOverviewState::Running:
         case UutOverviewState::Paused:
             stepCaption = phaseName.isEmpty()
-                ? tr("CURRENT STEP")
-                : tr("%1 STEP").arg(phaseName);
-            stepFallback = tr("Preparing");
+                ? uiText("CURRENT STEP")
+                : uiText("%1 STEP").arg(phaseName);
+            stepFallback = uiText("Preparing");
             break;
         case UutOverviewState::Passed:
             stepCaption = phaseName.isEmpty()
-                ? tr("FINAL STEP")
-                : tr("FINAL %1 STEP").arg(phaseName);
-            stepFallback = tr("Completed");
+                ? uiText("FINAL STEP")
+                : uiText("FINAL %1 STEP").arg(phaseName);
+            stepFallback = uiText("Completed");
             break;
         case UutOverviewState::Failed:
             stepCaption = phaseName.isEmpty()
-                ? tr("FAILED STEP")
-                : tr("FAILED %1 STEP").arg(phaseName);
-            stepFallback = tr("Failed");
+                ? uiText("FAILED STEP")
+                : uiText("FAILED %1 STEP").arg(phaseName);
+            stepFallback = uiText("Failed");
             break;
         case UutOverviewState::Stopped:
-            stepCaption = tr("STOPPED AT");
-            stepFallback = tr("Stopped");
+            stepCaption = uiText("STOPPED AT");
+            stepFallback = uiText("Stopped");
             break;
         }
         setTextIfChanged(m_stepCaptionLabel, stepCaption);
@@ -1460,36 +1509,36 @@ public:
         QString currentStateText;
         QColor currentStateColor;
         if (entry.retryActive) {
-            currentStateText = QStringLiteral("RETRY");
+            currentStateText = uiText("RETRY");
             currentStateColor = QColor(QStringLiteral("#a87500"));
         } else {
             switch (entry.state) {
             case UutOverviewState::Disabled:
-                currentStateText = QStringLiteral("OFF");
+                currentStateText = uiText("OFF");
                 currentStateColor = QColor(QStringLiteral("#7d888f"));
                 break;
             case UutOverviewState::Waiting:
-                currentStateText = QStringLiteral("WAIT");
+                currentStateText = uiText("WAIT");
                 currentStateColor = QColor(QStringLiteral("#667680"));
                 break;
             case UutOverviewState::Running:
-                currentStateText = QStringLiteral("RUN");
+                currentStateText = uiText("RUN");
                 currentStateColor = QColor(QStringLiteral("#a87500"));
                 break;
             case UutOverviewState::Paused:
-                currentStateText = QStringLiteral("PAUSE");
+                currentStateText = uiText("PAUSE");
                 currentStateColor = QColor(QStringLiteral("#35677f"));
                 break;
             case UutOverviewState::Passed:
-                currentStateText = QStringLiteral("PASS");
+                currentStateText = uiText("PASS");
                 currentStateColor = QColor(QStringLiteral("#2f7548"));
                 break;
             case UutOverviewState::Failed:
-                currentStateText = QStringLiteral("FAIL");
+                currentStateText = uiText("FAIL");
                 currentStateColor = QColor(QStringLiteral("#a43838"));
                 break;
             case UutOverviewState::Stopped:
-                currentStateText = QStringLiteral("STOP");
+                currentStateText = uiText("STOP");
                 currentStateColor = QColor(QStringLiteral("#875151"));
                 break;
             }
@@ -1541,7 +1590,7 @@ public:
         setTextIfChanged(
             m_retryLabel,
             showRetry
-                ? tr("ATTEMPT %1 / %2")
+                ? uiText("ATTEMPT %1 / %2")
                       .arg(entry.retryAttempt)
                       .arg(entry.retryMaxAttempts)
                 : QString{});
@@ -1700,7 +1749,7 @@ MultiUutOverviewWidget::MultiUutOverviewWidget(QWidget* parent)
     root->setSpacing(12);
 
     auto* header = new QHBoxLayout;
-    auto* title = new QLabel(tr("UUT OVERVIEW"), this);
+    auto* title = makeUiLabel("UUT OVERVIEW", this);
     title->setObjectName(QStringLiteral("multiUutOverviewTitle"));
     auto titleFont = title->font();
     titleFont.setPointSize(titleFont.pointSize() + 4);
@@ -1753,6 +1802,13 @@ MultiUutOverviewWidget::MultiUutOverviewWidget(QWidget* parent)
         updateCleanupOverlayVisibility();
     });
     updateCleanupOverlayGeometry();
+    connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
+            this, [this] {
+        refreshCards();
+        refreshSharedPeriodicTasks();
+        refreshSharedResources();
+        updateSummary();
+    }, Qt::QueuedConnection);
 
     setStyleSheet(QStringLiteral(
         "QWidget#multiUutOverview{background:#f4f6f7;}"
@@ -1953,8 +2009,7 @@ bool MultiUutOverviewWidget::presentOperatorPrompt(
             event,
             sequencePath,
             {},
-            tr("ALL %1 UUTs  |  ONCE PER BATCH")
-                .arg(qMax(1, participantCount)));
+            qMax(1, participantCount));
         updateBatchPromptGeometry();
         overlay->show();
         overlay->raise();
@@ -2308,10 +2363,10 @@ void MultiUutOverviewWidget::updateSummary()
     }
     m_summaryLabel->setText(
         disabled > 0
-            ? tr("RUNNING %1   PASS %2   FAIL %3   WAITING %4   DISABLED %5")
+            ? uiText("RUNNING %1   PASS %2   FAIL %3   WAITING %4   DISABLED %5")
                   .arg(running).arg(passed).arg(failed).arg(waiting)
                   .arg(disabled)
-            : tr("RUNNING %1   PASS %2   FAIL %3   WAITING %4")
+            : uiText("RUNNING %1   PASS %2   FAIL %3   WAITING %4")
                   .arg(running).arg(passed).arg(failed).arg(waiting));
 }
 
@@ -2370,8 +2425,7 @@ void MultiUutOverviewWidget::restoreBatchOperatorPrompt()
         prompt->event,
         prompt->sequencePath,
         {},
-        tr("ALL %1 UUTs  |  ONCE PER BATCH")
-            .arg(qMax(1, participantCount)));
+        qMax(1, participantCount));
     updateBatchPromptGeometry();
     overlay->show();
     overlay->raise();

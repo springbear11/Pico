@@ -21,11 +21,14 @@ QFont picoATEInterfaceFont()
         QStringLiteral("Segoe UI"),
         QStringLiteral("Microsoft YaHei UI")};
     QFont font;
+    QStringList families;
     for (const auto& candidate : candidates) {
         if (QFontDatabase::hasFamily(candidate)) {
-            font.setFamily(candidate);
-            break;
+            families.push_back(candidate);
         }
+    }
+    if (!families.isEmpty()) {
+        font.setFamilies(families);
     }
     font.setPointSizeF(10.0);
     font.setHintingPreference(QFont::PreferFullHinting);

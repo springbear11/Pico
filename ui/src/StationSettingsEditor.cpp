@@ -1,4 +1,5 @@
 #include "StationSettingsEditor.h"
+#include "UiTextBinding.h"
 
 #include "LoadingSpinner.h"
 #include "OnOffControl.h"
@@ -63,7 +64,10 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     layout->setContentsMargins(12, 8, 12, 12);
     layout->setSpacing(10);
 
-    m_title = new QLabel(tr("Basic Settings"), this);
+    m_title = new QLabel(uiText("Basic Settings"), this);
+    connect(&UiLanguage::instance(), &UiLanguage::languageChanged, this, [this] {
+        m_title->setText(uiText(m_pendingChanges ? "Basic Settings *" : "Basic Settings"));
+    });
     auto titleFont = m_title->font();
     titleFont.setBold(true);
     titleFont.setPointSize(titleFont.pointSize() + 1);
@@ -547,8 +551,8 @@ void StationSettingsEditor::setPendingChanges(bool pending)
     m_pendingChanges = pending;
     if (m_title) {
         m_title->setText(m_pendingChanges
-                             ? tr("Basic Settings *")
-                             : tr("Basic Settings"));
+                             ? uiText("Basic Settings *")
+                             : uiText("Basic Settings"));
     }
     emit pendingChangesChanged(m_pendingChanges);
 }

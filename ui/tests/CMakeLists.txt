@@ -73,6 +73,10 @@ qt_add_executable(PicoATEUiWindowTests
     MainWindowLifecycleTests.cpp
     ../src/MainWindow.cpp
     ../src/MainWindow.h
+    ../src/UiTextBinding.cpp
+    ../src/UiTextBinding.h
+    ../src/TitleBarLanguageButton.cpp
+    ../src/TitleBarLanguageButton.h
     ../src/MultiUutOverviewWidget.cpp
     ../src/MultiUutOverviewWidget.h
     ../src/StepPropertyEditor.cpp
@@ -95,6 +99,10 @@ target_compile_definitions(PicoATEUiWindowTests
     PRIVATE
         PICOATE_UI_TEST_PROJECT_DIR="${PICOATE_ROOT_DIR}"
 )
+
+if(WIN32)
+    target_link_libraries(PicoATEUiWindowTests PRIVATE dwmapi)
+endif()
 
 set_target_properties(PicoATEUiWindowTests
     PROPERTIES

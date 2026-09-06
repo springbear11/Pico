@@ -57,6 +57,7 @@ protected:
 
 private:
     void buildUi();
+    void retranslateUi();
     void applyResponsiveLayout(bool force = false);
     void updateCommands();
     void updateState(UiRunState state);
@@ -160,6 +161,7 @@ private:
     bool m_currentRunCounted = false;
     bool m_stopRequested = false;
     bool m_fieldDeviceDialogOpen = false;
+    bool m_uutSlotDialogOpen = false;
     int m_responsiveLayoutMode = -1;
 };
 

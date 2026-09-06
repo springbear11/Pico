@@ -31,6 +31,10 @@
 #include "StationDocument.h"
 #include "StationPropertyEditor.h"
 #include "StationSettingsEditor.h"
+#include "UiLanguage.h"
+#include "UiTextBinding.h"
+#include "UutSlotConfigurationDialog.h"
+#include "PicoATE/Core/ExecutionReportJson.h"
 
 #include <QApplication>
 #include <QAbstractButton>
@@ -58,6 +62,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QMenu>
+#include <QMenuBar>
 #include <QLineEdit>
 #include <QListView>
 #include <QListWidget>
@@ -70,6 +75,7 @@
 #include <QPainter>
 #include <QSettings>
 #include <QScreen>
+#include <QScopeGuard>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSpinBox>
@@ -92,6 +98,11 @@
 
 #include <algorithm>
 #include <array>
+
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#include <dwmapi.h>
+#endif
 
 using namespace PicoATE::Ui;
 
@@ -368,8 +379,16 @@ class MainWindowLifecycleTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void titleBarLanguageButtonPreservesNativeWindow();
+    void uutSlotsSuspendScanner_data();
+    void uutSlotsSuspendScanner();
     void initTestCase();
     void cleanupTestCase();
+    void languageSwitchPreservesAdminDraftAndSelection();
+    void languageSwitchPreservesRunningProductionAndScanner();
+    void languageSwitchRefreshesModelsWithoutChangingReports();
+    void languageSwitchPreservesPromptInputAndResponse();
+    void languageSwitchPreservesSlotChoices();
     void picoStyleDrawsFilledCheckedIndicators();
     void parserActualDelegateHighlightsSelectedTokens();
     void inputWheelGuardPreventsAccidentalValueChanges();
@@ -494,6 +513,534 @@ void MainWindowLifecycleTests::initTestCase()
 void MainWindowLifecycleTests::cleanupTestCase()
 {
     QSettings().clear();
+}
+
+void MainWindowLifecycleTests::titleBarLanguageButtonPreservesNativeWindow()
+{
+    auto& language = UiLanguage::instance();
+    QVERIFY(language.setChinese(false, false));
+    const auto restoreLanguage = qScopeGuard([&] {
+        language.setChinese(false, false);
+        QSettings().remove(QStringLiteral("ui/language"));
+    });
+    QMainWindow window;
+    window.setWindowTitle(QStringLiteral("PicoATE - Language caption verification"));
+    auto* edit = new QLineEdit(&window);
+    window.setCentralWidget(edit);
+    window.menuBar()->addMenu(QStringLiteral("File"));
+    const auto originalFlags = window.windowFlags();
+    installLanguageButton(&window);
+    QCOMPARE(window.windowFlags(), originalFlags);
+    window.resize(900, 540);
+    window.show();
+    window.activateWindow();
+    auto* button = window.findChild<QToolButton*>(QStringLiteral("uiLanguageButton"));
+    QVERIFY(button);
+    QTRY_VERIFY(button->isVisible());
+    QCOMPARE(button->text(), QStringLiteral("EN"));
+    QVERIFY(!button->isChecked());
+    QCOMPARE(button->width(), 52);
+    edit->setText(QStringLiteral("DRAFT-1234"));
+    edit->setFocus();
+    edit->setCursorPosition(5);
+    const auto frameBefore = window.frameGeometry();
+    const auto buttonSize = button->size();
+    button->click();
+    QVERIFY(language.isChinese());
+    QCOMPARE(button->text(), QString::fromUtf8("中"));
+    QVERIFY(button->isChecked());
+    QTRY_COMPARE_WITH_TIMEOUT(button->property("languageProgress").toReal(), 1.0, 1500);
+    QCOMPARE(uiText("READY"), QString::fromUtf8("待开始"));
+    QCOMPARE(uiText("Ready"), QString::fromUtf8("待开始"));
+    QCOMPARE(button->size(), buttonSize);
+    QCOMPARE(window.frameGeometry(), frameBefore);
+    QCOMPARE(edit->text(), QStringLiteral("DRAFT-1234"));
+    QCOMPARE(edit->cursorPosition(), 5);
+    QVERIFY(edit->hasFocus());
+
+#ifdef Q_OS_WIN
+    if (QGuiApplication::platformName() == QStringLiteral("windows")) {
+        QVERIFY(!window.menuBar()->cornerWidget(Qt::TopRightCorner));
+        const auto ownerHwnd = reinterpret_cast<HWND>(window.winId());
+        const auto buttonHwnd = reinterpret_cast<HWND>(button->winId());
+        const auto aligned = [&] {
+            RECT frame{}, caption{}, control{};
+            POINT content{0, 0};
+            if (!GetWindowRect(ownerHwnd, &frame) || !GetWindowRect(buttonHwnd, &control) ||
+                !ClientToScreen(ownerHwnd, &content) ||
+                FAILED(DwmGetWindowAttribute(ownerHwnd, DWMWA_CAPTION_BUTTON_BOUNDS,
+                                             &caption, sizeof(caption)))) return false;
+            return control.left > frame.left && control.bottom < content.y &&
+                control.top > frame.top + caption.top &&
+                qAbs(control.right - (frame.left + caption.left -
+                     qRound(8 * window.devicePixelRatioF()))) <= 2;
+        };
+        QTRY_VERIFY(aligned());
+        QVERIFY(!(GetWindowLongPtr(buttonHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST));
+        QVERIFY(GetWindowLongPtr(buttonHwnd, GWL_EXSTYLE) & WS_EX_LAYERED);
+        const auto rendered = button->grab().toImage();
+        QVERIFY(rendered.hasAlphaChannel());
+        QCOMPARE(rendered.pixelColor(0, 0).alpha(), 0);
+        QCOMPARE(rendered.pixelColor(rendered.width() - 1, rendered.height() - 1).alpha(), 0);
+        QCOMPARE(GetWindow(buttonHwnd, GW_OWNER), ownerHwnd);
+        POINT previousCursor{};
+        GetCursorPos(&previousCursor);
+        const auto restoreCursor = qScopeGuard([&] {
+            SetCursorPos(previousCursor.x, previousCursor.y);
+        });
+        RECT control{};
+        GetWindowRect(buttonHwnd, &control);
+        SetCursorPos((control.left + control.right) / 2,
+                     (control.top + control.bottom) / 2);
+        INPUT input[2]{};
+        input[0].type = input[1].type = INPUT_MOUSE;
+        input[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+        input[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        QCOMPARE(SendInput(2, input, sizeof(INPUT)), UINT(2));
+        QTRY_VERIFY(!language.isChinese());
+        QCOMPARE(button->text(), QStringLiteral("EN"));
+        QVERIFY(!button->isChecked());
+        QTRY_COMPARE_WITH_TIMEOUT(button->property("languageProgress").toReal(), 0.0, 1500);
+        QVERIFY(edit->hasFocus());
+        QCOMPARE(window.frameGeometry(), frameBefore);
+
+        window.showMaximized();
+        QTRY_VERIFY(window.isMaximized());
+        QTRY_VERIFY(aligned());
+        window.showNormal();
+        QTRY_VERIFY(!window.isMaximized());
+        QTRY_VERIFY(aligned());
+        window.move(window.pos() + QPoint(20, 20));
+        QTRY_VERIFY(aligned());
+        window.showMinimized();
+        QTRY_VERIFY(!button->isVisible());
+        window.showNormal();
+        window.raise();
+        window.activateWindow();
+        QTRY_VERIFY(button->isVisible());
+        QTRY_VERIFY(aligned());
+
+        QDialog modal(&window);
+        modal.setWindowModality(Qt::WindowModal);
+        modal.show();
+        QTRY_VERIFY(!button->isVisible());
+        modal.close();
+        window.raise();
+        window.activateWindow();
+        QTRY_VERIFY(button->isVisible());
+        const auto screenshotRoot = qEnvironmentVariable("PICOATE_LANGUAGE_SCREENSHOTS");
+        if (!screenshotRoot.isEmpty()) {
+            QTest::qWait(300);
+            const auto frame = window.frameGeometry();
+            QVERIFY(window.screen()->grabWindow(0, frame.x(), frame.y(), frame.width(),
+                                                qMin(110, frame.height()))
+                        .save(QDir(screenshotRoot).filePath(QStringLiteral("caption-language-en.png"))));
+            button->click();
+            QTRY_COMPARE(button->property("languageProgress").toReal(), 1.0);
+            QTest::qWait(300);
+            QVERIFY(window.screen()->grabWindow(0, frame.x(), frame.y(), frame.width(),
+                                                qMin(110, frame.height()))
+                        .save(QDir(screenshotRoot).filePath(QStringLiteral("caption-language-zh.png"))));
+        }
+        window.hide();
+        QTRY_VERIFY(!button->isVisible());
+    }
+#endif
+}
+
+void MainWindowLifecycleTests::uutSlotsSuspendScanner_data()
+{
+    QTest::addColumn<bool>("admin");
+    QTest::addColumn<bool>("accept");
+    QTest::addColumn<bool>("scannerVisible");
+    QTest::newRow("admin-apply") << true << true << true;
+    QTest::newRow("admin-cancel") << true << false << true;
+    QTest::newRow("admin-hidden") << true << false << false;
+    QTest::newRow("test-apply") << false << true << true;
+    QTest::newRow("test-cancel") << false << false << true;
+    QTest::newRow("test-hidden") << false << false << false;
+}
+
+void MainWindowLifecycleTests::uutSlotsSuspendScanner()
+{
+    QFETCH(bool, admin);
+    QFETCH(bool, accept);
+    QFETCH(bool, scannerVisible);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("sequence.json"));
+    QVERIFY(QFile::copy(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+                       + QStringLiteral("/examples/simple_sequence.json"), sequencePath));
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(R"({"stationId":"SLOT-SCAN","uutCount":4,"scanDialogEnabled":true,"devices":[]})");
+    station.close();
+    std::unique_ptr<QMainWindow> window;
+    if (admin) {
+        auto main = std::make_unique<MainWindow>();
+        QVERIFY(main->openSequenceFile(sequencePath));
+        QVERIFY(main->openStationFile(stationPath));
+        window = std::move(main);
+    } else {
+        StartupSelection selection;
+        selection.mode = UiMode::Test;
+        selection.sequencePath = sequencePath;
+        selection.stationPath = stationPath;
+        selection.scanDialogEnabled = true;
+        window = std::make_unique<ProductionWindow>(selection);
+    }
+    window->show();
+    auto* viewModel = window->findChild<ExecutionViewModel*>();
+    auto* scan = window->findChild<ScanDialog*>();
+    auto* count = window->findChild<QSpinBox*>(admin ? QStringLiteral("uutCountSpinBox")
+                                       : QStringLiteral("productionUutCountSpinBox"));
+    auto* slotAction = window->findChild<QAction*>(admin ? QStringLiteral("adminUutSlotsAction")
+                                       : QStringLiteral("productionUutSlotsAction"));
+    QVERIFY(viewModel && scan && count && slotAction);
+    count->setValue(4);
+    if (admin) viewModel->compile();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 5000);
+    QTest::qWait(80);
+    scan->setSlotCount(4);
+    scan->showForNextScan();
+    auto* edit = scan->findChild<QLineEdit*>(QStringLiteral("barcodeEdit"));
+    QVERIFY(edit);
+    edit->setText(QStringLiteral("SN-0001"));
+    QVERIFY(QMetaObject::invokeMethod(scan, "submitBarcode"));
+    QCOMPARE(scan->barcodes().at(0), QStringLiteral("SN-0001"));
+    edit->setText(QStringLiteral("SN-DRAFT"));
+    if (!scannerVisible) scan->hide();
+    bool opened = false;
+    bool stayedHidden = false;
+    QTimer::singleShot(0, window.get(), [&] {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        opened = dialog->objectName() == QStringLiteral("uutSlotConfigurationDialog");
+        stayedHidden = !scan->isVisible();
+        // A late ready notification must not surface the scanner over Slots.
+        if (!admin && scannerVisible) viewModel->stateChanged(UiRunState::Ready);
+        QTimer::singleShot(50, dialog, [&, dialog] {
+            stayedHidden = stayedHidden && !scan->isVisible();
+            if (accept) {
+                auto* third = dialog->findChild<QPushButton*>(QStringLiteral("uutSlotToggle3"));
+                if (third) third->click();
+                dialog->accept();
+            } else {
+                dialog->reject();
+            }
+        });
+    });
+    slotAction->trigger();
+    QVERIFY(opened);
+    QVERIFY(stayedHidden);
+    QCOMPARE(scan->isVisible(), scannerVisible);
+    QCOMPARE(scan->barcodes().at(0), QStringLiteral("SN-0001"));
+    QCOMPARE(scan->slotEnabledStates(), (QVector<bool>{true, true, !accept, true}));
+    if (!accept) QCOMPARE(edit->text(), QStringLiteral("SN-DRAFT"));
+    if (scannerVisible) QTRY_VERIFY(edit->hasFocus());
+    scan->hide();
+    QVERIFY(window->close());
+}
+
+void MainWindowLifecycleTests::languageSwitchPreservesAdminDraftAndSelection()
+{
+    auto& language = UiLanguage::instance();
+    QVERIFY(language.setChinese(false, false));
+    const auto restore = qScopeGuard([&] {
+        language.setChinese(false, false);
+        QSettings().remove(QStringLiteral("ui/language"));
+    });
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR)
+                                    + QStringLiteral("/examples/simple_sequence.json")));
+    window.resize(1366, 768);
+    window.show();
+    auto* button = window.findChild<QToolButton*>(QStringLiteral("uiLanguageButton"));
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
+    auto* tree = window.findChild<QTreeView*>(QStringLiteral("sequenceTreeView"));
+    auto* document = window.findChild<SequenceDocument*>();
+    auto* model = window.findChild<SequenceTreeModel*>();
+    auto* editor = window.findChild<StepPropertyEditor*>();
+    auto* compile = window.findChild<QAction*>(QStringLiteral("compileAction"));
+    QVERIFY(button && tabs && tree && document && model && editor && compile);
+    tabs->setCurrentIndex(1);
+    const auto parent = model->index(1, 0);
+    const QPersistentModelIndex step = model->index(0, 0, parent);
+    tree->expand(parent);
+    tree->setCurrentIndex(step);
+    auto* name = editor->findChild<QLineEdit*>(QStringLiteral("propertyNameEdit"));
+    QVERIFY(name);
+    name->setText(QStringLiteral("Waiting"));
+    name->setCursorPosition(3);
+    QVERIFY(editor->hasPendingChanges());
+    const auto before = document->snapshot();
+    QSignalSpy changed(document, &SequenceDocument::documentChanged);
+    QSignalSpy reset(model, &QAbstractItemModel::modelReset);
+    button->click();
+    QTRY_COMPARE(tabs->tabText(0), QString::fromUtf8("运行界面"));
+    QCOMPARE(tabs->tabText(1), QString::fromUtf8("流程配置"));
+    QCOMPARE(tabs->tabText(2), QString::fromUtf8("工站配置"));
+    QCOMPARE(compile->text(), QString::fromUtf8("编译"));
+    QCOMPARE(tabs->currentIndex(), 1);
+    QCOMPARE(tree->currentIndex(), QModelIndex(step));
+    QVERIFY(tree->isExpanded(parent));
+    QCOMPARE(name->text(), QStringLiteral("Waiting"));
+    QCOMPARE(name->cursorPosition(), 3);
+    QVERIFY(editor->hasPendingChanges());
+    QCOMPARE(document->snapshot().json, before.json);
+    QCOMPARE(document->revision(), before.revision);
+    QCOMPARE(changed.count(), 0);
+    QCOMPARE(reset.count(), 0);
+    QCOMPARE(QSettings().value(QStringLiteral("ui/language")).toString(), QStringLiteral("zh_CN"));
+    QVERIFY(language.setChinese(false, false));
+    language.restorePreference();
+    QVERIFY(language.isChinese());
+    const auto screenshotRoot = qEnvironmentVariable("PICOATE_LANGUAGE_SCREENSHOTS");
+    if (!screenshotRoot.isEmpty()) {
+        QVERIFY(window.grab().save(QDir(screenshotRoot).filePath(QStringLiteral("admin-flow-zh.png"))));
+    }
+    button->click();
+    QTRY_COMPARE(tabs->tabText(0), QStringLiteral("Run Test"));
+    QCOMPARE(compile->text(), QStringLiteral("Compile"));
+    QCOMPARE(name->text(), QStringLiteral("Waiting"));
+    QCOMPARE(document->snapshot().json, before.json);
+    QCOMPARE(reset.count(), 0);
+}
+
+void MainWindowLifecycleTests::languageSwitchPreservesRunningProductionAndScanner()
+{
+    auto& language = UiLanguage::instance();
+    QVERIFY(language.setChinese(false, false));
+    const auto restore = qScopeGuard([&] {
+        language.setChinese(false, false);
+        QSettings().remove(QStringLiteral("ui/language"));
+    });
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("language_sequence.json"));
+    QFile sequence(sequencePath);
+    QVERIFY(sequence.open(QIODevice::WriteOnly));
+    sequence.write(R"({"id":"language","name":"Language","version":"1","groups":[
+        {"id":"setup","kind":"setup","steps":[]},
+        {"id":"main","kind":"main","steps":[{"id":"wait","name":"Waiting","kind":"wait","ms":1500}]},
+        {"id":"cleanup","kind":"cleanup","steps":[]}]})");
+    sequence.close();
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(R"({"stationId":"LANG-STATION","model":"M2","scanDialogEnabled":false,"devices":[]})");
+    station.close();
+    StartupSelection selection;
+    selection.mode = UiMode::Test;
+    selection.sequencePath = sequencePath;
+    selection.stationPath = stationPath;
+    selection.scanDialogEnabled = false;
+    ProductionWindow window(selection);
+    window.resize(1366, 768);
+    window.show();
+    auto* viewModel = window.findChild<ExecutionViewModel*>();
+    auto* button = window.findChild<QToolButton*>(QStringLiteral("uiLanguageButton"));
+    auto* count = window.findChild<QSpinBox*>(QStringLiteral("productionUutCountSpinBox"));
+    auto* start = window.findChild<QAction*>(QStringLiteral("productionStartAction"));
+    auto* overall = window.findChild<QLabel*>(QStringLiteral("productionOverallResult"));
+    auto* scan = window.findChild<ScanDialog*>();
+    QVERIFY(viewModel && button && count && start && overall && scan);
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 5000);
+    count->setValue(2);
+    auto* edit = scan->findChild<QLineEdit*>();
+    QVERIFY(edit);
+    edit->setText(QStringLiteral("BTSN00001234"));
+    edit->setSelection(4, 3);
+    button->click();
+    QTRY_COMPARE(start->text(), QString::fromUtf8("开始测试"));
+    QCOMPARE(edit->text(), QStringLiteral("BTSN00001234"));
+    QCOMPARE(edit->selectedText(), QStringLiteral("000"));
+    QVERIFY(!scan->isVisible());
+    QCOMPARE(uiText("address"), QStringLiteral("address"));
+    QCOMPARE(uiText("canId"), QStringLiteral("canId"));
+    QCOMPARE(uiText("frame"), QStringLiteral("frame"));
+    start->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Running, 3000);
+    button->click();
+    QTRY_COMPARE(overall->text(), QStringLiteral("RUNNING"));
+    QCOMPARE(viewModel->state(), UiRunState::Running);
+    button->click();
+    QTRY_COMPARE(overall->text(), QString::fromUtf8("运行中"));
+    const auto screenshotRoot = qEnvironmentVariable("PICOATE_LANGUAGE_SCREENSHOTS");
+    if (!screenshotRoot.isEmpty()) {
+        QTest::qWait(60);
+        QVERIFY(window.grab().save(QDir(screenshotRoot).filePath(QStringLiteral("test-overview-zh.png"))));
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Completed, 5000);
+    QTRY_COMPARE(overall->text(), QString::fromUtf8("成功"));
+    const auto report = PicoATE::Core::serializeExecutionReport(viewModel->report());
+    QCOMPARE(viewModel->report().uuts.size(), 2);
+    button->click();
+    QTRY_COMPARE(overall->text(), QStringLiteral("PASS"));
+    QCOMPARE(PicoATE::Core::serializeExecutionReport(viewModel->report()), report);
+    QVERIFY(window.close());
+}
+
+void MainWindowLifecycleTests::languageSwitchRefreshesModelsWithoutChangingReports()
+{
+    using namespace PicoATE::Core;
+    auto& language = UiLanguage::instance();
+    QVERIFY(language.setChinese(false, false));
+    const auto restore = qScopeGuard([&] { language.setChinese(false, false); });
+    DiagnosticModel diagnostics;
+    DeviceStatusModel devices;
+    AttemptModel attempts;
+    MeasurementModel measurements;
+    HistoryModel history;
+    const QVector<QAbstractItemModel*> tables = {&diagnostics, &devices, &attempts, &measurements, &history};
+    const QStringList english = {QStringLiteral("Severity"), QStringLiteral("Device"),
+        QStringLiteral("Attempt"), QStringLiteral("Measurement"), QStringLiteral("Saved")};
+    const QStringList chinese = {QString::fromUtf8("级别"), QString::fromUtf8("设备"),
+        QString::fromUtf8("执行次数"), QString::fromUtf8("测量项"), QString::fromUtf8("保存时间")};
+    for (int i = 0; i < tables.size(); ++i) {
+        QCOMPARE(tables[i]->headerData(0, Qt::Horizontal).toString(), english[i]);
+    }
+    StepReport step;
+    step.stepId = QStringLiteral("canId");
+    step.nodePath = QStringLiteral("main.canId");
+    step.displayName = QStringLiteral("Waiting");
+    step.phase = ExecutionPhase::Main;
+    step.state = ActivationState::Passed;
+    step.outcome = NodeOutcome::Passed;
+    UutReport uut;
+    uut.uutId = QStringLiteral("UUT-1");
+    uut.steps = {step};
+    ExecutionReport report;
+    report.uuts = {uut};
+    report.completed = true;
+    report.state = ExecutionState::Completed;
+    UutStepModel model;
+    model.setReport(report);
+    const QPersistentModelIndex index = model.indexForStep(uut.uutId, step.nodePath);
+    QVERIFY(index.isValid());
+    QSignalSpy reset(&model, &QAbstractItemModel::modelReset);
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    QTemporaryDir directory;
+    const auto englishCsv = directory.filePath(QStringLiteral("en.csv"));
+    const auto chineseCsv = directory.filePath(QStringLiteral("zh.csv"));
+    QVERIFY(ReportExporter::saveCsv(englishCsv, report).success);
+    QVERIFY(language.setChinese(true, false));
+    for (int i = 0; i < tables.size(); ++i) {
+        QCOMPARE(tables[i]->headerData(0, Qt::Horizontal).toString(), chinese[i]);
+    }
+    QCOMPARE(index.data().toString(), QStringLiteral("Waiting"));
+    QCOMPARE(QModelIndex(index).siblingAtColumn(UutStepModel::OutcomeColumn).data().toString(), QString::fromUtf8("成功"));
+    QCOMPARE(reset.count(), 0);
+    QVERIFY(changed.count() > 0);
+    QVERIFY(ReportExporter::saveCsv(chineseCsv, report).success);
+    QFile before(englishCsv), after(chineseCsv);
+    QVERIFY(before.open(QIODevice::ReadOnly) && after.open(QIODevice::ReadOnly));
+    QCOMPARE(before.readAll(), after.readAll());
+    QVERIFY(language.setChinese(false, false));
+    for (int i = 0; i < tables.size(); ++i) {
+        QCOMPARE(tables[i]->headerData(0, Qt::Horizontal).toString(), english[i]);
+    }
+    QCOMPARE(QModelIndex(index).siblingAtColumn(UutStepModel::OutcomeColumn).data().toString(), QStringLiteral("Passed"));
+    QCOMPARE(reset.count(), 0);
+}
+
+void MainWindowLifecycleTests::languageSwitchPreservesPromptInputAndResponse()
+{
+    using namespace PicoATE::Core;
+    auto& language = UiLanguage::instance();
+    QVERIFY(language.setChinese(false, false));
+    const auto restore = qScopeGuard([&] { language.setChinese(false, false); });
+    MultiUutOverviewWidget overview;
+    UutOverviewModel model;
+    RunRequest::UutInput uut;
+    uut.uutId = QStringLiteral("UUT-1");
+    model.resetForRun({}, {uut});
+    overview.setModel(&model);
+    overview.resize(940, 640);
+    overview.show();
+    RuntimeEvent prompt;
+    prompt.kind = RuntimeEventKind::OperatorPromptRequested;
+    prompt.uutId = uut.uutId;
+    prompt.details = {
+        {QStringLiteral("promptInstanceId"), QStringLiteral("language-input")},
+        {QStringLiteral("mode"), QStringLiteral("input")},
+        {QStringLiteral("inputType"), QStringLiteral("number")},
+        {QStringLiteral("message"), QStringLiteral("Waiting")},
+        {QStringLiteral("executionScope"), QStringLiteral("OncePerBatch")}
+    };
+    QVERIFY(overview.presentOperatorPrompt(prompt, {}));
+    auto* overlay = overview.findChild<QWidget*>(QStringLiteral("multiUutOverviewPromptOverlay"));
+    QVERIFY(overlay);
+    auto* input = overlay->findChild<QLineEdit*>(QStringLiteral("uutOverviewPromptInput"));
+    auto* submit = overlay->findChild<QPushButton*>(QStringLiteral("uutOverviewPromptConfirmButton"));
+    auto* error = overlay->findChild<QLabel*>(QStringLiteral("uutOverviewPromptInputError"));
+    auto* context = overlay->findChild<QLabel*>(QStringLiteral("uutOverviewPromptContext"));
+    QVERIFY(input && submit && error && context);
+    input->setText(QStringLiteral("invalid"));
+    submit->click();
+    QVERIFY(!error->isHidden());
+    QVERIFY(language.setChinese(true, false));
+    QCoreApplication::processEvents();
+    QTRY_COMPARE(submit->text(), QString::fromUtf8("提交"));
+    QCOMPARE(error->text(), uiText("Enter a valid number."));
+    QCOMPARE(context->text(), uiText("ALL %1 UUTs  |  ONCE PER BATCH").arg(1));
+    QCOMPARE(overlay->findChild<QLabel*>(QStringLiteral("uutOverviewPromptMessage"))->text(),
+             QStringLiteral("Waiting"));
+    input->setText(QStringLiteral("12.345"));
+    input->setSelection(3, 2);
+    QVERIFY(language.setChinese(false, false));
+    QCoreApplication::processEvents();
+    QTRY_COMPARE(submit->text(), QStringLiteral("Submit"));
+    QCOMPARE(input->text(), QStringLiteral("12.345"));
+    QCOMPARE(input->selectedText(), QStringLiteral("34"));
+    QCOMPARE(context->text(), QStringLiteral("ALL 1 UUTs  |  ONCE PER BATCH"));
+    QSignalSpy response(&overview, &MultiUutOverviewWidget::operatorPromptResponseRequested);
+    submit->click();
+    QCOMPARE(response.count(), 1);
+    const auto arguments = response.takeFirst();
+    QCOMPARE(arguments[0].toString(), QStringLiteral("language-input"));
+    QCOMPARE(qvariant_cast<OperatorPromptResponse>(arguments[1]), OperatorPromptResponse::Submitted);
+    QCOMPARE(arguments[2].toMap().value(QStringLiteral("value")).toDouble(), 12.345);
+    QVERIFY(overview.setOperatorPromptResponsePending(QStringLiteral("language-input"), true));
+    QVERIFY(language.setChinese(true, false));
+    QTRY_COMPARE(overlay->findChild<QLabel*>(QStringLiteral("uutOverviewPromptStatus"))->text(),
+                 uiText("Recording operator response..."));
+    QVERIFY(!submit->isEnabled());
+    QVERIFY(overview.hasOperatorPrompt(QStringLiteral("language-input")));
+    overview.closeOperatorPrompt(QStringLiteral("language-input"));
+}
+
+void MainWindowLifecycleTests::languageSwitchPreservesSlotChoices()
+{
+    auto& language = UiLanguage::instance();
+    QVERIFY(language.setChinese(false, false));
+    const auto restore = qScopeGuard([&] { language.setChinese(false, false); });
+    bool verified = false;
+    QTimer::singleShot(0, [&] {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        QVERIFY(dialog);
+        auto closeOnFailure = qScopeGuard([dialog] { dialog->reject(); });
+        auto* third = dialog->findChild<QPushButton*>(QStringLiteral("uutSlotToggle3"));
+        auto* summary = dialog->findChild<QLabel*>(QStringLiteral("uutSlotConfigurationSummary"));
+        auto* buttons = dialog->findChild<QDialogButtonBox*>(QStringLiteral("uutSlotConfigurationButtons"));
+        QVERIFY(third && summary && buttons);
+        third->click();
+        QVERIFY(!third->isChecked());
+        QVERIFY(language.setChinese(true, false));
+        QCOMPARE(dialog->windowTitle(), QString::fromUtf8("工位设置"));
+        QCOMPARE(summary->text(), uiText("%1 / %2 active").arg(3).arg(4));
+        QCOMPARE(buttons->button(QDialogButtonBox::Ok)->text(), QString::fromUtf8("应用"));
+        QVERIFY(language.setChinese(false, false));
+        QCOMPARE(summary->text(), QStringLiteral("3 / 4 active"));
+        QVERIFY(!third->isChecked());
+        verified = true;
+        closeOnFailure.dismiss();
+        dialog->accept();
+    });
+    const auto states = showUutSlotConfigurationDialog(nullptr, 4, {true, true, true, true});
+    QVERIFY(verified && states.has_value());
+    QCOMPARE(*states, QVector<bool>({true, true, false, true}));
 }
 
 void MainWindowLifecycleTests::wrapsSelectedStepsInTestItemFromToolbar()

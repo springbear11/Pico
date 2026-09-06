@@ -1,3 +1,4 @@
+#include "UiLanguage.h"
 #include "StationDeviceModel.h"
 
 #include <QBrush>
@@ -87,6 +88,7 @@ StationDeviceModel::StationDeviceModel(StationDocument* document, QObject* paren
     : QAbstractTableModel(parent)
     , m_document(document)
 {
+    enableUiModelTranslation(this, false);
     Q_ASSERT(m_document);
     connect(m_document, &StationDocument::documentChanged,
             this, &StationDeviceModel::rebuild);
@@ -243,13 +245,13 @@ QVariant StationDeviceModel::headerData(int section,
         return {};
     }
     switch (section) {
-    case DeviceIdColumn: return tr("Logical ID");
-    case DeviceTypeColumn: return tr("Type");
-    case DriverIdColumn: return tr("Driver / Model");
-    case AddressColumn: return tr("Resource");
-    case LifetimeColumn: return tr("Lifetime");
-    case ConnectionColumn: return tr("Connection");
-    case EnabledColumn: return tr("Enable");
+    case DeviceIdColumn: return uiText("Logical ID");
+    case DeviceTypeColumn: return uiText("Type");
+    case DriverIdColumn: return uiText("Driver / Model");
+    case AddressColumn: return uiText("Resource");
+    case LifetimeColumn: return uiText("Lifetime");
+    case ConnectionColumn: return uiText("Connection");
+    case EnabledColumn: return uiText("Enable");
     default: return {};
     }
 }

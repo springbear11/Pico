@@ -1,3 +1,4 @@
+#include "UiLanguage.h"
 #include "SequenceTreeModel.h"
 
 #include "FunctionIconProvider.h"
@@ -205,6 +206,7 @@ SequenceTreeModel::SequenceTreeModel(SequenceDocument* document, QObject* parent
     : QAbstractItemModel(parent)
     , m_document(document)
 {
+    enableUiModelTranslation(this, false);
     Q_ASSERT(m_document);
     connect(m_document, &SequenceDocument::documentChanged,
             this, &SequenceTreeModel::refreshFromDocument);
@@ -523,21 +525,21 @@ QVariant SequenceTreeModel::headerData(int section,
 
     switch (section) {
     case NameColumn:
-        return tr("Name");
+        return uiText("Name");
     case KindColumn:
-        return tr("Kind");
+        return uiText("Kind");
     case IdColumn:
-        return tr("ID / Key");
+        return uiText("ID / Key");
     case ResourceRegionColumn:
         return {};
     case BreakpointColumn:
-        return tr("BP");
+        return uiText("BP");
     case EnabledColumn:
-        return tr("Enabled");
+        return uiText("Enabled");
     case InspectionColumn:
         return m_inspectionField.isEmpty()
-            ? tr("Inspect")
-            : tr("Inspect: %1").arg(
+            ? uiText("Inspect")
+            : uiText("Inspect: %1").arg(
                   m_inspectionDisplayName.isEmpty()
                       ? m_inspectionField
                       : m_inspectionDisplayName);

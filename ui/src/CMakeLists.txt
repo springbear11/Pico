@@ -44,6 +44,20 @@ add_library(PicoATEUiRuntime STATIC
     StartupSupport.h
     UiExecutionTypes.cpp
     UiExecutionTypes.h
+    UiLanguage.cpp
+    UiLanguage.h
+)
+
+find_package(Qt6 REQUIRED COMPONENTS LinguistTools)
+qt_add_lrelease(
+    TS_FILES translations/picoate_zh_CN.ts
+    QM_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/translations"
+    QM_FILES_OUTPUT_VARIABLE PICOATE_UI_QM_FILES
+)
+qt_add_resources(PicoATEUiRuntime picoate_ui_translations
+    PREFIX "/i18n"
+    BASE "${CMAKE_CURRENT_BINARY_DIR}/translations"
+    FILES ${PICOATE_UI_QM_FILES}
 )
 
 target_include_directories(PicoATEUiRuntime
@@ -96,6 +110,10 @@ qt_add_executable(PicoATEUi WIN32
     Main.cpp
     MainWindow.cpp
     MainWindow.h
+    UiTextBinding.cpp
+    UiTextBinding.h
+    TitleBarLanguageButton.cpp
+    TitleBarLanguageButton.h
     MultiUutOverviewWidget.cpp
     MultiUutOverviewWidget.h
     OnOffControl.cpp
@@ -151,6 +169,10 @@ target_compile_definitions(PicoATEUi
         PICOATE_PROJECT_DIR="${PICOATE_ROOT_DIR}"
         PICOATE_VERSION="${PROJECT_VERSION}"
 )
+
+if(WIN32)
+    target_link_libraries(PicoATEUi PRIVATE dwmapi)
+endif()
 
 add_custom_command(TARGET PicoATEUi POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory

@@ -1,3 +1,4 @@
+#include "UiTextBinding.h"
 #include "MainWindow.h"
 
 #include "ApplicationDiagnostics.h"
@@ -114,6 +115,9 @@
 #include <limits>
 #include <utility>
 
+using PicoATE::Ui::uiText;
+using PicoATE::Ui::uiStateText;
+
 namespace PicoATE::Ui {
 
 namespace {
@@ -186,7 +190,7 @@ public:
         : QDialog(parent)
     {
         setObjectName(QStringLiteral("registerWorkbookDialog"));
-        setWindowTitle(tr("Import Register Workbook"));
+        setWindowTitle(uiText("Import Register Workbook"));
         setModal(true);
         setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
         setAttribute(Qt::WA_TranslucentBackground);
@@ -209,13 +213,13 @@ public:
         cardLayout->setContentsMargins(24, 22, 24, 24);
         cardLayout->setSpacing(12);
 
-        auto* title = new QLabel(tr("Import Register Workbook"), card);
+        auto* title = makeUiLabel("Import Register Workbook", card);
         title->setObjectName(QStringLiteral("registerWorkbookTitle"));
         title->setAlignment(Qt::AlignCenter);
         cardLayout->addWidget(title);
 
         auto* hint = new QLabel(
-            tr("Select a workbook from the project register folder"), card);
+            uiText("Select a workbook from the project register folder"), card);
         hint->setObjectName(QStringLiteral("registerWorkbookHint"));
         hint->setAlignment(Qt::AlignCenter);
         cardLayout->addWidget(hint);
@@ -265,13 +269,13 @@ public:
         buttonRow->setContentsMargins(0, 0, 0, 0);
         buttonRow->setSpacing(10);
         buttonRow->addStretch();
-        auto* importButton = new QPushButton(tr("Import"), card);
+        auto* importButton = makeUiButton("Import", card);
         importButton->setObjectName(
             QStringLiteral("registerWorkbookImportButton"));
         importButton->setDefault(true);
         importButton->setFixedSize(112, 40);
         buttonRow->addWidget(importButton);
-        auto* cancelButton = new QPushButton(tr("Cancel"), card);
+        auto* cancelButton = makeUiButton("Cancel", card);
         cancelButton->setObjectName(
             QStringLiteral("registerWorkbookCancelButton"));
         cancelButton->setFixedSize(112, 40);
@@ -904,16 +908,16 @@ QString adminRunStateText(UiRunState state)
     case UiRunState::Pausing:
     case UiRunState::Paused:
     case UiRunState::Stopping:
-        return QObject::tr("RUNNING");
+        return uiText("RUNNING");
     case UiRunState::Completed:
-        return QObject::tr("PASS");
+        return uiText("PASS");
     case UiRunState::Failed:
     case UiRunState::CompileFailed:
-        return QObject::tr("FAIL");
+        return uiText("FAIL");
     case UiRunState::Ready:
-        return QObject::tr("READY");
+        return uiText("READY");
     default:
-        return QObject::tr("WAITING");
+        return uiText("WAITING");
     }
 }
 
@@ -939,17 +943,17 @@ QString adminRunStateStyle(UiRunState state)
 QString adminOverviewStateText(UiRunState state, bool stopRequested)
 {
     switch (state) {
-    case UiRunState::Starting: return QObject::tr("STARTING");
-    case UiRunState::Running: return QObject::tr("TESTING");
-    case UiRunState::Pausing: return QObject::tr("PAUSING");
-    case UiRunState::Paused: return QObject::tr("PAUSED");
-    case UiRunState::Stopping: return QObject::tr("STOPPING");
+    case UiRunState::Starting: return uiText("STARTING");
+    case UiRunState::Running: return uiText("TESTING");
+    case UiRunState::Pausing: return uiText("PAUSING");
+    case UiRunState::Paused: return uiText("PAUSED");
+    case UiRunState::Stopping: return uiText("STOPPING");
     case UiRunState::Completed:
     case UiRunState::Failed:
-        return stopRequested ? QObject::tr("STOPPED")
-                             : QObject::tr("COMPLETED");
-    case UiRunState::Ready: return QObject::tr("READY");
-    default: return QObject::tr("WAITING");
+        return stopRequested ? uiText("STOPPED")
+                             : uiText("COMPLETED");
+    case UiRunState::Ready: return uiText("READY");
+    default: return uiText("WAITING");
     }
 }
 
@@ -1053,15 +1057,15 @@ public:
         auto* stateLayout = new QVBoxLayout(stateArea);
         stateLayout->setContentsMargins(0, 0, 0, 0);
         stateLayout->setSpacing(3);
-        auto* stateCaption = new QLabel(tr("BATCH STATUS"), stateArea);
+        auto* stateCaption = makeUiLabel("BATCH STATUS", stateArea);
         stateCaption->setObjectName(
             QStringLiteral("adminOverviewSummaryCaption"));
-        m_stateLabel = new QLabel(tr("WAITING"), stateArea);
+        m_stateLabel = new QLabel(uiText("WAITING"), stateArea);
         m_stateLabel->setObjectName(
             QStringLiteral("adminOverviewSummaryState"));
         m_stateLabel->setAlignment(Qt::AlignCenter);
         m_stateLabel->setMinimumWidth(112);
-        m_elapsedLabel = new QLabel(tr("Elapsed 00:00.000"), stateArea);
+        m_elapsedLabel = new QLabel(uiText("Elapsed 00:00.000"), stateArea);
         m_elapsedLabel->setObjectName(
             QStringLiteral("adminOverviewSummaryElapsed"));
         stateLayout->addWidget(stateCaption);
@@ -1080,22 +1084,22 @@ public:
         stationLayout->setHorizontalSpacing(18);
         stationLayout->setVerticalSpacing(1);
         m_stationLabel = addField(
-            stationLayout, 0, 0, tr("STATION"),
+            stationLayout, 0, 0, "STATION",
             QStringLiteral("adminOverviewStationValue"));
         m_modelLabel = addField(
-            stationLayout, 0, 1, tr("MODEL"),
+            stationLayout, 0, 1, "MODEL",
             QStringLiteral("adminOverviewModelValue"));
         m_customerIdLabel = addField(
-            stationLayout, 0, 2, tr("CUSTOMER ID"),
+            stationLayout, 0, 2, "CUSTOMER ID",
             QStringLiteral("adminOverviewCustomerIdValue"));
         m_orderLabel = addField(
-            stationLayout, 2, 0, tr("ORDER"),
+            stationLayout, 2, 0, "ORDER",
             QStringLiteral("adminOverviewOrderValue"));
         m_testerLabel = addField(
-            stationLayout, 2, 1, tr("TESTER"),
+            stationLayout, 2, 1, "TESTER",
             QStringLiteral("adminOverviewTesterValue"));
         m_jigLabel = addField(
-            stationLayout, 2, 2, tr("JIG NO."),
+            stationLayout, 2, 2, "JIG NO.",
             QStringLiteral("adminOverviewJigValue"));
         for (int column = 0; column < 3; ++column) {
             stationLayout->setColumnStretch(column, 1);
@@ -1112,14 +1116,14 @@ public:
         countLayout->setHorizontalSpacing(14);
         countLayout->setVerticalSpacing(2);
         m_runningLabel = addField(
-            countLayout, 0, 0, tr("RUNNING"),
+            countLayout, 0, 0, "RUNNING",
             QStringLiteral("adminOverviewRunningValue"));
-        m_passLabel = addField(countLayout, 0, 1, tr("PASS"),
+        m_passLabel = addField(countLayout, 0, 1, "PASS",
                                QStringLiteral("adminOverviewPassValue"));
-        m_failLabel = addField(countLayout, 0, 2, tr("FAIL"),
+        m_failLabel = addField(countLayout, 0, 2, "FAIL",
                                QStringLiteral("adminOverviewFailValue"));
         m_waitingLabel = addField(
-            countLayout, 0, 3, tr("WAITING"),
+            countLayout, 0, 3, "WAITING",
             QStringLiteral("adminOverviewWaitingValue"));
         m_runningLabel->setProperty("summaryTone", "running");
         m_passLabel->setProperty("summaryTone", "pass");
@@ -1148,7 +1152,8 @@ public:
     {
         const int stateValue = static_cast<int>(state);
         if (m_lastState == stateValue &&
-            m_lastStopRequested == stopRequested) {
+            m_lastStopRequested == stopRequested &&
+            m_stateLabel->text() == adminOverviewStateText(state, stopRequested)) {
             return;
         }
         m_lastState = stateValue;
@@ -1197,7 +1202,7 @@ public:
 
     void setElapsedText(const QString& elapsed)
     {
-        const auto text = tr("Elapsed %1").arg(elapsed);
+        const auto text = uiText("Elapsed %1").arg(elapsed);
         if (m_elapsedLabel->text() != text) {
             m_elapsedLabel->setText(text);
         }
@@ -1248,12 +1253,12 @@ private:
     }
 
     QLabel* addField(QGridLayout* layout, int row, int column,
-                     const QString& caption, const QString& objectName)
+                     const char* caption, const QString& objectName)
     {
-        auto* captionLabel = new QLabel(caption, this);
+        auto* captionLabel = makeUiLabel(caption, this);
         captionLabel->setObjectName(
             QStringLiteral("adminOverviewSummaryCaption"));
-        auto* valueLabel = new QLabel(tr("--"), this);
+        auto* valueLabel = new QLabel(uiText("--"), this);
         valueLabel->setObjectName(objectName);
         valueLabel->setProperty("overviewSummaryValue", true);
         valueLabel->setMinimumWidth(52);
@@ -1266,7 +1271,7 @@ private:
 
     void setFieldText(QLabel* label, const QString& text)
     {
-        const auto display = text.trimmed().isEmpty() ? tr("--")
+        const auto display = text.trimmed().isEmpty() ? uiText("--")
                                                        : text.trimmed();
         if (label->text() != display) {
             label->setText(display);
@@ -1303,7 +1308,7 @@ private:
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(tr("PicoATE Runner"));
+    setWindowTitle(uiText("PicoATE Runner"));
     resize(1180, 760);
     setMinimumSize(900, 600);
 
@@ -1345,6 +1350,9 @@ MainWindow::MainWindow(QWidget* parent)
     buildActions();
     serviceAdminStartupAnimation();
     buildLayout();
+    installLanguageButton(this);
+    connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
+            this, &MainWindow::retranslateUi, Qt::QueuedConnection);
     m_operatorPromptPresenter->setOverviewHost(
         ShowAdminUutOverview ? m_adminUutOverview : nullptr);
     serviceAdminStartupAnimation();
@@ -1429,11 +1437,11 @@ MainWindow::MainWindow(QWidget* parent)
                     }
                     const auto diagnostics = m_viewModel->diagnostics();
                     const auto summary = diagnostics.isEmpty()
-                        ? tr("Compile failed. Open Diagnostics for details.")
-                        : tr("Compile failed: %1 [%2]")
+                        ? uiText("Compile failed. Open Diagnostics for details.")
+                        : uiText("Compile failed: %1 [%2]")
                               .arg(diagnostics.first().message,
                                    diagnostics.first().path.isEmpty()
-                                       ? tr("root")
+                                       ? uiText("root")
                                        : diagnostics.first().path);
                     statusBar()->showMessage(summary, 15000);
                     if (routedCompile) {
@@ -1442,7 +1450,7 @@ MainWindow::MainWindow(QWidget* parent)
                         });
                     }
                 } else {
-                    statusBar()->showMessage(uiRunStateName(state));
+                    statusBar()->showMessage(uiStateText(uiRunStateName(state)));
                 }
             });
     connect(m_scanDialog,
@@ -1461,7 +1469,7 @@ MainWindow::MainWindow(QWidget* parent)
                 m_stationDeviceModel->markConnectionTesting(deviceId);
                 updateStationEditor();
                 statusBar()->showMessage(
-                    tr("Testing connection: %1").arg(deviceId));
+                    uiText("Testing connection: %1").arg(deviceId));
             });
     connect(m_viewModel,
             &ExecutionViewModel::deviceConnectionTestFinished,
@@ -1470,9 +1478,9 @@ MainWindow::MainWindow(QWidget* parent)
                 m_stationDeviceModel->setConnectionTestResult(result);
                 updateStationEditor();
                 const auto summary = result.passed()
-                    ? tr("Connection passed: %1 (%2 ms)")
+                    ? uiText("Connection passed: %1 (%2 ms)")
                           .arg(result.deviceId).arg(result.elapsedMs)
-                    : tr("Connection %1: %2 - %3")
+                    : uiText("Connection %1: %2 - %3")
                           .arg(deviceConnectionTestOutcomeName(result.outcome),
                                result.deviceId,
                                result.errorMessage);
@@ -1535,16 +1543,16 @@ MainWindow::MainWindow(QWidget* parent)
                 m_sequenceTreeView->doItemsLayout();
                 m_sequenceTreeView->viewport()->update();
                 if (fieldPath.isEmpty()) {
-                    statusBar()->showMessage(tr("Field inspection cleared"),
+                    statusBar()->showMessage(uiText("Field inspection cleared"),
                                              3000);
                 } else if (matches > 0) {
                     statusBar()->showMessage(
-                        tr("Showing '%1' on %2 Flow item(s)")
+                        uiText("Showing '%1' on %2 Flow item(s)")
                             .arg(displayName).arg(matches),
                         5000);
                 } else {
                     statusBar()->showMessage(
-                        tr("'%1' is not stored on any Flow item")
+                        uiText("'%1' is not stored on any Flow item")
                             .arg(displayName),
                         7000);
                 }
@@ -1794,14 +1802,14 @@ MainWindow::MainWindow(QWidget* parent)
                     if (m_sequenceDocument->isModified()) {
                         QMessageBox prompt(
                             QMessageBox::Question,
-                            tr("Unsaved Flow Draft"),
-                            tr("The Flow draft has changes. Save them to %1 before leaving?")
+                            uiText("Unsaved Flow Draft"),
+                            uiText("The Flow draft has changes. Save them to %1 before leaving?")
                                 .arg(m_sequenceDocument->displayName()),
                             QMessageBox::NoButton,
                             this);
                         auto* saveButton = prompt.addButton(QMessageBox::Save);
                         auto* keepDraftButton = prompt.addButton(
-                            tr("Keep Draft"), QMessageBox::AcceptRole);
+                            uiText("Keep Draft"), QMessageBox::AcceptRole);
                         auto* cancelButton = prompt.addButton(QMessageBox::Cancel);
                         prompt.setDefaultButton(
                             qobject_cast<QPushButton*>(saveButton));
@@ -1846,7 +1854,7 @@ MainWindow::MainWindow(QWidget* parent)
     updateWindowTitle();
 
     updateCommandState();
-    statusBar()->showMessage(uiRunStateName(m_viewModel->state()));
+    statusBar()->showMessage(uiStateText(uiRunStateName(m_viewModel->state())));
     serviceAdminStartupAnimation();
 }
 
@@ -1899,7 +1907,7 @@ void MainWindow::initializeNewProjectTemplate(const QString& projectRootPath)
         StartupSupport::newProjectStationTemplate());
     if (!sequenceReady || !stationReady) {
         m_newProjectTemplate = false;
-        statusBar()->showMessage(tr("Failed to initialize the new project template"),
+        statusBar()->showMessage(uiText("Failed to initialize the new project template"),
                                  5000);
         return;
     }
@@ -1916,9 +1924,9 @@ void MainWindow::initializeNewProjectTemplate(const QString& projectRootPath)
     updateStationEditor();
     updateAdminStationSummary();
     if (m_adminSequenceLabel) {
-        m_adminSequenceLabel->setText(tr("New Project Template"));
+        m_adminSequenceLabel->setText(uiText("New Project Template"));
         m_adminSequenceLabel->setToolTip(
-            tr("The first save creates sequence.json and StationSystem.json together"));
+            uiText("The first save creates sequence.json and StationSystem.json together"));
     }
     updateWindowTitle();
     updateCommandState();
@@ -1928,7 +1936,7 @@ void MainWindow::createNewProject()
 {
     if (!m_viewModel || !m_viewModel->canChangeSources()) {
         statusBar()->showMessage(
-            tr("Wait for the current operation to finish before creating a project"),
+            uiText("Wait for the current operation to finish before creating a project"),
             4000);
         return;
     }
@@ -1944,7 +1952,7 @@ void MainWindow::createNewProject()
             m_workspaceTabs->indexOf(m_flowEditorPage);
     }
     statusBar()->showMessage(
-        tr("New project template created. The first save will ask for a project name."),
+        uiText("New project template created. The first save will ask for a project name."),
         5000);
 }
 
@@ -2014,7 +2022,7 @@ void MainWindow::openProductRoutingConfiguration()
 {
     if (!m_viewModel || !m_viewModel->canChangeSources()) {
         statusBar()->showMessage(
-            tr("Wait for the current operation to finish before editing routes"),
+            uiText("Wait for the current operation to finish before editing routes"),
             4000);
         return;
     }
@@ -2026,7 +2034,7 @@ void MainWindow::openProductRoutingConfiguration()
     ProductRoutingDialog dialog(effectiveProductRoutingPath(), this);
     connect(&dialog, &ProductRoutingDialog::routingSaved, this, [this] {
         statusBar()->showMessage(
-            tr("Product routing saved. Changes apply to the next scan."), 5000);
+            uiText("Product routing saved. Changes apply to the next scan."), 5000);
     });
     dialog.exec();
     if (restoreScanner) {
@@ -2060,7 +2068,7 @@ void MainWindow::initializeAdminWorkspace()
     }
     m_adminWorkspaceInitialized = true;
     m_adminWorkspaceInitializing = true;
-    showStartupOverlay(tr("Loading plugins and preparing the Admin workspace..."));
+    showStartupOverlay(uiText("Loading plugins and preparing the Admin workspace..."));
     QTimer::singleShot(0, this, [this] { scanPlugins(false); });
 }
 
@@ -2288,8 +2296,8 @@ bool MainWindow::maybeSaveSequence()
 
     const auto choice = QMessageBox::warning(
         this,
-        tr("Unsaved Sequence"),
-        tr("Save changes to %1?").arg(m_sequenceDocument->displayName()),
+        uiText("Unsaved Sequence"),
+        uiText("Save changes to %1?").arg(m_sequenceDocument->displayName()),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
         QMessageBox::Save);
     if (choice == QMessageBox::Cancel) {
@@ -2315,7 +2323,7 @@ bool MainWindow::confirmAndSaveSequence()
     const bool hasPendingStep = m_stepPropertyEditor &&
                                 m_stepPropertyEditor->hasPendingChanges();
     if (!hasPendingStep && !m_sequenceDocument->isModified()) {
-        statusBar()->showMessage(tr("No sequence changes to save"), 3000);
+        statusBar()->showMessage(uiText("No sequence changes to save"), 3000);
         return true;
     }
 
@@ -2345,13 +2353,13 @@ bool MainWindow::saveSequence()
 
     QString errorMessage;
     if (!m_sequenceDocument->save(&errorMessage)) {
-        QMessageBox::critical(this, tr("Save Sequence"), errorMessage);
+        QMessageBox::critical(this, uiText("Save Sequence"), errorMessage);
         return false;
     }
     synchronizeSequenceSnapshot();
     ApplicationDiagnostics::recordAction(
         QStringLiteral("SEQUENCE_SAVED"), m_sequenceDocument->filePath());
-    statusBar()->showMessage(tr("Sequence saved"), 3000);
+    statusBar()->showMessage(uiText("Sequence saved"), 3000);
     updateWindowTitle();
     updateCommandState();
     return true;
@@ -2375,8 +2383,8 @@ bool MainWindow::saveNewProjectAs()
     const auto rootPath = newProjectRootPath();
     if (!QDir(rootPath).exists() && !QDir().mkpath(rootPath)) {
         QMessageBox::critical(
-            this, tr("Save New Project As"),
-            tr("Cannot create the projects directory: %1").arg(rootPath));
+            this, uiText("Save New Project As"),
+            uiText("Cannot create the projects directory: %1").arg(rootPath));
         return false;
     }
 
@@ -2393,8 +2401,8 @@ bool MainWindow::saveNewProjectAs()
         bool accepted = false;
         const auto candidate = QInputDialog::getText(
             this,
-            tr("Save New Project As"),
-            tr("Project name (saved under %1):").arg(rootPath),
+            uiText("Save New Project As"),
+            uiText("Project name (saved under %1):").arg(rootPath),
             QLineEdit::Normal,
             suggestedName,
             &accepted).trimmed();
@@ -2427,8 +2435,8 @@ bool MainWindow::saveNewProjectAs()
             reservedNames.contains(reservedToken);
         if (invalid) {
             QMessageBox::warning(
-                this, tr("Invalid Project Name"),
-                tr("Use a normal folder name without reserved names or these characters: < > : \" / \\ | ? *"));
+                this, uiText("Invalid Project Name"),
+                uiText("Use a normal folder name without reserved names or these characters: < > : \" / \\ | ? *"));
             suggestedName = candidate;
             continue;
         }
@@ -2440,16 +2448,16 @@ bool MainWindow::saveNewProjectAs()
                 QDir::AllEntries | QDir::Hidden | QDir::System |
                     QDir::NoDotAndDotDot).isEmpty()) {
             QMessageBox::warning(
-                this, tr("Project Already Exists"),
-                tr("The project folder is not empty: %1\nChoose another project name.")
+                this, uiText("Project Already Exists"),
+                uiText("The project folder is not empty: %1\nChoose another project name.")
                     .arg(candidatePath));
             suggestedName = candidate;
             continue;
         }
         if (!candidateDirectory.exists() && !QDir().mkpath(candidatePath)) {
             QMessageBox::critical(
-                this, tr("Save New Project As"),
-                tr("Cannot create the project folder: %1").arg(candidatePath));
+                this, uiText("Save New Project As"),
+                uiText("Cannot create the project folder: %1").arg(candidatePath));
             return false;
         }
         projectName = candidate;
@@ -2485,8 +2493,8 @@ bool MainWindow::saveNewProjectAs()
         QFile::remove(sequencePath);
         QFile::remove(stationPath);
         QMessageBox::critical(
-            this, tr("Save New Project As"),
-            tr("Failed to create the project files: %1").arg(errorMessage));
+            this, uiText("Save New Project As"),
+            uiText("Failed to create the project files: %1").arg(errorMessage));
         return false;
     }
     const auto imagesPath = QDir(projectPath).filePath(QStringLiteral("images"));
@@ -2494,8 +2502,8 @@ bool MainWindow::saveNewProjectAs()
         QFile::remove(sequencePath);
         QFile::remove(stationPath);
         QMessageBox::critical(
-            this, tr("Save New Project As"),
-            tr("Cannot create the project images folder: %1").arg(imagesPath));
+            this, uiText("Save New Project As"),
+            uiText("Cannot create the project images folder: %1").arg(imagesPath));
         return false;
     }
     const auto registerPath = QDir(projectPath).filePath(RegisterDirectoryName);
@@ -2503,16 +2511,16 @@ bool MainWindow::saveNewProjectAs()
         QFile::remove(sequencePath);
         QFile::remove(stationPath);
         QMessageBox::critical(
-            this, tr("Save New Project As"),
-            tr("Cannot create the project register folder: %1")
+            this, uiText("Save New Project As"),
+            uiText("Cannot create the project register folder: %1")
                 .arg(registerPath));
         return false;
     }
     if (!m_sequenceDocument->load(sequencePath) ||
         !m_stationDocument->load(stationPath)) {
         QMessageBox::critical(
-            this, tr("Save New Project As"),
-            tr("The project files were written but could not be reloaded."));
+            this, uiText("Save New Project As"),
+            uiText("The project files were written but could not be reloaded."));
         return false;
     }
 
@@ -2535,7 +2543,7 @@ bool MainWindow::saveNewProjectAs()
     ApplicationDiagnostics::recordAction(
         QStringLiteral("NEW_PROJECT_SAVED"), projectPath);
     statusBar()->showMessage(
-        tr("Project '%1' saved").arg(projectName), 5000);
+        uiText("Project '%1' saved").arg(projectName), 5000);
     updateWindowTitle();
     updateCommandState();
     return true;
@@ -2556,23 +2564,23 @@ bool MainWindow::saveSequenceAs()
 
     const auto path = QFileDialog::getSaveFileName(
         this,
-        tr("Save Sequence As"),
+        uiText("Save Sequence As"),
         m_sequenceDocument->filePath(),
-        tr("Sequence JSON (*.json);;All Files (*.*)"));
+        uiText("Sequence JSON (*.json);;All Files (*.*)"));
     if (path.isEmpty()) {
         return false;
     }
 
     QString errorMessage;
     if (!m_sequenceDocument->saveAs(path, &errorMessage)) {
-        QMessageBox::critical(this, tr("Save Sequence"), errorMessage);
+        QMessageBox::critical(this, uiText("Save Sequence"), errorMessage);
         return false;
     }
     addRecentSequence(path);
     synchronizeSequenceSnapshot();
     ApplicationDiagnostics::recordAction(
         QStringLiteral("SEQUENCE_SAVED_AS"), path);
-    statusBar()->showMessage(tr("Sequence saved"), 3000);
+    statusBar()->showMessage(uiText("Sequence saved"), 3000);
     updateWindowTitle();
     updateCommandState();
     return true;
@@ -2588,8 +2596,8 @@ bool MainWindow::maybeSaveStation()
     }
     const auto choice = QMessageBox::warning(
         this,
-        tr("Unsaved Station"),
-        tr("Save changes to %1?").arg(m_stationDocument->displayName()),
+        uiText("Unsaved Station"),
+        uiText("Save changes to %1?").arg(m_stationDocument->displayName()),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
         QMessageBox::Save);
     if (choice == QMessageBox::Cancel) {
@@ -2614,13 +2622,13 @@ bool MainWindow::confirmAndSaveStation()
         (m_stationPropertyEditor && m_stationPropertyEditor->hasPendingChanges()) ||
         (m_stationSettingsEditor && m_stationSettingsEditor->hasPendingChanges());
     if (!m_stationDocument->isModified() && !hasPending) {
-        statusBar()->showMessage(tr("No Station changes to save"), 3000);
+        statusBar()->showMessage(uiText("No Station changes to save"), 3000);
         return true;
     }
     const auto choice = QMessageBox::question(
         this,
-        tr("Save Station"),
-        tr("Save the current Station changes to %1?")
+        uiText("Save Station"),
+        uiText("Save the current Station changes to %1?")
             .arg(m_stationDocument->displayName()),
         QMessageBox::Save | QMessageBox::Cancel,
         QMessageBox::Save);
@@ -2640,8 +2648,8 @@ bool MainWindow::resolvePendingStationChanges()
     }
     const auto choice = QMessageBox::warning(
         this,
-        tr("Unsaved Station Changes"),
-        tr("Station Config has unsaved property changes."),
+        uiText("Unsaved Station Changes"),
+        uiText("Station Config has unsaved property changes."),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
         QMessageBox::Save);
     if (choice == QMessageBox::Cancel) {
@@ -2662,8 +2670,8 @@ bool MainWindow::resolvePendingStationDeviceChanges()
     }
     const auto choice = QMessageBox::warning(
         this,
-        tr("Unsaved Device Changes"),
-        tr("The current Station device has unsaved changes."),
+        uiText("Unsaved Device Changes"),
+        uiText("The current Station device has unsaved changes."),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
         QMessageBox::Save);
     if (choice == QMessageBox::Cancel) {
@@ -2709,7 +2717,7 @@ void MainWindow::saveActiveDocument()
             (m_stationSettingsEditor &&
              m_stationSettingsEditor->hasPendingChanges());
         if (!hasChanges) {
-            statusBar()->showMessage(tr("No project changes to save"), 3000);
+            statusBar()->showMessage(uiText("No project changes to save"), 3000);
             return;
         }
         saveNewProjectAs();
@@ -2750,10 +2758,10 @@ bool MainWindow::saveStation()
     }
     QString errorMessage;
     if (!m_stationDocument->save(&errorMessage)) {
-        QMessageBox::critical(this, tr("Save Station"), errorMessage);
+        QMessageBox::critical(this, uiText("Save Station"), errorMessage);
         return false;
     }
-    statusBar()->showMessage(tr("Station saved"), 3000);
+    statusBar()->showMessage(uiText("Station saved"), 3000);
     updateWindowTitle();
     updateCommandState();
     return true;
@@ -2772,20 +2780,20 @@ bool MainWindow::saveStationAs()
     }
     const auto path = QFileDialog::getSaveFileName(
         this,
-        tr("Save Station As"),
+        uiText("Save Station As"),
         m_stationDocument->filePath(),
-        tr("Station JSON (*.json);;All Files (*.*)"));
+        uiText("Station JSON (*.json);;All Files (*.*)"));
     if (path.isEmpty()) {
         return false;
     }
     QString errorMessage;
     if (!m_stationDocument->saveAs(path, &errorMessage)) {
-        QMessageBox::critical(this, tr("Save Station"), errorMessage);
+        QMessageBox::critical(this, uiText("Save Station"), errorMessage);
         return false;
     }
     addRecentStation(path);
     synchronizeStationSnapshot();
-    statusBar()->showMessage(tr("Station saved"), 3000);
+    statusBar()->showMessage(uiText("Station saved"), 3000);
     updateWindowTitle();
     updateCommandState();
     return true;
@@ -2794,7 +2802,7 @@ bool MainWindow::saveStationAs()
 void MainWindow::editSequenceVariables()
 {
     if (!m_sequenceDocument || m_sequenceDocument->isEmpty()) {
-        statusBar()->showMessage(tr("Open a sequence before editing variables"), 3000);
+        statusBar()->showMessage(uiText("Open a sequence before editing variables"), 3000);
         return;
     }
     if (!resolvePendingStepChanges()) {
@@ -2806,10 +2814,10 @@ void MainWindow::editSequenceVariables()
         return;
     }
     if (!m_sequenceDocument->setSequenceVariables(dialog.variables())) {
-        statusBar()->showMessage(tr("Failed to update sequence variables"), 4000);
+        statusBar()->showMessage(uiText("Failed to update sequence variables"), 4000);
         return;
     }
-    statusBar()->showMessage(tr("Sequence variable draft updated; press Ctrl+S to save"),
+    statusBar()->showMessage(uiText("Sequence variable draft updated; press Ctrl+S to save"),
                              4000);
 }
 
@@ -2827,8 +2835,8 @@ void MainWindow::importRegisterConfiguration()
     if (sequencePath.isEmpty()) {
         QMessageBox::information(
             this,
-            tr("Save Project First"),
-            tr("Save the new project before importing its Register workbook."));
+            uiText("Save Project First"),
+            uiText("Save the new project before importing its Register workbook."));
         return;
     }
 
@@ -2851,8 +2859,8 @@ void MainWindow::importRegisterConfiguration()
     if (registerDirectory.isEmpty()) {
         QMessageBox::warning(
             this,
-            tr("Register Workbook Not Found"),
-            tr("Create a lowercase register folder beside the project files and place an .xlsx or .xlsm workbook in it."));
+            uiText("Register Workbook Not Found"),
+            uiText("Create a lowercase register folder beside the project files and place an .xlsx or .xlsm workbook in it."));
         return;
     }
 
@@ -2871,8 +2879,8 @@ void MainWindow::importRegisterConfiguration()
     if (workbooks.isEmpty()) {
         QMessageBox::warning(
             this,
-            tr("Register Workbook Not Found"),
-            tr("No .xlsx or .xlsm workbook was found in:\n%1")
+            uiText("Register Workbook Not Found"),
+            uiText("No .xlsx or .xlsm workbook was found in:\n%1")
                 .arg(QDir::toNativeSeparators(registerDirectory)));
         return;
     }
@@ -2916,8 +2924,8 @@ void MainWindow::importRegisterConfiguration()
         bool accepted = false;
         deviceId = QInputDialog::getItem(
             this,
-            tr("Register Target Device"),
-            tr("Modbus device"),
+            uiText("Register Target Device"),
+            uiText("Modbus device"),
             modbusDeviceIds,
             0,
             false,
@@ -2931,8 +2939,8 @@ void MainWindow::importRegisterConfiguration()
     if (importerPath.isEmpty()) {
         QMessageBox::critical(
             this,
-            tr("Register Importer Missing"),
-            tr("PicoATE.RegisterImporter.exe is not available beside PicoATE.UI.exe."));
+            uiText("Register Importer Missing"),
+            uiText("PicoATE.RegisterImporter.exe is not available beside PicoATE.UI.exe."));
         return;
     }
 
@@ -2966,8 +2974,8 @@ void MainWindow::importRegisterConfiguration()
         if (failedToStart) {
             QMessageBox::critical(
                 this,
-                tr("Register Import Failed"),
-                tr("Unable to start the register importer: %1").arg(processError));
+                uiText("Register Import Failed"),
+                uiText("Unable to start the register importer: %1").arg(processError));
             updateCommandState();
             return;
         }
@@ -2979,8 +2987,8 @@ void MainWindow::importRegisterConfiguration()
             !responseDocument.isObject()) {
             QMessageBox::critical(
                 this,
-                tr("Register Import Failed"),
-                tr("The register importer returned an invalid response.%1")
+                uiText("Register Import Failed"),
+                uiText("The register importer returned an invalid response.%1")
                     .arg(standardError.isEmpty()
                              ? QString{}
                              : QStringLiteral("\n\n") + standardError));
@@ -3006,9 +3014,9 @@ void MainWindow::importRegisterConfiguration()
             }
             QMessageBox::warning(
                 this,
-                tr("Register Import Failed"),
+                uiText("Register Import Failed"),
                 messages.isEmpty()
-                    ? tr("The register table could not be converted.")
+                    ? uiText("The register table could not be converted.")
                     : messages.join(QLatin1Char('\n')));
             updateCommandState();
             return;
@@ -3020,8 +3028,8 @@ void MainWindow::importRegisterConfiguration()
             m_sequenceDocument->revision() != capturedRevision) {
             QMessageBox::information(
                 this,
-                tr("Flow Changed"),
-                tr("The Flow changed while the workbook was being converted. Import again to avoid overwriting newer edits."));
+                uiText("Flow Changed"),
+                uiText("The Flow changed while the workbook was being converted. Import again to avoid overwriting newer edits."));
             updateCommandState();
             return;
         }
@@ -3035,9 +3043,9 @@ void MainWindow::importRegisterConfiguration()
                 &errorMessage)) {
             QMessageBox::warning(
                 this,
-                tr("Register Import Failed"),
+                uiText("Register Import Failed"),
                 errorMessage.isEmpty()
-                    ? tr("The generated TestItem could not be inserted into Main.")
+                    ? uiText("The generated TestItem could not be inserted into Main.")
                     : errorMessage);
             updateCommandState();
             return;
@@ -3066,7 +3074,7 @@ void MainWindow::importRegisterConfiguration()
                 value.toObject().value(QStringLiteral("message")).toString());
         }
         const auto summary =
-            tr("Imported %1 register parameter(s) from %2. Press Ctrl+S to save.")
+            uiText("Imported %1 register parameter(s) from %2. Press Ctrl+S to save.")
                 .arg(response.value(QStringLiteral("parameterCount")).toInt())
                 .arg(QFileInfo(response.value(QStringLiteral("workbook")).toString())
                          .fileName());
@@ -3074,7 +3082,7 @@ void MainWindow::importRegisterConfiguration()
         if (!warningMessages.isEmpty()) {
             QMessageBox::information(
                 this,
-                tr("Register Import Warnings"),
+                uiText("Register Import Warnings"),
                 summary + QStringLiteral("\n\n") +
                     warningMessages.join(QLatin1Char('\n')));
         }
@@ -3092,7 +3100,7 @@ void MainWindow::importRegisterConfiguration()
     if (m_importRegisterConfigAction) {
         m_importRegisterConfigAction->setEnabled(false);
     }
-    statusBar()->showMessage(tr("Importing register workbook..."));
+    statusBar()->showMessage(uiText("Importing register workbook..."));
     process->start();
 }
 
@@ -3161,8 +3169,8 @@ void MainWindow::setSelectedSequenceStepsEnabled(bool enabled)
     const auto paths = selectedSequenceStepPaths();
     if (!m_sequenceDocument->setStepsEnabled(paths, enabled)) {
         statusBar()->showMessage(
-            enabled ? tr("Selected steps are already enabled")
-                    : tr("Selected steps are already disabled"),
+            enabled ? uiText("Selected steps are already enabled")
+                    : uiText("Selected steps are already disabled"),
             3000);
     }
 }
@@ -3175,10 +3183,10 @@ void MainWindow::copySequenceSteps()
     }
     m_sequenceClipboard = m_sequenceDocument->copiedSteps(paths);
     if (m_sequenceClipboard.isEmpty()) {
-        statusBar()->showMessage(tr("Unable to copy selected steps"), 4000);
+        statusBar()->showMessage(uiText("Unable to copy selected steps"), 4000);
     } else {
         statusBar()->showMessage(
-            tr("Copied %1 item(s)").arg(m_sequenceClipboard.size()), 2500);
+            uiText("Copied %1 item(s)").arg(m_sequenceClipboard.size()), 2500);
     }
     updateCommandState();
 }
@@ -3204,7 +3212,7 @@ void MainWindow::pasteSequenceSteps()
     if (!m_sequenceDocument->pasteSteps(
             parentPath, row, m_sequenceClipboard, &pastedPaths) ||
         pastedPaths.isEmpty()) {
-        statusBar()->showMessage(tr("Unable to paste copied steps here"), 4000);
+        statusBar()->showMessage(uiText("Unable to paste copied steps here"), 4000);
         return;
     }
 
@@ -3227,7 +3235,7 @@ void MainWindow::pasteSequenceSteps()
             current, QAbstractItemView::PositionAtCenter);
     }
     statusBar()->showMessage(
-        tr("Pasted %1 item(s)").arg(pastedPaths.size()), 2500);
+        uiText("Pasted %1 item(s)").arg(pastedPaths.size()), 2500);
 }
 
 QVector<SequenceItemPath> MainWindow::selectedSequenceStepPaths() const
@@ -3258,7 +3266,7 @@ void MainWindow::wrapSelectedStepsInTestItem()
     SequenceItemPath testItemPath;
     if (!m_sequenceDocument->wrapStepsInTestItem(paths, &testItemPath)) {
         statusBar()->showMessage(
-            tr("Select one or more contiguous steps under the same parent"),
+            uiText("Select one or more contiguous steps under the same parent"),
             4000);
         return;
     }
@@ -3279,7 +3287,7 @@ void MainWindow::placeResourceRegionBoundary()
 {
     if (!resolvePendingStepChanges()) {
         statusBar()->showMessage(
-            tr("Fix the current Step parameters before placing LOCK or UNLOCK"),
+            uiText("Fix the current Step parameters before placing LOCK or UNLOCK"),
             7000);
         return;
     }
@@ -3287,7 +3295,7 @@ void MainWindow::placeResourceRegionBoundary()
         m_sequenceTreeView->currentIndex());
     if (!path.isValid() || path.isGroup() || path.stepIndices.isEmpty()) {
         statusBar()->showMessage(
-            tr("Select a Step for LOCK or UNLOCK"), 5000);
+            uiText("Select a Step for LOCK or UNLOCK"), 5000);
         return;
     }
 
@@ -3306,7 +3314,7 @@ void MainWindow::placeResourceRegionBoundary()
             return;
         }
         statusBar()->showMessage(
-            tr("LOCK and its matching UNLOCK were removed"), 5000);
+            uiText("LOCK and its matching UNLOCK were removed"), 5000);
         updateCommandState();
         return;
     }
@@ -3316,7 +3324,7 @@ void MainWindow::placeResourceRegionBoundary()
             return;
         }
         statusBar()->showMessage(
-            tr("UNLOCK removed; the LOCK is waiting for a new end point"),
+            uiText("UNLOCK removed; the LOCK is waiting for a new end point"),
             6000);
         updateCommandState();
         return;
@@ -3326,7 +3334,7 @@ void MainWindow::placeResourceRegionBoundary()
                                      .toString();
     if (!currentRegionId.isEmpty() && !completesSingleItem) {
         statusBar()->showMessage(
-            tr("This row is already inside a LOCK/UNLOCK interval"), 6000);
+            uiText("This row is already inside a LOCK/UNLOCK interval"), 6000);
         return;
     }
 
@@ -3347,7 +3355,7 @@ void MainWindow::placeResourceRegionBoundary()
                 return;
             }
             statusBar()->showMessage(
-                tr("Hardware selection cancelled; LOCK and UNLOCK were removed"),
+                uiText("Hardware selection cancelled; LOCK and UNLOCK were removed"),
                 6000);
             updateCommandState();
             return;
@@ -3368,10 +3376,10 @@ void MainWindow::placeResourceRegionBoundary()
     }
     statusBar()->showMessage(
         placedEntry
-            ? tr("LOCK placed; click this row again for one item, or select a later sibling for a range")
+            ? uiText("LOCK placed; click this row again for one item, or select a later sibling for a range")
             : (completesSingleItem
-                   ? tr("Single-item lock placed; resources release when this item completes")
-                   : tr("UNLOCK placed; the locked interval is complete")),
+                   ? uiText("Single-item lock placed; resources release when this item completes")
+                   : uiText("UNLOCK placed; the locked interval is complete")),
         6000);
     updateCommandState();
 }
@@ -3399,14 +3407,14 @@ bool MainWindow::chooseResourceRegionResources(const QString& regionId,
     if (devices.isEmpty()) {
         QMessageBox::information(
             this,
-            tr("Select Locked Hardware"),
-            tr("No configured Station hardware is available. Configure and enable a device in Station Config first."));
+            uiText("Select Locked Hardware"),
+            uiText("No configured Station hardware is available. Configure and enable a device in Station Config first."));
         return false;
     }
 
     QDialog dialog(this);
     dialog.setObjectName(QStringLiteral("resourceRegionResourceDialog"));
-    dialog.setWindowTitle(tr("Select Locked Hardware"));
+    dialog.setWindowTitle(uiText("Select Locked Hardware"));
     dialog.resize(620, 390);
     dialog.setMinimumSize(520, 330);
     dialog.setStyleSheet(QStringLiteral(R"(
@@ -3438,11 +3446,11 @@ bool MainWindow::chooseResourceRegionResources(const QString& regionId,
     auto* layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(18, 16, 18, 14);
     layout->setSpacing(8);
-    auto* title = new QLabel(tr("Hardware held by this interval"), &dialog);
+    auto* title = new QLabel(uiText("Hardware held by this interval"), &dialog);
     title->setObjectName(QStringLiteral("resourceRegionTitle"));
     layout->addWidget(title);
     auto* hint = new QLabel(
-        tr("Other UUTs wait until UNLOCK. Select one or more physical devices."),
+        uiText("Other UUTs wait until UNLOCK. Select one or more physical devices."),
         &dialog);
     hint->setObjectName(QStringLiteral("resourceRegionHint"));
     hint->setWordWrap(true);
@@ -3504,7 +3512,7 @@ bool MainWindow::chooseResourceRegionResources(const QString& regionId,
     buttons->setObjectName(QStringLiteral("resourceRegionResourceButtons"));
     auto* ok = buttons->button(QDialogButtonBox::Ok);
     ok->setObjectName(QStringLiteral("resourceRegionConfirmButton"));
-    ok->setText(tr("Use Selected"));
+    ok->setText(uiText("Use Selected"));
     const auto updateSelection = [resourceButtons, ok, selectionCount] {
         int checkedCount = 0;
         for (const auto* card : resourceButtons) {
@@ -3513,8 +3521,8 @@ bool MainWindow::chooseResourceRegionResources(const QString& regionId,
         ok->setEnabled(checkedCount > 0);
         selectionCount->setText(
             checkedCount == 1
-                ? QObject::tr("1 device selected")
-                : QObject::tr("%1 devices selected").arg(checkedCount));
+                ? uiText("1 device selected")
+                : uiText("%1 devices selected").arg(checkedCount));
     };
     for (auto* card : resourceButtons) {
         connect(card, &QToolButton::toggled, &dialog,
@@ -3794,7 +3802,7 @@ void MainWindow::runScannedUuts(const QStringList& serialNumbers)
     }
     if (m_autoRouteBySn) {
         if (!m_viewModel || !m_viewModel->canChangeSources()) {
-            showProductRoutingError(tr("A test is already running"));
+            showProductRoutingError(uiText("A test is already running"));
             return;
         }
 
@@ -3822,7 +3830,7 @@ void MainWindow::runScannedUuts(const QStringList& serialNumbers)
         }
         if (sns.size() != batch.uutCount) {
             showProductRoutingError(
-                tr("Project %1 provides %2 UUT slot(s), but the scanner has %3")
+                uiText("Project %1 provides %2 UUT slot(s), but the scanner has %3")
                     .arg(batch.route.projectName)
                     .arg(batch.uutCount)
                     .arg(sns.size()));
@@ -3858,19 +3866,19 @@ void MainWindow::runScannedUuts(const QStringList& serialNumbers)
         if (currentStationPath != route.stationPath &&
             !openStationFile(route.stationPath)) {
             showProductRoutingError(
-                tr("Cannot open routed Station: %1").arg(route.stationPath));
+                uiText("Cannot open routed Station: %1").arg(route.stationPath));
             return;
         }
         if (currentPath != route.sequencePath) {
             if (!openSequenceFile(route.sequencePath)) {
                 showProductRoutingError(
-                    tr("Cannot open routed Sequence: %1").arg(route.sequencePath));
+                    uiText("Cannot open routed Sequence: %1").arg(route.sequencePath));
                 return;
             }
         }
         m_pendingRoutedSerialNumbers = sns;
         statusBar()->showMessage(
-            tr("%1 active UUT SN(s) matched %2. Loading project %3...")
+            uiText("%1 active UUT SN(s) matched %2. Loading project %3...")
                 .arg(enabledUutSlotCount(m_adminUutSlotEnabled))
                 .arg(route.routeName, route.projectName));
         compileSequence();
@@ -3884,16 +3892,26 @@ void MainWindow::configureAdminUutSlots()
 {
     const int slotCount = m_uutCount ? qMax(1, m_uutCount->value()) : 1;
     synchronizeAdminUutSlotCount(slotCount);
+    const bool restoreScanner = m_scanDialog->isVisible();
+    m_uutSlotDialogOpen = true;
+    m_scanDialog->hide();
     const auto selected = showUutSlotConfigurationDialog(
         this, slotCount, m_adminUutSlotEnabled);
-    if (!selected) {
-        return;
+    if (selected) {
+        m_adminUutSlotEnabled = *selected;
+        m_scanDialog->setSlotCount(slotCount);
+        m_scanDialog->setSlotEnabledStates(m_adminUutSlotEnabled);
+        updateAdminUutSlotAction();
+        updateCompilePreview();
     }
-    m_adminUutSlotEnabled = *selected;
-    m_scanDialog->setSlotCount(slotCount);
-    m_scanDialog->setSlotEnabledStates(m_adminUutSlotEnabled);
-    updateAdminUutSlotAction();
-    updateCompilePreview();
+    m_uutSlotDialogOpen = false;
+    if (restoreScanner) {
+        // Resume the current batch without clearing already scanned SNs.
+        m_scanDialog->show();
+        m_scanDialog->raise();
+        m_scanDialog->activateWindow();
+        m_scanDialog->setFocus(Qt::OtherFocusReason);
+    }
 }
 
 void MainWindow::synchronizeAdminUutSlotCount(int slotCount)
@@ -3918,9 +3936,9 @@ void MainWindow::updateAdminUutSlotAction()
     m_uutSlotsAction->setVisible(
         ShowAdminUutCountControl && slotCount > 1);
     m_uutSlotsAction->setText(
-        tr("UUT Slots %1/%2").arg(activeCount).arg(slotCount));
+        uiText("UUT Slots %1/%2").arg(activeCount).arg(slotCount));
     m_uutSlotsAction->setToolTip(
-        tr("%1 active UUT station(s); physical slot numbers are preserved")
+        uiText("%1 active UUT station(s); physical slot numbers are preserved")
             .arg(activeCount));
 }
 
@@ -3933,7 +3951,7 @@ void MainWindow::startAdminRunWithSerial(const QString& serialNumber)
     }
     if (!m_viewModel || !m_viewModel->canRun()) {
         statusBar()->showMessage(
-            tr("Compile the sequence before starting a test"), 4000);
+            uiText("Compile the sequence before starting a test"), 4000);
         return;
     }
     const int uutCount = m_uutCount
@@ -3959,14 +3977,14 @@ void MainWindow::startAdminRunWithSerial(const QString& serialNumber)
         inputs.cbegin(), inputs.cend(),
         [](const RunRequest::UutInput& input) { return input.enabled; });
     if (active == inputs.cend()) {
-        statusBar()->showMessage(tr("Enable at least one UUT station"), 4000);
+        statusBar()->showMessage(uiText("Enable at least one UUT station"), 4000);
         return;
     }
     m_activeAdminSerialNumber.clear();
     m_activeAdminUutId = active->uutId;
     m_viewModel->setBreakpoints(m_sequenceTreeModel->breakpointSpecs());
     m_sequenceTreeModel->setCurrentDebugNodePath({});
-    m_adminSerialLabel->setText(tr("--"));
+    m_adminSerialLabel->setText(uiText("--"));
     ApplicationDiagnostics::recordAction(
         QStringLiteral("RUN_REQUESTED"),
         QStringLiteral("uutSlots=%1; activeUuts=%2; firstUut=%3")
@@ -3981,7 +3999,7 @@ void MainWindow::startAdminRunWithSerials(const QStringList& serialNumbers)
 {
     if (!m_viewModel || !m_viewModel->canRun() || serialNumbers.isEmpty()) {
         statusBar()->showMessage(
-            tr("Compile the sequence before starting a test"), 4000);
+            uiText("Compile the sequence before starting a test"), 4000);
         return;
     }
 
@@ -4005,7 +4023,7 @@ void MainWindow::startAdminRunWithSerials(const QStringList& serialNumbers)
         inputs.cbegin(), inputs.cend(),
         [](const RunRequest::UutInput& input) { return input.enabled; });
     if (active == inputs.cend()) {
-        statusBar()->showMessage(tr("Enable at least one UUT station"), 4000);
+        statusBar()->showMessage(uiText("Enable at least one UUT station"), 4000);
         return;
     }
     m_activeAdminSerialNumber = active->variables.value(
@@ -4027,12 +4045,12 @@ void MainWindow::startAdminRunWithSerials(const QStringList& serialNumbers)
 void MainWindow::showProductRoutingError(const QString& message)
 {
     const auto text = message.trimmed().isEmpty()
-        ? tr("Product routing failed")
+        ? uiText("Product routing failed")
         : message.trimmed();
     statusBar()->showMessage(text.section(QLatin1Char('\n'), 0, 0), 10000);
     QTimer::singleShot(0, this, [this, text] {
         m_scanDialog->hide();
-        QMessageBox::warning(this, tr("Product routing"), text);
+        QMessageBox::warning(this, uiText("Product routing"), text);
         showStartupScanDialog();
     });
 }
@@ -4067,7 +4085,7 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
         artifactUuts);
     if (!artifact.success) {
         statusBar()->showMessage(
-            tr("Cannot create report files: %1").arg(artifact.errorMessage),
+            uiText("Cannot create report files: %1").arg(artifact.errorMessage),
             10000);
     }
     auto preview = m_adminPreviewReport;
@@ -4119,14 +4137,17 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
         showAdminUutDetails(m_selectedAdminUutId);
     }
     statusBar()->showMessage(
-        tr("Loop run %1 of %2").arg(iteration).arg(totalIterations));
+        uiText("Loop run %1 of %2").arg(iteration).arg(totalIterations));
 }
 
 void MainWindow::toggleScanDialog()
 {
+    if (m_uutSlotDialogOpen) {
+        return;
+    }
     if (m_scanDialog && m_scanDialog->isVisible()) {
         m_scanDialog->cancelCurrentScan();
-        statusBar()->showMessage(tr("Barcode scan cancelled"), 2500);
+        statusBar()->showMessage(uiText("Barcode scan cancelled"), 2500);
         return;
     }
     if (!resolvePendingStepChanges()) {
@@ -4138,8 +4159,8 @@ void MainWindow::toggleScanDialog()
     if (!canScan) {
         statusBar()->showMessage(
             m_autoRouteBySn
-                ? tr("Wait for the current operation to finish before scanning")
-                : tr("Compile the sequence before scanning"),
+                ? uiText("Wait for the current operation to finish before scanning")
+                : uiText("Compile the sequence before scanning"),
             4000);
         return;
     }
@@ -4200,7 +4221,7 @@ void MainWindow::toggleScanDialog()
 void MainWindow::scanPlugins(bool interactive)
 {
     if (m_pluginScanInProgress) {
-        statusBar()->showMessage(tr("Plugin scan is already running"), 3000);
+        statusBar()->showMessage(uiText("Plugin scan is already running"), 3000);
         return;
     }
 
@@ -4208,10 +4229,10 @@ void MainWindow::scanPlugins(bool interactive)
     const auto pluginDirectory = QDir(applicationDirectory).absoluteFilePath(
         QStringLiteral("plugins"));
     if (!QDir().mkpath(pluginDirectory)) {
-        const auto message = tr(
+        const auto message = uiText(
             "Could not create the 'plugins' directory next to PicoATE.UI.exe.");
         if (interactive) {
-            QMessageBox::warning(this, tr("Scan Plugins"), message);
+            QMessageBox::warning(this, uiText("Scan Plugins"), message);
         }
         completeAdminWorkspaceInitialization();
         return;
@@ -4221,7 +4242,7 @@ void MainWindow::scanPlugins(bool interactive)
         loadPluginRegistry();
         if (interactive) {
             statusBar()->showMessage(
-                tr("No PicoATE plugin DLL was found in the plugins directory"),
+                uiText("No PicoATE plugin DLL was found in the plugins directory"),
                 7000);
         }
         completeAdminWorkspaceInitialization();
@@ -4239,9 +4260,9 @@ void MainWindow::scanPlugins(bool interactive)
         // temporarily unavailable. Startup no longer preloads it in the
         // MainWindow constructor.
         loadPluginRegistry();
-        const auto message = tr("No compatible PicoATE.NativeHost.exe was found. Rebuild or redeploy the UI so the Host supports --describe. Plugin DLLs are never loaded directly in the UI process.");
+        const auto message = uiText("No compatible PicoATE.NativeHost.exe was found. Rebuild or redeploy the UI so the Host supports --describe. Plugin DLLs are never loaded directly in the UI process.");
         if (interactive) {
-            QMessageBox::critical(this, tr("Scan Plugins"), message);
+            QMessageBox::critical(this, uiText("Scan Plugins"), message);
         } else {
             statusBar()->showMessage(message, 7000);
         }
@@ -4255,8 +4276,8 @@ void MainWindow::scanPlugins(bool interactive)
     if (m_scanPluginsAction) {
         m_scanPluginsAction->setEnabled(false);
     }
-    showStartupOverlay(tr("Scanning plugin functions..."));
-    statusBar()->showMessage(tr("Scanning plugins..."));
+    showStartupOverlay(uiText("Scanning plugin functions..."));
+    statusBar()->showMessage(uiText("Scanning plugins..."));
     auto result = std::make_shared<PluginScanResult>();
     auto* worker = QThread::create(
         [result, pluginDirectory, nativeHostCandidates, registryPath] {
@@ -4288,13 +4309,13 @@ void MainWindow::scanPlugins(bool interactive)
                     if (interactive) {
                         QMessageBox::information(
                             this,
-                            tr("Scan Plugins"),
-                            tr("Found %1 plugin DLL(s), loaded %2 plugin(s), and updated:\n%3")
+                            uiText("Scan Plugins"),
+                            uiText("Found %1 plugin DLL(s), loaded %2 plugin(s), and updated:\n%3")
                                 .arg(result->discoveredDllCount)
                                 .arg(result->plugins.size())
                                 .arg(registryPath));
                     }
-                    statusBar()->showMessage(tr("Plugin registry updated"), 5000);
+                    statusBar()->showMessage(uiText("Plugin registry updated"), 5000);
                     completeAdminWorkspaceInitialization();
                     worker->deleteLater();
                     return;
@@ -4307,19 +4328,19 @@ void MainWindow::scanPlugins(bool interactive)
                 const int maximumDetails = qMin(8, result->errors.size());
                 for (int index = 0; index < maximumDetails; ++index) {
                     const auto& error = result->errors[index];
-                    details.push_back(tr("%1: %2").arg(error.path, error.message));
+                    details.push_back(uiText("%1: %2").arg(error.path, error.message));
                 }
                 if (interactive) {
                     QMessageBox::warning(
                         this,
-                        tr("Scan Plugins"),
-                        tr("Found %1 DLL(s) and loaded %2 plugin(s).\n%3")
+                        uiText("Scan Plugins"),
+                        uiText("Found %1 DLL(s) and loaded %2 plugin(s).\n%3")
                             .arg(result->discoveredDllCount)
                             .arg(result->plugins.size())
                             .arg(details.join(QLatin1Char('\n'))));
                 }
                 statusBar()->showMessage(
-                    tr("Plugin scan completed with %1 error(s)")
+                    uiText("Plugin scan completed with %1 error(s)")
                         .arg(result->errors.size()),
                     7000);
                 completeAdminWorkspaceInitialization();
@@ -4496,7 +4517,7 @@ void MainWindow::loadPluginRegistry()
     recordStage("bindings");
     if (!registry.ok()) {
         statusBar()->showMessage(
-            tr("Plugin registry contains %1 error(s)").arg(registry.errors.size()),
+            uiText("Plugin registry contains %1 error(s)").arg(registry.errors.size()),
             7000);
     }
     if (m_pluginFunctionView) {
@@ -4643,8 +4664,8 @@ void MainWindow::deleteStationDevice()
         if (stationDeviceType(laterDevice) == deviceType) {
             QMessageBox::information(
                 this,
-                tr("Cannot Delete Device"),
-                tr("%1 is not the last %2 device. Device IDs must remain continuous.")
+                uiText("Cannot Delete Device"),
+                uiText("%1 is not the last %2 device. Device IDs must remain continuous.")
                     .arg(logicalId, deviceType));
             return;
         }
@@ -4675,8 +4696,8 @@ void MainWindow::deleteStationDevice()
     if (!stepNames.isEmpty()) {
         QMessageBox::warning(
             this,
-            tr("Device Is Still Used"),
-            tr("%1 cannot be deleted because the Flow still references it:\n\n%2\n\n"
+            uiText("Device Is Still Used"),
+            uiText("%1 cannot be deleted because the Flow still references it:\n\n%2\n\n"
                "Change or remove these device references first.")
                 .arg(referencedIds.join(QStringLiteral(", ")),
                      stepNames.join(QStringLiteral("\n"))));
@@ -4757,8 +4778,8 @@ void MainWindow::fillPreviousStationDeviceSlot()
     if (targetRow < 0) {
         QMessageBox::information(
             this,
-            tr("No Earlier Empty Slot"),
-            tr("The selected device has no earlier empty logical ID of the same type."));
+            uiText("No Earlier Empty Slot"),
+            uiText("The selected device has no earlier empty logical ID of the same type."));
         return;
     }
 
@@ -4780,8 +4801,8 @@ void MainWindow::fillPreviousStationDeviceSlot()
     if (hasReferences) {
         const auto choice = QMessageBox::question(
             this,
-            tr("Update Flow References"),
-            tr("Move the configuration from %1 to %2 and update every Flow "
+            uiText("Update Flow References"),
+            uiText("Move the configuration from %1 to %2 and update every Flow "
                "reference from %1 to %2?")
                 .arg(sourceId, targetId),
             QMessageBox::Yes | QMessageBox::Cancel,
@@ -4794,8 +4815,8 @@ void MainWindow::fillPreviousStationDeviceSlot()
     if (!m_stationDocument->moveDeviceConfiguration(sourceRow, targetRow)) {
         QMessageBox::warning(
             this,
-            tr("Move Failed"),
-            tr("Unable to move the selected configuration into %1.").arg(targetId));
+            uiText("Move Failed"),
+            uiText("Unable to move the selected configuration into %1.").arg(targetId));
         return;
     }
 
@@ -4821,7 +4842,7 @@ void MainWindow::fillPreviousStationDeviceSlot()
     }
 
     statusBar()->showMessage(
-        tr("Moved device configuration from %1 to %2; %1 is now an empty slot")
+        uiText("Moved device configuration from %1 to %2; %1 is now an empty slot")
             .arg(sourceId, targetId),
         8000);
     updateStationEditor();
@@ -5077,7 +5098,7 @@ void MainWindow::normalizeStationLogicalIds()
     }
     m_stationDocument->replaceRootObject(std::move(root));
     statusBar()->showMessage(
-        tr("Logical device IDs were generated automatically. Save Station Config to keep them."),
+        uiText("Logical device IDs were generated automatically. Save Station Config to keep them."),
         8000);
 }
 
@@ -5105,7 +5126,7 @@ void MainWindow::applyStationLogicalIdMigrations()
         root.insert(QStringLiteral("groups"), groups);
         m_sequenceDocument->replaceRootObject(std::move(root));
         statusBar()->showMessage(
-            tr("Flow device references were updated to the generated Logical IDs."),
+            uiText("Flow device references were updated to the generated Logical IDs."),
             8000);
     }
     m_pendingStationLogicalIdMigrations.clear();
@@ -5190,13 +5211,13 @@ QVector<UiDiagnostic> MainWindow::stationFlowDiagnostics() const
             UiDiagnosticSeverity::Error,
             path,
             configured
-                ? tr("Device '%1' is disabled but is used by Flow: %2")
+                ? uiText("Device '%1' is disabled but is used by Flow: %2")
                       .arg(iterator.key(), stepNames.join(QStringLiteral(", ")))
-                : tr("Device '%1' is used by Flow but is not configured: %2")
+                : uiText("Device '%1' is used by Flow but is not configured: %2")
                       .arg(iterator.key(), stepNames.join(QStringLiteral(", "))),
             configured
-                ? tr("Enable the Station device, or disable/remove the listed Flow steps")
-                : tr("Add and enable this logical device in Station Config")});
+                ? uiText("Enable the Station device, or disable/remove the listed Flow steps")
+                : uiText("Add and enable this logical device in Station Config")});
     }
     return result;
 }
@@ -5250,8 +5271,8 @@ void MainWindow::focusSequenceDiagnostic(const QModelIndex& index)
     const auto target = parseSequenceDiagnosticTarget(diagnostic->path);
     if (!target.isValid()) {
         statusBar()->showMessage(
-            tr("This diagnostic belongs to the sequence root: %1")
-                .arg(diagnostic->path.isEmpty() ? tr("root") : diagnostic->path),
+            uiText("This diagnostic belongs to the sequence root: %1")
+                .arg(diagnostic->path.isEmpty() ? uiText("root") : diagnostic->path),
             5000);
         return;
     }
@@ -5264,7 +5285,7 @@ void MainWindow::focusSequenceDiagnostic(const QModelIndex& index)
     }
     if (!treeIndex.isValid()) {
         statusBar()->showMessage(
-            tr("The diagnostic target no longer exists: %1").arg(diagnostic->path),
+            uiText("The diagnostic target no longer exists: %1").arg(diagnostic->path),
             5000);
         return;
     }
@@ -5279,8 +5300,8 @@ void MainWindow::focusSequenceDiagnostic(const QModelIndex& index)
                               m_stepPropertyEditor->focusField(target.fieldPath);
     statusBar()->showMessage(
         fieldFocused
-            ? tr("Located diagnostic field: %1").arg(diagnostic->path)
-            : tr("Located diagnostic node: %1").arg(diagnostic->path),
+            ? uiText("Located diagnostic field: %1").arg(diagnostic->path)
+            : uiText("Located diagnostic node: %1").arg(diagnostic->path),
         4000);
 }
 
@@ -5321,16 +5342,16 @@ void MainWindow::focusStationDiagnosticValue(const UiDiagnostic& diagnostic)
         ? m_stationPropertyEditor->focusField(diagnostic.path)
         : m_stationSettingsEditor->focusField(diagnostic.path);
     statusBar()->showMessage(
-        focused ? tr("Located station field: %1").arg(diagnostic.path)
-                : tr("Located station diagnostic: %1").arg(diagnostic.path),
+        focused ? uiText("Located station field: %1").arg(diagnostic.path)
+                : uiText("Located station diagnostic: %1").arg(diagnostic.path),
         4000);
 }
 
 void MainWindow::updateWindowTitle()
 {
-    QString title = tr("PicoATE");
+    QString title = uiText("PicoATE");
     if (m_newProjectTemplate) {
-        title += QStringLiteral(" - ") + tr("New Project Template");
+        title += QStringLiteral(" - ") + uiText("New Project Template");
         if ((m_sequenceDocument && m_sequenceDocument->isModified()) ||
             (m_stationDocument && m_stationDocument->isModified()) ||
             (m_stepPropertyEditor &&
@@ -5367,105 +5388,90 @@ void MainWindow::updateWindowTitle()
 
 void MainWindow::buildActions()
 {
-    auto* fileMenu = menuBar()->addMenu(tr("&File"));
-    auto* editMenu = menuBar()->addMenu(tr("&Edit"));
-    auto* runMenu = menuBar()->addMenu(tr("&Run"));
-    auto* viewMenu = menuBar()->addMenu(tr("&View"));
-    auto* toolsMenu = menuBar()->addMenu(tr("&Tools"));
-    auto* mainToolbar = addToolBar(tr("Runner"));
+    auto* fileMenu = addUiMenu(menuBar(), "&File");
+    auto* editMenu = addUiMenu(menuBar(), "&Edit");
+    auto* runMenu = addUiMenu(menuBar(), "&Run");
+    auto* viewMenu = addUiMenu(menuBar(), "&View");
+    auto* toolsMenu = addUiMenu(menuBar(), "&Tools");
+    auto* mainToolbar = addToolBar(uiText("Runner"));
     mainToolbar->setObjectName(QStringLiteral("runnerToolbar"));
     mainToolbar->setMovable(false);
     mainToolbar->setFloatable(false);
     mainToolbar->setIconSize(QSize(20, 20));
     mainToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 
-    m_newProjectAction = new QAction(tr("New Project..."), this);
+    m_newProjectAction = makeUiAction("New Project...", this);
     m_newProjectAction->setObjectName(QStringLiteral("newProjectAction"));
     m_newProjectAction->setShortcut(QKeySequence::New);
-    m_newProjectAction->setToolTip(
-        tr("Create an empty Sequence and Station project"));
+    bindUiText(m_newProjectAction, "toolTip", "Create an empty Sequence and Station project");
     connect(m_newProjectAction, &QAction::triggered,
             this, &MainWindow::createNewProject);
 
-    m_openSequenceAction = new QAction(
-        toolbarIcon("folder-open"),
-        tr("Open Sequence"),
-        this);
-    m_openSequenceAction->setToolTip(tr("Open sequence JSON"));
+    m_openSequenceAction = makeUiAction(toolbarIcon("folder-open"), "Open Sequence", this);
+    bindUiText(m_openSequenceAction, "toolTip", "Open sequence JSON");
     connect(m_openSequenceAction, &QAction::triggered, this, [this] { chooseSequence(); });
-    m_recentSequenceMenu = new QMenu(tr("Open Recent Sequence"), fileMenu);
+    m_recentSequenceMenu = new QMenu(uiText("Open Recent Sequence"), fileMenu);
+    bindUiText(m_recentSequenceMenu, "title", "Open Recent Sequence");
     m_recentSequenceMenu->setObjectName(QStringLiteral("recentSequenceMenu"));
 
-    m_saveSequenceAction = new QAction(
-        toolbarIcon("save"), tr("Save Sequence"), this);
+    m_saveSequenceAction = makeUiAction(toolbarIcon("save"), "Save Sequence", this);
     m_saveSequenceAction->setObjectName(QStringLiteral("saveSequenceAction"));
     m_saveSequenceAction->setShortcut(QKeySequence::Save);
-    m_saveSequenceAction->setToolTip(tr("Save sequence JSON"));
+    bindUiText(m_saveSequenceAction, "toolTip", "Save sequence JSON");
     connect(m_saveSequenceAction, &QAction::triggered,
             this, &MainWindow::saveActiveDocument);
 
-    m_saveSequenceAsAction = new QAction(tr("Save Sequence As..."), this);
+    m_saveSequenceAsAction = makeUiAction("Save Sequence As...", this);
     m_saveSequenceAsAction->setShortcut(QKeySequence::SaveAs);
     connect(m_saveSequenceAsAction, &QAction::triggered, this, [this] { saveSequenceAs(); });
 
-    m_undoAction = new QAction(
-        toolbarIcon("undo-2"), tr("Undo"), this);
+    m_undoAction = makeUiAction(toolbarIcon("undo-2"), "Undo", this);
     m_undoAction->setShortcut(QKeySequence::Undo);
-    m_undoAction->setToolTip(tr("Undo last sequence edit"));
+    bindUiText(m_undoAction, "toolTip", "Undo last sequence edit");
     connect(m_undoAction, &QAction::triggered,
             this, [this] { applyUndoRedo(false); });
-    m_redoAction = new QAction(
-        toolbarIcon("redo-2"), tr("Redo"), this);
+    m_redoAction = makeUiAction(toolbarIcon("redo-2"), "Redo", this);
     m_redoAction->setShortcut(QKeySequence::Redo);
-    m_redoAction->setToolTip(tr("Redo last sequence edit"));
+    bindUiText(m_redoAction, "toolTip", "Redo last sequence edit");
     connect(m_redoAction, &QAction::triggered,
             this, [this] { applyUndoRedo(true); });
     connect(m_sequenceDocument->undoStack(), &QUndoStack::undoTextChanged,
             this, [this](const QString& text) {
                 m_undoAction->setText(text.isEmpty()
-                    ? tr("Undo") : tr("Undo %1").arg(text));
+                    ? uiText("Undo") : uiText("Undo %1").arg(text));
             });
     connect(m_sequenceDocument->undoStack(), &QUndoStack::redoTextChanged,
             this, [this](const QString& text) {
                 m_redoAction->setText(text.isEmpty()
-                    ? tr("Redo") : tr("Redo %1").arg(text));
+                    ? uiText("Redo") : uiText("Redo %1").arg(text));
             });
 
-    m_addStepAction = new QAction(
-        toolbarIcon("list-plus"), tr("Add Step"), this);
-    m_addStepAction->setToolTip(tr("Add step after selection or inside a container"));
+    m_addStepAction = makeUiAction(toolbarIcon("list-plus"), "Add Step", this);
+    bindUiText(m_addStepAction, "toolTip", "Add step after selection or inside a container");
     connect(m_addStepAction, &QAction::triggered, this, [this] { addSequenceStep(); });
 
-    m_deleteStepAction = new QAction(
-        toolbarIcon("trash-2"), tr("Delete Step"), this);
+    m_deleteStepAction = makeUiAction(toolbarIcon("trash-2"), "Delete Step", this);
     m_deleteStepAction->setObjectName(QStringLiteral("deleteStepAction"));
     m_deleteStepAction->setShortcut(QKeySequence::Delete);
     connect(m_deleteStepAction, &QAction::triggered, this, [this] { deleteSequenceStep(); });
 
-    m_copyStepAction = new QAction(
-        toolbarIcon("copy"),
-        tr("Copy Selected"), this);
+    m_copyStepAction = makeUiAction(toolbarIcon("copy"), "Copy Selected", this);
     m_copyStepAction->setObjectName(QStringLiteral("copyStepAction"));
-    m_copyStepAction->setToolTip(
-        tr("Copy selected Steps and TestItems (Ctrl+C)"));
+    bindUiText(m_copyStepAction, "toolTip", "Copy selected Steps and TestItems (Ctrl+C)");
     connect(m_copyStepAction, &QAction::triggered,
             this, &MainWindow::copySequenceSteps);
 
-    m_pasteStepAction = new QAction(
-        toolbarIcon("clipboard-paste"),
-        tr("Paste"), this);
+    m_pasteStepAction = makeUiAction(toolbarIcon("clipboard-paste"), "Paste", this);
     m_pasteStepAction->setObjectName(QStringLiteral("pasteStepAction"));
-    m_pasteStepAction->setToolTip(
-        tr("Paste copied items after the current item (Ctrl+V)"));
+    bindUiText(m_pasteStepAction, "toolTip", "Paste copied items after the current item (Ctrl+V)");
     connect(m_pasteStepAction, &QAction::triggered,
             this, &MainWindow::pasteSequenceSteps);
 
-    m_findFlowFieldAction = new QAction(tr("Find Flow Item"), this);
+    m_findFlowFieldAction = makeUiAction("Find Flow Item", this);
     m_findFlowFieldAction->setObjectName(QStringLiteral("findFlowFieldAction"));
     m_findFlowFieldAction->setShortcut(QKeySequence::Find);
     m_findFlowFieldAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-    m_findFlowFieldAction->setToolTip(
-        tr("Find by Step name, ID, function, or device (Ctrl+F)"));
+    bindUiText(m_findFlowFieldAction, "toolTip", "Find by Step name, ID, function, or device (Ctrl+F)");
     connect(m_findFlowFieldAction, &QAction::triggered, this, [this] {
         if (!m_flowFieldSearch) return;
         m_flowFieldSearch->parentWidget()->show();
@@ -5474,90 +5480,69 @@ void MainWindow::buildActions()
         m_flowFieldSearch->selectAll();
     });
 
-    m_sequenceVariablesAction = new QAction(
-        toolbarIcon("variable"),
-        tr("Variables"),
-        this);
+    m_sequenceVariablesAction = makeUiAction(toolbarIcon("variable"), "Variables", this);
     m_sequenceVariablesAction->setObjectName(
         QStringLiteral("sequenceVariablesAction"));
-    m_sequenceVariablesAction->setToolTip(
-        tr("Edit shared and per-UUT sequence variables"));
+    bindUiText(m_sequenceVariablesAction, "toolTip", "Edit shared and per-UUT sequence variables");
     connect(m_sequenceVariablesAction, &QAction::triggered,
             this, &MainWindow::editSequenceVariables);
 
-    m_importRegisterConfigAction = new QAction(
-        toolbarIcon("file-spreadsheet"),
-        tr("Import Register Table"),
-        this);
+    m_importRegisterConfigAction = makeUiAction(toolbarIcon("file-spreadsheet"), "Import Register Table", this);
     m_importRegisterConfigAction->setObjectName(
         QStringLiteral("importRegisterConfigAction"));
-    m_importRegisterConfigAction->setToolTip(
-        tr("Choose a project Register workbook and replace MAIN/register_config"));
+    bindUiText(m_importRegisterConfigAction, "toolTip", "Choose a project Register workbook and replace MAIN/register_config");
     m_importRegisterConfigAction->setVisible(
         !registerImporterExecutablePath().isEmpty());
     connect(m_importRegisterConfigAction, &QAction::triggered,
             this, &MainWindow::importRegisterConfiguration);
 
-    m_wrapTestItemAction = new QAction(
-        toolbarIcon("combine"), tr("Wrap in TestItem"), this);
+    m_wrapTestItemAction = makeUiAction(toolbarIcon("combine"), "Wrap in TestItem", this);
     m_wrapTestItemAction->setObjectName(QStringLiteral("wrapTestItemAction"));
-    m_wrapTestItemAction->setToolTip(
-        tr("Wrap selected contiguous steps in a TestItem"));
+    bindUiText(m_wrapTestItemAction, "toolTip", "Wrap selected contiguous steps in a TestItem");
     connect(m_wrapTestItemAction, &QAction::triggered,
             this, [this] { wrapSelectedStepsInTestItem(); });
 
-    m_enableStepsAction = new QAction(
-        toolbarIcon("circle-check-big"), tr("Enable Selected"), this);
+    m_enableStepsAction = makeUiAction(toolbarIcon("circle-check-big"), "Enable Selected", this);
     m_enableStepsAction->setObjectName(QStringLiteral("enableStepsAction"));
-    m_enableStepsAction->setToolTip(tr("Enable all selected steps"));
+    bindUiText(m_enableStepsAction, "toolTip", "Enable all selected steps");
     connect(m_enableStepsAction, &QAction::triggered,
             this, [this] { setSelectedSequenceStepsEnabled(true); });
 
-    m_disableStepsAction = new QAction(
-        toolbarIcon("circle-x"), tr("Disable Selected"), this);
+    m_disableStepsAction = makeUiAction(toolbarIcon("circle-x"), "Disable Selected", this);
     m_disableStepsAction->setObjectName(QStringLiteral("disableStepsAction"));
-    m_disableStepsAction->setToolTip(tr("Disable all selected steps"));
+    bindUiText(m_disableStepsAction, "toolTip", "Disable all selected steps");
     connect(m_disableStepsAction, &QAction::triggered,
             this, [this] { setSelectedSequenceStepsEnabled(false); });
 
-    m_moveStepUpAction = new QAction(
-        toolbarIcon("arrow-up"), tr("Move Up"), this);
+    m_moveStepUpAction = makeUiAction(toolbarIcon("arrow-up"), "Move Up", this);
     connect(m_moveStepUpAction, &QAction::triggered, this, [this] { moveSequenceStep(-1); });
 
-    m_moveStepDownAction = new QAction(
-        toolbarIcon("arrow-down"), tr("Move Down"), this);
+    m_moveStepDownAction = makeUiAction(toolbarIcon("arrow-down"), "Move Down", this);
     connect(m_moveStepDownAction, &QAction::triggered, this, [this] { moveSequenceStep(1); });
 
-    m_expandSequencePhasesAction = new QAction(
-        toolbarIcon("chevrons-up-down"), tr("Expand Flow"), this);
+    m_expandSequencePhasesAction = makeUiAction(toolbarIcon("chevrons-up-down"), "Expand Flow", this);
     m_expandSequencePhasesAction->setObjectName(
         QStringLiteral("expandSequencePhasesAction"));
-    m_expandSequencePhasesAction->setToolTip(
-        tr("Expand all items under Setup, Main, and Cleanup"));
+    bindUiText(m_expandSequencePhasesAction, "toolTip", "Expand all items under Setup, Main, and Cleanup");
     connect(m_expandSequencePhasesAction, &QAction::triggered,
             this, &MainWindow::expandSequencePhases);
 
-    m_collapseSequencePhasesAction = new QAction(
-        toolbarIcon("chevrons-down-up"), tr("Collapse Flow"), this);
+    m_collapseSequencePhasesAction = makeUiAction(toolbarIcon("chevrons-down-up"), "Collapse Flow", this);
     m_collapseSequencePhasesAction->setObjectName(
         QStringLiteral("collapseSequencePhasesAction"));
-    m_collapseSequencePhasesAction->setToolTip(
-        tr("Show only the first level under Setup, Main, and Cleanup"));
+    bindUiText(m_collapseSequencePhasesAction, "toolTip", "Show only the first level under Setup, Main, and Cleanup");
     connect(m_collapseSequencePhasesAction, &QAction::triggered,
             this, &MainWindow::collapseSequencePhasesToFirstLevel);
 
-    m_openStationAction = new QAction(
-        toolbarIcon("folder-cog"),
-        tr("Open Station"),
-        this);
-    m_openStationAction->setToolTip(tr("Open station JSON"));
+    m_openStationAction = makeUiAction(toolbarIcon("folder-cog"), "Open Station", this);
+    bindUiText(m_openStationAction, "toolTip", "Open station JSON");
     connect(m_openStationAction, &QAction::triggered, this, [this] { chooseStation(); });
-    m_recentStationMenu = new QMenu(tr("Open Recent Station"), fileMenu);
+    m_recentStationMenu = new QMenu(uiText("Open Recent Station"), fileMenu);
+    bindUiText(m_recentStationMenu, "title", "Open Recent Station");
     m_recentStationMenu->setObjectName(QStringLiteral("recentStationMenu"));
 
-    m_saveStationAction = new QAction(
-        toolbarIcon("save"), tr("Save Station"), this);
-    m_saveStationAction->setToolTip(tr("Save station JSON"));
+    m_saveStationAction = makeUiAction(toolbarIcon("save"), "Save Station", this);
+    bindUiText(m_saveStationAction, "toolTip", "Save station JSON");
     connect(m_saveStationAction, &QAction::triggered,
             this, [this] {
                 if (m_newProjectTemplate) {
@@ -5566,127 +5551,92 @@ void MainWindow::buildActions()
                     confirmAndSaveStation();
                 }
             });
-    m_saveStationAsAction = new QAction(tr("Save Station As..."), this);
+    m_saveStationAsAction = makeUiAction("Save Station As...", this);
     connect(m_saveStationAsAction, &QAction::triggered,
             this, [this] { saveStationAs(); });
 
-    m_stationUndoAction = new QAction(
-        toolbarIcon("undo-2"), tr("Undo"), this);
-    m_stationUndoAction->setToolTip(tr("Undo last station edit"));
+    m_stationUndoAction = makeUiAction(toolbarIcon("undo-2"), "Undo", this);
+    bindUiText(m_stationUndoAction, "toolTip", "Undo last station edit");
     connect(m_stationUndoAction, &QAction::triggered,
             this, [this] { applyStationUndoRedo(false); });
-    m_stationRedoAction = new QAction(
-        toolbarIcon("redo-2"), tr("Redo"), this);
-    m_stationRedoAction->setToolTip(tr("Redo last station edit"));
+    m_stationRedoAction = makeUiAction(toolbarIcon("redo-2"), "Redo", this);
+    bindUiText(m_stationRedoAction, "toolTip", "Redo last station edit");
     connect(m_stationRedoAction, &QAction::triggered,
             this, [this] { applyStationUndoRedo(true); });
     connect(m_stationDocument->undoStack(), &QUndoStack::undoTextChanged,
             this, [this](const QString& text) {
                 m_stationUndoAction->setText(text.isEmpty()
-                    ? tr("Undo") : tr("Undo %1").arg(text));
+                    ? uiText("Undo") : uiText("Undo %1").arg(text));
             });
     connect(m_stationDocument->undoStack(), &QUndoStack::redoTextChanged,
             this, [this](const QString& text) {
                 m_stationRedoAction->setText(text.isEmpty()
-                    ? tr("Redo") : tr("Redo %1").arg(text));
+                    ? uiText("Redo") : uiText("Redo %1").arg(text));
             });
 
-    m_addDeviceAction = new QAction(
-        toolbarIcon("list-plus"), tr("Add Device"), this);
+    m_addDeviceAction = makeUiAction(toolbarIcon("list-plus"), "Add Device", this);
     connect(m_addDeviceAction, &QAction::triggered,
             this, [this] { addStationDevice(); });
-    m_duplicateDeviceAction = new QAction(
-        toolbarIcon("copy-plus"), tr("Duplicate Device"), this);
+    m_duplicateDeviceAction = makeUiAction(toolbarIcon("copy-plus"), "Duplicate Device", this);
     connect(m_duplicateDeviceAction, &QAction::triggered,
             this, [this] { duplicateStationDevice(); });
-    m_deleteDeviceAction = new QAction(
-        toolbarIcon("trash-2"), tr("Delete Device"), this);
+    m_deleteDeviceAction = makeUiAction(toolbarIcon("trash-2"), "Delete Device", this);
     m_deleteDeviceAction->setObjectName(QStringLiteral("deleteDeviceAction"));
     connect(m_deleteDeviceAction, &QAction::triggered,
             this, [this] { deleteStationDevice(); });
-    m_fillPreviousDeviceSlotAction = new QAction(
-        toolbarIcon("list-restart"),
-        tr("Fill Previous Empty ID"),
-        this);
+    m_fillPreviousDeviceSlotAction = makeUiAction(toolbarIcon("list-restart"), "Fill Previous Empty ID", this);
     m_fillPreviousDeviceSlotAction->setObjectName(
         QStringLiteral("fillPreviousDeviceSlotAction"));
-    m_fillPreviousDeviceSlotAction->setToolTip(
-        tr("Move this configuration into the earliest empty logical ID of the same type"));
+    bindUiText(m_fillPreviousDeviceSlotAction, "toolTip", "Move this configuration into the earliest empty logical ID of the same type");
     connect(m_fillPreviousDeviceSlotAction, &QAction::triggered,
             this, [this] { fillPreviousStationDeviceSlot(); });
-    m_moveDeviceUpAction = new QAction(
-        toolbarIcon("arrow-up"), tr("Move Device Up"), this);
+    m_moveDeviceUpAction = makeUiAction(toolbarIcon("arrow-up"), "Move Device Up", this);
     connect(m_moveDeviceUpAction, &QAction::triggered,
             this, [this] { moveStationDevice(-1); });
-    m_moveDeviceDownAction = new QAction(
-        toolbarIcon("arrow-down"), tr("Move Device Down"), this);
+    m_moveDeviceDownAction = makeUiAction(toolbarIcon("arrow-down"), "Move Device Down", this);
     connect(m_moveDeviceDownAction, &QAction::triggered,
             this, [this] { moveStationDevice(1); });
-    m_testDeviceConnectionAction = new QAction(
-        toolbarIcon("plug-zap"),
-        tr("Test Connection"),
-        this);
+    m_testDeviceConnectionAction = makeUiAction(toolbarIcon("plug-zap"), "Test Connection", this);
     m_testDeviceConnectionAction->setObjectName(
         QStringLiteral("testDeviceConnectionAction"));
-    m_testDeviceConnectionAction->setToolTip(tr("Open, health-check, and close selected device"));
+    bindUiText(m_testDeviceConnectionAction, "toolTip", "Open, health-check, and close selected device");
     connect(m_testDeviceConnectionAction, &QAction::triggered,
             this, [this] { testSelectedStationDevice(); });
 
-    m_compileAction = new QAction(
-        toolbarIcon("refresh-cw"),
-        tr("Compile"),
-        this);
+    m_compileAction = makeUiAction(toolbarIcon("refresh-cw"), "Compile", this);
     m_compileAction->setObjectName(QStringLiteral("compileAction"));
-    m_compileAction->setToolTip(tr("Compile selected sequence"));
+    bindUiText(m_compileAction, "toolTip", "Compile selected sequence");
     connect(m_compileAction, &QAction::triggered,
             this, &MainWindow::compileSequence);
 
-    m_runAction = new QAction(
-        toolbarIcon("play"),
-        tr("Run"),
-        this);
+    m_runAction = makeUiAction(toolbarIcon("play"), "Run", this);
     m_runAction->setObjectName(QStringLiteral("runAction"));
-    m_runAction->setToolTip(tr("Run compiled sequence"));
+    bindUiText(m_runAction, "toolTip", "Run compiled sequence");
     connect(m_runAction,
             &QAction::triggered,
             this,
             &MainWindow::runSequence);
 
-    m_pauseAction = new QAction(
-        toolbarIcon("pause"),
-        tr("Pause"),
-        this);
-    m_pauseAction->setToolTip(tr("Pause after the running step completes"));
+    m_pauseAction = makeUiAction(toolbarIcon("pause"), "Pause", this);
+    bindUiText(m_pauseAction, "toolTip", "Pause after the running step completes");
     connect(m_pauseAction, &QAction::triggered, m_viewModel, &ExecutionViewModel::pause);
 
-    m_resumeAction = new QAction(
-        toolbarIcon("play"),
-        tr("Resume"),
-        this);
-    m_resumeAction->setToolTip(tr("Resume the paused execution"));
+    m_resumeAction = makeUiAction(toolbarIcon("play"), "Resume", this);
+    bindUiText(m_resumeAction, "toolTip", "Resume the paused execution");
     connect(m_resumeAction, &QAction::triggered, m_viewModel, &ExecutionViewModel::resume);
 
-    m_stepIntoAction = new QAction(
-        toolbarIcon("corner-right-down"),
-        tr("Step Into"),
-        this);
+    m_stepIntoAction = makeUiAction(toolbarIcon("corner-right-down"), "Step Into", this);
     m_stepIntoAction->setObjectName(QStringLiteral("stepIntoAction"));
-    m_stepIntoAction->setToolTip(tr("Run one scheduler step and pause again"));
+    bindUiText(m_stepIntoAction, "toolTip", "Run one scheduler step and pause again");
     connect(m_stepIntoAction, &QAction::triggered, m_viewModel, &ExecutionViewModel::stepInto);
 
-    m_stepOverAction = new QAction(
-        toolbarIcon("step-forward"),
-        tr("Step Over"),
-        this);
-    m_stepOverAction->setToolTip(tr("Run current step or structural block and pause again"));
+    m_stepOverAction = makeUiAction(toolbarIcon("step-forward"), "Step Over", this);
+    bindUiText(m_stepOverAction, "toolTip", "Run current step or structural block and pause again");
     connect(m_stepOverAction, &QAction::triggered, m_viewModel, &ExecutionViewModel::stepOver);
 
-    m_stopAction = new QAction(
-        toolbarIcon("square"),
-        tr("Stop"),
-        this);
+    m_stopAction = makeUiAction(toolbarIcon("square"), "Stop", this);
     m_stopAction->setObjectName(QStringLiteral("adminStopAction"));
-    m_stopAction->setToolTip(tr("Request graceful stop"));
+    bindUiText(m_stopAction, "toolTip", "Request graceful stop");
     connect(m_stopAction, &QAction::triggered, this, [this] {
         if (!m_viewModel->canStop()) {
             return;
@@ -5704,48 +5654,36 @@ void MainWindow::buildActions()
         });
     });
 
-    m_scanAction = new QAction(
-        toolbarIcon("scan-barcode"),
-        tr("Scan SN"),
-        this);
+    m_scanAction = makeUiAction(toolbarIcon("scan-barcode"), "Scan SN", this);
     m_scanAction->setObjectName(QStringLiteral("adminScanAction"));
-    m_scanAction->setToolTip(tr("Open or cancel the barcode dialog"));
+    bindUiText(m_scanAction, "toolTip", "Open or cancel the barcode dialog");
     connect(m_scanAction, &QAction::triggered, this, &MainWindow::toggleScanDialog);
 
-    m_uutSlotsAction = new QAction(
-        toolbarIcon("circle-check"), tr("UUT Slots"), this);
+    m_uutSlotsAction = makeUiAction(toolbarIcon("circle-check"), "UUT Slots", this);
     m_uutSlotsAction->setObjectName(QStringLiteral("adminUutSlotsAction"));
     connect(m_uutSlotsAction, &QAction::triggered,
             this, &MainWindow::configureAdminUutSlots);
 
-    m_productRoutingAction = new QAction(
-        toolbarIcon("list-restart"),
-        tr("Product Routing"),
-        this);
+    m_productRoutingAction = makeUiAction(toolbarIcon("list-restart"), "Product Routing", this);
     m_productRoutingAction->setObjectName(
         QStringLiteral("adminProductRoutingAction"));
-    m_productRoutingAction->setToolTip(
-        tr("Configure SN patterns and their test sequences"));
+    bindUiText(m_productRoutingAction, "toolTip", "Configure SN patterns and their test sequences");
     connect(m_productRoutingAction, &QAction::triggered,
             this, &MainWindow::openProductRoutingConfiguration);
 
-    m_scanPluginsAction = new QAction(
-        toolbarIcon("package-search"),
-        tr("Scan Plugins"),
-        this);
+    m_scanPluginsAction = makeUiAction(toolbarIcon("package-search"), "Scan Plugins", this);
     m_scanPluginsAction->setObjectName(QStringLiteral("scanPluginsAction"));
-    m_scanPluginsAction->setToolTip(
-        tr("Scan the plugin directory and rebuild PluginRegistry.json"));
+    bindUiText(m_scanPluginsAction, "toolTip", "Scan the plugin directory and rebuild PluginRegistry.json");
     connect(m_scanPluginsAction, &QAction::triggered,
             this, [this] { scanPlugins(true); });
 
-    m_resetLayoutAction = new QAction(tr("Reset Layout"), this);
+    m_resetLayoutAction = makeUiAction("Reset Layout", this);
     m_resetLayoutAction->setObjectName(QStringLiteral("resetLayoutAction"));
-    m_resetLayoutAction->setToolTip(tr("Restore the default window and panel layout"));
+    bindUiText(m_resetLayoutAction, "toolTip", "Restore the default window and panel layout");
     connect(m_resetLayoutAction, &QAction::triggered,
             this, &MainWindow::resetUiLayout);
 
-    auto* exitAction = new QAction(tr("E&xit"), this);
+    auto* exitAction = makeUiAction("E&xit", this);
     connect(exitAction, &QAction::triggered, this, &QWidget::close);
 
     fileMenu->addAction(m_newProjectAction);
@@ -5797,10 +5735,10 @@ void MainWindow::buildActions()
     m_uutCount->setObjectName(QStringLiteral("uutCountSpinBox"));
     m_uutCount->setRange(1, 64);
     m_uutCount->setValue(1);
-    m_uutCount->setPrefix(tr("UUTs "));
+    bindUiText(m_uutCount, "prefix", "UUTs ");
     m_uutCount->setAlignment(Qt::AlignCenter);
     m_uutCount->setFixedWidth(88);
-    m_uutCount->setToolTip(tr("Number of UUTs in this run"));
+    bindUiText(m_uutCount, "toolTip", "Number of UUTs in this run");
     if (ShowAdminUutCountControl) {
         mainToolbar->addWidget(m_uutCount);
         mainToolbar->addAction(m_uutSlotsAction);
@@ -5838,12 +5776,12 @@ void MainWindow::buildLayout()
 
     m_sequencePath = new QLineEdit(central);
     m_sequencePath->setReadOnly(true);
-    m_sequencePath->setPlaceholderText(tr("No sequence selected"));
+    bindUiText(m_sequencePath, "placeholderText", "No sequence selected");
     m_sequencePath->hide();
 
     m_stationPath = new QLineEdit(central);
     m_stationPath->setReadOnly(true);
-    m_stationPath->setPlaceholderText(tr("No station selected"));
+    bindUiText(m_stationPath, "placeholderText", "No station selected");
     m_stationPath->hide();
 
     constexpr int RunSidebarWidth = 230;
@@ -5860,7 +5798,7 @@ void MainWindow::buildLayout()
 
     auto* brandLogo = new QLabel(brandSlot);
     brandLogo->setObjectName(QStringLiteral("adminBrandLogo"));
-    brandLogo->setAccessibleName(tr("SINEXCEL"));
+    brandLogo->setAccessibleName(uiText("SINEXCEL"));
     brandLogo->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     brandLogo->setFixedSize(170, 32);
     const QPixmap brandSource(QStringLiteral(":/branding/Sinexcel.png"));
@@ -5876,7 +5814,7 @@ void MainWindow::buildLayout()
     brandSlotLayout->addStretch(1);
     brandHeader->addWidget(brandSlot);
 
-    m_adminSequenceLabel = new QLabel(tr("No sequence selected"), central);
+    m_adminSequenceLabel = new QLabel(uiText("No sequence selected"), central);
     m_adminSequenceLabel->setObjectName(QStringLiteral("adminSequenceLabel"));
     m_adminSequenceLabel->setAlignment(Qt::AlignCenter);
     m_adminSequenceLabel->setMinimumHeight(36);
@@ -5954,7 +5892,7 @@ void MainWindow::buildLayout()
     pluginFunctionView->deviceSelectionRequired = [this] {
         m_flowTargetSelector->showSelectionRequired();
         statusBar()->showMessage(
-            tr("Select a target device above before dragging a plugin function"),
+            uiText("Select a target device above before dragging a plugin function"),
             5000);
     };
     functionPanelLayout->addWidget(m_pluginFunctionView, 1);
@@ -5969,7 +5907,7 @@ void MainWindow::buildLayout()
                 }
                 if (!targetId.isEmpty()) {
                     statusBar()->showMessage(
-                        tr("Flow target selected: %1").arg(targetId), 3000);
+                        uiText("Flow target selected: %1").arg(targetId), 3000);
                 }
             });
     m_sequenceTreeView = new SequenceEditorTreeView;
@@ -6032,8 +5970,7 @@ void MainWindow::buildLayout()
     flowFieldSearchLayout->addStretch();
     m_flowFieldSearch = new QLineEdit(sequenceTreePanel);
     m_flowFieldSearch->setObjectName(QStringLiteral("flowFieldSearch"));
-    m_flowFieldSearch->setPlaceholderText(
-        tr("Find Step, ID, function, or device"));
+    bindUiText(m_flowFieldSearch, "placeholderText", "Find Step, ID, function, or device");
     m_flowFieldSearch->setClearButtonEnabled(true);
     m_flowFieldSearch->setFixedHeight(32);
     m_flowFieldSearch->setMaximumWidth(320);
@@ -6065,7 +6002,7 @@ void MainWindow::buildLayout()
             m_flowSearchMatchIndex = -1;
             if (!query.isEmpty()) {
                 statusBar()->showMessage(
-                    tr("No Flow item matches '%1'").arg(query), 7000);
+                    uiText("No Flow item matches '%1'").arg(query), 7000);
             }
             return;
         }
@@ -6083,7 +6020,7 @@ void MainWindow::buildLayout()
         m_sequenceTreeView->scrollTo(
             match, QAbstractItemView::EnsureVisible);
         statusBar()->showMessage(
-            tr("Match %1 of %2 for '%3'")
+            uiText("Match %1 of %2 for '%3'")
                 .arg(m_flowSearchMatchIndex + 1)
                 .arg(matches.size())
                 .arg(query),
@@ -6117,7 +6054,7 @@ void MainWindow::buildLayout()
     sequenceSplitter->setStretchFactor(1, 1);
     sequenceSplitter->setSizes({520, 140});
     sequenceEditorLayout->addWidget(sequenceSplitter, 1);
-    m_workspaceTabs->addTab(sequenceEditorPage, tr("Flow Editor"));
+    addUiTab(m_workspaceTabs, sequenceEditorPage, "Flow Editor");
     serviceAdminStartupAnimation();
 
     m_stationEditorPage = new QWidget(m_workspaceTabs);
@@ -6145,13 +6082,13 @@ void MainWindow::buildLayout()
     stationToolbar->addAction(m_moveDeviceUpAction);
     stationToolbar->addAction(m_moveDeviceDownAction);
     stationToolbar->addSeparator();
-    auto* connectionTimeoutLabel = new QLabel(tr("Timeout"), stationToolbar);
+    auto* connectionTimeoutLabel = makeUiLabel("Timeout", stationToolbar);
     m_connectionTimeoutMs = new QSpinBox(stationToolbar);
     m_connectionTimeoutMs->setObjectName(QStringLiteral("connectionTimeoutSpinBox"));
     m_connectionTimeoutMs->setRange(100, 60000);
     m_connectionTimeoutMs->setValue(5000);
     m_connectionTimeoutMs->setSingleStep(500);
-    m_connectionTimeoutMs->setSuffix(tr(" ms"));
+    m_connectionTimeoutMs->setSuffix(uiText(" ms"));
     m_connectionTimeoutMs->setFixedWidth(110);
     stationToolbar->addWidget(connectionTimeoutLabel);
     stationToolbar->addWidget(m_connectionTimeoutMs);
@@ -6180,7 +6117,7 @@ void MainWindow::buildLayout()
     auto* deviceLayout = new QVBoxLayout(devicePane);
     deviceLayout->setContentsMargins(8, 8, 8, 8);
     deviceLayout->setSpacing(8);
-    auto* deviceTitle = new QLabel(tr("Devices"), devicePane);
+    auto* deviceTitle = makeUiLabel("Devices", devicePane);
     auto deviceTitleFont = deviceTitle->font();
     deviceTitleFont.setBold(true);
     deviceTitleFont.setPointSize(deviceTitleFont.pointSize() + 1);
@@ -6211,7 +6148,7 @@ void MainWindow::buildLayout()
     auto* propertyLayout = new QVBoxLayout(propertyPane);
     propertyLayout->setContentsMargins(8, 8, 8, 8);
     propertyLayout->setSpacing(8);
-    auto* propertyTitle = new QLabel(tr("Device Parameters"), propertyPane);
+    auto* propertyTitle = makeUiLabel("Device Parameters", propertyPane);
     auto propertyTitleFont = propertyTitle->font();
     propertyTitleFont.setBold(true);
     propertyTitleFont.setPointSize(propertyTitleFont.pointSize() + 1);
@@ -6242,7 +6179,7 @@ void MainWindow::buildLayout()
     stationSplitter->setStretchFactor(1, 1);
     stationSplitter->setSizes({520, 140});
     stationEditorLayout->addWidget(stationSplitter, 1);
-    m_workspaceTabs->addTab(stationEditorPage, tr("Station Config"));
+    addUiTab(m_workspaceTabs, stationEditorPage, "Station Config");
     serviceAdminStartupAnimation();
 
     m_runTestPage = new QWidget(m_workspaceTabs);
@@ -6289,12 +6226,10 @@ void MainWindow::buildLayout()
     auto* navigationLeadLayout = new QHBoxLayout(m_adminUutNavigationLead);
     navigationLeadLayout->setContentsMargins(6, 0, 6, 0);
     navigationLeadLayout->setSpacing(8);
-    m_adminBackToOverview = new QPushButton(
-        overviewIndicatorIcon(0.0), tr("Overview"),
-        m_adminUutNavigationLead);
+    m_adminBackToOverview = makeUiButton(overviewIndicatorIcon(0.0), "Overview", m_adminUutNavigationLead);
     m_adminBackToOverview->setObjectName(
         QStringLiteral("adminBackToUutOverview"));
-    m_adminBackToOverview->setToolTip(tr("Return to the UUT overview"));
+    bindUiText(m_adminBackToOverview, "toolTip", "Return to the UUT overview");
     m_adminBackToOverview->setCheckable(true);
     m_adminBackToOverview->setIconSize(QSize(18, 18));
     m_adminBackToOverview->setProperty("overviewIndicatorFill", 0.0);
@@ -6320,7 +6255,7 @@ void MainWindow::buildLayout()
                 overviewIndicatorAnimation->setEndValue(checked ? 1.0 : 0.0);
                 overviewIndicatorAnimation->start();
             });
-    auto* detailTitle = new QLabel(tr("UUT DETAILS"), m_adminUutNavigationLead);
+    auto* detailTitle = makeUiLabel("UUT DETAILS", m_adminUutNavigationLead);
     detailTitle->setObjectName(QStringLiteral("adminSectionTitle"));
     navigationLeadLayout->addWidget(m_adminBackToOverview);
     navigationLeadLayout->addWidget(detailTitle);
@@ -6367,34 +6302,34 @@ void MainWindow::buildLayout()
     auto* sidebarLayout = new QVBoxLayout(sidebar);
     sidebarLayout->setContentsMargins(18, 18, 18, 18);
     sidebarLayout->setSpacing(12);
-    auto* unitTitle = new QLabel(tr("UNIT UNDER TEST"), sidebar);
+    auto* unitTitle = makeUiLabel("UNIT UNDER TEST", sidebar);
     unitTitle->setObjectName(QStringLiteral("adminSectionTitle"));
     sidebarLayout->addWidget(unitTitle);
     auto* unitDetails = new QFormLayout;
     unitDetails->setHorizontalSpacing(12);
     unitDetails->setVerticalSpacing(10);
-    m_adminSerialCaption = new QLabel(tr("SN"), sidebar);
+    m_adminSerialCaption = makeUiLabel("SN", sidebar);
     m_adminSerialCaption->setObjectName(
         QStringLiteral("adminSerialCaption"));
-    m_adminSerialLabel = new QLabel(tr("--"), sidebar);
+    m_adminSerialLabel = new QLabel(uiText("--"), sidebar);
     m_adminSerialLabel->setObjectName(QStringLiteral("adminSerialLabel"));
-    m_adminStationLabel = new QLabel(tr("--"), sidebar);
+    m_adminStationLabel = new QLabel(uiText("--"), sidebar);
     m_adminStationLabel->setObjectName(QStringLiteral("adminStationLabel"));
-    m_adminModelLabel = new QLabel(tr("--"), sidebar);
+    m_adminModelLabel = new QLabel(uiText("--"), sidebar);
     m_adminModelLabel->setObjectName(QStringLiteral("adminModelLabel"));
-    m_adminCustomerIdLabel = new QLabel(tr("--"), sidebar);
+    m_adminCustomerIdLabel = new QLabel(uiText("--"), sidebar);
     m_adminCustomerIdLabel->setObjectName(
         QStringLiteral("adminCustomerIdLabel"));
-    m_adminOrderLabel = new QLabel(tr("--"), sidebar);
-    m_adminTesterLabel = new QLabel(tr("--"), sidebar);
-    m_adminJigLabel = new QLabel(tr("--"), sidebar);
+    m_adminOrderLabel = new QLabel(uiText("--"), sidebar);
+    m_adminTesterLabel = new QLabel(uiText("--"), sidebar);
+    m_adminJigLabel = new QLabel(uiText("--"), sidebar);
     unitDetails->addRow(m_adminSerialCaption, m_adminSerialLabel);
-    unitDetails->addRow(tr("Station ID"), m_adminStationLabel);
-    unitDetails->addRow(tr("Model"), m_adminModelLabel);
-    unitDetails->addRow(tr("Customer ID"), m_adminCustomerIdLabel);
-    unitDetails->addRow(tr("Order"), m_adminOrderLabel);
-    unitDetails->addRow(tr("Tester"), m_adminTesterLabel);
-    unitDetails->addRow(tr("Jig No."), m_adminJigLabel);
+    addUiRow(unitDetails, "Station ID", m_adminStationLabel);
+    addUiRow(unitDetails, "Model", m_adminModelLabel);
+    addUiRow(unitDetails, "Customer ID", m_adminCustomerIdLabel);
+    addUiRow(unitDetails, "Order", m_adminOrderLabel);
+    addUiRow(unitDetails, "Tester", m_adminTesterLabel);
+    addUiRow(unitDetails, "Jig No.", m_adminJigLabel);
     sidebarLayout->addLayout(unitDetails);
     sidebarLayout->addStretch(1);
 
@@ -6402,11 +6337,11 @@ void MainWindow::buildLayout()
     m_adminYieldChart->setObjectName(QStringLiteral("adminYieldChart"));
     sidebarLayout->addWidget(m_adminYieldChart, 0, Qt::AlignHCenter);
 
-    auto* resultCaption = new QLabel(tr("OVERALL RESULT"), sidebar);
+    auto* resultCaption = makeUiLabel("OVERALL RESULT", sidebar);
     resultCaption->setObjectName(QStringLiteral("adminMetricCaption"));
     resultCaption->setAlignment(Qt::AlignCenter);
     sidebarLayout->addWidget(resultCaption);
-    m_adminOverallResult = new QLabel(tr("WAITING"), sidebar);
+    m_adminOverallResult = new QLabel(uiText("WAITING"), sidebar);
     m_adminOverallResult->setObjectName(QStringLiteral("adminOverallResult"));
     m_adminOverallResult->setAlignment(Qt::AlignCenter);
     m_adminOverallResult->setMinimumHeight(104);
@@ -6415,11 +6350,11 @@ void MainWindow::buildLayout()
     overallFont.setPointSize(overallFont.pointSize() + 12);
     m_adminOverallResult->setFont(overallFont);
     sidebarLayout->addWidget(m_adminOverallResult);
-    auto* elapsedCaption = new QLabel(tr("ELAPSED TIME"), sidebar);
+    auto* elapsedCaption = makeUiLabel("ELAPSED TIME", sidebar);
     elapsedCaption->setObjectName(QStringLiteral("adminMetricCaption"));
     elapsedCaption->setAlignment(Qt::AlignCenter);
     sidebarLayout->addWidget(elapsedCaption);
-    m_adminElapsedLabel = new QLabel(tr("00:00.000"), sidebar);
+    m_adminElapsedLabel = new QLabel(uiText("00:00.000"), sidebar);
     m_adminElapsedLabel->setObjectName(QStringLiteral("adminElapsedLabel"));
     m_adminElapsedLabel->setAlignment(Qt::AlignCenter);
     sidebarLayout->addWidget(m_adminElapsedLabel);
@@ -6489,7 +6424,7 @@ void MainWindow::buildLayout()
     m_attemptView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_attemptView->verticalHeader()->setVisible(false);
     installProportionalHeader(m_attemptView, {1, 2, 1, 1, 4});
-    details->addTab(m_attemptView, tr("Attempts"));
+    addUiTab(details, m_attemptView, "Attempts");
 
     m_measurementView = new QTableView(details);
     m_measurementView->setModel(m_measurementModel);
@@ -6498,7 +6433,7 @@ void MainWindow::buildLayout()
     m_measurementView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_measurementView->verticalHeader()->setVisible(false);
     installProportionalHeader(m_measurementView, {2, 2, 1, 3, 1});
-    details->addTab(m_measurementView, tr("Measurements"));
+    addUiTab(details, m_measurementView, "Measurements");
 
     m_runtimeTimelineView = new QTableView(details);
     m_runtimeTimelineView->setModel(m_runtimeTimelineProxy);
@@ -6513,7 +6448,7 @@ void MainWindow::buildLayout()
     m_runtimeTimelineView->horizontalHeader()->setSectionResizeMode(
         RuntimeTimelineModel::MessageColumn, QHeaderView::Stretch);
     m_runtimeTimelineView->setColumnWidth(RuntimeTimelineModel::TimeColumn, 112);
-    details->addTab(m_runtimeTimelineView, tr("Execution Log"));
+    addUiTab(details, m_runtimeTimelineView, "Execution Log");
     connect(m_runtimeTimelineView,
             &QTableView::clicked,
             this,
@@ -6527,7 +6462,7 @@ void MainWindow::buildLayout()
     m_debugSnapshotView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_debugSnapshotView->verticalHeader()->setVisible(false);
     installProportionalHeader(m_debugSnapshotView, {2, 2, 5});
-    details->addTab(m_debugSnapshotView, tr("Debug"));
+    addUiTab(details, m_debugSnapshotView, "Debug");
 
     m_deviceStatusView = new QTableView(details);
     m_deviceStatusView->setModel(m_deviceStatusModel);
@@ -6536,7 +6471,7 @@ void MainWindow::buildLayout()
     m_deviceStatusView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_deviceStatusView->verticalHeader()->setVisible(false);
     installProportionalHeader(m_deviceStatusView, {2, 2, 3, 2, 5});
-    details->addTab(m_deviceStatusView, tr("Devices"));
+    addUiTab(details, m_deviceStatusView, "Devices");
 
     serviceAdminStartupAnimation();
     m_historyPage = new QWidget(m_workspaceTabs);
@@ -6547,23 +6482,23 @@ void MainWindow::buildLayout()
     historyLayout->setSpacing(6);
     auto* historyCommands = new QHBoxLayout;
     m_historyFilter = new QLineEdit(historyPage);
-    m_historyFilter->setPlaceholderText(tr("Filter by sequence, UUT or result"));
+    bindUiText(m_historyFilter, "placeholderText", "Filter by sequence, UUT or result");
     historyCommands->addWidget(m_historyFilter, 1);
-    auto* openHistory = new QPushButton(
-        style()->standardIcon(QStyle::SP_DialogOpenButton), tr("Open"), historyPage);
+    auto* openHistory = makeUiButton(
+        style()->standardIcon(QStyle::SP_DialogOpenButton), "Open", historyPage);
     auto* exportText = new QPushButton(
-        style()->standardIcon(QStyle::SP_DialogSaveButton), tr("TXT"), historyPage);
+        style()->standardIcon(QStyle::SP_DialogSaveButton), uiText("TXT"), historyPage);
     auto* exportCsv = new QPushButton(
-        style()->standardIcon(QStyle::SP_DialogSaveButton), tr("CSV"), historyPage);
+        style()->standardIcon(QStyle::SP_DialogSaveButton), uiText("CSV"), historyPage);
     auto* exportXlsx = new QPushButton(
-        style()->standardIcon(QStyle::SP_DialogSaveButton), tr("XLSX"), historyPage);
+        style()->standardIcon(QStyle::SP_DialogSaveButton), uiText("XLSX"), historyPage);
     auto* exportPdf = new QPushButton(
-        style()->standardIcon(QStyle::SP_DialogSaveButton), tr("PDF"), historyPage);
-    openHistory->setToolTip(tr("Open selected report"));
-    exportText->setToolTip(tr("Export selected report as TXT"));
-    exportCsv->setToolTip(tr("Export selected report as CSV"));
-    exportXlsx->setToolTip(tr("Export selected report as XLSX"));
-    exportPdf->setToolTip(tr("Export selected report as PDF"));
+        style()->standardIcon(QStyle::SP_DialogSaveButton), uiText("PDF"), historyPage);
+    bindUiText(openHistory, "toolTip", "Open selected report");
+    bindUiText(exportText, "toolTip", "Export selected report as TXT");
+    bindUiText(exportCsv, "toolTip", "Export selected report as CSV");
+    bindUiText(exportXlsx, "toolTip", "Export selected report as XLSX");
+    bindUiText(exportPdf, "toolTip", "Export selected report as PDF");
     historyCommands->addWidget(openHistory);
     historyCommands->addWidget(exportText);
     historyCommands->addWidget(exportCsv);
@@ -6612,7 +6547,7 @@ void MainWindow::buildLayout()
     m_diagnosticView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_diagnosticView->verticalHeader()->setVisible(false);
     installProportionalHeader(m_diagnosticView, {1, 2, 5, 3});
-    details->addTab(m_diagnosticView, tr("Diagnostics"));
+    addUiTab(details, m_diagnosticView, "Diagnostics");
 
     runDataSplitter->setStretchFactor(0, 3);
     runDataSplitter->setStretchFactor(1, 2);
@@ -6662,8 +6597,8 @@ void MainWindow::buildLayout()
     statsLayout->addWidget(m_adminAverageTime);
     statusBar()->addPermanentWidget(statsBar, 1);
 
-    m_workspaceTabs->insertTab(0, runPage, tr("Run Test"));
-    m_workspaceTabs->addTab(historyPage, tr("Reports"));
+    addUiTab(m_workspaceTabs, runPage, "Run Test", 0);
+    addUiTab(m_workspaceTabs, historyPage, "Reports");
     rootLayout->addWidget(m_workspaceTabs, 1);
 
     setCentralWidget(central);
@@ -6798,9 +6733,9 @@ void MainWindow::chooseSequence()
 
     const QString path = QFileDialog::getOpenFileName(
         this,
-        tr("Open Sequence"),
+        uiText("Open Sequence"),
         m_sequenceDocument ? m_sequenceDocument->filePath() : QString(),
-        tr("Sequence JSON (*.json);;All Files (*.*)"));
+        uiText("Sequence JSON (*.json);;All Files (*.*)"));
     if (path.isEmpty()) {
         return;
     }
@@ -6808,11 +6743,11 @@ void MainWindow::chooseSequence()
     if (!openSequenceFile(path)) {
         const auto diagnostics = m_sequenceDocument->diagnostics();
         statusBar()->showMessage(
-            diagnostics.isEmpty() ? tr("Failed to open sequence")
+            diagnostics.isEmpty() ? uiText("Failed to open sequence")
                                   : diagnostics.first().message);
         return;
     }
-    statusBar()->showMessage(tr("Sequence loaded"), 3000);
+    statusBar()->showMessage(uiText("Sequence loaded"), 3000);
 }
 void MainWindow::chooseStation()
 {
@@ -6821,20 +6756,20 @@ void MainWindow::chooseStation()
     }
     const QString path = QFileDialog::getOpenFileName(
         this,
-        tr("Open Station"),
+        uiText("Open Station"),
         m_stationDocument ? m_stationDocument->filePath() : QString(),
-        tr("Station JSON (*.json);;All Files (*.*)"));
+        uiText("Station JSON (*.json);;All Files (*.*)"));
     if (path.isEmpty()) {
         return;
     }
     if (!openStationFile(path)) {
         const auto diagnostics = m_stationDocument->diagnostics();
         statusBar()->showMessage(
-            diagnostics.isEmpty() ? tr("Failed to open station")
+            diagnostics.isEmpty() ? uiText("Failed to open station")
                                   : diagnostics.first().message);
         return;
     }
-    statusBar()->showMessage(tr("Station loaded"), 3000);
+    statusBar()->showMessage(uiText("Station loaded"), 3000);
 }
 
 void MainWindow::updateCommandState()
@@ -6850,8 +6785,8 @@ void MainWindow::updateCommandState()
     m_runAction->setEnabled(m_viewModel->canRun());
     m_runAction->setToolTip(
         m_viewModel->state() == UiRunState::CompileFailed
-            ? tr("Run is unavailable because compilation failed. Fix the highlighted diagnostic and compile again.")
-            : tr("Run compiled sequence"));
+            ? uiText("Run is unavailable because compilation failed. Fix the highlighted diagnostic and compile again.")
+            : uiText("Run compiled sequence"));
     m_pauseAction->setEnabled(m_viewModel->canPause());
     m_resumeAction->setEnabled(m_viewModel->canResume());
     m_stepIntoAction->setEnabled(m_viewModel->canStepInto());
@@ -6900,19 +6835,19 @@ void MainWindow::updateCommandState()
         (sequenceHasChanges || stationHasChanges);
     const bool stationActive = isStationWorkspaceActive();
     m_saveSequenceAction->setText(
-        stationActive ? tr("Save Station") : tr("Save Sequence"));
+        stationActive ? uiText("Save Station") : uiText("Save Sequence"));
     m_saveSequenceAction->setToolTip(
         m_newProjectTemplate
-            ? tr("Save the Sequence and Station as a new project")
-            : (stationActive ? tr("Save Station configuration")
-                             : tr("Save sequence JSON")));
+            ? uiText("Save the Sequence and Station as a new project")
+            : (stationActive ? uiText("Save Station configuration")
+                             : uiText("Save sequence JSON")));
     m_saveSequenceAction->setEnabled(
         canChangeSources &&
         (templateHasChanges ||
          (stationActive ? stationHasChanges : sequenceHasChanges)));
     m_saveSequenceAsAction->setText(
-        m_newProjectTemplate ? tr("Save New Project As...")
-                             : tr("Save Sequence As..."));
+        m_newProjectTemplate ? uiText("Save New Project As...")
+                             : uiText("Save Sequence As..."));
     m_saveSequenceAsAction->setEnabled(canChangeSources && hasDocument);
     m_undoAction->setEnabled(
         canChangeSources && m_sequenceDocument->undoStack()->canUndo());
@@ -6976,8 +6911,8 @@ void MainWindow::updateCommandState()
         canChangeSources && hasStation &&
         (stationHasChanges || templateHasChanges));
     m_saveStationAsAction->setText(
-        m_newProjectTemplate ? tr("Save New Project As...")
-                             : tr("Save Station As..."));
+        m_newProjectTemplate ? uiText("Save New Project As...")
+                             : uiText("Save Station As..."));
     m_saveStationAsAction->setEnabled(canChangeSources && hasStation);
     m_stationUndoAction->setEnabled(
         canChangeSources && m_stationDocument->undoStack()->canUndo());
@@ -7029,8 +6964,8 @@ void MainWindow::updateDiagnostics()
             details->setTabText(
                 index,
                 diagnostics.isEmpty()
-                    ? tr("Diagnostics")
-                    : tr("Diagnostics (%1)").arg(diagnostics.size()));
+                    ? uiText("Diagnostics")
+                    : uiText("Diagnostics (%1)").arg(diagnostics.size()));
         }
     }
 }
@@ -7101,6 +7036,39 @@ void MainWindow::updateCompilePreview()
     updateAdminProgress();
 }
 
+void MainWindow::retranslateUi()
+{
+    updateWindowTitle();
+    updateCommandState();
+    updateAdminUutSlotAction();
+    updateAdminYield();
+    updateAdminOverviewSummary();
+    if (m_adminRunStack->currentWidget() == m_adminRunOverviewPage) {
+        m_adminOverallResult->setText(
+            adminOverviewStateText(m_adminSessionState, m_adminStopRequested));
+    } else if (m_selectedAdminUutId.isEmpty()) {
+        m_adminOverallResult->setText(adminRunStateText(m_adminSessionState));
+    } else {
+        updateSelectedAdminUutSummary();
+    }
+    const auto refreshUndo = [](QAction* action, QUndoStack* stack, bool redo) {
+        const auto text = redo ? stack->redoText() : stack->undoText();
+        action->setText(text.isEmpty() ? uiText(redo ? "Redo" : "Undo")
+            : uiText(redo ? "Redo %1" : "Undo %1").arg(text));
+    };
+    refreshUndo(m_undoAction, m_sequenceDocument->undoStack(), false);
+    refreshUndo(m_redoAction, m_sequenceDocument->undoStack(), true);
+    refreshUndo(m_stationUndoAction, m_stationDocument->undoStack(), false);
+    refreshUndo(m_stationRedoAction, m_stationDocument->undoStack(), true);
+    statusBar()->showMessage(uiStateText(uiRunStateName(m_viewModel->state())));
+    const int diagnosticCount = m_diagnosticModel->rowCount();
+    auto* tabs = qobject_cast<QTabWidget*>(m_diagnosticView->parentWidget()->parentWidget());
+    if (tabs && tabs->indexOf(m_diagnosticView) >= 0) {
+        tabs->setTabText(tabs->indexOf(m_diagnosticView), diagnosticCount == 0
+            ? uiText("Diagnostics") : uiText("Diagnostics (%1)").arg(diagnosticCount));
+    }
+}
+
 void MainWindow::updateAdminRunState(UiRunState state)
 {
     if (!m_adminOverallResult) {
@@ -7156,11 +7124,11 @@ void MainWindow::updateAdminStationSummary()
         : result.config.stationId;
     m_adminStationLabel->setText(stationId);
     m_adminModelLabel->setText(result.config.model.trimmed().isEmpty()
-                                   ? tr("--")
+                                   ? uiText("--")
                                    : result.config.model.trimmed());
     m_adminCustomerIdLabel->setText(
         result.config.customerId.trimmed().isEmpty()
-            ? tr("--")
+            ? uiText("--")
             : result.config.customerId.trimmed());
     m_adminOrderLabel->setText(stationMetadataValue(
         result.config.metadata, {"order", "orderNumber"}));
@@ -7187,14 +7155,14 @@ void MainWindow::updateAdminYield()
         return;
     }
     const int total = m_adminPassedUnits + m_adminFailedUnits;
-    m_adminPassCount->setText(tr("PASS %1").arg(m_adminPassedUnits));
-    m_adminFailCount->setText(tr("FAIL %1").arg(m_adminFailedUnits));
-    m_adminTotalCount->setText(tr("TOTAL %1").arg(total));
+    m_adminPassCount->setText(uiText("PASS %1").arg(m_adminPassedUnits));
+    m_adminFailCount->setText(uiText("FAIL %1").arg(m_adminFailedUnits));
+    m_adminTotalCount->setText(uiText("TOTAL %1").arg(total));
     m_adminYieldChart->setCounts(m_adminPassedUnits, m_adminFailedUnits);
     const qint64 average = total > 0
         ? m_adminTotalCompletedDurationMs / total
         : 0;
-    m_adminAverageTime->setText(tr("AVERAGE TIME %1:%2.%3")
+    m_adminAverageTime->setText(uiText("AVERAGE TIME %1:%2.%3")
         .arg(average / 60000, 2, 10, QLatin1Char('0'))
         .arg(average / 1000 % 60, 2, 10, QLatin1Char('0'))
         .arg(average % 1000, 3, 10, QLatin1Char('0')));
@@ -7442,7 +7410,7 @@ void MainWindow::rebuildAdminUutButtons()
         button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
         button->setToolTip(definition.serialNumber.isEmpty()
                                ? definition.uutId
-                               : tr("%1 | SN: %2")
+                               : uiText("%1 | SN: %2")
                                      .arg(definition.uutId,
                                           definition.serialNumber));
         m_adminUutNavigationGroup->addButton(button, row + 1);
@@ -7480,7 +7448,7 @@ void MainWindow::updateSelectedAdminUutSummary()
         return;
     }
     m_adminSerialLabel->setText(entry->serialNumber.isEmpty()
-                                    ? tr("--")
+                                    ? uiText("--")
                                     : entry->serialNumber);
     if (m_adminRunStack && m_adminRunOverviewPage &&
         m_adminRunStack->currentWidget() == m_adminRunOverviewPage) {
@@ -7512,7 +7480,7 @@ void MainWindow::updateSelectedAdminUutSummary()
     }
     m_adminOverallResult->setText(
         entry->state == UutOverviewState::Waiting
-            ? tr("WAITING")
+            ? uiText("WAITING")
             : adminRunStateText(displayState));
     m_adminOverallResult->setStyleSheet(adminRunStateStyle(displayState));
     m_adminProgress->setValue(entry->progress);
@@ -7536,14 +7504,14 @@ void MainWindow::updateReport()
         if (saved.success) {
             refreshHistory();
         } else {
-            statusBar()->showMessage(tr("Failed to save report: %1").arg(saved.errorMessage));
+            statusBar()->showMessage(uiText("Failed to save report: %1").arg(saved.errorMessage));
         }
     }
     if (report.completed && m_runArtifactWriter->active()) {
         const auto archived = m_runArtifactWriter->finalize(report);
         if (!archived.success) {
             statusBar()->showMessage(
-                tr("Report archive failed: %1").arg(archived.errorMessage),
+                uiText("Report archive failed: %1").arg(archived.errorMessage),
                 10000);
         }
     }
@@ -7671,7 +7639,7 @@ void MainWindow::applyRuntimeEvents(
     const auto written = m_runArtifactWriter->appendLogLines(logLines);
     if (!written.success) {
         statusBar()->showMessage(
-            tr("TXT log write failed: %1").arg(written.errorMessage),
+            uiText("TXT log write failed: %1").arg(written.errorMessage),
             10000);
     }
     if (detailVisible && m_runtimeTimelineView->model()->rowCount() > 0) {
@@ -7793,9 +7761,9 @@ void MainWindow::selectRuntimeEvent(const PicoATE::Core::RuntimeEvent& event)
                                                          : event.nodeDisplayName;
     QString message = stepName.isEmpty()
         ? kindName
-        : tr("%1: %2").arg(kindName, stepName);
+        : uiText("%1: %2").arg(kindName, stepName);
     if (!event.message.isEmpty()) {
-        message = tr("%1 - %2").arg(message, event.message);
+        message = uiText("%1 - %2").arg(message, event.message);
     }
     statusBar()->showMessage(message, 5000);
 }
@@ -7850,7 +7818,7 @@ void MainWindow::focusExecutionLogForResult(const QModelIndex& index)
     }
     if (row < 0) {
         statusBar()->showMessage(
-            tr("No execution log is available for %1 yet").arg(step->displayName),
+            uiText("No execution log is available for %1 yet").arg(step->displayName),
             3000);
         return;
     }
@@ -7918,11 +7886,11 @@ void MainWindow::focusDebugNode(const PicoATE::Core::RuntimeEvent& event)
     const auto localPath = m_sequenceTreeModel->localPathForIndex(index);
     if (event.kind == PicoATE::Core::RuntimeEventKind::BreakpointHit) {
         statusBar()->showMessage(
-            tr("Breakpoint hit: %1").arg(localPath.isEmpty() ? event.nodeId : localPath),
+            uiText("Breakpoint hit: %1").arg(localPath.isEmpty() ? event.nodeId : localPath),
             8000);
     } else {
         statusBar()->showMessage(
-            tr("Paused after step: %1").arg(localPath.isEmpty() ? event.nodeId : localPath),
+            uiText("Paused after step: %1").arg(localPath.isEmpty() ? event.nodeId : localPath),
             5000);
     }
 }
@@ -7967,7 +7935,7 @@ void MainWindow::refreshHistory()
     QString errorMessage;
     m_historyModel->setEntries(m_historyStore->entries(&errorMessage));
     if (!errorMessage.isEmpty()) {
-        statusBar()->showMessage(tr("Failed to load report history: %1").arg(errorMessage));
+        statusBar()->showMessage(uiText("Failed to load report history: %1").arg(errorMessage));
     }
 }
 
@@ -7984,7 +7952,7 @@ void MainWindow::loadSelectedHistory()
 {
     const auto entry = selectedHistoryEntry();
     if (!entry) {
-        statusBar()->showMessage(tr("Select a report first"));
+        statusBar()->showMessage(uiText("Select a report first"));
         return;
     }
     const auto loaded = m_historyStore->load(entry->id);
@@ -7992,23 +7960,23 @@ void MainWindow::loadSelectedHistory()
         const auto detail = !loaded.errorMessage.isEmpty()
             ? loaded.errorMessage
             : loaded.parseErrors.first().message;
-        statusBar()->showMessage(tr("Failed to load report: %1").arg(detail));
+        statusBar()->showMessage(uiText("Failed to load report: %1").arg(detail));
         return;
     }
     displayReport(loaded.report);
-    statusBar()->showMessage(tr("Loaded report %1").arg(entry->id));
+    statusBar()->showMessage(uiText("Loaded report %1").arg(entry->id));
 }
 
 void MainWindow::exportSelectedHistory(HistoryExportFormat format)
 {
     const auto entry = selectedHistoryEntry();
     if (!entry) {
-        statusBar()->showMessage(tr("Select a report first"));
+        statusBar()->showMessage(uiText("Select a report first"));
         return;
     }
     const auto loaded = m_historyStore->load(entry->id);
     if (!loaded.ok()) {
-        statusBar()->showMessage(tr("Failed to load selected report"));
+        statusBar()->showMessage(uiText("Failed to load selected report"));
         return;
     }
     const bool csv = format == HistoryExportFormat::Csv;
@@ -8019,13 +7987,13 @@ void MainWindow::exportSelectedHistory(HistoryExportFormat format)
         : (xlsx ? QStringLiteral("xlsx")
                 : (csv ? QStringLiteral("csv") : QStringLiteral("txt")));
     const auto title = pdf
-        ? tr("Export PDF Report")
-        : (xlsx ? tr("Export XLSX Report")
-                : (csv ? tr("Export CSV Report") : tr("Export TXT Report")));
+        ? uiText("Export PDF Report")
+        : (xlsx ? uiText("Export XLSX Report")
+                : (csv ? uiText("Export CSV Report") : uiText("Export TXT Report")));
     const auto filter = pdf
-        ? tr("PDF Report (*.pdf)")
-        : (xlsx ? tr("Excel Workbook (*.xlsx)")
-                : (csv ? tr("CSV Report (*.csv)") : tr("TXT Report (*.txt)")));
+        ? uiText("PDF Report (*.pdf)")
+        : (xlsx ? uiText("Excel Workbook (*.xlsx)")
+                : (csv ? uiText("CSV Report (*.csv)") : uiText("TXT Report (*.txt)")));
     const auto path = QFileDialog::getSaveFileName(
         this,
         title,
@@ -8043,8 +8011,8 @@ void MainWindow::exportSelectedHistory(HistoryExportFormat format)
         result = ReportExporter::makeReadOnly(path);
     }
     statusBar()->showMessage(result.success
-                                 ? tr("Report exported")
-                                 : tr("Export failed: %1").arg(result.errorMessage));
+                                 ? uiText("Report exported")
+                                 : uiText("Export failed: %1").arg(result.errorMessage));
 }
 
 void MainWindow::restoreUiSettings()
@@ -8152,7 +8120,7 @@ void MainWindow::resetUiLayout()
     }
     m_responsiveLayoutMode = -1;
     applyResponsiveLayout(true);
-    statusBar()->showMessage(tr("Default layout restored"), 3000);
+    statusBar()->showMessage(uiText("Default layout restored"), 3000);
 }
 
 void MainWindow::addRecentSequence(const QString& filePath)
@@ -8190,7 +8158,7 @@ void MainWindow::refreshRecentFileMenus()
         for (int index = 0; index < paths.size(); ++index) {
             const auto path = paths.at(index);
             auto* action = menu->addAction(
-                tr("%1  %2").arg(index + 1).arg(QFileInfo(path).fileName()));
+                uiText("%1  %2").arg(index + 1).arg(QFileInfo(path).fileName()));
             action->setToolTip(path);
             connect(action, &QAction::triggered, this, [this, path, sequence] {
                 sequence ? openRecentSequence(path) : openRecentStation(path);
@@ -8210,7 +8178,7 @@ void MainWindow::openRecentSequence(const QString& filePath)
     if (!openSequenceFile(filePath)) {
         m_recentSequences.removeAll(filePath);
         refreshRecentFileMenus();
-        statusBar()->showMessage(tr("Recent sequence could not be opened"), 5000);
+        statusBar()->showMessage(uiText("Recent sequence could not be opened"), 5000);
     }
 }
 
@@ -8222,7 +8190,7 @@ void MainWindow::openRecentStation(const QString& filePath)
     if (!openStationFile(filePath)) {
         m_recentStations.removeAll(filePath);
         refreshRecentFileMenus();
-        statusBar()->showMessage(tr("Recent station could not be opened"), 5000);
+        statusBar()->showMessage(uiText("Recent station could not be opened"), 5000);
     }
 }
 

@@ -1,3 +1,4 @@
+#include "UiTextBinding.h"
 #include "ProductionWindow.h"
 
 #include "ProportionalHeaderView.h"
@@ -66,6 +67,9 @@
 #include <initializer_list>
 #include <algorithm>
 
+using PicoATE::Ui::uiText;
+using PicoATE::Ui::uiStateText;
+
 namespace PicoATE::Ui {
 
 namespace {
@@ -105,17 +109,17 @@ bool runtimeEventCarriesActivationState(
 QString productionStateText(UiRunState state)
 {
     switch (state) {
-    case UiRunState::Compiling: return QStringLiteral("COMPILING");
-    case UiRunState::Ready: return QStringLiteral("READY");
+    case UiRunState::Compiling: return uiText("COMPILING");
+    case UiRunState::Ready: return uiText("READY");
     case UiRunState::Starting:
-    case UiRunState::Running: return QStringLiteral("RUNNING");
-    case UiRunState::Pausing: return QStringLiteral("PAUSING");
-    case UiRunState::Paused: return QStringLiteral("PAUSED");
-    case UiRunState::Stopping: return QStringLiteral("STOPPING");
-    case UiRunState::Completed: return QStringLiteral("PASS");
+    case UiRunState::Running: return uiText("RUNNING");
+    case UiRunState::Pausing: return uiText("PAUSING");
+    case UiRunState::Paused: return uiText("PAUSED");
+    case UiRunState::Stopping: return uiText("STOPPING");
+    case UiRunState::Completed: return uiText("PASS");
     case UiRunState::CompileFailed:
-    case UiRunState::Failed: return QStringLiteral("FAIL");
-    default: return QStringLiteral("WAITING");
+    case UiRunState::Failed: return uiText("FAIL");
+    default: return uiText("WAITING");
     }
 }
 
@@ -197,17 +201,17 @@ QIcon overviewIndicatorIcon(qreal fill)
 QString productionOverviewStateText(UiRunState state, bool stopRequested)
 {
     switch (state) {
-    case UiRunState::Starting: return QStringLiteral("STARTING");
-    case UiRunState::Running: return QStringLiteral("TESTING");
-    case UiRunState::Pausing: return QStringLiteral("PAUSING");
-    case UiRunState::Paused: return QStringLiteral("PAUSED");
-    case UiRunState::Stopping: return QStringLiteral("STOPPING");
+    case UiRunState::Starting: return uiText("STARTING");
+    case UiRunState::Running: return uiText("TESTING");
+    case UiRunState::Pausing: return uiText("PAUSING");
+    case UiRunState::Paused: return uiText("PAUSED");
+    case UiRunState::Stopping: return uiText("STOPPING");
     case UiRunState::Completed:
     case UiRunState::Failed:
-        return stopRequested ? QStringLiteral("STOPPED")
-                             : QStringLiteral("COMPLETED");
-    case UiRunState::Ready: return QStringLiteral("READY");
-    default: return QStringLiteral("WAITING");
+        return stopRequested ? uiText("STOPPED")
+                             : uiText("COMPLETED");
+    case UiRunState::Ready: return uiText("READY");
+    default: return uiText("WAITING");
     }
 }
 
@@ -236,15 +240,15 @@ public:
         auto* stateLayout = new QVBoxLayout(stateArea);
         stateLayout->setContentsMargins(0, 0, 0, 0);
         stateLayout->setSpacing(3);
-        auto* stateCaption = new QLabel(tr("BATCH STATUS"), stateArea);
+        auto* stateCaption = makeUiLabel("BATCH STATUS", stateArea);
         stateCaption->setObjectName(
             QStringLiteral("productionOverviewSummaryCaption"));
-        m_stateLabel = new QLabel(tr("WAITING"), stateArea);
+        m_stateLabel = new QLabel(uiText("WAITING"), stateArea);
         m_stateLabel->setObjectName(
             QStringLiteral("productionOverviewSummaryState"));
         m_stateLabel->setAlignment(Qt::AlignCenter);
         m_stateLabel->setMinimumWidth(112);
-        m_elapsedLabel = new QLabel(tr("Elapsed 00:00.000"), stateArea);
+        m_elapsedLabel = new QLabel(uiText("Elapsed 00:00.000"), stateArea);
         m_elapsedLabel->setObjectName(
             QStringLiteral("productionOverviewSummaryElapsed"));
         stateLayout->addWidget(stateCaption);
@@ -263,22 +267,22 @@ public:
         stationLayout->setHorizontalSpacing(18);
         stationLayout->setVerticalSpacing(1);
         m_stationLabel = addField(
-            stationLayout, 0, 0, tr("STATION"),
+            stationLayout, 0, 0, "STATION",
             QStringLiteral("productionOverviewStationValue"));
         m_modelLabel = addField(
-            stationLayout, 0, 1, tr("MODEL"),
+            stationLayout, 0, 1, "MODEL",
             QStringLiteral("productionOverviewModelValue"));
         m_customerIdLabel = addField(
-            stationLayout, 0, 2, tr("CUSTOMER ID"),
+            stationLayout, 0, 2, "CUSTOMER ID",
             QStringLiteral("productionOverviewCustomerIdValue"));
         m_orderLabel = addField(
-            stationLayout, 2, 0, tr("ORDER"),
+            stationLayout, 2, 0, "ORDER",
             QStringLiteral("productionOverviewOrderValue"));
         m_testerLabel = addField(
-            stationLayout, 2, 1, tr("TESTER"),
+            stationLayout, 2, 1, "TESTER",
             QStringLiteral("productionOverviewTesterValue"));
         m_jigLabel = addField(
-            stationLayout, 2, 2, tr("JIG NO."),
+            stationLayout, 2, 2, "JIG NO.",
             QStringLiteral("productionOverviewJigValue"));
         for (int column = 0; column < 3; ++column) {
             stationLayout->setColumnStretch(column, 1);
@@ -295,16 +299,16 @@ public:
         countLayout->setHorizontalSpacing(14);
         countLayout->setVerticalSpacing(2);
         m_runningLabel = addCount(
-            countLayout, 0, tr("RUNNING"), QStringLiteral("running"),
+            countLayout, 0, "RUNNING", QStringLiteral("running"),
             QStringLiteral("productionOverviewRunningValue"));
         m_passLabel = addCount(
-            countLayout, 1, tr("PASS"), QStringLiteral("pass"),
+            countLayout, 1, "PASS", QStringLiteral("pass"),
             QStringLiteral("productionOverviewPassValue"));
         m_failLabel = addCount(
-            countLayout, 2, tr("FAIL"), QStringLiteral("fail"),
+            countLayout, 2, "FAIL", QStringLiteral("fail"),
             QStringLiteral("productionOverviewFailValue"));
         m_waitingLabel = addCount(
-            countLayout, 3, tr("WAITING"), QStringLiteral("waiting"),
+            countLayout, 3, "WAITING", QStringLiteral("waiting"),
             QStringLiteral("productionOverviewWaitingValue"));
         for (int column = 0; column < 4; ++column) {
             countLayout->setColumnStretch(column, 1);
@@ -328,7 +332,8 @@ public:
     {
         const int stateValue = static_cast<int>(state);
         if (m_lastState == stateValue &&
-            m_lastStopRequested == stopRequested) {
+            m_lastStopRequested == stopRequested &&
+            m_stateLabel->text() == productionOverviewStateText(state, stopRequested)) {
             return;
         }
         m_lastState = stateValue;
@@ -378,7 +383,7 @@ public:
 
     void setElapsedText(const QString& elapsed)
     {
-        const auto text = tr("Elapsed %1").arg(elapsed);
+        const auto text = uiText("Elapsed %1").arg(elapsed);
         if (m_elapsedLabel->text() != text) {
             m_elapsedLabel->setText(text);
         }
@@ -429,12 +434,12 @@ private:
     }
 
     QLabel* addField(QGridLayout* layout, int row, int column,
-                     const QString& caption, const QString& objectName)
+                     const char* caption, const QString& objectName)
     {
-        auto* captionLabel = new QLabel(caption, this);
+        auto* captionLabel = makeUiLabel(caption, this);
         captionLabel->setObjectName(
             QStringLiteral("productionOverviewSummaryCaption"));
-        auto* valueLabel = new QLabel(tr("--"), this);
+        auto* valueLabel = new QLabel(uiText("--"), this);
         valueLabel->setObjectName(objectName);
         valueLabel->setProperty("productionOverviewValue", true);
         valueLabel->setMinimumWidth(52);
@@ -446,10 +451,10 @@ private:
     }
 
     QLabel* addCount(QGridLayout* layout, int column,
-                     const QString& caption, const QString& tone,
+                     const char* caption, const QString& tone,
                      const QString& objectName)
     {
-        auto* captionLabel = new QLabel(caption, this);
+        auto* captionLabel = makeUiLabel(caption, this);
         captionLabel->setObjectName(
             QStringLiteral("productionOverviewSummaryCaption"));
         auto* label = new QLabel(this);
@@ -465,7 +470,7 @@ private:
 
     void setFieldText(QLabel* label, const QString& text)
     {
-        const auto display = text.trimmed().isEmpty() ? tr("--")
+        const auto display = text.trimmed().isEmpty() ? uiText("--")
                                                        : text.trimmed();
         if (label->text() != display) {
             label->setText(display);
@@ -504,7 +509,7 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
     , m_selection(std::move(selection))
 {
     setObjectName(QStringLiteral("productionWindow"));
-    setWindowTitle(tr("PicoATE TEST"));
+    setWindowTitle(uiText("PicoATE TEST"));
     setMinimumSize(840, 560);
 #if defined(PICOATE_UI_TEST_PROJECT_DIR)
     m_viewModel = new ExecutionViewModel(
@@ -535,6 +540,9 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
     synchronizeUutSlotCount(
         StartupSupport::stationUutCount(m_selection.stationPath, 1));
     buildUi();
+    installLanguageButton(this);
+    connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
+            this, &ProductionWindow::retranslateUi, Qt::QueuedConnection);
     m_operatorPromptPresenter->setOverviewHost(m_uutOverview);
     updateUutSlotAction();
     QTimer::singleShot(0, this, [this] { applyResponsiveLayout(); });
@@ -674,6 +682,16 @@ bool ProductionWindow::eventFilter(QObject* watched, QEvent* event)
     return QMainWindow::eventFilter(watched, event);
 }
 
+void ProductionWindow::retranslateUi()
+{
+    updateCommands();
+    updateUutSlotAction();
+    updateYieldStatistics();
+    updateOverviewSummary();
+    m_overallResult->setText(productionStateText(m_viewModel->state()));
+    statusBar()->showMessage(uiStateText(uiRunStateName(m_viewModel->state())));
+}
+
 void ProductionWindow::buildUi()
 {
     auto* central = new QWidget(this);
@@ -682,7 +700,7 @@ void ProductionWindow::buildUi()
     layout->setContentsMargins(16, 14, 16, 12);
     layout->setSpacing(10);
 
-    auto* toolbar = new QToolBar(tr("TEST Controls"), central);
+    auto* toolbar = new QToolBar(uiText("TEST Controls"), central);
     toolbar->setObjectName(QStringLiteral("productionToolbar"));
     toolbar->setMovable(false);
     toolbar->setFloatable(false);
@@ -690,44 +708,35 @@ void ProductionWindow::buildUi()
     toolbar->setIconSize(QSize(20, 20));
     toolbar->setFixedHeight(48);
     toolbar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_startAction = toolbar->addAction(
-        productionToolbarIcon("play"), tr("Start"));
+    m_startAction = addUiAction(toolbar, productionToolbarIcon("play"), "Start");
     m_startAction->setObjectName(QStringLiteral("productionStartAction"));
-    m_pauseAction = toolbar->addAction(
-        productionToolbarIcon("pause"), tr("Pause"));
+    m_pauseAction = addUiAction(toolbar, productionToolbarIcon("pause"), "Pause");
     m_pauseAction->setObjectName(QStringLiteral("productionPauseAction"));
-    m_resumeAction = toolbar->addAction(
-        productionToolbarIcon("play"), tr("Resume"));
+    m_resumeAction = addUiAction(toolbar, productionToolbarIcon("play"), "Resume");
     m_resumeAction->setObjectName(QStringLiteral("productionResumeAction"));
-    m_stopAction = toolbar->addAction(
-        productionToolbarIcon("square"), tr("Stop"));
+    m_stopAction = addUiAction(toolbar, productionToolbarIcon("square"), "Stop");
     m_stopAction->setObjectName(QStringLiteral("productionStopAction"));
     m_uutCount = new QSpinBox(toolbar);
     m_uutCount->setObjectName(
         QStringLiteral("productionUutCountSpinBox"));
     m_uutCount->setRange(1, 64);
     m_uutCount->setValue(qMax(1, m_uutSlotEnabled.size()));
-    m_uutCount->setPrefix(tr("UUTs "));
+    bindUiText(m_uutCount, "prefix", "UUTs ");
     m_uutCount->setAlignment(Qt::AlignCenter);
     m_uutCount->setFixedWidth(88);
-    m_uutCount->setToolTip(tr("Number of physical UUT stations"));
+    bindUiText(m_uutCount, "toolTip", "Number of physical UUT stations");
     toolbar->addWidget(m_uutCount);
-    m_uutSlotsAction = toolbar->addAction(
-        productionToolbarIcon("circle-check"), tr("UUT Slots"));
+    m_uutSlotsAction = addUiAction(toolbar, productionToolbarIcon("circle-check"), "UUT Slots");
     m_uutSlotsAction->setObjectName(
         QStringLiteral("productionUutSlotsAction"));
-    m_uutSlotsAction->setToolTip(
-        tr("Enable or disable physical UUT stations"));
+    bindUiText(m_uutSlotsAction, "toolTip", "Enable or disable physical UUT stations");
     toolbar->addSeparator();
-    m_fieldDeviceAction = toolbar->addAction(
-        productionToolbarIcon("cable"), tr("Devices"));
+    m_fieldDeviceAction = addUiAction(toolbar, productionToolbarIcon("cable"), "Devices");
     m_fieldDeviceAction->setObjectName(QStringLiteral("productionFieldDeviceAction"));
-    m_productRoutingAction = toolbar->addAction(
-        productionToolbarIcon("list-restart"), tr("Routes"));
+    m_productRoutingAction = addUiAction(toolbar, productionToolbarIcon("list-restart"), "Routes");
     m_productRoutingAction->setObjectName(
         QStringLiteral("productionProductRoutingAction"));
-    m_productRoutingAction->setToolTip(
-        tr("Configure SN patterns and their test sequences"));
+    bindUiText(m_productRoutingAction, "toolTip", "Configure SN patterns and their test sequences");
     connect(m_startAction, &QAction::triggered,
             this, &ProductionWindow::beginManualRun);
     connect(m_uutCount, &QSpinBox::valueChanged, this, [this](int value) {
@@ -777,7 +786,7 @@ void ProductionWindow::buildUi()
 
     auto* brandLogo = new QLabel(brandSlot);
     brandLogo->setObjectName(QStringLiteral("productionBrandLogo"));
-    brandLogo->setAccessibleName(tr("SINEXCEL"));
+    brandLogo->setAccessibleName(uiText("SINEXCEL"));
     brandLogo->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     brandLogo->setFixedSize(170, 32);
     const QPixmap brandSource(QStringLiteral(":/branding/Sinexcel.png"));
@@ -794,7 +803,7 @@ void ProductionWindow::buildUi()
     brandHeader->addWidget(brandSlot);
 
     const auto sequenceTitle = m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn
-        ? tr("Auto By SN")
+        ? uiText("Auto By SN")
         : QFileInfo(m_selection.sequencePath).fileName();
     m_sequenceLabel = new QLabel(sequenceTitle, central);
     m_sequenceLabel->setObjectName(QStringLiteral("productionSequenceLabel"));
@@ -818,14 +827,13 @@ void ProductionWindow::buildUi()
     auto* navigationLeadLayout = new QHBoxLayout(navigationLead);
     navigationLeadLayout->setContentsMargins(6, 0, 6, 0);
     navigationLeadLayout->setSpacing(8);
-    m_overviewButton = new QPushButton(
-        overviewIndicatorIcon(0.0), tr("Overview"), navigationLead);
+    m_overviewButton = makeUiButton(overviewIndicatorIcon(0.0), "Overview", navigationLead);
     m_overviewButton->setObjectName(
         QStringLiteral("productionOverviewButton"));
     m_overviewButton->setCheckable(true);
     m_overviewButton->setIconSize(QSize(18, 18));
     m_overviewButton->setProperty("overviewIndicatorFill", 0.0);
-    m_overviewButton->setToolTip(tr("Return to the UUT overview"));
+    bindUiText(m_overviewButton, "toolTip", "Return to the UUT overview");
     auto* overviewIndicatorAnimation = new QVariantAnimation(
         m_overviewButton);
     overviewIndicatorAnimation->setDuration(140);
@@ -846,7 +854,7 @@ void ProductionWindow::buildUi()
                 overviewIndicatorAnimation->setEndValue(checked ? 1.0 : 0.0);
                 overviewIndicatorAnimation->start();
             });
-    auto* detailTitle = new QLabel(tr("UUT DETAILS"), navigationLead);
+    auto* detailTitle = makeUiLabel("UUT DETAILS", navigationLead);
     detailTitle->setObjectName(QStringLiteral("productionSectionTitle"));
     navigationLeadLayout->addWidget(m_overviewButton);
     navigationLeadLayout->addWidget(detailTitle);
@@ -890,7 +898,7 @@ void ProductionWindow::buildUi()
     sidebarLayout->setContentsMargins(18, 18, 18, 18);
     sidebarLayout->setSpacing(14);
 
-    auto* unitTitle = new QLabel(tr("UNIT UNDER TEST"), sidebar);
+    auto* unitTitle = makeUiLabel("UNIT UNDER TEST", sidebar);
     unitTitle->setObjectName(QStringLiteral("productionSectionTitle"));
     sidebarLayout->addWidget(unitTitle);
 
@@ -905,18 +913,18 @@ void ProductionWindow::buildUi()
     details->setHorizontalSpacing(12);
     details->setVerticalSpacing(12);
     details->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    m_serialLabel = new QLabel(tr("--"), sidebar);
+    m_serialLabel = new QLabel(uiText("--"), sidebar);
     m_serialLabel->setObjectName(QStringLiteral("productionSerialLabel"));
     m_stationLabel = new QLabel(stationId, sidebar);
     m_stationLabel->setObjectName(QStringLiteral("productionStationLabel"));
     m_modelLabel = new QLabel(stationResult.config.model.trimmed().isEmpty()
-                                  ? tr("--")
+                                  ? uiText("--")
                                   : stationResult.config.model.trimmed(),
                               sidebar);
     m_modelLabel->setObjectName(QStringLiteral("productionModelLabel"));
     m_customerIdLabel = new QLabel(
         stationResult.config.customerId.trimmed().isEmpty()
-            ? tr("--")
+            ? uiText("--")
             : stationResult.config.customerId.trimmed(),
         sidebar);
     m_customerIdLabel->setObjectName(
@@ -933,13 +941,13 @@ void ProductionWindow::buildUi()
         value->setTextInteractionFlags(Qt::TextSelectableByMouse);
         value->setWordWrap(true);
     }
-    details->addRow(tr("SN"), m_serialLabel);
-    details->addRow(tr("Station ID"), m_stationLabel);
-    details->addRow(tr("Model"), m_modelLabel);
-    details->addRow(tr("Customer ID"), m_customerIdLabel);
-    details->addRow(tr("Order"), m_orderLabel);
-    details->addRow(tr("Tester"), m_testerLabel);
-    details->addRow(tr("Jig No."), m_jigLabel);
+    addUiRow(details, "SN", m_serialLabel);
+    addUiRow(details, "Station ID", m_stationLabel);
+    addUiRow(details, "Model", m_modelLabel);
+    addUiRow(details, "Customer ID", m_customerIdLabel);
+    addUiRow(details, "Order", m_orderLabel);
+    addUiRow(details, "Tester", m_testerLabel);
+    addUiRow(details, "Jig No.", m_jigLabel);
     sidebarLayout->addLayout(details);
     sidebarLayout->addStretch(1);
 
@@ -947,11 +955,11 @@ void ProductionWindow::buildUi()
     m_yieldChart->setObjectName(QStringLiteral("productionYieldChart"));
     sidebarLayout->addWidget(m_yieldChart, 0, Qt::AlignHCenter);
 
-    auto* resultCaption = new QLabel(tr("OVERALL RESULT"), sidebar);
+    auto* resultCaption = makeUiLabel("OVERALL RESULT", sidebar);
     resultCaption->setObjectName(QStringLiteral("productionMetricCaption"));
     resultCaption->setAlignment(Qt::AlignCenter);
     sidebarLayout->addWidget(resultCaption);
-    m_overallResult = new QLabel(tr("WAITING"), sidebar);
+    m_overallResult = new QLabel(uiText("WAITING"), sidebar);
     m_overallResult->setObjectName(QStringLiteral("productionOverallResult"));
     m_overallResult->setAlignment(Qt::AlignCenter);
     m_overallResult->setMinimumHeight(112);
@@ -961,11 +969,11 @@ void ProductionWindow::buildUi()
     m_overallResult->setFont(resultFont);
     sidebarLayout->addWidget(m_overallResult);
 
-    auto* elapsedCaption = new QLabel(tr("ELAPSED TIME"), sidebar);
+    auto* elapsedCaption = makeUiLabel("ELAPSED TIME", sidebar);
     elapsedCaption->setObjectName(QStringLiteral("productionMetricCaption"));
     elapsedCaption->setAlignment(Qt::AlignCenter);
     sidebarLayout->addWidget(elapsedCaption);
-    m_elapsedLabel = new QLabel(tr("00:00.000"), sidebar);
+    m_elapsedLabel = new QLabel(uiText("00:00.000"), sidebar);
     m_elapsedLabel->setObjectName(QStringLiteral("productionElapsedLabel"));
     m_elapsedLabel->setAlignment(Qt::AlignCenter);
     sidebarLayout->addWidget(m_elapsedLabel);
@@ -1001,7 +1009,7 @@ void ProductionWindow::buildUi()
     auto* resultsLayout = new QVBoxLayout(resultsArea);
     resultsLayout->setContentsMargins(0, 0, 0, 0);
     resultsLayout->setSpacing(6);
-    auto* resultsTitle = new QLabel(tr("TEST RESULTS"), resultsArea);
+    auto* resultsTitle = makeUiLabel("TEST RESULTS", resultsArea);
     resultsTitle->setObjectName(QStringLiteral("productionSectionTitle"));
     resultsLayout->addWidget(resultsTitle);
     m_resultView = new QTreeView(resultsArea);
@@ -1033,7 +1041,7 @@ void ProductionWindow::buildUi()
     auto* logsLayout = new QVBoxLayout(logsArea);
     logsLayout->setContentsMargins(0, 0, 0, 0);
     logsLayout->setSpacing(6);
-    auto* logsTitle = new QLabel(tr("EXECUTION LOG"), logsArea);
+    auto* logsTitle = makeUiLabel("EXECUTION LOG", logsArea);
     logsTitle->setObjectName(QStringLiteral("productionSectionTitle"));
     logsLayout->addWidget(logsTitle);
     m_logView = new QTableView(logsArea);
@@ -1374,14 +1382,14 @@ void ProductionWindow::updateState(UiRunState state)
                 if (details.size() == 5) break;
             }
             if (details.isEmpty()) {
-                details.push_back(tr("The test could not be started."));
+                details.push_back(uiText("The test could not be started."));
             }
             const auto message = details.join(QStringLiteral("\n\n"));
             statusBar()->showMessage(message.section(QLatin1Char('\n'), 0, 0),
                                      15000);
             QTimer::singleShot(0, this, [this, message] {
                 m_scanDialog->hide();
-                QMessageBox::critical(this, tr("Test could not start"), message);
+                QMessageBox::critical(this, uiText("Test could not start"), message);
                 showScanDialogWhenReady();
             });
         } else {
@@ -1390,7 +1398,7 @@ void ProductionWindow::updateState(UiRunState state)
     }
     updateCommands();
     updateOverviewSummary();
-    statusBar()->showMessage(uiRunStateName(state));
+    statusBar()->showMessage(uiStateText(uiRunStateName(state)));
 }
 
 void ProductionWindow::updateCompileSummary()
@@ -1423,7 +1431,7 @@ void ProductionWindow::updateCompileSummary()
                 }
             }
             showRoutingError(details.isEmpty()
-                ? tr("The routed Sequence could not be compiled")
+                ? uiText("The routed Sequence could not be compiled")
                 : details.join(QStringLiteral("\n")));
         }
         return;
@@ -1448,7 +1456,7 @@ void ProductionWindow::updateReport()
         const auto archived = m_runArtifactWriter->finalize(report);
         if (!archived.success) {
             statusBar()->showMessage(
-                tr("Report archive failed: %1").arg(archived.errorMessage),
+                uiText("Report archive failed: %1").arg(archived.errorMessage),
                 10000);
         }
     }
@@ -1538,7 +1546,7 @@ void ProductionWindow::applyRuntimeEvents(
     const auto written = m_runArtifactWriter->appendLogLines(logLines);
     if (!written.success) {
         statusBar()->showMessage(
-            tr("TXT log write failed: %1").arg(written.errorMessage),
+            uiText("TXT log write failed: %1").arg(written.errorMessage),
             10000);
     }
     if (m_logModel->rowCount() > 0) {
@@ -1587,7 +1595,7 @@ void ProductionWindow::focusExecutionLogForResult(const QModelIndex& index)
     }
     if (row < 0) {
         statusBar()->showMessage(
-            tr("No execution log is available for %1 yet").arg(step->displayName),
+            uiText("No execution log is available for %1 yet").arg(step->displayName),
             3000);
         return;
     }
@@ -1596,7 +1604,7 @@ void ProductionWindow::focusExecutionLogForResult(const QModelIndex& index)
     const auto logIndex = m_logProxy->mapFromSource(sourceIndex);
     if (!logIndex.isValid()) {
         statusBar()->showMessage(
-            tr("The execution log belongs to another UUT"), 3000);
+            uiText("The execution log belongs to another UUT"), 3000);
         return;
     }
     m_logView->setCurrentIndex(logIndex);
@@ -1636,7 +1644,7 @@ void ProductionWindow::beginRunBatch(const QStringList& serialNumbers)
         }
     }
     m_runPreparationPending = true;
-    statusBar()->showMessage(tr("Preparing station devices..."));
+    statusBar()->showMessage(uiText("Preparing station devices..."));
     startResolvedRun();
 }
 
@@ -1669,7 +1677,7 @@ void ProductionWindow::beginAutoRoutedRunBatch(
         return;
     }
     if (!m_viewModel->canChangeSources()) {
-        showRoutingError(tr("A test is already running"));
+        showRoutingError(uiText("A test is already running"));
         return;
     }
 
@@ -1697,7 +1705,7 @@ void ProductionWindow::beginAutoRoutedRunBatch(
     }
     if (sns.size() != batch.uutCount) {
         showRoutingError(
-            tr("Project %1 provides %2 UUT slot(s), but the scanner has %3")
+            uiText("Project %1 provides %2 UUT slot(s), but the scanner has %3")
                 .arg(batch.route.projectName)
                 .arg(batch.uutCount)
                 .arg(sns.size()));
@@ -1716,7 +1724,7 @@ void ProductionWindow::beginAutoRoutedRunBatch(
     updateStationSummary();
     m_sequenceLabel->setText(QFileInfo(route.sequencePath).fileName());
     m_sequenceLabel->setToolTip(
-        tr("Project: %1\nSequence: %2\nStation: %3\nMatched route: %4")
+        uiText("Project: %1\nSequence: %2\nStation: %3\nMatched route: %4")
             .arg(route.projectName, route.sequencePath,
                  route.stationPath, route.routeName));
     if (m_viewModel->sequencePath() == route.sequencePath &&
@@ -1729,7 +1737,7 @@ void ProductionWindow::beginAutoRoutedRunBatch(
     m_viewModel->setSequencePath(route.sequencePath);
     m_viewModel->compile();
     statusBar()->showMessage(
-        tr("%1 active UUT SN(s) matched %2. Loading %3...")
+        uiText("%1 active UUT SN(s) matched %2. Loading %3...")
             .arg(enabledUutSlotCount(m_uutSlotEnabled))
             .arg(route.routeName, QFileInfo(route.sequencePath).fileName()));
 }
@@ -1737,12 +1745,12 @@ void ProductionWindow::beginAutoRoutedRunBatch(
 void ProductionWindow::showRoutingError(const QString& message)
 {
     const auto text = message.trimmed().isEmpty()
-        ? tr("Product routing failed")
+        ? uiText("Product routing failed")
         : message.trimmed();
     statusBar()->showMessage(text.section(QLatin1Char('\n'), 0, 0), 10000);
     QTimer::singleShot(0, this, [this, text] {
         m_scanDialog->hide();
-        QMessageBox::warning(this, tr("Product routing"), text);
+        QMessageBox::warning(this, uiText("Product routing"), text);
         showScanDialogWhenReady();
     });
 }
@@ -1765,7 +1773,7 @@ void ProductionWindow::startResolvedRun()
         uutCount,
         enabledStates.isEmpty() ? m_uutSlotEnabled : enabledStates);
     if (enabledUutSlotCount(enabledStates) == 0) {
-        statusBar()->showMessage(tr("Enable at least one UUT station"), 4000);
+        statusBar()->showMessage(uiText("Enable at least one UUT station"), 4000);
         return;
     }
 
@@ -1792,9 +1800,9 @@ void ProductionWindow::startResolvedRun()
     m_activeUutId = active->uutId;
     const int activeCount = enabledUutSlotCount(enabledStates);
     m_serialLabel->setText(m_activeSerialNumber.isEmpty()
-                               ? tr("--")
+                               ? uiText("--")
                                : activeCount > 1
-                               ? tr("%1  (+%2)").arg(m_activeSerialNumber)
+                               ? uiText("%1  (+%2)").arg(m_activeSerialNumber)
                                                   .arg(activeCount - 1)
                                : m_activeSerialNumber);
     m_runUutInputs = inputs;
@@ -1807,20 +1815,29 @@ void ProductionWindow::configureUutSlots()
 {
     const int slotCount = configuredUutCount();
     synchronizeUutSlotCount(slotCount);
+    const bool restoreScanner = m_scanDialog->isVisible();
+    m_uutSlotDialogOpen = true;
+    m_scanDialog->hide();
     const auto selected = showUutSlotConfigurationDialog(
         this, slotCount, m_uutSlotEnabled);
-    if (!selected) {
-        return;
+    if (selected) {
+        m_uutSlotEnabled = *selected;
+        m_scanDialog->setSlotCount(slotCount);
+        m_scanDialog->setSlotEnabledStates(m_uutSlotEnabled);
+        updateUutSlotAction();
+        if (!m_previewReport.uuts.isEmpty() &&
+            m_viewModel->canChangeSources()) {
+            resetPreviewForUuts(configuredPreviewUuts(), slotCount > 1);
+        }
+        updateCommands();
     }
-    m_uutSlotEnabled = *selected;
-    m_scanDialog->setSlotCount(slotCount);
-    m_scanDialog->setSlotEnabledStates(m_uutSlotEnabled);
-    updateUutSlotAction();
-    if (!m_previewReport.uuts.isEmpty() &&
-        m_viewModel->canChangeSources()) {
-        resetPreviewForUuts(configuredPreviewUuts(), slotCount > 1);
+    m_uutSlotDialogOpen = false;
+    if (restoreScanner) {
+        m_scanDialog->show();
+        m_scanDialog->raise();
+        m_scanDialog->activateWindow();
+        m_scanDialog->setFocus(Qt::OtherFocusReason);
     }
-    updateCommands();
 }
 
 int ProductionWindow::configuredUutCount() const
@@ -1854,9 +1871,9 @@ void ProductionWindow::updateUutSlotAction()
     const int slotCount = qMax(1, m_uutSlotEnabled.size());
     const int activeCount = enabledUutSlotCount(m_uutSlotEnabled);
     m_uutSlotsAction->setText(
-        tr("UUT Slots %1/%2").arg(activeCount).arg(slotCount));
+        uiText("UUT Slots %1/%2").arg(activeCount).arg(slotCount));
     m_uutSlotsAction->setToolTip(
-        tr("%1 active UUT station(s); physical slot numbers are preserved")
+        uiText("%1 active UUT station(s); physical slot numbers are preserved")
             .arg(activeCount));
 }
 
@@ -1868,7 +1885,7 @@ void ProductionWindow::openFieldDeviceConfiguration()
     if (m_selection.stationPath.trimmed().isEmpty() ||
         !QFileInfo(m_selection.stationPath).isFile()) {
         statusBar()->showMessage(
-            tr("Select a product route before configuring its devices"), 5000);
+            uiText("Select a product route before configuring its devices"), 5000);
         return;
     }
     const bool restoreScanner = m_scanDialog->isVisible();
@@ -1933,7 +1950,7 @@ void ProductionWindow::beginRunIteration(int iteration, int totalIterations)
         artifactUuts);
     if (!artifact.success) {
         statusBar()->showMessage(
-            tr("Cannot create report files: %1").arg(artifact.errorMessage),
+            uiText("Cannot create report files: %1").arg(artifact.errorMessage),
             10000);
     }
     m_terminalNodes.clear();
@@ -1943,7 +1960,7 @@ void ProductionWindow::beginRunIteration(int iteration, int totalIterations)
     m_elapsed.restart();
     m_elapsedTimer->start();
     statusBar()->showMessage(
-        tr("Loop run %1 of %2").arg(iteration).arg(totalIterations));
+        uiText("Loop run %1 of %2").arg(iteration).arg(totalIterations));
 }
 
 void ProductionWindow::beginManualRun()
@@ -2095,10 +2112,10 @@ void ProductionWindow::rebuildUutNavigation()
             definition.enabled
                 ? (definition.serialNumber.isEmpty()
                        ? definition.uutId
-                       : tr("%1 | SN: %2")
+                       : uiText("%1 | SN: %2")
                              .arg(definition.uutId,
                                   definition.serialNumber))
-                : tr("%1 | Disabled for this run").arg(definition.uutId));
+                : uiText("%1 | Disabled for this run").arg(definition.uutId));
         m_uutNavigationGroup->addButton(button, row + 1);
         m_uutNavigationLayout->addWidget(button);
         button->show();
@@ -2176,7 +2193,7 @@ void ProductionWindow::showUutDetails(
     m_logProxy->setVisibleUutId(m_selectedUutId);
     m_uutOverview->setSelectedUutId(m_selectedUutId);
     m_serialLabel->setText(entry->serialNumber.isEmpty()
-                               ? tr("--")
+                               ? uiText("--")
                                : entry->serialNumber);
     m_runStack->setCurrentWidget(m_detailPage);
     m_overviewButton->setChecked(false);
@@ -2202,7 +2219,7 @@ void ProductionWindow::showUutDetails(
 
 void ProductionWindow::showScanDialogWhenReady()
 {
-    if (m_fieldDeviceDialogOpen) {
+    if (m_fieldDeviceDialogOpen || m_uutSlotDialogOpen || m_scanDialog->isVisible()) {
         return;
     }
     const bool autoRouting =
@@ -2249,8 +2266,14 @@ void ProductionWindow::showScanDialogWhenReady()
         m_scanDialog->setSlotCount(slotCount);
         m_scanDialog->setSlotEnabledStates(m_uutSlotEnabled);
     }
-    QTimer::singleShot(0, m_scanDialog, [dialog = m_scanDialog] {
-        dialog->showForNextScan();
+    QTimer::singleShot(0, this, [this] {
+        const bool ready = m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn
+            ? m_viewModel->canChangeSources() && !m_runPreparationPending
+            : m_viewModel->canRun();
+        if (!m_fieldDeviceDialogOpen && !m_uutSlotDialogOpen &&
+            m_selection.scanDialogEnabled && ready && !m_scanDialog->isVisible()) {
+            m_scanDialog->showForNextScan();
+        }
     });
 }
 
@@ -2282,13 +2305,13 @@ void ProductionWindow::updateProgress()
 void ProductionWindow::updateYieldStatistics()
 {
     const int total = m_passedUnits + m_failedUnits;
-    m_passCountLabel->setText(tr("PASS %1").arg(m_passedUnits));
-    m_failCountLabel->setText(tr("FAIL %1").arg(m_failedUnits));
-    m_totalCountLabel->setText(tr("TOTAL %1").arg(total));
+    m_passCountLabel->setText(uiText("PASS %1").arg(m_passedUnits));
+    m_failCountLabel->setText(uiText("FAIL %1").arg(m_failedUnits));
+    m_totalCountLabel->setText(uiText("TOTAL %1").arg(total));
     m_yieldChart->setCounts(m_passedUnits, m_failedUnits);
     const qint64 average = total > 0 ? m_totalCompletedDurationMs / total : 0;
     m_averageTimeLabel->setText(
-        tr("AVERAGE TIME %1").arg(compactDuration(average)));
+        uiText("AVERAGE TIME %1").arg(compactDuration(average)));
     updateOverviewSummary();
 }
 
@@ -2356,13 +2379,13 @@ void ProductionWindow::updateStationSummary()
         ? QFileInfo(m_selection.stationPath).completeBaseName()
         : stationResult.config.stationId;
     const auto& metadata = stationResult.config.metadata;
-    m_stationLabel->setText(stationId.isEmpty() ? tr("--") : stationId);
+    m_stationLabel->setText(stationId.isEmpty() ? uiText("--") : stationId);
     m_modelLabel->setText(stationResult.config.model.trimmed().isEmpty()
-                              ? tr("--")
+                              ? uiText("--")
                               : stationResult.config.model.trimmed());
     m_customerIdLabel->setText(
         stationResult.config.customerId.trimmed().isEmpty()
-            ? tr("--")
+            ? uiText("--")
             : stationResult.config.customerId.trimmed());
     m_orderLabel->setText(metadataValue(metadata, {"order", "orderNumber"}));
     m_testerLabel->setText(metadataValue(metadata, {"tester", "operator"}));
@@ -2386,7 +2409,7 @@ void ProductionWindow::openProductRoutingConfiguration()
     ProductRoutingDialog dialog(routingPath, this);
     connect(&dialog, &ProductRoutingDialog::routingSaved, this, [this] {
         statusBar()->showMessage(
-            tr("Product routing saved. Changes apply to the next scan."), 5000);
+            uiText("Product routing saved. Changes apply to the next scan."), 5000);
     });
     dialog.exec();
     if (restoreScanner) {

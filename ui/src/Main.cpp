@@ -5,6 +5,7 @@
 #include "MainWindow.h"
 #include "PicoATEStyle.h"
 #include "ProductionWindow.h"
+#include "UiLanguage.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -69,6 +70,7 @@ int main(int argc, char* argv[])
     QCoreApplication::setApplicationName(QStringLiteral("PicoATE UI"));
     QCoreApplication::setApplicationVersion(QStringLiteral(PICOATE_VERSION));
     QCoreApplication::setOrganizationName(QStringLiteral("PicoATE"));
+    PicoATE::Ui::UiLanguage::instance().restorePreference();
     application.setWindowIcon(QIcon(QStringLiteral(":/branding/PicoATE.png")));
     PicoATE::Ui::ApplicationDiagnostics::install();
 

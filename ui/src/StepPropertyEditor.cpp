@@ -1,4 +1,5 @@
 #include "StepPropertyEditor.h"
+#include "UiTextBinding.h"
 
 #include "LoadingSpinner.h"
 #include "OnOffControl.h"
@@ -958,14 +959,18 @@ StepPropertyEditor::StepPropertyEditor(SequenceDocument* document,
     root->setContentsMargins(8, 0, 0, 0);
     root->setSpacing(6);
 
-    m_titleLabel = new QLabel(tr("Properties"), this);
+    m_titleLabel = new QLabel(uiText("Properties"), this);
+    connect(&UiLanguage::instance(), &UiLanguage::languageChanged, this, [this] {
+        m_titleLabel->setText(m_previewing ? uiText("Function Preview")
+            : (m_draftDirty ? uiText("Properties *") : uiText("Properties")));
+    });
     m_titleLabel->setObjectName(QStringLiteral("propertyEditorTitle"));
     auto titleFont = m_titleLabel->font();
     titleFont.setBold(true);
     m_titleLabel->setFont(titleFont);
     root->addWidget(m_titleLabel);
 
-    m_emptyLabel = new QLabel(tr("No sequence item selected"), this);
+    m_emptyLabel = makeUiLabel("No sequence item selected", this);
     root->addWidget(m_emptyLabel);
 
     m_tabs = new QTabWidget(this);
@@ -1231,8 +1236,8 @@ void StepPropertyEditor::setDraftDirty(bool dirty)
     }
     m_draftDirty = dirty;
     m_titleLabel->setText(m_previewing
-        ? tr("Function Preview")
-        : (dirty ? tr("Properties *") : tr("Properties")));
+        ? uiText("Function Preview")
+        : (dirty ? uiText("Properties *") : uiText("Properties")));
     emit pendingChangesChanged(dirty);
 }
 
@@ -1618,7 +1623,7 @@ void StepPropertyEditor::buildGeneralPage()
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidget(content);
-    m_tabs->addTab(scroll, tr("General"));
+    addUiTab(m_tabs, scroll, "General");
 }
 
 bool StepPropertyEditor::usesAutomaticBatchExecutionScope() const
@@ -2079,7 +2084,7 @@ void StepPropertyEditor::buildDataPage()
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidget(content);
-    m_tabs->addTab(scroll, tr("Data"));
+    addUiTab(m_tabs, scroll, "Data");
     serviceAdminStartupAnimation();
 }
 
@@ -2218,7 +2223,7 @@ void StepPropertyEditor::buildPolicyPage()
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidget(content);
-    m_tabs->addTab(scroll, tr("Policies"));
+    addUiTab(m_tabs, scroll, "Policies");
     serviceAdminStartupAnimation();
 }
 
@@ -2235,8 +2240,8 @@ void StepPropertyEditor::loadCurrentObject()
     m_isGroup = valid && !m_previewing && m_path.isGroup();
     const bool standardGroup = m_isGroup && m_document &&
                                m_document->isStandardGroup(m_path);
-    m_titleLabel->setText(m_previewing ? tr("Function Preview")
-                                      : tr("Properties"));
+    m_titleLabel->setText(m_previewing ? uiText("Function Preview")
+                                      : uiText("Properties"));
     m_emptyLabel->setVisible(!valid);
     m_tabs->setVisible(valid);
     if (!valid) {

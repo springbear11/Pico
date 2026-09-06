@@ -94,6 +94,7 @@ private:
 
     void buildActions();
     void buildLayout();
+    void retranslateUi();
     void createNewProject();
     bool saveNewProjectAs();
     QString newProjectRootPath() const;
@@ -385,6 +386,7 @@ private:
     bool m_adminWorkspaceInitializing = false;
     bool m_historyLoaded = false;
     bool m_autoRouteBySn = false;
+    bool m_uutSlotDialogOpen = false;
     bool m_newProjectTemplate = false;
     int m_responsiveLayoutMode = -1;
     UiRunState m_adminSessionState = UiRunState::Empty;

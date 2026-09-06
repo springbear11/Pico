@@ -1,4 +1,5 @@
 #include "PluginFunctionModel.h"
+#include "UiLanguage.h"
 
 #include "FunctionIconProvider.h"
 
@@ -31,6 +32,7 @@ QJsonObject basicStep(const QString& name,
 PluginFunctionModel::PluginFunctionModel(QObject* parent)
     : QAbstractItemModel(parent)
 {
+    enableUiModelTranslation(this);
     rebuild();
 }
 
@@ -92,7 +94,9 @@ QVariant PluginFunctionModel::data(const QModelIndex& modelIndex, int role) cons
     if (!item || item == m_root.get()) {
         return {};
     }
-    if (role == Qt::DisplayRole) return item->text;
+    if (role == Qt::DisplayRole) {
+        return item->parent == m_root.get() ? uiStateText(item->text) : item->text;
+    }
     if (role == Qt::ToolTipRole) return item->tooltip;
     if (role == Qt::DecorationRole && !item->iconKey.isEmpty()) {
         return functionIcon(item->iconKey);
@@ -122,7 +126,7 @@ QVariant PluginFunctionModel::headerData(int section,
                                          int role) const
 {
     return section == 0 && orientation == Qt::Horizontal && role == Qt::DisplayRole
-        ? tr("Function Palette")
+        ? uiText("Function Palette")
         : QVariant{};
 }
 

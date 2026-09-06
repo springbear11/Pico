@@ -1,5 +1,7 @@
 #pragma once
 
+#include "UiLanguage.h"
+
 #include <QPainter>
 #include <QPaintEvent>
 #include <QSize>
@@ -22,6 +24,11 @@ public:
         setMinimumWidth(150);
         setAccessibleName(QStringLiteral("Yield"));
         updateProperties();
+        connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
+                this, [this] {
+            updateProperties();
+            update();
+        });
     }
 
     void setCounts(int passed, int failed)
@@ -109,7 +116,7 @@ protected:
                                 108.0,
                                 20.0),
                          Qt::AlignCenter,
-                         QStringLiteral("YIELD"));
+                         uiText("YIELD"));
     }
 
 private:
@@ -131,7 +138,7 @@ private:
                 .arg(yieldPercent(), 0, 'f', 1)
                 .arg(m_passed)
                 .arg(m_failed));
-        setToolTip(QStringLiteral("PASS %1  |  FAIL %2  |  YIELD %3%")
+        setToolTip(uiText("PASS %1  |  FAIL %2  |  YIELD %3%")
                        .arg(m_passed)
                        .arg(m_failed)
                        .arg(yieldPercent(), 0, 'f', 1));

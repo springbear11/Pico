@@ -1,4 +1,5 @@
 #include "OperatorPromptPresenter.h"
+#include "UiLanguage.h"
 
 #include "ExecutionViewModel.h"
 #include "MultiUutOverviewWidget.h"
@@ -36,6 +37,8 @@ public:
     {
         setObjectName(QStringLiteral("operatorPromptDialog"));
         setModal(false);
+        connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
+                this, [this] { retranslatePrompt(); });
         setMinimumWidth(420);
 
         auto* layout = new QVBoxLayout(this);
@@ -124,7 +127,7 @@ public:
 
         const auto text = m_inputEdit->text();
         if (text.trimmed().isEmpty()) {
-            setInputError(tr("Enter a value."));
+            setInputError("Enter a value.");
             return false;
         }
 
@@ -133,7 +136,7 @@ public:
             bool ok = false;
             const auto parsed = text.trimmed().toLongLong(&ok, 10);
             if (!ok) {
-                setInputError(tr("Enter a valid integer."));
+                setInputError("Enter a valid integer.");
                 return false;
             }
             value = parsed;
@@ -141,7 +144,7 @@ public:
             bool ok = false;
             const auto parsed = text.trimmed().toDouble(&ok);
             if (!ok || !std::isfinite(parsed)) {
-                setInputError(tr("Enter a valid number."));
+                setInputError("Enter a valid number.");
                 return false;
             }
             value = parsed;
@@ -167,6 +170,7 @@ public:
     void configure(const PicoATE::Core::RuntimeEvent& event,
                    const QString& sequencePath)
     {
+        m_promptDetails = event.details;
         const auto mode = event.details.value("mode").toString();
         m_currentInstanceId = event.details.value("promptInstanceId").toString();
         setWindowTitle(event.details.value("title").toString().isEmpty()
@@ -206,6 +210,7 @@ public:
             ? tr("The test continues while this instruction remains visible.")
             : tr("Select the observed result."));
         setResponsePending(false);
+        retranslatePrompt();
         adjustSize();
     }
 
@@ -217,7 +222,7 @@ public:
         }
         if (pending) {
             m_statusLabel->setVisible(true);
-            m_statusLabel->setText(tr("Recording operator response..."));
+            m_statusLabel->setText(uiText("Recording operator response..."));
         }
     }
 
@@ -261,8 +266,33 @@ protected:
     }
 
 private:
-    void setInputError(const QString& message)
+    void retranslatePrompt()
     {
+        m_inputErrorLabel->setText(m_inputErrorSource
+            ? uiText(m_inputErrorSource) : QString{});
+        const auto buttonText = [this](const char* key, const char* fallback) {
+            const auto text = m_promptDetails.value(QString::fromLatin1(key),
+                                                    QString::fromLatin1(fallback)).toString();
+            return text == QString::fromLatin1(fallback) ? uiText(fallback) : text;
+        };
+        m_confirmButton->setText(buttonText("confirmText", m_isInput ? "Submit" : "OK"));
+        m_passButton->setText(buttonText("passText", "PASS"));
+        m_failButton->setText(buttonText("failText", "FAIL"));
+        const bool notice = m_promptDetails.value(QStringLiteral("mode"))
+                                .toString() == QStringLiteral("notice");
+        m_statusLabel->setText(m_responsePending
+            ? uiText("Recording operator response...")
+            : (notice ? uiText("The test continues while this instruction remains visible.")
+                      : uiText("Select the observed result.")));
+        if (m_promptDetails.value(QStringLiteral("title")).toString().isEmpty()) {
+            setWindowTitle(uiText("Message"));
+        }
+    }
+
+    void setInputError(const char* source)
+    {
+        m_inputErrorSource = source;
+        const auto message = source ? uiText(source) : QString{};
         m_inputErrorLabel->setText(message);
         m_inputErrorLabel->setVisible(!message.isEmpty());
         m_inputEdit->setProperty("invalid", !message.isEmpty());
@@ -317,6 +347,8 @@ private:
     bool m_isInput = false;
     bool m_allowClose = false;
     bool m_responsePending = false;
+    QVariantMap m_promptDetails;
+    const char* m_inputErrorSource = nullptr;
 };
 
 } // namespace

@@ -1,3 +1,4 @@
+#include "UiLanguage.h"
 #include "RunnerModels.h"
 
 #include "FunctionIconProvider.h"
@@ -897,6 +898,7 @@ QString uutOverviewStateName(UutOverviewState state)
 UutOverviewModel::UutOverviewModel(QObject* parent)
     : QAbstractTableModel(parent)
 {
+    enableUiModelTranslation(this);
 }
 
 int UutOverviewModel::rowCount(const QModelIndex& parent) const
@@ -942,9 +944,9 @@ QVariant UutOverviewModel::data(const QModelIndex& index, int role) const
     case SerialNumberColumn:
         return entry.serialNumber.isEmpty() ? QStringLiteral("--")
                                             : entry.serialNumber;
-    case StateColumn: return uutOverviewStateName(entry.state);
+    case StateColumn: return uiStateText(uutOverviewStateName(entry.state));
     case CurrentStepColumn:
-        return entry.currentStep.isEmpty() ? QStringLiteral("Waiting to start")
+        return entry.currentStep.isEmpty() ? uiText("Waiting to start")
                                            : entry.currentStep;
     case ProgressColumn:
         return QStringLiteral("%1 / %2 (%3%)")
@@ -964,12 +966,12 @@ QVariant UutOverviewModel::headerData(int section,
         return {};
     }
     switch (section) {
-    case UutColumn: return QStringLiteral("UUT");
-    case SerialNumberColumn: return QStringLiteral("SN");
-    case StateColumn: return QStringLiteral("State");
-    case CurrentStepColumn: return QStringLiteral("Current Step");
-    case ProgressColumn: return QStringLiteral("Progress");
-    case DurationColumn: return QStringLiteral("Time");
+    case UutColumn: return uiText("UUT");
+    case SerialNumberColumn: return uiText("SN");
+    case StateColumn: return uiText("State");
+    case CurrentStepColumn: return uiText("Current Step");
+    case ProgressColumn: return uiText("Progress");
+    case DurationColumn: return uiText("Time");
     default: return {};
     }
 }
@@ -1574,6 +1576,7 @@ void UutOverviewModel::emitRowChanged(int row)
 DiagnosticModel::DiagnosticModel(QObject* parent)
     : QAbstractTableModel(parent)
 {
+    enableUiModelTranslation(this);
 }
 
 int DiagnosticModel::rowCount(const QModelIndex& parent) const
@@ -1625,11 +1628,11 @@ QVariant DiagnosticModel::headerData(int section,
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
         return {};
     }
-    static const QStringList headers = {
-        QStringLiteral("Severity"),
-        QStringLiteral("Path"),
-        QStringLiteral("Message"),
-        QStringLiteral("Suggestion")};
+    const QStringList headers = {
+        uiText("Severity"),
+        uiText("Path"),
+        uiText("Message"),
+        uiText("Suggestion")};
     return section >= 0 && section < headers.size() ? headers[section] : QVariant();
 }
 
@@ -1654,6 +1657,7 @@ std::optional<UiDiagnostic> DiagnosticModel::diagnosticAt(int row) const
 UutStepModel::UutStepModel(QObject* parent)
     : QAbstractItemModel(parent)
 {
+    enableUiModelTranslation(this);
 }
 
 QModelIndex UutStepModel::index(int row,
@@ -1729,7 +1733,7 @@ QVariant UutStepModel::data(const QModelIndex& index, int role) const
             return font;
         }
         if (role == Qt::DisplayRole && index.column() == NameColumn) {
-            return PicoATE::Core::executionPhaseName(modelItem->phase).toUpper();
+            return uiStateText(PicoATE::Core::executionPhaseName(modelItem->phase).toUpper());
         }
         return {};
     }
@@ -1751,16 +1755,16 @@ QVariant UutStepModel::data(const QModelIndex& index, int role) const
             return uut.uutId;
         case StateColumn:
             return m_completedUuts.contains(uut.uutId)
-                ? QStringLiteral("Completed")
+                ? uiText("Completed")
                 : (m_report.state == PicoATE::Core::ExecutionState::Running
-                       ? QStringLiteral("Running")
-                       : QStringLiteral("Pending"));
+                       ? uiText("Running")
+                       : uiText("Pending"));
         case OutcomeColumn:
             if (!m_completedUuts.contains(uut.uutId)) {
-                return QStringLiteral("Unknown");
+                return uiText("Unknown");
             }
-            return uut.hasError ? QStringLiteral("Failed")
-                                : QStringLiteral("Passed");
+            return uut.hasError ? uiText("Failed")
+                                : uiText("Passed");
         case AttemptsColumn: {
             int attempts = 0;
             for (const auto& step : uut.steps) {
@@ -1842,12 +1846,12 @@ QVariant UutStepModel::data(const QModelIndex& index, int role) const
         return joinedActualText(step.measurements);
     case OutcomeColumn:
         return step.outcome == PicoATE::Core::NodeOutcome::Unknown
-            ? activationStateName(step.state)
-            : outcomeName(step.outcome);
+            ? uiStateText(activationStateName(step.state))
+            : uiStateText(outcomeName(step.outcome));
     case TimeColumn:
         return durationText(step.durationMs);
     case StateColumn:
-        return activationStateName(step.state);
+        return uiStateText(activationStateName(step.state));
     case AttemptsColumn:
         return step.attempts.size();
     case LoopColumn:
@@ -1865,17 +1869,17 @@ QVariant UutStepModel::headerData(int section,
         return {};
     }
     const QStringList headers = {
-        m_singleUutPhaseLayout ? QStringLiteral("Phase / Step")
-                               : QStringLiteral("UUT / Step"),
-        QStringLiteral("Error Code"),
-        QStringLiteral("Lower"),
-        QStringLiteral("Upper"),
-        QStringLiteral("Actual"),
-        QStringLiteral("Result"),
-        QStringLiteral("Time"),
-        QStringLiteral("State"),
-        QStringLiteral("Attempts"),
-        QStringLiteral("Loop"),
+        m_singleUutPhaseLayout ? uiText("Phase / Step")
+                               : uiText("UUT / Step"),
+        uiText("Error Code"),
+        uiText("Lower"),
+        uiText("Upper"),
+        uiText("Actual"),
+        uiText("Result"),
+        uiText("Time"),
+        uiText("State"),
+        uiText("Attempts"),
+        uiText("Loop"),
         QString()};
     return section >= 0 && section < headers.size() ? headers[section] : QVariant();
 }
@@ -2470,6 +2474,7 @@ void UutStepModel::emitItemsDataChanged(const QSet<ModelItem*>& items)
 DeviceStatusModel::DeviceStatusModel(QObject* parent)
     : QAbstractTableModel(parent)
 {
+    enableUiModelTranslation(this);
 }
 
 int DeviceStatusModel::rowCount(const QModelIndex& parent) const
@@ -2512,7 +2517,7 @@ QVariant DeviceStatusModel::data(const QModelIndex& index, int role) const
     case DriverColumn:
         return device.driver;
     case StateColumn:
-        return PicoATE::Core::deviceConnectionStateName(device.state);
+        return uiStateText(PicoATE::Core::deviceConnectionStateName(device.state));
     case MessageColumn:
         return device.message;
     default:
@@ -2527,12 +2532,12 @@ QVariant DeviceStatusModel::headerData(int section,
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
         return {};
     }
-    static const QStringList headers = {
-        QStringLiteral("Device"),
-        QStringLiteral("Type"),
-        QStringLiteral("Driver"),
-        QStringLiteral("State"),
-        QStringLiteral("Message")};
+    const QStringList headers = {
+        uiText("Device"),
+        uiText("Type"),
+        uiText("Driver"),
+        uiText("State"),
+        uiText("Message")};
     return section >= 0 && section < headers.size() ? headers[section] : QVariant();
 }
 
@@ -2584,6 +2589,7 @@ void DeviceStatusModel::clear()
 HistoryModel::HistoryModel(QObject* parent)
     : QAbstractTableModel(parent)
 {
+    enableUiModelTranslation(this);
 }
 
 int HistoryModel::rowCount(const QModelIndex& parent) const
@@ -2622,9 +2628,9 @@ QVariant HistoryModel::data(const QModelIndex& index, int role) const
     case VersionColumn:
         return entry.sequenceVersion;
     case StateColumn:
-        return executionStateName(entry.state);
+        return uiStateText(executionStateName(entry.state));
     case ResultColumn:
-        return entry.hasError ? QStringLiteral("Failed") : QStringLiteral("Passed");
+        return entry.hasError ? uiText("Failed") : uiText("Passed");
     case UutsColumn:
         return entry.uutIds.join(QStringLiteral(", "));
     default:
@@ -2639,13 +2645,13 @@ QVariant HistoryModel::headerData(int section,
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
         return {};
     }
-    static const QStringList headers = {
-        QStringLiteral("Saved"),
-        QStringLiteral("Sequence"),
-        QStringLiteral("Version"),
-        QStringLiteral("State"),
-        QStringLiteral("Result"),
-        QStringLiteral("UUTs")};
+    const QStringList headers = {
+        uiText("Saved"),
+        uiText("Sequence"),
+        uiText("Version"),
+        uiText("State"),
+        uiText("Result"),
+        uiText("UUTs")};
     return section >= 0 && section < headers.size() ? headers[section] : QVariant();
 }
 
@@ -2667,6 +2673,7 @@ std::optional<ReportHistoryEntry> HistoryModel::entryAt(int row) const
 AttemptModel::AttemptModel(QObject* parent)
     : QAbstractTableModel(parent)
 {
+    enableUiModelTranslation(this);
 }
 
 int AttemptModel::rowCount(const QModelIndex& parent) const
@@ -2701,7 +2708,7 @@ QVariant AttemptModel::data(const QModelIndex& index, int role) const
     case IndexColumn:
         return attempt.index;
     case OutcomeColumn:
-        return outcomeName(attempt.outcome);
+        return uiStateText(outcomeName(attempt.outcome));
     case LoopColumn:
         return loopIterationDescription(attempt.loopIteration);
     case MeasurementCountColumn:
@@ -2720,12 +2727,12 @@ QVariant AttemptModel::headerData(int section,
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
         return {};
     }
-    static const QStringList headers = {
-        QStringLiteral("Attempt"),
-        QStringLiteral("Outcome"),
-        QStringLiteral("Loop iteration"),
-        QStringLiteral("Measurements"),
-        QStringLiteral("Error")};
+    const QStringList headers = {
+        uiText("Attempt"),
+        uiText("Outcome"),
+        uiText("Loop iteration"),
+        uiText("Measurements"),
+        uiText("Error")};
     return section >= 0 && section < headers.size() ? headers[section] : QVariant();
 }
 
@@ -2747,6 +2754,7 @@ std::optional<PicoATE::Core::AttemptReport> AttemptModel::attemptAt(int row) con
 MeasurementModel::MeasurementModel(QObject* parent)
     : QAbstractTableModel(parent)
 {
+    enableUiModelTranslation(this);
 }
 
 int MeasurementModel::rowCount(const QModelIndex& parent) const
@@ -2798,7 +2806,7 @@ QVariant MeasurementModel::data(const QModelIndex& index, int role) const
     case LimitsColumn:
         return measurementLimits(measurement);
     case StatusColumn:
-        return PicoATE::Core::measurementStatusName(measurement.status);
+        return uiStateText(PicoATE::Core::measurementStatusName(measurement.status));
     default:
         return {};
     }
@@ -2811,12 +2819,12 @@ QVariant MeasurementModel::headerData(int section,
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
         return {};
     }
-    static const QStringList headers = {
-        QStringLiteral("Measurement"),
-        QStringLiteral("Value"),
-        QStringLiteral("Unit"),
-        QStringLiteral("Limits"),
-        QStringLiteral("Status")};
+    const QStringList headers = {
+        uiText("Measurement"),
+        uiText("Value"),
+        uiText("Unit"),
+        uiText("Limits"),
+        uiText("Status")};
     return section >= 0 && section < headers.size() ? headers[section] : QVariant();
 }
 
@@ -2840,6 +2848,7 @@ RuntimeLogModel::RuntimeLogModel(QObject* parent, int maximumRows)
     : QAbstractTableModel(parent)
     , m_maximumRows(qMax(1, maximumRows))
 {
+    enableUiModelTranslation(this, false);
 }
 
 int RuntimeLogModel::rowCount(const QModelIndex& parent) const
@@ -2889,15 +2898,15 @@ QVariant RuntimeLogModel::headerData(int section,
     }
     switch (section) {
     case TimeColumn:
-        return tr("Time");
+        return uiText("Time");
     case UutColumn:
-        return tr("UUT");
+        return uiText("UUT");
     case StepColumn:
-        return tr("Step");
+        return uiText("Step");
     case AttemptColumn:
-        return tr("Attempt");
+        return uiText("Attempt");
     case MessageColumn:
-        return tr("Message");
+        return uiText("Message");
     default:
         return {};
     }
@@ -2955,6 +2964,7 @@ RuntimeTimelineModel::RuntimeTimelineModel(QObject* parent, int maximumRows)
     : QAbstractTableModel(parent)
     , m_maximumRows(qMax(1, maximumRows))
 {
+    enableUiModelTranslation(this, false);
 }
 
 int RuntimeTimelineModel::rowCount(const QModelIndex& parent) const
@@ -3029,9 +3039,9 @@ QVariant RuntimeTimelineModel::headerData(int section,
 
     switch (section) {
     case TimeColumn:
-        return tr("Time");
+        return uiText("Time");
     case MessageColumn:
-        return tr("Message");
+        return uiText("Message");
     default:
         return {};
     }
@@ -3468,6 +3478,7 @@ bool UutRuntimeTimelineProxyModel::filterAcceptsRow(
 DebugSnapshotModel::DebugSnapshotModel(QObject* parent)
     : QAbstractTableModel(parent)
 {
+    enableUiModelTranslation(this, false);
 }
 
 int DebugSnapshotModel::rowCount(const QModelIndex& parent) const
@@ -3516,11 +3527,11 @@ QVariant DebugSnapshotModel::headerData(int section,
 
     switch (section) {
     case SectionColumn:
-        return QStringLiteral("Section");
+        return uiText("Section");
     case NameColumn:
-        return QStringLiteral("Name");
+        return uiText("Name");
     case ValueColumn:
-        return QStringLiteral("Value");
+        return uiText("Value");
     default:
         return {};
     }
