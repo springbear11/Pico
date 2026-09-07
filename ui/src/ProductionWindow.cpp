@@ -1,4 +1,5 @@
 #include "UiTextBinding.h"
+#include "ElidedInfoLabel.h"
 #include "ProductionWindow.h"
 
 #include "ProportionalHeaderView.h"
@@ -58,6 +59,7 @@
 #include <QTableView>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeView>
 #include <QVariantAnimation>
 #include <QVBoxLayout>
@@ -225,8 +227,8 @@ public:
     {
         setObjectName(QStringLiteral("productionOverviewSummary"));
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        setMinimumHeight(94);
-        setMaximumHeight(108);
+        setMinimumHeight(112);
+        setMaximumHeight(126);
 
         auto* root = new QHBoxLayout(this);
         root->setContentsMargins(14, 10, 14, 10);
@@ -235,8 +237,8 @@ public:
         auto* stateArea = new QWidget(this);
         stateArea->setObjectName(
             QStringLiteral("productionOverviewSummaryStateArea"));
-        stateArea->setMinimumWidth(128);
-        stateArea->setMaximumWidth(168);
+        stateArea->setMinimumWidth(170);
+        stateArea->setMaximumWidth(205);
         auto* stateLayout = new QVBoxLayout(stateArea);
         stateLayout->setContentsMargins(0, 0, 0, 0);
         stateLayout->setSpacing(3);
@@ -341,44 +343,7 @@ public:
         m_stateLabel->setText(
             productionOverviewStateText(state, stopRequested));
 
-        QString background = QStringLiteral("#eef2f4");
-        QString foreground = QStringLiteral("#344751");
-        QString border = QStringLiteral("#bcc7cd");
-        switch (state) {
-        case UiRunState::Starting:
-        case UiRunState::Running:
-        case UiRunState::Pausing:
-        case UiRunState::Stopping:
-            background = QStringLiteral("#fff4d7");
-            foreground = QStringLiteral("#8a5d00");
-            border = QStringLiteral("#d7ac45");
-            break;
-        case UiRunState::Paused:
-            background = QStringLiteral("#e9f3f8");
-            foreground = QStringLiteral("#315f78");
-            border = QStringLiteral("#8fb4c6");
-            break;
-        case UiRunState::Completed:
-            background = stopRequested ? QStringLiteral("#fbe8e8")
-                                       : QStringLiteral("#e5f4e9");
-            foreground = stopRequested ? QStringLiteral("#a83237")
-                                       : QStringLiteral("#287848");
-            border = stopRequested ? QStringLiteral("#db9295")
-                                   : QStringLiteral("#87bd98");
-            break;
-        case UiRunState::CompileFailed:
-        case UiRunState::Failed:
-            background = QStringLiteral("#fbe8e8");
-            foreground = QStringLiteral("#a83237");
-            border = QStringLiteral("#db9295");
-            break;
-        default:
-            break;
-        }
-        m_stateLabel->setStyleSheet(QStringLiteral(
-            "background:%1;color:%2;border:1px solid %3;border-radius:5px;"
-            "padding:4px 10px;font-size:16px;font-weight:800;")
-                                         .arg(background, foreground, border));
+        m_stateLabel->setStyleSheet(runStatusStyle(state, stopRequested) + QStringLiteral("padding:5px 10px;font-size:20px;font-weight:700;"));
     }
 
     void setElapsedText(const QString& elapsed)
@@ -540,7 +505,6 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
     synchronizeUutSlotCount(
         StartupSupport::stationUutCount(m_selection.stationPath, 1));
     buildUi();
-    installLanguageButton(this);
     connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
             this, &ProductionWindow::retranslateUi, Qt::QueuedConnection);
     m_operatorPromptPresenter->setOverviewHost(m_uutOverview);
@@ -628,18 +592,21 @@ void ProductionWindow::applyResponsiveLayout(bool force)
 
     if (auto* sidebar = findChild<QWidget*>(
             QStringLiteral("productionSidebar"))) {
-        sidebar->setMinimumWidth(compact ? 185 : 215);
-        sidebar->setMaximumWidth(compact ? 230 : 270);
+        sidebar->setMinimumWidth(compact ? 225 : 245);
+        sidebar->setMaximumWidth(compact ? 285 : 310);
+        sidebar->setStyleSheet(compact
+            ? QStringLiteral("QLabel[runInfoValue=\"true\"] {font-size:13px;}")
+            : QStringLiteral("QLabel[runInfoValue=\"true\"] {font-size:14px;}"));
         if (auto* sidebarLayout = qobject_cast<QVBoxLayout*>(sidebar->layout())) {
-            const int margin = compact ? 12 : 18;
+            const int margin = compact ? 10 : 18;
             sidebarLayout->setContentsMargins(margin, margin, margin, margin);
-            sidebarLayout->setSpacing(compact ? 8 : 14);
+            sidebarLayout->setSpacing(compact ? 5 : 14);
         }
     }
     if (auto* splitter = findChild<QSplitter*>(
             QStringLiteral("productionContentSplitter"))) {
-        splitter->setSizes(compact ? QList<int>{195, 805}
-                                   : QList<int>{235, 900});
+        splitter->setSizes(compact ? QList<int>{235, 805}
+                                   : QList<int>{260, 900});
     }
     if (auto* splitter = findChild<QSplitter*>(
             QStringLiteral("productionDataSplitter"))) {
@@ -651,11 +618,25 @@ void ProductionWindow::applyResponsiveLayout(bool force)
         m_sequenceLabel->setMaximumHeight(compact ? 38 : 44);
     }
     if (m_yieldChart) {
-        m_yieldChart->setMinimumHeight(compact ? 54 : 64);
-        m_yieldChart->setMaximumHeight(compact ? 74 : 100);
+        m_yieldChart->setMinimumHeight(compact ? 52 : 64);
+        m_yieldChart->setMaximumHeight(compact ? 60 : 100);
     }
     if (m_overallResult) {
-        m_overallResult->setMinimumHeight(compact ? 76 : 112);
+        m_overallResult->setMinimumHeight(compact ? 60 : 112);
+        auto font = m_overallResult->font();
+        font.setPointSize(compact ? 18 : 21);
+        font.setBold(true);
+        m_overallResult->setFont(font);
+        m_overallResult->setWordWrap(true);
+    }
+    if (auto* form = findChild<QFormLayout*>(QStringLiteral("productionRunInfoForm"))) {
+        form->setVerticalSpacing(compact ? 4 : 12);
+        form->setHorizontalSpacing(compact ? 8 : 12);
+    }
+    if (m_elapsedLabel) {
+        m_elapsedLabel->setStyleSheet(compact
+            ? QStringLiteral("font-size:16px;font-weight:700;padding:6px;")
+            : QStringLiteral("font-size:19px;font-weight:700;padding:10px;"));
     }
 }
 
@@ -770,7 +751,17 @@ void ProductionWindow::buildUi()
             this, &ProductionWindow::openFieldDeviceConfiguration);
     connect(m_productRoutingAction, &QAction::triggered,
             this, &ProductionWindow::openProductRoutingConfiguration);
-    layout->addWidget(toolbar);
+    auto* toolbarHost = new QFrame(central);
+    toolbarHost->setObjectName(QStringLiteral("productionToolbarHost"));
+    toolbarHost->setStyleSheet(QStringLiteral(
+        "QFrame#productionToolbarHost {background:#ffffff;border:1px solid #d8dde1;border-radius:6px;}"));
+    toolbar->setStyleSheet(QStringLiteral("QToolBar {border:0;background:transparent;}"));
+    auto* toolbarRow = new QHBoxLayout(toolbarHost);
+    toolbarRow->setContentsMargins(0, 0, 8, 0);
+    toolbarRow->setSpacing(4);
+    toolbarRow->addWidget(toolbar, 1);
+    toolbarRow->addWidget(makeLanguageButton(central));
+    layout->addWidget(toolbarHost);
 
     constexpr int ProductionSidebarWidth = 235;
     auto* brandHeader = new QHBoxLayout;
@@ -909,37 +900,39 @@ void ProductionWindow::buildUi()
     const auto& metadata = stationResult.config.metadata;
 
     auto* details = new QFormLayout;
+    details->setObjectName(QStringLiteral("productionRunInfoForm"));
+    details->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    details->setRowWrapPolicy(QFormLayout::DontWrapRows);
     details->setContentsMargins(0, 0, 0, 0);
     details->setHorizontalSpacing(12);
     details->setVerticalSpacing(12);
     details->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    m_serialLabel = new QLabel(uiText("--"), sidebar);
+    m_serialLabel = new ElidedInfoLabel(uiText("--"), sidebar);
     m_serialLabel->setObjectName(QStringLiteral("productionSerialLabel"));
-    m_stationLabel = new QLabel(stationId, sidebar);
+    m_stationLabel = new ElidedInfoLabel(stationId, sidebar);
     m_stationLabel->setObjectName(QStringLiteral("productionStationLabel"));
-    m_modelLabel = new QLabel(stationResult.config.model.trimmed().isEmpty()
+    m_modelLabel = new ElidedInfoLabel(stationResult.config.model.trimmed().isEmpty()
                                   ? uiText("--")
                                   : stationResult.config.model.trimmed(),
                               sidebar);
     m_modelLabel->setObjectName(QStringLiteral("productionModelLabel"));
-    m_customerIdLabel = new QLabel(
+    m_customerIdLabel = new ElidedInfoLabel(
         stationResult.config.customerId.trimmed().isEmpty()
             ? uiText("--")
             : stationResult.config.customerId.trimmed(),
         sidebar);
     m_customerIdLabel->setObjectName(
         QStringLiteral("productionCustomerIdLabel"));
-    m_orderLabel = new QLabel(metadataValue(metadata, {"order", "orderNumber"}), sidebar);
+    m_orderLabel = new ElidedInfoLabel(metadataValue(metadata, {"order", "orderNumber"}), sidebar);
     m_orderLabel->setObjectName(QStringLiteral("productionOrderLabel"));
-    m_testerLabel = new QLabel(metadataValue(metadata, {"tester", "operator"}), sidebar);
+    m_testerLabel = new ElidedInfoLabel(metadataValue(metadata, {"tester", "operator"}), sidebar);
     m_testerLabel->setObjectName(QStringLiteral("productionTesterLabel"));
-    m_jigLabel = new QLabel(metadataValue(metadata, {"jigNo", "fixtureId", "fixture"}), sidebar);
+    m_jigLabel = new ElidedInfoLabel(metadataValue(metadata, {"jigNo", "fixtureId", "fixture"}), sidebar);
     m_jigLabel->setObjectName(QStringLiteral("productionJigLabel"));
     for (auto* value : {m_serialLabel, m_stationLabel, m_modelLabel,
                         m_customerIdLabel, m_orderLabel, m_testerLabel,
                         m_jigLabel}) {
-        value->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        value->setWordWrap(true);
+        configureRunInfoValue(value);
     }
     addUiRow(details, "SN", m_serialLabel);
     addUiRow(details, "Station ID", m_stationLabel);
@@ -1167,11 +1160,7 @@ void ProductionWindow::buildUi()
             font-size: 10px;
             font-weight: 700;
         }
-        QLabel#productionOverviewSummaryElapsed {
-            color: #64747d;
-            font-size: 11px;
-            font-weight: 600;
-        }
+        QLabel#productionOverviewSummaryElapsed { color: #344048; font-size: 15px; font-weight: 700; }
         QLabel[productionOverviewValue="true"] {
             color: #253139;
             font-size: 14px;

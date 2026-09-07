@@ -13,9 +13,11 @@ class QMenuBar;
 class QPushButton;
 class QTabWidget;
 class QToolBar;
+class QToolButton;
 class QWidget;
 
 namespace PicoATE::Ui {
+enum class UiRunState;
 
 void bindUiText(QObject* object, const char* property, const char* source);
 QLabel* makeUiLabel(const char* source, QWidget* parent);
@@ -27,6 +29,8 @@ QMenu* addUiMenu(QMenuBar* menuBar, const char* source);
 QAction* addUiAction(QToolBar* toolbar, const QIcon& icon, const char* source);
 void addUiTab(QTabWidget* tabs, QWidget* page, const char* source, int index = -1);
 void addUiRow(QFormLayout* layout, const char* source, QWidget* field);
-void installLanguageButton(QMainWindow* window);
+QToolButton* makeLanguageButton(QWidget* parent);
+void configureRunInfoValue(QLabel* label);
+QString runStatusStyle(UiRunState state, bool stopRequested = false);
 
 } // namespace PicoATE::Ui

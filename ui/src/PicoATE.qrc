@@ -44,5 +44,6 @@
         <file alias="scan-barcode.svg">assets/lucide/scan-barcode.svg</file>
         <file alias="cable.svg">assets/lucide/cable.svg</file>
         <file alias="eye.svg">assets/lucide/eye.svg</file>
+        <file alias="languages.svg">assets/lucide/languages.svg</file>
     </qresource>
 </RCC>

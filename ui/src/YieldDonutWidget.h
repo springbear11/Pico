@@ -56,14 +56,16 @@ protected:
 
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
+        const qreal scale = std::min<qreal>(1.0,
+            std::min(width() / 180.0, height() / 100.0));
+        painter.translate((width() - 180.0 * scale) / 2.0,
+                          (height() - 100.0 * scale) / 2.0);
+        painter.scale(scale, scale);
 
         constexpr qreal ringWidth = 11.0;
         constexpr int fullArc = 180 * 16;
-        const qreal diameter = std::max<qreal>(
-            56.0,
-            std::min<qreal>(160.0,
-                            std::min(width() - 20.0, 2.0 * (height() - 12.0))));
-        const QRectF ringRect((width() - diameter) / 2.0,
+        constexpr qreal diameter = 160.0;
+        const QRectF ringRect((180.0 - diameter) / 2.0,
                               5.0,
                               diameter,
                               diameter);
@@ -95,7 +97,7 @@ protected:
 
         const QPointF center = ringRect.center();
         QFont percentFont = font();
-        percentFont.setPointSizeF(14.0);
+        percentFont.setPointSizeF(std::max(14.0, 10.0 / scale));
         percentFont.setWeight(QFont::DemiBold);
         painter.setFont(percentFont);
         painter.setPen(QColor(QStringLiteral("#24313b")));
@@ -107,7 +109,7 @@ protected:
                          QStringLiteral("%1%").arg(yieldPercent(), 0, 'f', 1));
 
         QFont captionFont = font();
-        captionFont.setPointSizeF(8.5);
+        captionFont.setPointSizeF(std::max(8.5, 7.0 / scale));
         captionFont.setWeight(QFont::DemiBold);
         painter.setFont(captionFont);
         painter.setPen(QColor(QStringLiteral("#697780")));

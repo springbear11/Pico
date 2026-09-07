@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE TS>
+<!DOCTYPE TS []>
 <TS version="2.1" language="zh_CN" sourcelanguage="en">
 <context>
     <name>UiShell</name>
@@ -435,5 +435,132 @@ HELD BY: %1</source><translation>
     <message><source>
 WAIT TIME: %1 s</source><translation>
 等待时长：%1 s</translation></message>
+    <message><source>Language</source><translation>语言</translation></message>
+    <message><source>Browse</source><translation>浏览</translation></message>
+    <message><source>SN Length</source><translation>SN 长度</translation></message>
+    <message><source>SN Pattern</source><translation>SN 规则</translation></message>
+    <message><source>Jig No</source><translation>治具编号</translation></message>
+    <message><source>Any</source><translation>不限</translation></message>
+    <message><source>Allowed Characters</source><translation>允许字符</translation></message>
+    <message><source>UUT Count</source><translation>UUT 数量</translation></message>
+    <message><source>Loop Count</source><translation>循环次数</translation></message>
+    <message><source>Loop Test</source><translation>循环测试</translation></message>
+    <message><source>Scan Dialog</source><translation>扫码框</translation></message>
+    <message><source>Default Stop on Failure</source><translation>默认失败停止</translation></message>
+    <message><source>TXT Log</source><translation>TXT 日志</translation></message>
+    <message><source>CSV Report</source><translation>CSV 报告</translation></message>
+    <message><source>XLSX Report</source><translation>XLSX 报告</translation></message>
+    <message><source>PDF Report</source><translation>PDF 报告</translation></message>
+    <message><source>Output Folder</source><translation>输出目录</translation></message>
+    <message><source>Fixture or jig identifier</source><translation>治具编号</translation></message>
+    <message><source>Production or work order</source><translation>生产工单号</translation></message>
+    <message><source>Tester or operator name</source><translation>测试员或操作员姓名</translation></message>
+    <message><source>Exact SN length. Leave empty for Any.</source><translation>要求的 SN 字符数，留空表示长度不限。</translation></message>
+    <message><source>BTSN*, *BTSN*, or *BTSN</source><translation>BTSN*、*BTSN* 或 *BTSN</translation></message>
+    <message><source>Optional wildcard rule. * matches any number of characters.</source><translation>可选的通配符规则，* 匹配任意数量的字符。</translation></message>
+    <message><source>Optional regular expression applied to the complete SN.</source><translation>可选的正则表达式，对完整 SN 进行校验。</translation></message>
+    <message><source>Number of UUT SNs collected before one batch starts</source><translation>每批测试开始前需要采集 SN 的 UUT 数量</translation></message>
+    <message><source>Run the complete sequence this many times after one Run command</source><translation>点击一次运行后，完整测试流程的重复执行次数</translation></message>
+    <message><source>Enable repeated sequence testing</source><translation>启用循环测试</translation></message>
+    <message><source>Enable scan dialog</source><translation>启用扫码框</translation></message>
+    <message><source>Stop on failure by default</source><translation>默认失败停止</translation></message>
+    <message><source>Default for inherited onFail, onError, and onTimeout policies. Explicit Step policies are preserved.</source><translation>作为 onFail、onError 和 onTimeout 的默认策略；步骤中单独设置的策略优先。</translation></message>
+    <message><source>Enable TXT execution log</source><translation>启用 TXT 执行日志</translation></message>
+    <message><source>Enable CSV result report</source><translation>启用 CSV 测试报告</translation></message>
+    <message><source>Enable XLSX result report</source><translation>启用 XLSX 测试报告</translation></message>
+    <message><source>Enable PDF result report</source><translation>启用 PDF 测试报告</translation></message>
+    <message><source>Select Report Output Folder</source><translation>选择报告输出目录</translation></message>
+    <message><source>Station ID cannot be empty</source><translation>工站编号不能为空</translation></message>
+    <message><source>SN Length must be an integer from 1 to 256, or empty for Any</source><translation>SN 长度必须为 1 到 256 的整数，留空表示不限</translation></message>
+    <message><source>Loop Count must be an integer from 1 to 100000</source><translation>循环次数必须为 1 到 100000 的整数</translation></message>
+    <message><source>UUT Count must be an integer from 1 to 64</source><translation>UUT 数量必须为 1 到 64 的整数</translation></message>
+    <message><source>Allow manual project selection in Test</source><translation>允许 Test 模式手动选择项目</translation></message>
+    <message><source>Allow manual project selection in Test mode</source><translation>允许 Test 模式手动选择项目</translation></message>
+    <message><source>Match a scanned SN to one product project containing its Sequence and Station.</source><translation>根据扫描的 SN 匹配产品项目，并加载对应的测试脚本和工站配置。</translation></message>
+    <message><source>Add route</source><translation>新增路由</translation></message>
+    <message><source>Duplicate selected route</source><translation>复制选中的路由</translation></message>
+    <message><source>Delete selected route</source><translation>删除选中的路由</translation></message>
+    <message><source>Product / Route</source><translation>产品 / 路由</translation></message>
+    <message><source>Project</source><translation>项目</translation></message>
+    <message><source>Device Status</source><translation>设备状态</translation></message>
+    <message><source>A readable product or route name</source><translation>产品或路由的名称</translation></message>
+    <message><source>SN wildcard: BTSN* = starts with, *BTSN* = contains, *BTSN = ends with. ? matches one character.</source><translation>SN 通配符：BTSN* 表示以 BTSN 开头，*BTSN* 表示包含 BTSN，*BTSN 表示以 BTSN 结尾，? 匹配一个字符。</translation></message>
+    <message><source>Configure the devices in this project's Station</source><translation>配置当前项目工站中的设备资源</translation></message>
+    <message><source>Select Product Project</source><translation>选择产品项目</translation></message>
+    <message><source>%1 (Needs attention)</source><translation>%1（需要检查）</translation></message>
+    <message><source>Legacy: %1</source><translation>旧版：%1</translation></message>
+    <message><source>Legacy flat route. Select a product project to migrate it.</source><translation>旧版独立脚本路由，请选择产品项目完成迁移。</translation></message>
+    <message><source>Configure</source><translation>配置</translation></message>
+    <message><source>Missing StationSystem.json</source><translation>缺少 StationSystem.json</translation></message>
+    <message><source>Not selected</source><translation>未选择</translation></message>
+    <message><source>Needs attention</source><translation>需要检查</translation></message>
+    <message><source>Sequence: %1
+Station: %2</source><translation>脚本：%1
+工站：%2</translation></message>
+    <message><source>Product Devices</source><translation>产品设备</translation></message>
+    <message><source>This product project has no StationSystem.json.</source><translation>当前产品项目中没有 StationSystem.json。</translation></message>
+    <message><source>Device configuration saved. Unsaved route edits remain in this dialog.</source><translation>设备配置已保存，尚未保存的路由修改仍保留在当前窗口中。</translation></message>
+    <message><source>Cannot save ProductRouting.json: %1</source><translation>无法保存 ProductRouting.json：%1</translation></message>
+    <message><source>Route %1 needs a name.</source><translation>路由 %1 的名称不能为空。</translation></message>
+    <message><source>Route %1: %2</source><translation>路由 %1：%2</translation></message>
+    <message><source>Route %1: Station is invalid: %2</source><translation>路由 %1：工站配置无效：%2</translation></message>
+    <message><source>Sequence cannot be read: %1</source><translation>无法读取脚本：%1</translation></message>
+    <message><source>Sequence is not valid JSON: %1</source><translation>脚本不是有效的 JSON：%1</translation></message>
+    <message><source>ProductRouting.json does not exist yet. Save to create it.</source><translation>尚未创建 ProductRouting.json，保存后会自动创建。</translation></message>
+    <message><source>Loaded %1 route(s).</source><translation>已加载 %1 条路由。</translation></message>
+    <message><source>Route %1</source><translation>路由 %1</translation></message>
+    <message><source> Copy</source><translation> 副本</translation></message>
+    <message><source>Delete Route</source><translation>删除路由</translation></message>
+    <message><source>Delete route '%1' (%2)?</source><translation>删除路由“%1”（%2）？</translation></message>
+    <message><source>Field Device Configuration</source><translation>设备资源配置</translation></message>
+    <message><source>Configure station connection resources</source><translation>工站连接资源配置</translation></message>
+    <message><source>CAN Serial Number</source><translation>CAN 设备序列号</translation></message>
+    <message><source>VISA Resource</source><translation>VISA 资源</translation></message>
+    <message><source>COM Port</source><translation>串口</translation></message>
+    <message><source>TCP / IP</source><translation>TCP / IP</translation></message>
+    <message><source>Manual Resource</source><translation>手动资源</translation></message>
+    <message><source>Discard</source><translation>不保存</translation></message>
+    <message><source>No driver</source><translation>未配置驱动</translation></message>
+    <message><source>Not configured</source><translation>未配置</translation></message>
+    <message><source>Could not keep the current device changes: %1</source><translation>无法保留当前设备的修改：%1</translation></message>
+    <message><source>Scan Devices</source><translation>扫描设备</translation></message>
+    <message><source>Select or enter the device serial number</source><translation>选择或输入设备序列号</translation></message>
+    <message><source>Select or enter a VISA resource</source><translation>选择或输入 VISA 资源</translation></message>
+    <message><source>Select or enter a COM port</source><translation>选择或输入串口号</translation></message>
+    <message><source>Enter an IP address or host:port</source><translation>输入 IP 地址或主机:端口</translation></message>
+    <message><source>Enter a connection resource</source><translation>输入连接资源</translation></message>
+    <message><source>Scanning resources...</source><translation>正在扫描资源…</translation></message>
+    <message><source>Found %1 resource(s)</source><translation>找到 %1 个资源</translation></message>
+    <message><source>Scan failed: %1</source><translation>扫描失败：%1</translation></message>
+    <message><source>Saved %1 = %2</source><translation>已保存 %1 = %2</translation></message>
+    <message><source>No device changes to save.</source><translation>没有需要保存的设备修改。</translation></message>
+    <message><source>All device bindings were saved.</source><translation>所有设备资源绑定已保存。</translation></message>
+    <message><source>Save all device changes before closing?</source><translation>关闭前是否保存所有设备修改？</translation></message>
+    <message><source>Wait for the configured duration before continuing to the next step.</source><translation>等待设定的时长后，再执行下一步。</translation></message>
+    <message><source>Show an instruction, request OK or PASS/FAIL confirmation, or collect text or numeric input. Supports condition-based closing.</source><translation>显示操作提示、要求 OK 或 PASS/FAIL 人工确认，也可采集文本或数值供后续步骤使用；支持按条件关闭。</translation></message>
+    <message><source>Compare an actual value with an expected value or limits and record PASS or FAIL. Supports numeric and text comparisons.</source><translation>将实际值与期望值或上下限比较，记录成功或失败；支持数值和文本比较。</translation></message>
+    <message><source>Group related steps into one test item with a combined result, retry settings, and failure policies.</source><translation>将相关步骤组合为测试项，统一记录结果，并配置重试次数与失败策略。</translation></message>
+    <message><source>Repeat the child steps a configured number of times.</source><translation>按设定次数重复执行内部步骤。</translation></message>
+    <message><source>Repeat the child steps while a condition is true. Use a loop limit or Break If to control when it ends.</source><translation>条件满足时循环执行内部步骤，可通过循环上限或 Break If 控制退出。</translation></message>
+    <message><source>Exit the current loop when the condition matches. Otherwise continue the loop without failing this step.</source><translation>条件满足时退出当前循环；不满足则继续循环，不将本步骤判为失败。</translation></message>
+    <message><source>Maintain a counter with an initial value and increment for later steps to reference.</source><translation>按初始值和增量维护计数器，计数结果可供后续步骤引用。</translation></message>
+    <message><source>Collect input values from repeated executions into a result for later steps.</source><translation>收集多次执行的输入值并汇总为结果，供后续步骤使用。</translation></message>
+    <message><source>Wait for the participating UUTs to reach this synchronization point before continuing.</source><translation>等待参与测试的 UUT 到达此同步点后，再继续执行。</translation></message>
+    <message><source>Add a placeholder step that completes without performing a device operation.</source><translation>添加不执行设备操作的占位步骤，执行后直接完成。</translation></message>
+    <message><source>Built-in flow control and result evaluation steps</source><translation>内置流程控制、数据处理和结果判定功能</translation></message>
+    <message><source>Decode binary payloads, Modbus registers, and structured text</source><translation>解析二进制数据、Modbus 寄存器及结构化文本</translation></message>
+    <message><source>Calculate statistics, arithmetic results, and number representations</source><translation>对变量进行统计、基础运算和进制转换</translation></message>
+    <message><source>Decode byte or bit fields from CAN frames and other binary payloads.</source><translation>按字节或位偏移，从 CAN 帧等二进制数据中提取并解析指定字段。</translation></message>
+    <message><source>Decode typed values from Modbus register arrays.</source><translation>按寄存器偏移、数量与字节顺序，将寄存器数组解析为数值或文本。</translation></message>
+    <message><source>Decode ASCII or UTF-8 text stored as two bytes per Modbus register.</source><translation>将每个寄存器的两个字节还原为 ASCII 或 UTF-8 文本。</translation></message>
+    <message><source>Extract text between start and end markers, including escaped CR/LF markers.</source><translation>提取起始标记和结束标记之间的文本，支持转义的回车和换行标记。</translation></message>
+    <message><source>Split text and return either one field or multiple typed, named fields.</source><translation>按分隔符拆分文本，返回指定字段，或按名称输出多个指定类型的字段。</translation></message>
+    <message><source>Capture either one group or multiple typed, named groups from structured text.</source><translation>使用正则表达式捕获文本，可输出单个捕获组或多个指定类型的命名字段。</translation></message>
+    <message><source>Calculate minimum, maximum, range, average, sum, and source names from runtime values.</source><translation>计算运行时数值的最小值、最大值、极差、平均值及总和，并返回对应数据名称。</translation></message>
+    <message><source>Run a typed arithmetic operation without executing a free-form script.</source><translation>对变量执行指定的基础算术运算，无需编写脚本。</translation></message>
+    <message><source>Parse decimal, hexadecimal, octal, or binary text into an integer.</source><translation>将十进制、十六进制、八进制或二进制文本转换为整数。</translation></message>
+    <message><source>Format an integer as decimal, hexadecimal, octal, or binary text.</source><translation>将整数转换为指定进制的文本，可用于显示或后续参数拼接。</translation></message>
+    <message><source>Delete</source><translation>删除</translation></message>
+    <message><source>Copy</source><translation>复制</translation></message>
 </context>
 </TS>

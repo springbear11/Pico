@@ -1,7 +1,8 @@
 # UI Language Switching
 
-Admin and Test windows share a Chinese/English button in the Windows title bar,
-immediately before the native minimize button. The initial language is
+Admin and Test windows share a language icon at the far right of the main
+controls toolbar. It opens a menu of supported languages with the current
+language checked. The initial language is
 English. `QSettings` key `ui/language` stores `en` or `zh_CN` for the next launch.
 
 `ui/src/UiLanguage.*` owns the Qt translator. The `UiShell` translation context
@@ -9,23 +10,15 @@ in `ui/src/translations/picoate_zh_CN.ts` contains UI display strings only.
 Qt LinguistTools compiles the catalog and CMake embeds it in the executable's
 resources. No separate translation file is needed on the target computer.
 
-## Caption and Scanner Interaction
+## Language Menu and Scanner Interaction
 
-`ui/src/TitleBarLanguageButton.*` implements the caption control as an owned,
-non-activating tool surface anchored to the native caption-button bounds.
-The main window is not frameless: native resizing, snapping, minimize, maximize,
-restore and close behavior are retained. The surface follows move, resize, DPI,
-activation and visibility events, never uses global always-on-top, and hides
-while a modal configuration window is open or another application is active.
-Windows 11's native caption-color API matches the caption to the light UI.
-Non-Windows/offscreen platforms keep the menu-bar corner fallback.
-
-The control is a compact pill matching the login AUTO BY SN toggle: Chinese
-shows only "中" in white on charcoal; English shows only "EN" in charcoal on
-white. It keeps a 52-pixel logical width and is vertically inset in the caption.
-The outer surface is transparent and has no native border or shadow. A 170 ms
-fill transition provides click feedback without moving the window or stealing
-focus from an editor/scanner. There is no continuous animation or UI polling.
+`makeLanguageButton()` in `ui/src/UiTextBinding.cpp` creates a normal child
+QToolButton with a Lucide language icon and QMenu, not a combo box or a floating
+title-bar surface. It stays visible when another application or the taskbar
+takes focus. The native window frame is unchanged. Hover and menu-open
+backgrounds provide feedback. The former TitleBarLanguageButton is not used by
+either application window. New supported locales can be added to the menu and
+translator without changing the toolbar layout.
 READY/Ready display as "待开始".
 
 Admin and Test both hide the scanner during UUT Slots configuration and restore
@@ -43,9 +36,28 @@ state and runtime readiness at dispatch time to prevent late popups.
 - Editor section titles and table headers. Technical parameters and their
   values remain in English, including address, canId, frame, kind, onFail and
   executionScope. User-provided step names, messages, SNs and IDs remain intact.
+- Basic-function palette tooltips describe the actual purpose in both languages;
+  external plugin descriptions stay in English.
+- Station Basic Settings labels, Product Routing and Test device configuration
+  are localized. The Station device-parameter editor is unchanged.
 - Plugin definitions, engine behavior, JSON files, log messages and report
-  exports retain their original content. Login and remaining configuration
-  dialogs are outside the initial translation coverage.
+  exports retain their original content. Login is outside this coverage.
+
+## Overview and Compact Displays
+
+Admin preserves the complete physical-slot list for compile previews and each
+run iteration. Disabled slots remain gray, non-interactive cards and navigation
+buttons; they are not submitted for execution or included in result counts.
+
+The Overview summary uses the same result colors as the single-UUT sidebar,
+with larger status and elapsed-time text. Compact sidebars reserve sufficient
+width for labels and reduce metric spacing and chart sizes.
+
+`ui/src/ElidedInfoLabel.h` renders SN and other product fields on one line,
+showing at most 24 characters plus an ellipsis (or fewer if the cell is narrow).
+The complete original value remains in QLabel::text(), is shown on hover, and
+can be copied from the context menu. No newline, truncation, or formatting is
+written back into a variable, log, report, or configuration document.
 
 ## Maintenance
 
@@ -66,6 +78,26 @@ The language regression tests in `MainWindowLifecycleTests.cpp` cover pending
 Flow edits, active multi-UUT runs, scanner contents, model indexes, unchanged CSV
 exports, prompt inputs/responses and physical slot choices. Build both Debug and
 Release after updating the catalog.
+
+## Validation (2026-09-08)
+
+- Debug and Release UI builds completed with 553 finished translations.
+- Release focused window checks: 18 passed, 0 failed, including fixture setup
+  and teardown. Covers disabled slots before and after a run, physical UUT IDs,
+  the language menu, configuration drafts, English plugin descriptions, and
+  single-line 22/24/32-character SN display with full-value hover text.
+- Small-screen screenshots were inspected at 1100x680 and 1366x768 logical
+  window sizes. SN caption and content share the same non-wrapping form row;
+  the SN value aligns with Station ID, Model, and Customer ID values.
+- Additional 1.5x Qt scale: 4 passed, 0 failed, including setup/teardown.
+- UI runtime CTest suite passed. No engine or plugin source changes.
+- Debug expanded window checks: 12 passed, 1 existing failure. The assertion
+  in `adminMultiUutRunShowsOverviewAndNavigatesToDetails` about two-card vertical
+  centering has the same geometry as the pre-change September 6 log (card center
+  355, host center 266). It remains recorded, not removed or weakened.
+- These are focused regression checks, not a full hardware or all-window
+  validation. The 0.3.0 installer is refreshed after the value-column alignment
+  follow-up, without changing the version number.
 
 ## Validation (2026-09-06)
 

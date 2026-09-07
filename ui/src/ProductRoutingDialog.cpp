@@ -1,4 +1,5 @@
 #include "ProductRoutingDialog.h"
+#include "UiTextBinding.h"
 
 #include "FieldDeviceDialog.h"
 #include "OnOffControl.h"
@@ -45,7 +46,7 @@ constexpr int LegacySequenceRole = Qt::UserRole + 1;
 
 QString snPatternHelp()
 {
-    return QObject::tr(
+    return uiText(
         "SN wildcard: BTSN* = starts with, *BTSN* = contains, "
         "*BTSN = ends with. ? matches one character.");
 }
@@ -74,7 +75,7 @@ ProductRoutingDialog::ProductRoutingDialog(QString routingPath, QWidget* parent)
     , m_routingPath(QFileInfo(std::move(routingPath)).absoluteFilePath())
 {
     setObjectName(QStringLiteral("productRoutingDialog"));
-    setWindowTitle(tr("Product Routing"));
+    setWindowTitle(uiText("Product Routing"));
     setMinimumSize(1100, 520);
     resize(1240, 600);
     buildUi();
@@ -87,31 +88,30 @@ void ProductRoutingDialog::buildUi()
     root->setContentsMargins(18, 16, 18, 16);
     root->setSpacing(12);
 
-    auto* title = new QLabel(tr("Product routing"), this);
+    auto* title = makeUiLabel("Product routing", this);
     title->setObjectName(QStringLiteral("productRoutingTitle"));
     root->addWidget(title);
 
     auto* subtitle = new QLabel(
-        tr("Match a scanned SN to one product project containing its Sequence and Station."),
+        uiText("Match a scanned SN to one product project containing its Sequence and Station."),
         this);
     subtitle->setObjectName(QStringLiteral("productRoutingSubtitle"));
     root->addWidget(subtitle);
 
     auto* policyRow = new QHBoxLayout;
-    auto* policyLabel = new QLabel(tr("Allow manual project selection in Test"), this);
+    auto* policyLabel = makeUiLabel("Allow manual project selection in Test", this);
     policyLabel->setObjectName(QStringLiteral("productRoutingPolicyLabel"));
     m_allowManualSwitch = new OnOffSwitch(this);
     m_allowManualSwitch->setObjectName(
         QStringLiteral("productRoutingAllowManualSwitch"));
-    m_allowManualSwitch->setAccessibleName(
-        tr("Allow manual project selection in Test mode"));
+    bindUiText(m_allowManualSwitch, "accessibleName", "Allow manual project selection in Test mode");
     policyRow->addWidget(policyLabel);
     policyRow->addWidget(m_allowManualSwitch);
     policyRow->addStretch(1);
     root->addLayout(policyRow);
 
     auto* routeTools = new QHBoxLayout;
-    auto* routesLabel = new QLabel(tr("Routes"), this);
+    auto* routesLabel = makeUiLabel("Routes", this);
     routesLabel->setObjectName(QStringLiteral("productRoutingRoutesLabel"));
     routeTools->addWidget(routesLabel);
     routeTools->addStretch(1);
@@ -119,19 +119,19 @@ void ProductRoutingDialog::buildUi()
     auto* addButton = new QToolButton(this);
     addButton->setObjectName(QStringLiteral("productRoutingAddButton"));
     addButton->setIcon(routingIcon("list-plus"));
-    addButton->setToolTip(tr("Add route"));
-    addButton->setAccessibleName(tr("Add route"));
+    bindUiText(addButton, "toolTip", "Add route");
+    bindUiText(addButton, "accessibleName", "Add route");
     m_duplicateButton = new QToolButton(this);
     m_duplicateButton->setObjectName(
         QStringLiteral("productRoutingDuplicateButton"));
     m_duplicateButton->setIcon(routingIcon("copy-plus"));
-    m_duplicateButton->setToolTip(tr("Duplicate selected route"));
-    m_duplicateButton->setAccessibleName(tr("Duplicate selected route"));
+    bindUiText(m_duplicateButton, "toolTip", "Duplicate selected route");
+    bindUiText(m_duplicateButton, "accessibleName", "Duplicate selected route");
     m_removeButton = new QToolButton(this);
     m_removeButton->setObjectName(QStringLiteral("productRoutingRemoveButton"));
     m_removeButton->setIcon(routingIcon("trash-2"));
-    m_removeButton->setToolTip(tr("Delete selected route"));
-    m_removeButton->setAccessibleName(tr("Delete selected route"));
+    bindUiText(m_removeButton, "toolTip", "Delete selected route");
+    bindUiText(m_removeButton, "accessibleName", "Delete selected route");
     for (auto* button : {addButton, m_duplicateButton, m_removeButton}) {
         button->setAutoRaise(true);
         button->setIconSize(QSize(19, 19));
@@ -143,8 +143,8 @@ void ProductRoutingDialog::buildUi()
     m_table = new QTableWidget(0, ColumnCount, this);
     m_table->setObjectName(QStringLiteral("productRoutingTable"));
     m_table->setHorizontalHeaderLabels({
-        tr("Enabled"), tr("Product / Route"), tr("SN Pattern"),
-        tr("SN Length"), tr("Project"), tr("Device Status"), tr("Devices"),
+        uiText("Enabled"), uiText("Product / Route"), uiText("SN Pattern"),
+        uiText("SN Length"), uiText("Project"), uiText("Device Status"), uiText("Devices"),
     });
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -184,6 +184,8 @@ void ProductRoutingDialog::buildUi()
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
     m_saveButton = buttons->button(QDialogButtonBox::Save);
+    bindUiText(m_saveButton, "text", "Save");
+    bindUiText(buttons->button(QDialogButtonBox::Cancel), "text", "Cancel");
     m_saveButton->setObjectName(QStringLiteral("productRoutingSaveButton"));
     root->addWidget(buttons);
 
@@ -260,7 +262,7 @@ void ProductRoutingDialog::load()
             QFileInfo(m_routingPath).absolutePath());
         populate(config);
         m_statusLabel->setText(
-            tr("ProductRouting.json does not exist yet. Save to create it."));
+            uiText("ProductRouting.json does not exist yet. Save to create it."));
         return;
     }
 
@@ -268,7 +270,7 @@ void ProductRoutingDialog::load()
     populate(loaded.config);
     if (loaded.ok()) {
         m_statusLabel->setText(
-            tr("Loaded %1 route(s).").arg(loaded.config.routes.size()));
+            uiText("Loaded %1 route(s).").arg(loaded.config.routes.size()));
         return;
     }
 
@@ -304,7 +306,7 @@ void ProductRoutingDialog::populate(
 void ProductRoutingDialog::addRoute()
 {
     PicoATE::Core::ProductRoute route;
-    route.name = tr("Route %1").arg(m_table->rowCount() + 1);
+    route.name = uiText("Route %1").arg(m_table->rowCount() + 1);
     route.enabled = true;
     if (!m_projects.isEmpty()) {
         route.projectPath = m_projects.first().directoryPath;
@@ -322,7 +324,7 @@ void ProductRoutingDialog::duplicateSelectedRoute()
     }
     PicoATE::Core::ProductRoute route;
     route.enabled = m_table->item(row, EnabledColumn)->checkState() == Qt::Checked;
-    route.name = m_table->item(row, NameColumn)->text().trimmed() + tr(" Copy");
+    route.name = m_table->item(row, NameColumn)->text().trimmed() + uiText(" Copy");
     route.pattern = m_table->item(row, PatternColumn)->text().trimmed();
     if (auto* length = qobject_cast<QLineEdit*>(
             m_table->cellWidget(row, LengthColumn))) {
@@ -347,13 +349,13 @@ void ProductRoutingDialog::removeSelectedRoute()
     const auto routeName = m_table->item(row, NameColumn)->text().trimmed();
     const auto pattern = m_table->item(row, PatternColumn)->text().trimmed();
     const auto displayName = routeName.isEmpty() ? pattern : routeName;
-    if (QMessageBox::question(
-            this,
-            tr("Delete Route"),
-            tr("Delete route '%1' (%2)?")
-                .arg(displayName, pattern),
-            QMessageBox::Yes | QMessageBox::Cancel,
-            QMessageBox::Cancel) != QMessageBox::Yes) {
+    QMessageBox confirmation(QMessageBox::Question, uiText("Delete Route"),
+        uiText("Delete route '%1' (%2)?").arg(displayName, pattern),
+        QMessageBox::Yes | QMessageBox::Cancel, this);
+    confirmation.setDefaultButton(QMessageBox::Cancel);
+    confirmation.button(QMessageBox::Yes)->setText(uiText("Delete"));
+    confirmation.button(QMessageBox::Cancel)->setText(uiText("Cancel"));
+    if (confirmation.exec() != QMessageBox::Yes) {
         restoreSelectedRouteRow();
         return;
     }
@@ -379,7 +381,7 @@ void ProductRoutingDialog::appendRoute(const PicoATE::Core::ProductRoute& route)
     m_table->setItem(row, EnabledColumn, enabled);
 
     auto* name = new QTableWidgetItem(route.name);
-    name->setToolTip(tr("A readable product or route name"));
+    name->setToolTip(uiText("A readable product or route name"));
     m_table->setItem(row, NameColumn, name);
 
     auto* pattern = new QTableWidgetItem(route.pattern);
@@ -390,22 +392,22 @@ void ProductRoutingDialog::appendRoute(const PicoATE::Core::ProductRoute& route)
     length->setObjectName(QStringLiteral("productRoutingSnLengthEdit"));
     length->setValidator(new QIntValidator(1, 256, length));
     length->setMaxLength(3);
-    length->setPlaceholderText(tr("Any"));
+    bindUiText(length, "placeholderText", "Any");
     length->setAlignment(Qt::AlignCenter);
     length->setText(route.snLength > 0 ? QString::number(route.snLength)
                                       : QString{});
-    length->setToolTip(tr("Exact SN length. Leave empty for Any."));
+    bindUiText(length, "toolTip", "Exact SN length. Leave empty for Any.");
     length->setProperty("preserveRouteSelection", true);
     length->installEventFilter(this);
     m_table->setCellWidget(row, LengthColumn, length);
 
     auto* project = new QComboBox(m_table);
     project->setObjectName(QStringLiteral("productRoutingProjectCombo"));
-    project->addItem(tr("Select Product Project"), QString{});
+    project->addItem(uiText("Select Product Project"), QString{});
     for (const auto& candidate : m_projects) {
         const auto label = candidate.ok()
             ? candidate.name
-            : tr("%1 (Needs attention)").arg(candidate.name);
+            : uiText("%1 (Needs attention)").arg(candidate.name);
         project->addItem(label, candidate.directoryPath);
         const int index = project->count() - 1;
         if (!candidate.ok()) {
@@ -432,12 +434,12 @@ void ProductRoutingDialog::appendRoute(const PicoATE::Core::ProductRoute& route)
     } else if (!route.sequencePath.trimmed().isEmpty()) {
         const auto legacyPath = QFileInfo(route.sequencePath).absoluteFilePath();
         project->addItem(
-            tr("Legacy: %1").arg(QFileInfo(legacyPath).fileName()), QString{});
+            uiText("Legacy: %1").arg(QFileInfo(legacyPath).fileName()), QString{});
         projectIndex = project->count() - 1;
         project->setItemData(projectIndex, legacyPath, LegacySequenceRole);
         project->setItemData(
             projectIndex,
-            tr("Legacy flat route. Select a product project to migrate it."),
+            uiText("Legacy flat route. Select a product project to migrate it."),
             Qt::ToolTipRole);
     }
     project->setCurrentIndex(qMax(0, projectIndex));
@@ -449,11 +451,11 @@ void ProductRoutingDialog::appendRoute(const PicoATE::Core::ProductRoute& route)
     deviceStatus->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
     m_table->setItem(row, DeviceStatusColumn, deviceStatus);
 
-    auto* devices = new QPushButton(tr("Configure"), m_table);
+    auto* devices = makeUiButton("Configure", m_table);
     devices->setObjectName(QStringLiteral("productRoutingDevicesButton"));
     devices->setMinimumWidth(156);
     devices->setIcon(routingIcon("cable"));
-    devices->setToolTip(tr("Configure the devices in this project's Station"));
+    bindUiText(devices, "toolTip", "Configure the devices in this project's Station");
     devices->setProperty("preserveRouteSelection", true);
     devices->installEventFilter(this);
     m_table->setCellWidget(row, DevicesColumn, devices);
@@ -504,13 +506,13 @@ void ProductRoutingDialog::updateProjectRow(int row)
         } else {
             project.errors.push_back({
                 QStringLiteral("project.station"),
-                tr("Missing StationSystem.json"),
+                uiText("Missing StationSystem.json"),
                 {}});
         }
     }
 
     if (projectPath.isEmpty() && legacySequence.isEmpty()) {
-        status->setText(tr("Not selected"));
+        status->setText(uiText("Not selected"));
         status->setForeground(QColor(QStringLiteral("#68737b")));
         status->setToolTip({});
         devices->setEnabled(false);
@@ -522,14 +524,14 @@ void ProductRoutingDialog::updateProjectRow(int row)
         details.push_back(error.message);
     }
     if (project.ok()) {
-        status->setText(tr("Ready"));
+        status->setText(uiText("Ready"));
         status->setForeground(QColor(QStringLiteral("#177245")));
         status->setToolTip(
-            tr("Sequence: %1\nStation: %2")
+            uiText("Sequence: %1\nStation: %2")
                 .arg(QFileInfo(project.sequencePath).fileName(),
                      QFileInfo(project.stationPath).fileName()));
     } else {
-        status->setText(tr("Needs attention"));
+        status->setText(uiText("Needs attention"));
         status->setForeground(QColor(QStringLiteral("#b42318")));
         status->setToolTip(details.join(QStringLiteral("\n")));
     }
@@ -560,8 +562,8 @@ void ProductRoutingDialog::openProjectDevices(int row)
     }
     if (!QFileInfo(stationPath).isFile()) {
         QMessageBox::warning(
-            this, tr("Product Devices"),
-            tr("This product project has no StationSystem.json."));
+            this, uiText("Product Devices"),
+            uiText("This product project has no StationSystem.json."));
         updateProjectRow(row);
         return;
     }
@@ -570,7 +572,7 @@ void ProductRoutingDialog::openProjectDevices(int row)
     connect(&dialog, &FieldDeviceDialog::stationSaved, this, [this, row] {
         m_statusLabel->setStyleSheet({});
         m_statusLabel->setText(
-            tr("Device configuration saved. Unsaved route edits remain in this dialog."));
+            uiText("Device configuration saved. Unsaved route edits remain in this dialog."));
         updateProjectRow(row);
     });
     dialog.exec();
@@ -595,7 +597,7 @@ void ProductRoutingDialog::save()
         !file.commit()) {
         m_statusLabel->setStyleSheet(QStringLiteral("color: #b42318;"));
         m_statusLabel->setText(
-            tr("Cannot save ProductRouting.json: %1").arg(file.errorString()));
+            uiText("Cannot save ProductRouting.json: %1").arg(file.errorString()));
         return;
     }
 
@@ -630,7 +632,7 @@ bool ProductRoutingDialog::collectAndValidate(
                 LegacySequenceRole).toString().trimmed();
         }
         if (route.name.isEmpty()) {
-            const auto message = tr("Route %1 needs a name.").arg(row + 1);
+            const auto message = uiText("Route %1 needs a name.").arg(row + 1);
             errors->push_back(message);
             markCellInvalid(row, NameColumn, message);
         }
@@ -681,7 +683,7 @@ bool ProductRoutingDialog::collectAndValidate(
                 for (const auto& diagnostic : project.errors) {
                     details.push_back(diagnostic.message);
                 }
-                const auto message = tr("Route %1: %2")
+                const auto message = uiText("Route %1: %2")
                     .arg(row + 1)
                     .arg(details.join(QStringLiteral("; ")));
                 errors->push_back(message);
@@ -696,7 +698,7 @@ bool ProductRoutingDialog::collectAndValidate(
                     ? diagnostic.message
                     : QStringLiteral("%1: %2")
                           .arg(diagnostic.path, diagnostic.message);
-                const auto message = tr("Route %1: Station is invalid: %2")
+                const auto message = uiText("Route %1: Station is invalid: %2")
                     .arg(row + 1)
                     .arg(detail);
                 errors->push_back(message);
@@ -707,7 +709,7 @@ bool ProductRoutingDialog::collectAndValidate(
         }
         const auto error = validateSequence(sequencePath);
         if (!error.isEmpty()) {
-            const auto message = tr("Route %1: %2").arg(row + 1).arg(error);
+            const auto message = uiText("Route %1: %2").arg(row + 1).arg(error);
             errors->push_back(message);
             markCellInvalid(row, ProjectColumn, message);
         }
@@ -719,12 +721,12 @@ QString ProductRoutingDialog::validateSequence(const QString& sequencePath) cons
 {
     QFile file(sequencePath);
     if (!file.open(QIODevice::ReadOnly)) {
-        return tr("Sequence cannot be read: %1").arg(sequencePath);
+        return uiText("Sequence cannot be read: %1").arg(sequencePath);
     }
     QJsonParseError parseError;
     const auto document = QJsonDocument::fromJson(file.readAll(), &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-        return tr("Sequence is not valid JSON: %1").arg(parseError.errorString());
+        return uiText("Sequence is not valid JSON: %1").arg(parseError.errorString());
     }
     PicoATE::Core::SequenceCompiler compiler;
     const auto compiled = compiler.compileJson(document.object());
@@ -746,7 +748,7 @@ void ProductRoutingDialog::clearValidationState()
             item->setBackground(QBrush{});
             item->setToolTip(column == PatternColumn
                 ? snPatternHelp()
-                : tr("A readable product or route name"));
+                : uiText("A readable product or route name"));
         }
         for (int column : {LengthColumn, ProjectColumn}) {
             if (auto* widget = m_table->cellWidget(row, column)) {

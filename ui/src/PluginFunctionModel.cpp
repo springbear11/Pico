@@ -97,7 +97,9 @@ QVariant PluginFunctionModel::data(const QModelIndex& modelIndex, int role) cons
     if (role == Qt::DisplayRole) {
         return item->parent == m_root.get() ? uiStateText(item->text) : item->text;
     }
-    if (role == Qt::ToolTipRole) return item->tooltip;
+    if (role == Qt::ToolTipRole) {
+        return item->pluginIndex < 0 ? uiStateText(item->tooltip) : item->tooltip;
+    }
     if (role == Qt::DecorationRole && !item->iconKey.isEmpty()) {
         return functionIcon(item->iconKey);
     }
@@ -358,13 +360,25 @@ void PluginFunctionModel::rebuild()
         QStringLiteral("barrier"),
         QStringLiteral("noop")
     };
+    const QStringList basicDescriptions = {
+        QStringLiteral("Wait for the configured duration before continuing to the next step."),
+        QStringLiteral("Show an instruction, request OK or PASS/FAIL confirmation, or collect text or numeric input. Supports condition-based closing."),
+        QStringLiteral("Compare an actual value with an expected value or limits and record PASS or FAIL. Supports numeric and text comparisons."),
+        QStringLiteral("Group related steps into one test item with a combined result, retry settings, and failure policies."),
+        QStringLiteral("Repeat the child steps a configured number of times."),
+        QStringLiteral("Repeat the child steps while a condition is true. Use a loop limit or Break If to control when it ends."),
+        QStringLiteral("Exit the current loop when the condition matches. Otherwise continue the loop without failing this step."),
+        QStringLiteral("Maintain a counter with an initial value and increment for later steps to reference."),
+        QStringLiteral("Collect input values from repeated executions into a result for later steps."),
+        QStringLiteral("Wait for the participating UUTs to reach this synchronization point before continuing."),
+        QStringLiteral("Add a placeholder step that completes without performing a device operation.")
+    };
     for (int index = 0; index < basicFunctions.size(); ++index) {
         const auto& definition = basicFunctions[index];
         auto function = std::make_unique<Item>();
         function->kind = ItemKind::Function;
         function->text = definition.first;
-        function->tooltip = tr("Drag to the sequence to add a %1 step")
-                                .arg(definition.first);
+        function->tooltip = basicDescriptions.at(index);
         function->iconKey = basicIconKeys.value(index, QStringLiteral("basic"));
         function->stepTemplate = definition.second;
         function->parent = basicSectionPointer;

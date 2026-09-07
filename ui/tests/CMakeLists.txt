@@ -75,6 +75,7 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/MainWindow.h
     ../src/UiTextBinding.cpp
     ../src/UiTextBinding.h
+    ../src/ElidedInfoLabel.h
     ../src/TitleBarLanguageButton.cpp
     ../src/TitleBarLanguageButton.h
     ../src/MultiUutOverviewWidget.cpp

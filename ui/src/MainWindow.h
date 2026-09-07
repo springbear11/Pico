@@ -359,6 +359,7 @@ private:
     QString m_newProjectRootPath;
     QStringList m_pendingRoutedSerialNumbers;
     QVector<bool> m_adminUutSlotEnabled;
+    QVector<RunRequest::UutInput> m_adminRunUutInputs;
     QString m_activeAdminUutId;
     QString m_activeAdminSerialNumber;
     PicoATE::Core::UutId m_selectedAdminUutId;

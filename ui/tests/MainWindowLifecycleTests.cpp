@@ -33,6 +33,7 @@
 #include "StationSettingsEditor.h"
 #include "UiLanguage.h"
 #include "UiTextBinding.h"
+#include "ElidedInfoLabel.h"
 #include "UutSlotConfigurationDialog.h"
 #include "PicoATE/Core/ExecutionReportJson.h"
 
@@ -53,6 +54,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QGroupBox>
 #include <QImage>
 #include <QInputDialog>
@@ -380,6 +382,9 @@ class MainWindowLifecycleTests final : public QObject
 
 private slots:
     void titleBarLanguageButtonPreservesNativeWindow();
+    void adminDisabledSlotsRemainVisible();
+    void localizedConfigurationKeepsData();
+    void smallScreenRunInfoRemainsReadable();
     void uutSlotsSuspendScanner_data();
     void uutSlotsSuspendScanner();
     void initTestCase();
@@ -524,128 +529,332 @@ void MainWindowLifecycleTests::titleBarLanguageButtonPreservesNativeWindow()
         QSettings().remove(QStringLiteral("ui/language"));
     });
     QMainWindow window;
-    window.setWindowTitle(QStringLiteral("PicoATE - Language caption verification"));
     auto* edit = new QLineEdit(&window);
     window.setCentralWidget(edit);
-    window.menuBar()->addMenu(QStringLiteral("File"));
-    const auto originalFlags = window.windowFlags();
-    installLanguageButton(&window);
-    QCOMPARE(window.windowFlags(), originalFlags);
+    const auto flags = window.windowFlags();
+    auto* toolbar = window.addToolBar(QStringLiteral("Controls"));
+    auto* button = makeLanguageButton(toolbar);
+    toolbar->addWidget(button);
     window.resize(900, 540);
     window.show();
     window.activateWindow();
-    auto* button = window.findChild<QToolButton*>(QStringLiteral("uiLanguageButton"));
-    QVERIFY(button);
     QTRY_VERIFY(button->isVisible());
-    QCOMPARE(button->text(), QStringLiteral("EN"));
-    QVERIFY(!button->isChecked());
-    QCOMPARE(button->width(), 52);
+    QVERIFY(!button->isWindow());
+    QCOMPARE(window.windowFlags(), flags);
+    QCOMPARE(button->size(), QSize(40, 36));
+    QVERIFY(!button->icon().isNull());
+    auto* menu = button->menu();
+    QVERIFY(menu);
+    QCOMPARE(menu->actions().size(), 2);
+    auto* chinese = window.findChild<QAction*>(QStringLiteral("uiLanguage_zh_CN"));
+    auto* english = window.findChild<QAction*>(QStringLiteral("uiLanguage_en"));
+    QVERIFY(chinese && english);
+    QVERIFY(english->isChecked());
     edit->setText(QStringLiteral("DRAFT-1234"));
-    edit->setFocus();
     edit->setCursorPosition(5);
-    const auto frameBefore = window.frameGeometry();
-    const auto buttonSize = button->size();
-    button->click();
+    const auto frame = window.frameGeometry();
+    chinese->trigger();
     QVERIFY(language.isChinese());
-    QCOMPARE(button->text(), QString::fromUtf8("中"));
-    QVERIFY(button->isChecked());
-    QTRY_COMPARE_WITH_TIMEOUT(button->property("languageProgress").toReal(), 1.0, 1500);
+    QVERIFY(chinese->isChecked());
+    QVERIFY(!english->isChecked());
     QCOMPARE(uiText("READY"), QString::fromUtf8("待开始"));
-    QCOMPARE(uiText("Ready"), QString::fromUtf8("待开始"));
-    QCOMPARE(button->size(), buttonSize);
-    QCOMPARE(window.frameGeometry(), frameBefore);
     QCOMPARE(edit->text(), QStringLiteral("DRAFT-1234"));
     QCOMPARE(edit->cursorPosition(), 5);
-    QVERIFY(edit->hasFocus());
+    QCOMPARE(window.frameGeometry(), frame);
+    menu->popup(button->mapToGlobal(QPoint(0, button->height())));
+    QTRY_VERIFY(menu->isVisible());
+    QTest::keyClick(menu, Qt::Key_Escape);
+    QTRY_VERIFY(!menu->isVisible());
+    QVERIFY(language.isChinese());
 
-#ifdef Q_OS_WIN
-    if (QGuiApplication::platformName() == QStringLiteral("windows")) {
-        QVERIFY(!window.menuBar()->cornerWidget(Qt::TopRightCorner));
-        const auto ownerHwnd = reinterpret_cast<HWND>(window.winId());
-        const auto buttonHwnd = reinterpret_cast<HWND>(button->winId());
-        const auto aligned = [&] {
-            RECT frame{}, caption{}, control{};
-            POINT content{0, 0};
-            if (!GetWindowRect(ownerHwnd, &frame) || !GetWindowRect(buttonHwnd, &control) ||
-                !ClientToScreen(ownerHwnd, &content) ||
-                FAILED(DwmGetWindowAttribute(ownerHwnd, DWMWA_CAPTION_BUTTON_BOUNDS,
-                                             &caption, sizeof(caption)))) return false;
-            return control.left > frame.left && control.bottom < content.y &&
-                control.top > frame.top + caption.top &&
-                qAbs(control.right - (frame.left + caption.left -
-                     qRound(8 * window.devicePixelRatioF()))) <= 2;
-        };
-        QTRY_VERIFY(aligned());
-        QVERIFY(!(GetWindowLongPtr(buttonHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST));
-        QVERIFY(GetWindowLongPtr(buttonHwnd, GWL_EXSTYLE) & WS_EX_LAYERED);
-        const auto rendered = button->grab().toImage();
-        QVERIFY(rendered.hasAlphaChannel());
-        QCOMPARE(rendered.pixelColor(0, 0).alpha(), 0);
-        QCOMPARE(rendered.pixelColor(rendered.width() - 1, rendered.height() - 1).alpha(), 0);
-        QCOMPARE(GetWindow(buttonHwnd, GW_OWNER), ownerHwnd);
-        POINT previousCursor{};
-        GetCursorPos(&previousCursor);
-        const auto restoreCursor = qScopeGuard([&] {
-            SetCursorPos(previousCursor.x, previousCursor.y);
-        });
-        RECT control{};
-        GetWindowRect(buttonHwnd, &control);
-        SetCursorPos((control.left + control.right) / 2,
-                     (control.top + control.bottom) / 2);
-        INPUT input[2]{};
-        input[0].type = input[1].type = INPUT_MOUSE;
-        input[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-        input[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
-        QCOMPARE(SendInput(2, input, sizeof(INPUT)), UINT(2));
-        QTRY_VERIFY(!language.isChinese());
-        QCOMPARE(button->text(), QStringLiteral("EN"));
-        QVERIFY(!button->isChecked());
-        QTRY_COMPARE_WITH_TIMEOUT(button->property("languageProgress").toReal(), 0.0, 1500);
-        QVERIFY(edit->hasFocus());
-        QCOMPARE(window.frameGeometry(), frameBefore);
+    QEvent deactivate(QEvent::WindowDeactivate);
+    QCoreApplication::sendEvent(&window, &deactivate);
+    QCoreApplication::sendEvent(button, &deactivate);
+    QVERIFY(button->isVisible());
+    QDialog other;
+    other.show();
+    other.activateWindow();
+    QTest::qWait(80);
+    QVERIFY(button->isVisible());
+    other.close();
+    window.showMaximized();
+    QTRY_VERIFY(window.isMaximized());
+    QVERIFY(button->isVisible());
+    QVERIFY(window.rect().contains(button->mapTo(&window, button->rect().center())));
+    english->trigger();
+    QVERIFY(!language.isChinese());
+    QVERIFY(english->isChecked());
+    QCOMPARE(edit->text(), QStringLiteral("DRAFT-1234"));
+    window.showNormal();
+    QVERIFY(button->isVisible());
+}
 
-        window.showMaximized();
-        QTRY_VERIFY(window.isMaximized());
-        QTRY_VERIFY(aligned());
-        window.showNormal();
-        QTRY_VERIFY(!window.isMaximized());
-        QTRY_VERIFY(aligned());
-        window.move(window.pos() + QPoint(20, 20));
-        QTRY_VERIFY(aligned());
-        window.showMinimized();
-        QTRY_VERIFY(!button->isVisible());
-        window.showNormal();
-        window.raise();
-        window.activateWindow();
-        QTRY_VERIFY(button->isVisible());
-        QTRY_VERIFY(aligned());
-
-        QDialog modal(&window);
-        modal.setWindowModality(Qt::WindowModal);
-        modal.show();
-        QTRY_VERIFY(!button->isVisible());
-        modal.close();
-        window.raise();
-        window.activateWindow();
-        QTRY_VERIFY(button->isVisible());
-        const auto screenshotRoot = qEnvironmentVariable("PICOATE_LANGUAGE_SCREENSHOTS");
-        if (!screenshotRoot.isEmpty()) {
-            QTest::qWait(300);
-            const auto frame = window.frameGeometry();
-            QVERIFY(window.screen()->grabWindow(0, frame.x(), frame.y(), frame.width(),
-                                                qMin(110, frame.height()))
-                        .save(QDir(screenshotRoot).filePath(QStringLiteral("caption-language-en.png"))));
-            button->click();
-            QTRY_COMPARE(button->property("languageProgress").toReal(), 1.0);
-            QTest::qWait(300);
-            QVERIFY(window.screen()->grabWindow(0, frame.x(), frame.y(), frame.width(),
-                                                qMin(110, frame.height()))
-                        .save(QDir(screenshotRoot).filePath(QStringLiteral("caption-language-zh.png"))));
-        }
-        window.hide();
-        QTRY_VERIFY(!button->isVisible());
+void MainWindowLifecycleTests::adminDisabledSlotsRemainVisible()
+{
+    QSettings().clear();
+    QTemporaryDir directory;
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile file(stationPath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"({"stationId":"slot-preview","uutCount":4,"scanDialogEnabled":false,"devices":[]})");
+    file.close();
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR) +
+                                    QStringLiteral("/examples/simple_sequence.json")));
+    QVERIFY(window.openStationFile(stationPath));
+    window.show();
+    auto* compile = window.findChild<QAction*>(QStringLiteral("compileAction"));
+    auto* slotAction = window.findChild<QAction*>(QStringLiteral("adminUutSlotsAction"));
+    auto* count = window.findChild<QSpinBox*>(QStringLiteral("uutCountSpinBox"));
+    QVERIFY(count);
+    count->setValue(4);
+    auto* viewModel = window.findChild<ExecutionViewModel*>();
+    auto* overview = window.findChild<MultiUutOverviewWidget*>();
+    QVERIFY(compile && slotAction && viewModel && overview);
+    compile->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 5000);
+    bool applied = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = QApplication::activeModalWidget();
+        if (!dialog) return;
+        auto* first = dialog->findChild<QPushButton*>(QStringLiteral("uutSlotToggle1"));
+        auto* third = dialog->findChild<QPushButton*>(QStringLiteral("uutSlotToggle3"));
+        auto* buttons = dialog->findChild<QDialogButtonBox*>();
+        if (!first || !third || !buttons) return;
+        first->setChecked(false);
+        third->setChecked(false);
+        applied = true;
+        buttons->button(QDialogButtonBox::Ok)->click();
+    });
+    slotAction->trigger();
+    QVERIFY(applied);
+    QTRY_COMPARE(overview->model()->rowCount(), 4);
+    for (int slot : {1, 3}) {
+        const auto entry = overview->model()->entryAt(slot - 1);
+        QVERIFY(entry && !entry->enabled);
+        QCOMPARE(entry->uutId, QStringLiteral("UUT-%1").arg(slot));
+        QCOMPARE(entry->state, UutOverviewState::Disabled);
+        auto* card = window.findChild<QAbstractButton*>(QStringLiteral("uutOverviewCard_%1").arg(slot));
+        auto* button = window.findChild<QPushButton*>(QStringLiteral("adminUutButton_%1").arg(slot));
+        QVERIFY(card && button);
+        QVERIFY(!card->isHidden() && !card->isEnabled());
+        QTRY_VERIFY(!button->isHidden() && !button->isEnabled());
     }
-#endif
+    auto* run = window.findChild<QAction*>(QStringLiteral("runAction"));
+    QVERIFY(run && run->isEnabled());
+    run->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(viewModel->state() == UiRunState::Completed ||
+                             viewModel->state() == UiRunState::Failed, 5000);
+    QCOMPARE(viewModel->report().uuts.size(), 2);
+    QCOMPARE(viewModel->report().uuts.at(0).uutId, QStringLiteral("UUT-2"));
+    QCOMPARE(viewModel->report().uuts.at(1).uutId, QStringLiteral("UUT-4"));
+    QCOMPARE(overview->model()->rowCount(), 4);
+    QCOMPARE(overview->model()->entryAt(0)->state, UutOverviewState::Disabled);
+    QCOMPARE(overview->model()->entryAt(2)->state, UutOverviewState::Disabled);
+    const auto screenshots = qEnvironmentVariable("PICOATE_LANGUAGE_SCREENSHOTS");
+    if (!screenshots.isEmpty()) {
+        window.resize(1366, 768);
+        QTest::qWait(80);
+        QVERIFY(window.grab().save(QDir(screenshots).filePath(QStringLiteral("admin-disabled-slots.png"))));
+    }
+}
+
+void MainWindowLifecycleTests::localizedConfigurationKeepsData()
+{
+    auto& language = UiLanguage::instance();
+    QVERIFY(language.setChinese(false, false));
+    const auto restore = qScopeGuard([&] { language.setChinese(false, false); });
+    StationDocument document;
+    QVERIFY(document.initializeNew(QJsonObject{
+        {QStringLiteral("stationId"), QStringLiteral("BENCH")},
+        {QStringLiteral("model"), QStringLiteral("M2")},
+        {QStringLiteral("devices"), QJsonArray{}}
+    }));
+    StationSettingsEditor settings(&document);
+    auto* model = settings.findChild<QLineEdit*>(QStringLiteral("stationModelEdit"));
+    auto* snLength = settings.findChild<QLineEdit*>(QStringLiteral("stationSnLengthEdit"));
+    QVERIFY(model && snLength);
+    model->setText(QStringLiteral("DRAFT-C123"));
+    model->setCursorPosition(4);
+    QVERIFY(QMetaObject::invokeMethod(model, "textEdited", Q_ARG(QString, model->text())));
+    QVERIFY(settings.hasPendingChanges());
+    const auto snapshot = document.snapshot();
+    auto* form = settings.findChild<QFormLayout*>();
+    QVERIFY(form);
+
+    PluginFunctionModel palette;
+    PluginManifest plugin;
+    plugin.moduleId = QStringLiteral("plugin.example");
+    plugin.category = QStringLiteral("CAN");
+    PluginFunctionDefinition function;
+    function.id = QStringLiteral("send");
+    function.name = QStringLiteral("Send Frame");
+    function.description = QStringLiteral("Send a CAN frame to the selected device.");
+    plugin.functions.push_back(function);
+    palette.setPlugins({plugin});
+    const auto basic = palette.index(0, 0);
+    const auto wait = palette.index(0, 0, basic);
+    const auto waitTemplate = palette.stepTemplate(wait);
+    const auto pluginIndex = palette.index(0, 0, palette.index(0, 0, palette.index(1, 0)));
+    const auto pluginTip = palette.data(pluginIndex, Qt::ToolTipRole);
+    QVERIFY(pluginTip.toString().contains(function.description));
+
+    QVERIFY(language.setChinese(true, false));
+    auto* label = qobject_cast<QLabel*>(form->labelForField(snLength));
+    QVERIFY(label);
+    QCOMPARE(label->text(), QString::fromUtf8("SN 长度"));
+    QCOMPARE(model->text(), QStringLiteral("DRAFT-C123"));
+    QCOMPARE(model->cursorPosition(), 4);
+    QCOMPARE(document.snapshot().json, snapshot.json);
+    QVERIFY(settings.hasPendingChanges());
+    QVERIFY(palette.data(wait, Qt::ToolTipRole).toString().contains(QString::fromUtf8("等待")));
+    QCOMPARE(palette.stepTemplate(wait), waitTemplate);
+    QCOMPARE(palette.data(pluginIndex, Qt::ToolTipRole), pluginTip);
+    for (int row = 0; row < palette.rowCount(basic); ++row) {
+        const auto item = palette.index(row, 0, basic);
+        if (palette.rowCount(item) == 0) {
+            QVERIFY(!palette.data(item, Qt::ToolTipRole).toString().contains("Drag to"));
+        } else {
+            for (int child = 0; child < palette.rowCount(item); ++child) {
+                const auto tip = palette.data(palette.index(child, 0, item), Qt::ToolTipRole).toString();
+                QVERIFY2(tip.contains(QRegularExpression(QStringLiteral("[\\x{4e00}-\\x{9fff}]"))), qPrintable(tip));
+            }
+        }
+    }
+    QTemporaryDir directory;
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(QJsonDocument(document.rootObject()).toJson());
+    station.close();
+    FieldDeviceDialog devices(stationPath);
+    QCOMPARE(devices.windowTitle(), QString::fromUtf8("设备资源配置"));
+    QCOMPARE(devices.findChild<QPushButton*>(QStringLiteral("fieldSaveAllButton"))->text(),
+             QString::fromUtf8("全部保存"));
+    ProductRoutingDialog routing(directory.filePath(QStringLiteral("ProductRouting.json")));
+    auto* table = routing.findChild<QTableWidget*>();
+    QVERIFY(table);
+    QCOMPARE(table->horizontalHeaderItem(2)->text(), QString::fromUtf8("SN 规则"));
+    QCOMPARE(routing.findChild<QPushButton*>(QStringLiteral("productRoutingSaveButton"))->text(),
+             uiText("Save"));
+    const auto screenshots = qEnvironmentVariable("PICOATE_LANGUAGE_SCREENSHOTS");
+    if (!screenshots.isEmpty()) {
+        settings.resize(340, 900);
+        settings.show();
+        QTest::qWait(30);
+        QVERIFY(settings.grab().save(QDir(screenshots).filePath(QStringLiteral("station-basic-zh.png"))));
+        routing.show();
+        QTest::qWait(30);
+        QVERIFY(routing.grab().save(QDir(screenshots).filePath(QStringLiteral("product-routing-zh.png"))));
+        routing.hide();
+        devices.show();
+        QTest::qWait(30);
+        QVERIFY(devices.grab().save(QDir(screenshots).filePath(QStringLiteral("field-devices-zh.png"))));
+    }
+    QVERIFY(language.setChinese(false, false));
+    QCOMPARE(label->text(), QStringLiteral("SN Length"));
+    QCOMPARE(palette.stepTemplate(wait), waitTemplate);
+    QCOMPARE(document.snapshot().json, snapshot.json);
+}
+
+void MainWindowLifecycleTests::smallScreenRunInfoRemainsReadable()
+{
+    QSettings().clear();
+    auto& language = UiLanguage::instance();
+    const auto restore = qScopeGuard([&] { language.setChinese(false, false); });
+    QTemporaryDir directory;
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile file(stationPath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"({"stationId":"ATE-07","model":"M2","customerId":"C1234567","scanDialogEnabled":false,"devices":[]})");
+    file.close();
+    const auto sequencePath = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR) +
+                              QStringLiteral("/examples/simple_sequence.json");
+    for (bool admin : {true, false}) {
+        std::unique_ptr<QMainWindow> window;
+        if (admin) {
+            auto instance = std::make_unique<MainWindow>();
+            QVERIFY(instance->openSequenceFile(sequencePath));
+            QVERIFY(instance->openStationFile(stationPath));
+            instance->showRunPage();
+            window = std::move(instance);
+        } else {
+            StartupSelection selection;
+            selection.mode = UiMode::Test;
+            selection.sequencePath = sequencePath;
+            selection.stationPath = stationPath;
+            selection.scanDialogEnabled = false;
+            window = std::make_unique<ProductionWindow>(selection);
+        }
+        window->resize(1100, 680);
+        window->show();
+        QTest::qWait(200);
+        const QString prefix = admin ? QStringLiteral("admin") : QStringLiteral("production");
+        auto* sn = window->findChild<QLabel*>(prefix + QStringLiteral("SerialLabel"));
+        auto* status = window->findChild<QLabel*>(prefix + QStringLiteral("OverallResult"));
+        auto* stationLabel = window->findChild<QLabel*>(prefix + QStringLiteral("StationLabel"));
+        auto* elapsed = window->findChild<QLabel*>(prefix + QStringLiteral("ElapsedLabel"));
+        auto* button = window->findChild<QToolButton*>(QStringLiteral("uiLanguageButton"));
+        QVERIFY(sn && status && elapsed && button && stationLabel);
+        for (bool chinese : {false, true}) {
+            QVERIFY(language.setChinese(chinese, false));
+            for (const int length : {22, 24, 32}) {
+                const QString serial = QString(length - 4, QLatin1Char('8')) + QStringLiteral("LAST");
+                sn->setText(serial);
+                QTest::qWait(40);
+                QCOMPARE(sn->text(), serial);
+                auto* displayed = dynamic_cast<ElidedInfoLabel*>(sn);
+                QVERIFY(displayed);
+                if (length > 24 || sn->fontMetrics().horizontalAdvance(serial) >
+                                      sn->contentsRect().width() - 2) {
+                    QVERIFY(displayed->displayText().endsWith(QChar(0x2026)));
+                    QVERIFY(displayed->displayText().size() <= 25);
+                } else {
+                    QCOMPARE(displayed->displayText(), serial);
+                }
+                QHelpEvent hover(QEvent::ToolTip, QPoint(4, 4), sn->mapToGlobal(QPoint(4, 4)));
+                QCoreApplication::sendEvent(sn, &hover);
+                QCOMPARE(QToolTip::text(), serial);
+                QToolTip::hideText();
+                QVERIFY(sn->isVisible());
+                QVERIFY(sn->height() >= sn->fontMetrics().height());
+                const auto valueLeft = sn->mapTo(window.get(), QPoint()).x();
+                QCOMPARE(valueLeft, stationLabel->mapTo(window.get(), QPoint()).x());
+                for (const auto& field : {QStringLiteral("ModelLabel"), QStringLiteral("CustomerIdLabel")}) {
+                    auto* other = window->findChild<QLabel*>(prefix + field);
+                    QVERIFY(other);
+                    QCOMPARE(valueLeft, other->mapTo(window.get(), QPoint()).x());
+                }
+                auto* form = window->findChild<QFormLayout*>(prefix + QStringLiteral("RunInfoForm"));
+                QVERIFY(form);
+                auto* caption = form->labelForField(sn);
+                QVERIFY(caption);
+                int labelRow = -1;
+                int valueRow = -1;
+                QFormLayout::ItemRole labelRole;
+                QFormLayout::ItemRole valueRole;
+                form->getWidgetPosition(caption, &labelRow, &labelRole);
+                form->getWidgetPosition(sn, &valueRow, &valueRole);
+                QCOMPARE(labelRow, valueRow);
+                QCOMPARE(labelRole, QFormLayout::LabelRole);
+                QCOMPARE(valueRole, QFormLayout::FieldRole);
+                QCOMPARE(form->rowWrapPolicy(), QFormLayout::DontWrapRows);
+                const int snBottom = sn->mapTo(window.get(), sn->rect().bottomLeft()).y();
+                QVERIFY(snBottom < status->mapTo(window.get(), QPoint()).y());
+                QVERIFY(snBottom < stationLabel->mapTo(window.get(), QPoint()).y());
+                QVERIFY(status->geometry().bottom() <= elapsed->geometry().top());
+            }
+            const auto screenshots = qEnvironmentVariable("PICOATE_LANGUAGE_SCREENSHOTS");
+            if (!screenshots.isEmpty()) {
+                QVERIFY(window->grab().save(QDir(screenshots).filePath(
+                    prefix + (chinese ? QStringLiteral("-small-zh.png") : QStringLiteral("-small-en.png")))));
+            }
+        }
+        QVERIFY(button->isVisible());
+        QVERIFY(window->rect().contains(button->mapTo(window.get(), button->rect().center())));
+        QVERIFY(button->mapTo(window.get(), QPoint()).x() > window->width() - 100);
+        QVERIFY(window->close());
+    }
 }
 
 void MainWindowLifecycleTests::uutSlotsSuspendScanner_data()
@@ -777,7 +986,7 @@ void MainWindowLifecycleTests::languageSwitchPreservesAdminDraftAndSelection()
     const auto before = document->snapshot();
     QSignalSpy changed(document, &SequenceDocument::documentChanged);
     QSignalSpy reset(model, &QAbstractItemModel::modelReset);
-    button->click();
+    button->menu()->actions().at(language.isChinese() ? 1 : 0)->trigger();
     QTRY_COMPARE(tabs->tabText(0), QString::fromUtf8("运行界面"));
     QCOMPARE(tabs->tabText(1), QString::fromUtf8("流程配置"));
     QCOMPARE(tabs->tabText(2), QString::fromUtf8("工站配置"));
@@ -800,7 +1009,7 @@ void MainWindowLifecycleTests::languageSwitchPreservesAdminDraftAndSelection()
     if (!screenshotRoot.isEmpty()) {
         QVERIFY(window.grab().save(QDir(screenshotRoot).filePath(QStringLiteral("admin-flow-zh.png"))));
     }
-    button->click();
+    button->menu()->actions().at(language.isChinese() ? 1 : 0)->trigger();
     QTRY_COMPARE(tabs->tabText(0), QStringLiteral("Run Test"));
     QCOMPARE(compile->text(), QStringLiteral("Compile"));
     QCOMPARE(name->text(), QStringLiteral("Waiting"));
@@ -852,7 +1061,7 @@ void MainWindowLifecycleTests::languageSwitchPreservesRunningProductionAndScanne
     QVERIFY(edit);
     edit->setText(QStringLiteral("BTSN00001234"));
     edit->setSelection(4, 3);
-    button->click();
+    button->menu()->actions().at(language.isChinese() ? 1 : 0)->trigger();
     QTRY_COMPARE(start->text(), QString::fromUtf8("开始测试"));
     QCOMPARE(edit->text(), QStringLiteral("BTSN00001234"));
     QCOMPARE(edit->selectedText(), QStringLiteral("000"));
@@ -862,10 +1071,10 @@ void MainWindowLifecycleTests::languageSwitchPreservesRunningProductionAndScanne
     QCOMPARE(uiText("frame"), QStringLiteral("frame"));
     start->trigger();
     QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Running, 3000);
-    button->click();
+    button->menu()->actions().at(language.isChinese() ? 1 : 0)->trigger();
     QTRY_COMPARE(overall->text(), QStringLiteral("RUNNING"));
     QCOMPARE(viewModel->state(), UiRunState::Running);
-    button->click();
+    button->menu()->actions().at(language.isChinese() ? 1 : 0)->trigger();
     QTRY_COMPARE(overall->text(), QString::fromUtf8("运行中"));
     const auto screenshotRoot = qEnvironmentVariable("PICOATE_LANGUAGE_SCREENSHOTS");
     if (!screenshotRoot.isEmpty()) {
@@ -876,7 +1085,7 @@ void MainWindowLifecycleTests::languageSwitchPreservesRunningProductionAndScanne
     QTRY_COMPARE(overall->text(), QString::fromUtf8("成功"));
     const auto report = PicoATE::Core::serializeExecutionReport(viewModel->report());
     QCOMPARE(viewModel->report().uuts.size(), 2);
-    button->click();
+    button->menu()->actions().at(language.isChinese() ? 1 : 0)->trigger();
     QTRY_COMPARE(overall->text(), QStringLiteral("PASS"));
     QCOMPARE(PicoATE::Core::serializeExecutionReport(viewModel->report()), report);
     QVERIFY(window.close());

@@ -64,7 +64,7 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     layout->setContentsMargins(12, 8, 12, 12);
     layout->setSpacing(10);
 
-    m_title = new QLabel(uiText("Basic Settings"), this);
+    m_title = makeUiLabel("Basic Settings", this);
     connect(&UiLanguage::instance(), &UiLanguage::languageChanged, this, [this] {
         m_title->setText(uiText(m_pendingChanges ? "Basic Settings *" : "Basic Settings"));
     });
@@ -82,59 +82,56 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
 
     m_stationIdEdit = new QLineEdit(this);
     m_stationIdEdit->setObjectName(QStringLiteral("stationBasicIdEdit"));
-    form->addRow(tr("Station ID"), m_stationIdEdit);
+    addUiRow(form, "Station ID", m_stationIdEdit);
     m_stationModelEdit = new QLineEdit(this);
     m_stationModelEdit->setObjectName(QStringLiteral("stationModelEdit"));
-    form->addRow(tr("Model"), m_stationModelEdit);
+    addUiRow(form, "Model", m_stationModelEdit);
     m_customerIdEdit = new QLineEdit(this);
     m_customerIdEdit->setObjectName(QStringLiteral("stationCustomerIdEdit"));
-    form->addRow(tr("Customer ID"), m_customerIdEdit);
+    addUiRow(form, "Customer ID", m_customerIdEdit);
 
     m_jigNoEdit = new QLineEdit(this);
     m_jigNoEdit->setObjectName(QStringLiteral("stationJigNoEdit"));
-    m_jigNoEdit->setPlaceholderText(tr("Fixture or jig identifier"));
-    form->addRow(tr("Jig No"), m_jigNoEdit);
+    bindUiText(m_jigNoEdit, "placeholderText", "Fixture or jig identifier");
+    addUiRow(form, "Jig No", m_jigNoEdit);
     m_orderEdit = new QLineEdit(this);
     m_orderEdit->setObjectName(QStringLiteral("stationOrderEdit"));
-    m_orderEdit->setPlaceholderText(tr("Production or work order"));
-    form->addRow(tr("Order"), m_orderEdit);
+    bindUiText(m_orderEdit, "placeholderText", "Production or work order");
+    addUiRow(form, "Order", m_orderEdit);
     m_testerEdit = new QLineEdit(this);
     m_testerEdit->setObjectName(QStringLiteral("stationTesterEdit"));
-    m_testerEdit->setPlaceholderText(tr("Tester or operator name"));
-    form->addRow(tr("Tester"), m_testerEdit);
+    bindUiText(m_testerEdit, "placeholderText", "Tester or operator name");
+    addUiRow(form, "Tester", m_testerEdit);
 
     m_snLengthEdit = new QLineEdit(this);
     m_snLengthEdit->setObjectName(QStringLiteral("stationSnLengthEdit"));
     m_snLengthEdit->setValidator(new QIntValidator(1, 256, m_snLengthEdit));
     m_snLengthEdit->setMaxLength(3);
-    m_snLengthEdit->setPlaceholderText(tr("Any"));
+    bindUiText(m_snLengthEdit, "placeholderText", "Any");
     m_snLengthEdit->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    m_snLengthEdit->setToolTip(tr("Exact SN length. Leave empty for Any."));
-    form->addRow(tr("SN Length"), m_snLengthEdit);
+    bindUiText(m_snLengthEdit, "toolTip", "Exact SN length. Leave empty for Any.");
+    addUiRow(form, "SN Length", m_snLengthEdit);
 
     m_snPatternEdit = new QLineEdit(this);
     m_snPatternEdit->setObjectName(QStringLiteral("stationSnPatternEdit"));
-    m_snPatternEdit->setPlaceholderText(tr("BTSN*, *BTSN*, or *BTSN"));
-    m_snPatternEdit->setToolTip(
-        tr("Optional wildcard rule. * matches any number of characters."));
-    form->addRow(tr("SN Pattern"), m_snPatternEdit);
+    bindUiText(m_snPatternEdit, "placeholderText", "BTSN*, *BTSN*, or *BTSN");
+    bindUiText(m_snPatternEdit, "toolTip", "Optional wildcard rule. * matches any number of characters.");
+    addUiRow(form, "SN Pattern", m_snPatternEdit);
 
     m_snAllowedRegexEdit = new QLineEdit(this);
     m_snAllowedRegexEdit->setObjectName(
         QStringLiteral("stationSnAllowedRegexEdit"));
     m_snAllowedRegexEdit->setPlaceholderText(QStringLiteral("^[A-Z0-9]+$"));
-    m_snAllowedRegexEdit->setToolTip(
-        tr("Optional regular expression applied to the complete SN."));
-    form->addRow(tr("Allowed Characters"), m_snAllowedRegexEdit);
+    bindUiText(m_snAllowedRegexEdit, "toolTip", "Optional regular expression applied to the complete SN.");
+    addUiRow(form, "Allowed Characters", m_snAllowedRegexEdit);
 
     m_uutCountEdit = new QLineEdit(this);
     m_uutCountEdit->setObjectName(QStringLiteral("stationUutCountEdit"));
     m_uutCountEdit->setValidator(new QIntValidator(1, 64, m_uutCountEdit));
     m_uutCountEdit->setMaxLength(2);
     m_uutCountEdit->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    m_uutCountEdit->setToolTip(
-        tr("Number of UUT SNs collected before one batch starts"));
-    form->addRow(tr("UUT Count"), m_uutCountEdit);
+    bindUiText(m_uutCountEdit, "toolTip", "Number of UUT SNs collected before one batch starts");
+    addUiRow(form, "UUT Count", m_uutCountEdit);
 
     m_loopTestCountEdit = new QLineEdit(this);
     m_loopTestCountEdit->setObjectName(QStringLiteral("stationLoopTestCountEdit"));
@@ -142,47 +139,45 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
         new QIntValidator(1, 100000, m_loopTestCountEdit));
     m_loopTestCountEdit->setMaxLength(6);
     m_loopTestCountEdit->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    m_loopTestCountEdit->setToolTip(
-        tr("Run the complete sequence this many times after one Run command"));
-    form->addRow(tr("Loop Count"), m_loopTestCountEdit);
+    bindUiText(m_loopTestCountEdit, "toolTip", "Run the complete sequence this many times after one Run command");
+    addUiRow(form, "Loop Count", m_loopTestCountEdit);
     serviceAdminStartupAnimation();
 
     m_loopTestSwitch = new OnOffSwitch(this);
     m_loopTestSwitch->setObjectName(QStringLiteral("stationLoopTestSwitch"));
-    m_loopTestSwitch->setAccessibleName(tr("Enable repeated sequence testing"));
-    form->addRow(tr("Loop Test"), m_loopTestSwitch);
+    bindUiText(m_loopTestSwitch, "accessibleName", "Enable repeated sequence testing");
+    addUiRow(form, "Loop Test", m_loopTestSwitch);
 
     m_scanDialogSwitch = new OnOffSwitch(this);
     m_scanDialogSwitch->setObjectName(QStringLiteral("stationScanDialogSwitch"));
-    m_scanDialogSwitch->setAccessibleName(tr("Enable scan dialog"));
-    form->addRow(tr("Scan Dialog"), m_scanDialogSwitch);
+    bindUiText(m_scanDialogSwitch, "accessibleName", "Enable scan dialog");
+    addUiRow(form, "Scan Dialog", m_scanDialogSwitch);
 
     m_stopOnFailureSwitch = new OnOffSwitch(this);
     m_stopOnFailureSwitch->setObjectName(QStringLiteral("stationStopOnFailureSwitch"));
-    m_stopOnFailureSwitch->setAccessibleName(tr("Stop on failure by default"));
-    m_stopOnFailureSwitch->setToolTip(
-        tr("Default for inherited onFail, onError, and onTimeout policies. Explicit Step policies are preserved."));
-    form->addRow(tr("Default Stop on Failure"), m_stopOnFailureSwitch);
+    bindUiText(m_stopOnFailureSwitch, "accessibleName", "Stop on failure by default");
+    bindUiText(m_stopOnFailureSwitch, "toolTip", "Default for inherited onFail, onError, and onTimeout policies. Explicit Step policies are preserved.");
+    addUiRow(form, "Default Stop on Failure", m_stopOnFailureSwitch);
 
     m_txtLogSwitch = new OnOffSwitch(this);
     m_txtLogSwitch->setObjectName(QStringLiteral("stationTxtLogSwitch"));
-    m_txtLogSwitch->setAccessibleName(tr("Enable TXT execution log"));
-    form->addRow(tr("TXT Log"), m_txtLogSwitch);
+    bindUiText(m_txtLogSwitch, "accessibleName", "Enable TXT execution log");
+    addUiRow(form, "TXT Log", m_txtLogSwitch);
 
     m_csvReportSwitch = new OnOffSwitch(this);
     m_csvReportSwitch->setObjectName(QStringLiteral("stationCsvReportSwitch"));
-    m_csvReportSwitch->setAccessibleName(tr("Enable CSV result report"));
-    form->addRow(tr("CSV Report"), m_csvReportSwitch);
+    bindUiText(m_csvReportSwitch, "accessibleName", "Enable CSV result report");
+    addUiRow(form, "CSV Report", m_csvReportSwitch);
 
     m_xlsxReportSwitch = new OnOffSwitch(this);
     m_xlsxReportSwitch->setObjectName(QStringLiteral("stationXlsxReportSwitch"));
-    m_xlsxReportSwitch->setAccessibleName(tr("Enable XLSX result report"));
-    form->addRow(tr("XLSX Report"), m_xlsxReportSwitch);
+    bindUiText(m_xlsxReportSwitch, "accessibleName", "Enable XLSX result report");
+    addUiRow(form, "XLSX Report", m_xlsxReportSwitch);
 
     m_pdfReportSwitch = new OnOffSwitch(this);
     m_pdfReportSwitch->setObjectName(QStringLiteral("stationPdfReportSwitch"));
-    m_pdfReportSwitch->setAccessibleName(tr("Enable PDF result report"));
-    form->addRow(tr("PDF Report"), m_pdfReportSwitch);
+    bindUiText(m_pdfReportSwitch, "accessibleName", "Enable PDF result report");
+    addUiRow(form, "PDF Report", m_pdfReportSwitch);
 
     auto* outputRow = new QWidget(this);
     auto* outputLayout = new QHBoxLayout(outputRow);
@@ -190,13 +185,13 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     outputLayout->setSpacing(6);
     m_reportOutputEdit = new QLineEdit(outputRow);
     m_reportOutputEdit->setObjectName(QStringLiteral("stationReportOutputEdit"));
-    m_reportOutputEdit->setPlaceholderText(tr("<application>/log"));
-    m_browseReportOutputButton = new QPushButton(tr("Browse"), outputRow);
+    bindUiText(m_reportOutputEdit, "placeholderText", "<application>/log");
+    m_browseReportOutputButton = makeUiButton("Browse", outputRow);
     m_browseReportOutputButton->setObjectName(
         QStringLiteral("stationReportOutputBrowseButton"));
     outputLayout->addWidget(m_reportOutputEdit, 1);
     outputLayout->addWidget(m_browseReportOutputButton);
-    form->addRow(tr("Output Folder"), outputRow);
+    addUiRow(form, "Output Folder", outputRow);
     layout->addLayout(form);
 
     m_errorLabel = new QLabel(this);
@@ -228,7 +223,7 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     connect(m_browseReportOutputButton, &QPushButton::clicked, this, [this] {
         const auto selected = QFileDialog::getExistingDirectory(
             this,
-            tr("Select Report Output Folder"),
+            uiText("Select Report Output Folder"),
             m_reportOutputEdit->text().trimmed());
         if (!selected.isEmpty()) {
             m_reportOutputEdit->setText(selected);
@@ -317,12 +312,12 @@ bool StationSettingsEditor::commitPendingChanges()
         return false;
     }
     if (m_stationIdEdit->text().trimmed().isEmpty()) {
-        showError(tr("Station ID cannot be empty"));
+        showError(uiText("Station ID cannot be empty"));
         return false;
     }
     const auto snLengthText = m_snLengthEdit->text().trimmed();
     if (!snLengthText.isEmpty() && !m_snLengthEdit->hasAcceptableInput()) {
-        showError(tr("SN Length must be an integer from 1 to 256, or empty for Any"));
+        showError(uiText("SN Length must be an integer from 1 to 256, or empty for Any"));
         m_snLengthEdit->setFocus();
         m_snLengthEdit->selectAll();
         return false;
@@ -330,13 +325,13 @@ bool StationSettingsEditor::commitPendingChanges()
     const auto loopCountText = m_loopTestCountEdit->text().trimmed();
     if (m_loopTestSwitch->isChecked() &&
         !m_loopTestCountEdit->hasAcceptableInput()) {
-        showError(tr("Loop Count must be an integer from 1 to 100000"));
+        showError(uiText("Loop Count must be an integer from 1 to 100000"));
         m_loopTestCountEdit->setFocus();
         m_loopTestCountEdit->selectAll();
         return false;
     }
     if (!m_uutCountEdit->hasAcceptableInput()) {
-        showError(tr("UUT Count must be an integer from 1 to 64"));
+        showError(uiText("UUT Count must be an integer from 1 to 64"));
         m_uutCountEdit->setFocus();
         m_uutCountEdit->selectAll();
         return false;

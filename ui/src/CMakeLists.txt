@@ -112,6 +112,7 @@ qt_add_executable(PicoATEUi WIN32
     MainWindow.h
     UiTextBinding.cpp
     UiTextBinding.h
+    ElidedInfoLabel.h
     TitleBarLanguageButton.cpp
     TitleBarLanguageButton.h
     MultiUutOverviewWidget.cpp

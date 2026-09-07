@@ -1,4 +1,5 @@
 #include "UiTextBinding.h"
+#include "ElidedInfoLabel.h"
 #include "MainWindow.h"
 
 #include "ApplicationDiagnostics.h"
@@ -1043,8 +1044,8 @@ public:
     {
         setObjectName(QStringLiteral("adminOverviewSummary"));
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        setMinimumHeight(94);
-        setMaximumHeight(108);
+        setMinimumHeight(112);
+        setMaximumHeight(126);
 
         auto* root = new QHBoxLayout(this);
         root->setContentsMargins(14, 10, 14, 10);
@@ -1052,8 +1053,8 @@ public:
 
         auto* stateArea = new QWidget(this);
         stateArea->setObjectName(QStringLiteral("adminOverviewSummaryStateArea"));
-        stateArea->setMinimumWidth(128);
-        stateArea->setMaximumWidth(168);
+        stateArea->setMinimumWidth(170);
+        stateArea->setMaximumWidth(205);
         auto* stateLayout = new QVBoxLayout(stateArea);
         stateLayout->setContentsMargins(0, 0, 0, 0);
         stateLayout->setSpacing(3);
@@ -1160,44 +1161,7 @@ public:
         m_lastStopRequested = stopRequested;
         m_stateLabel->setText(adminOverviewStateText(state, stopRequested));
 
-        QString background = QStringLiteral("#eef2f4");
-        QString foreground = QStringLiteral("#344751");
-        QString border = QStringLiteral("#bcc7cd");
-        switch (state) {
-        case UiRunState::Starting:
-        case UiRunState::Running:
-        case UiRunState::Pausing:
-        case UiRunState::Stopping:
-            background = QStringLiteral("#fff4d7");
-            foreground = QStringLiteral("#8a5d00");
-            border = QStringLiteral("#d7ac45");
-            break;
-        case UiRunState::Paused:
-            background = QStringLiteral("#e9f3f8");
-            foreground = QStringLiteral("#315f78");
-            border = QStringLiteral("#8fb4c6");
-            break;
-        case UiRunState::Completed:
-            background = stopRequested ? QStringLiteral("#fbe8e8")
-                                       : QStringLiteral("#e5f4e9");
-            foreground = stopRequested ? QStringLiteral("#a83237")
-                                       : QStringLiteral("#287848");
-            border = stopRequested ? QStringLiteral("#db9295")
-                                   : QStringLiteral("#87bd98");
-            break;
-        case UiRunState::Failed:
-        case UiRunState::CompileFailed:
-            background = QStringLiteral("#fbe8e8");
-            foreground = QStringLiteral("#a83237");
-            border = QStringLiteral("#db9295");
-            break;
-        default:
-            break;
-        }
-        m_stateLabel->setStyleSheet(QStringLiteral(
-            "background:%1;color:%2;border:1px solid %3;border-radius:5px;"
-            "padding:4px 10px;font-size:16px;font-weight:800;")
-                                         .arg(background, foreground, border));
+        m_stateLabel->setStyleSheet(runStatusStyle(state, stopRequested) + QStringLiteral("padding:5px 10px;font-size:20px;font-weight:700;"));
     }
 
     void setElapsedText(const QString& elapsed)
@@ -1350,7 +1314,11 @@ MainWindow::MainWindow(QWidget* parent)
     buildActions();
     serviceAdminStartupAnimation();
     buildLayout();
-    installLanguageButton(this);
+    auto* languageToolbar = addToolBar(uiText("Language"));
+    languageToolbar->setObjectName(QStringLiteral("languageToolbar"));
+    languageToolbar->setMovable(false);
+    languageToolbar->setFloatable(false);
+    languageToolbar->addWidget(makeLanguageButton(languageToolbar));
     connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
             this, &MainWindow::retranslateUi, Qt::QueuedConnection);
     m_operatorPromptPresenter->setOverviewHost(
@@ -2136,31 +2104,43 @@ void MainWindow::applyResponsiveLayout(bool force)
     setSplitterSizes("stationVerticalSplitter",
                      {520, 140}, {560, 100});
     setSplitterSizes("runSplitter",
-                     {230, 900}, {190, 900});
+                     {260, 900}, {235, 900});
 
     if (m_adminSequenceLabel) {
         m_adminSequenceLabel->setMinimumHeight(compact ? 32 : 36);
     }
     if (auto* sidebar = findChild<QWidget*>(
             QStringLiteral("adminRunSidebar"))) {
-        sidebar->setMinimumWidth(compact ? 185 : 205);
-        sidebar->setMaximumWidth(compact ? 245 : 265);
+        sidebar->setMinimumWidth(compact ? 225 : 245);
+        sidebar->setMaximumWidth(compact ? 285 : 310);
+        sidebar->setStyleSheet(compact
+            ? QStringLiteral("QLabel[runInfoValue=\"true\"] {font-size:13px;}")
+            : QStringLiteral("QLabel[runInfoValue=\"true\"] {font-size:14px;}"));
         if (auto* sidebarLayout = qobject_cast<QVBoxLayout*>(sidebar->layout())) {
-            const int margin = compact ? 12 : 18;
+            const int margin = compact ? 10 : 18;
             sidebarLayout->setContentsMargins(margin, margin, margin, margin);
-            sidebarLayout->setSpacing(compact ? 8 : 12);
+            sidebarLayout->setSpacing(compact ? 5 : 12);
         }
     }
     if (m_adminOverallResult) {
-        m_adminOverallResult->setMinimumHeight(compact ? 78 : 104);
+        m_adminOverallResult->setMinimumHeight(compact ? 60 : 104);
         const bool showingOverview = m_adminRunStack && m_adminRunOverviewPage &&
             m_adminRunStack->currentWidget() == m_adminRunOverviewPage;
         setAdminOverallResultTypography(
             m_adminOverallResult, showingOverview, compact);
     }
     if (m_adminYieldChart) {
-        m_adminYieldChart->setMinimumHeight(compact ? 56 : 64);
-        m_adminYieldChart->setMaximumHeight(compact ? 76 : 100);
+        m_adminYieldChart->setMinimumHeight(compact ? 52 : 64);
+        m_adminYieldChart->setMaximumHeight(compact ? 60 : 100);
+    }
+    if (auto* form = findChild<QFormLayout*>(QStringLiteral("adminRunInfoForm"))) {
+        form->setVerticalSpacing(compact ? 4 : 10);
+        form->setHorizontalSpacing(compact ? 8 : 12);
+    }
+    if (m_adminElapsedLabel) {
+        m_adminElapsedLabel->setStyleSheet(compact
+            ? QStringLiteral("font-size:16px;font-weight:700;padding:6px;")
+            : QStringLiteral("font-size:19px;font-weight:700;padding:10px;"));
     }
 }
 
@@ -3991,6 +3971,7 @@ void MainWindow::startAdminRunWithSerial(const QString& serialNumber)
             .arg(uutCount)
             .arg(enabledUutSlotCount(m_adminUutSlotEnabled))
             .arg(m_activeAdminUutId));
+    m_adminRunUutInputs = inputs;
     m_viewModel->runUuts(inputs);
     showRunPage();
 }
@@ -4038,6 +4019,7 @@ void MainWindow::startAdminRunWithSerials(const QStringList& serialNumbers)
             .arg(inputs.size())
             .arg(enabledUutSlotCount(m_adminUutSlotEnabled))
             .arg(m_activeAdminUutId));
+    m_adminRunUutInputs = inputs;
     m_viewModel->runUuts(inputs);
     showRunPage();
 }
@@ -4093,6 +4075,8 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
     preview.hasError = false;
     preview.state = PicoATE::Core::ExecutionState::Idle;
     const auto activeUuts = m_viewModel->activeRunUuts();
+    const auto& visibleUuts = m_adminRunUutInputs.isEmpty()
+        ? activeUuts : m_adminRunUutInputs;
     const auto previewTemplate = preview.uuts.isEmpty()
         ? PicoATE::Core::UutReport{}
         : preview.uuts.first();
@@ -4112,7 +4096,7 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
         preview.uuts.push_back(std::move(uut));
     }
     m_adminUutOverview->resetRuntimeState();
-    m_uutOverviewModel->resetForRun(m_adminPreviewReport, activeUuts);
+    m_uutOverviewModel->resetForRun(m_adminPreviewReport, visibleUuts);
     m_selectedAdminUutId = activeUuts.isEmpty()
         ? PicoATE::Core::UutId{}
         : activeUuts.first().uutId;
@@ -4131,7 +4115,7 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
     updateAdminProgress();
     m_adminElapsed.restart();
     m_adminElapsedTimer->start();
-    if (ShowAdminUutOverview && activeUuts.size() > 1) {
+    if (ShowAdminUutOverview && visibleUuts.size() > 1) {
         showAdminUutOverview();
     } else {
         showAdminUutDetails(m_selectedAdminUutId);
@@ -5399,6 +5383,7 @@ void MainWindow::buildActions()
     mainToolbar->setFloatable(false);
     mainToolbar->setIconSize(QSize(20, 20));
     mainToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    mainToolbar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
     m_newProjectAction = makeUiAction("New Project...", this);
     m_newProjectAction->setObjectName(QStringLiteral("newProjectAction"));
@@ -6306,23 +6291,32 @@ void MainWindow::buildLayout()
     unitTitle->setObjectName(QStringLiteral("adminSectionTitle"));
     sidebarLayout->addWidget(unitTitle);
     auto* unitDetails = new QFormLayout;
+    unitDetails->setObjectName(QStringLiteral("adminRunInfoForm"));
+    unitDetails->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    unitDetails->setRowWrapPolicy(QFormLayout::DontWrapRows);
+    unitDetails->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     unitDetails->setHorizontalSpacing(12);
     unitDetails->setVerticalSpacing(10);
     m_adminSerialCaption = makeUiLabel("SN", sidebar);
     m_adminSerialCaption->setObjectName(
         QStringLiteral("adminSerialCaption"));
-    m_adminSerialLabel = new QLabel(uiText("--"), sidebar);
+    m_adminSerialLabel = new ElidedInfoLabel(uiText("--"), sidebar);
     m_adminSerialLabel->setObjectName(QStringLiteral("adminSerialLabel"));
-    m_adminStationLabel = new QLabel(uiText("--"), sidebar);
+    m_adminStationLabel = new ElidedInfoLabel(uiText("--"), sidebar);
     m_adminStationLabel->setObjectName(QStringLiteral("adminStationLabel"));
-    m_adminModelLabel = new QLabel(uiText("--"), sidebar);
+    m_adminModelLabel = new ElidedInfoLabel(uiText("--"), sidebar);
     m_adminModelLabel->setObjectName(QStringLiteral("adminModelLabel"));
-    m_adminCustomerIdLabel = new QLabel(uiText("--"), sidebar);
+    m_adminCustomerIdLabel = new ElidedInfoLabel(uiText("--"), sidebar);
     m_adminCustomerIdLabel->setObjectName(
         QStringLiteral("adminCustomerIdLabel"));
-    m_adminOrderLabel = new QLabel(uiText("--"), sidebar);
-    m_adminTesterLabel = new QLabel(uiText("--"), sidebar);
-    m_adminJigLabel = new QLabel(uiText("--"), sidebar);
+    m_adminOrderLabel = new ElidedInfoLabel(uiText("--"), sidebar);
+    m_adminTesterLabel = new ElidedInfoLabel(uiText("--"), sidebar);
+    m_adminJigLabel = new ElidedInfoLabel(uiText("--"), sidebar);
+    for (auto* label : {m_adminSerialLabel, m_adminStationLabel, m_adminModelLabel,
+                       m_adminCustomerIdLabel, m_adminOrderLabel, m_adminTesterLabel,
+                       m_adminJigLabel}) {
+        configureRunInfoValue(label);
+    }
     unitDetails->addRow(m_adminSerialCaption, m_adminSerialLabel);
     addUiRow(unitDetails, "Station ID", m_adminStationLabel);
     addUiRow(unitDetails, "Model", m_adminModelLabel);
@@ -6639,7 +6633,7 @@ void MainWindow::buildLayout()
             color: #74838c; font-size: 10px; font-weight: 700;
         }
         QLabel#adminOverviewSummaryElapsed {
-            color: #64747d; font-size: 11px; font-weight: 600;
+            color: #344048; font-size: 15px; font-weight: 700;
         }
         QLabel[overviewSummaryValue="true"] {
             color: #253139; font-size: 14px; font-weight: 700;
@@ -6672,6 +6666,9 @@ void MainWindow::buildLayout()
         QPushButton[adminUutSwitch="true"]:checked,
         QPushButton[adminUutSwitch="true"]:checked:hover {
             background: #202328; border-color: #202328; color: #ffffff;
+        }
+        QPushButton[adminUutSwitch="true"]:disabled {
+            background: #e7eaec; color: #8a949a; border-color: #cfd5d9;
         }
         QStatusBar#adminStatusBar {
             background: #f8f9fa; border-top: 1px solid #dce1e4;
@@ -6985,12 +6982,10 @@ void MainWindow::updateCompilePreview()
     synchronizeAdminUutSlotCount(uutCount);
     previewUuts.reserve(uutCount);
     for (int index = 1; index <= uutCount; ++index) {
-        if (!m_adminUutSlotEnabled[index - 1]) {
-            continue;
-        }
         RunRequest::UutInput input;
         input.uutId = QStringLiteral("UUT-%1").arg(index);
         input.slotIndex = index - 1;
+        input.enabled = m_adminUutSlotEnabled[index - 1];
         input.variables.insert(QStringLiteral("sn"), QString{});
         input.variables.insert(QStringLiteral("serialNumber"), QString{});
         previewUuts.push_back(std::move(input));
@@ -7005,6 +7000,9 @@ void MainWindow::updateCompilePreview()
         : preview.uuts.first();
     preview.uuts.clear();
     for (const auto& input : previewUuts) {
+        if (!input.enabled) {
+            continue;
+        }
         auto uut = previewTemplate;
         uut.uutId = input.uutId;
         uut.serialNumber.clear();
@@ -7016,9 +7014,16 @@ void MainWindow::updateCompilePreview()
 
     m_adminUutOverview->resetRuntimeState();
     m_uutOverviewModel->resetForRun(preview, previewUuts);
-    m_selectedAdminUutId = previewUuts.isEmpty()
-        ? PicoATE::Core::UutId{}
-        : previewUuts.first().uutId;
+    const auto selected = std::find_if(previewUuts.cbegin(), previewUuts.cend(),
+        [this](const auto& input) {
+            return input.enabled && input.uutId == m_selectedAdminUutId;
+        });
+    const auto firstEnabled = std::find_if(previewUuts.cbegin(), previewUuts.cend(),
+        [](const auto& input) { return input.enabled; });
+    if (selected == previewUuts.cend()) {
+        m_selectedAdminUutId = firstEnabled == previewUuts.cend()
+            ? PicoATE::Core::UutId{} : firstEnabled->uutId;
+    }
     m_adminUutOverview->setSelectedUutId(m_selectedAdminUutId);
     m_uutStepModel->setVisibleUutId(m_selectedAdminUutId);
     m_runtimeTimelineProxy->setVisibleUutId(m_selectedAdminUutId);
@@ -7286,10 +7291,17 @@ void MainWindow::showAdminUutDetails(const PicoATE::Core::UutId& uutId)
     }
     auto selected = uutId;
     int row = m_uutOverviewModel->rowForUut(selected);
-    if (row < 0 && m_uutOverviewModel->rowCount() > 0) {
-        const auto first = m_uutOverviewModel->entryAt(0);
-        selected = first ? first->uutId : PicoATE::Core::UutId{};
-        row = 0;
+    const auto current = m_uutOverviewModel->entryAt(row);
+    if (!current || !current->enabled) {
+        row = -1;
+        for (int candidate = 0; candidate < m_uutOverviewModel->rowCount(); ++candidate) {
+            const auto entry = m_uutOverviewModel->entryAt(candidate);
+            if (entry && entry->enabled) {
+                selected = entry->uutId;
+                row = candidate;
+                break;
+            }
+        }
     }
     if (row < 0) {
         return;
@@ -7370,6 +7382,7 @@ void MainWindow::rebuildAdminUutButtons()
         PicoATE::Core::UutId uutId;
         QString serialNumber;
         QString text;
+        bool enabled;
     };
     QVector<ButtonDefinition> definitions;
     definitions.reserve(m_uutOverviewModel->rowCount());
@@ -7392,7 +7405,7 @@ void MainWindow::rebuildAdminUutButtons()
         commonButtonWidth = qMax(
             commonButtonWidth,
             QFontMetrics(buttonFont).horizontalAdvance(text) + 30);
-        definitions.push_back({entry->uutId, serialNumber, text});
+        definitions.push_back({entry->uutId, serialNumber, text, entry->enabled});
     }
     commonButtonWidth = qMin(commonButtonWidth, 240);
 
@@ -7404,6 +7417,8 @@ void MainWindow::rebuildAdminUutButtons()
             QStringLiteral("adminUutButton_%1").arg(row + 1));
         button->setProperty("adminUutSwitch", true);
         button->setProperty("uutId", definition.uutId);
+        button->setProperty("slotEnabled", definition.enabled);
+        button->setEnabled(definition.enabled);
         button->setCheckable(true);
         button->setFont(buttonFont);
         button->setFixedWidth(commonButtonWidth);

@@ -1,0 +1,65 @@
+#pragma once
+
+#include "UiLanguage.h"
+
+#include <QApplication>
+#include <QClipboard>
+#include <QContextMenuEvent>
+#include <QHelpEvent>
+#include <QLabel>
+#include <QMenu>
+#include <QPainter>
+#include <QToolTip>
+
+namespace PicoATE::Ui {
+
+class ElidedInfoLabel final : public QLabel
+{
+public:
+    ElidedInfoLabel(const QString& value, QWidget* parent) : QLabel(value, parent)
+    {
+        setTextFormat(Qt::PlainText);
+        setWordWrap(false);
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    }
+
+    QString displayText() const
+    {
+        const auto characters = text().toUcs4();
+        const auto shortened = characters.size() > 24
+            ? QString::fromUcs4(characters.constData(), 24) + QChar(0x2026)
+            : text();
+        return fontMetrics().elidedText(shortened, Qt::ElideRight,
+                                        qMax(0, contentsRect().width() - 2));
+    }
+    QSize sizeHint() const override { return {160, fontMetrics().height() + 2}; }
+    QSize minimumSizeHint() const override { return {0, fontMetrics().height() + 2}; }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter painter(this);
+        painter.setPen(palette().color(foregroundRole()));
+        painter.drawText(contentsRect(), Qt::AlignLeft | Qt::AlignVCenter,
+                         displayText());
+    }
+    bool event(QEvent* event) override
+    {
+        if (event->type() == QEvent::ToolTip) {
+            const auto* help = static_cast<QHelpEvent*>(event);
+            QToolTip::showText(help->globalPos(), text().toHtmlEscaped(), this);
+            return true;
+        }
+        return QLabel::event(event);
+    }
+    void contextMenuEvent(QContextMenuEvent* event) override
+    {
+        QMenu menu(this);
+        auto* copy = menu.addAction(uiText("Copy"));
+        if (menu.exec(event->globalPos()) == copy) {
+            QApplication::clipboard()->setText(text());
+        }
+    }
+};
+
+} // namespace PicoATE::Ui

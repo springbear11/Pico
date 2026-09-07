@@ -1,4 +1,5 @@
 #include "FieldDeviceDialog.h"
+#include "UiTextBinding.h"
 
 #include "PicoATE/Core/StationConfig.h"
 
@@ -32,11 +33,11 @@ namespace {
 
 QString connectionKindLabel(const QString& kind)
 {
-    if (kind == QStringLiteral("canSerial")) return QObject::tr("CAN Serial Number");
-    if (kind == QStringLiteral("visa")) return QObject::tr("VISA Resource");
-    if (kind == QStringLiteral("serialPort")) return QObject::tr("COM Port");
-    if (kind == QStringLiteral("tcpIp")) return QObject::tr("TCP / IP");
-    return QObject::tr("Manual Resource");
+    if (kind == QStringLiteral("canSerial")) return uiText("CAN Serial Number");
+    if (kind == QStringLiteral("visa")) return uiText("VISA Resource");
+    if (kind == QStringLiteral("serialPort")) return uiText("COM Port");
+    if (kind == QStringLiteral("tcpIp")) return uiText("TCP / IP");
+    return uiText("Manual Resource");
 }
 
 QString registryPath(const QJsonObject& station, const QString& stationPath)
@@ -54,7 +55,7 @@ FieldDeviceDialog::FieldDeviceDialog(QString stationPath, QWidget* parent)
     , m_stationPath(QFileInfo(std::move(stationPath)).absoluteFilePath())
 {
     setObjectName(QStringLiteral("fieldDeviceDialog"));
-    setWindowTitle(tr("Field Device Configuration"));
+    setWindowTitle(uiText("Field Device Configuration"));
     setMinimumSize(760, 470);
     buildUi();
     if (loadStation()) {
@@ -71,7 +72,7 @@ void FieldDeviceDialog::buildUi()
     root->setContentsMargins(18, 16, 18, 16);
     root->setSpacing(12);
 
-    auto* title = new QLabel(tr("Configure station connection resources"), this);
+    auto* title = makeUiLabel("Configure station connection resources", this);
     title->setObjectName(QStringLiteral("fieldDeviceTitle"));
     root->addWidget(title);
 
@@ -98,15 +99,15 @@ void FieldDeviceDialog::buildUi()
     resourceLayout->setContentsMargins(0, 0, 0, 0);
     resourceLayout->setSpacing(8);
     resourceLayout->addWidget(m_resourceCombo, 1);
-    m_applyButton = new QPushButton(tr("Apply"), resourceEditor);
+    m_applyButton = makeUiButton("Apply", resourceEditor);
     m_applyButton->setObjectName(QStringLiteral("fieldApplyButton"));
     resourceLayout->addWidget(m_applyButton);
-    form->addRow(tr("Connection"), m_connectionKind);
-    form->addRow(tr("Resource"), resourceEditor);
+    addUiRow(form, "Connection", m_connectionKind);
+    addUiRow(form, "Resource", resourceEditor);
     editorLayout->addLayout(form);
 
     auto* actions = new QHBoxLayout;
-    m_refreshButton = new QPushButton(tr("Refresh"), editor);
+    m_refreshButton = makeUiButton("Refresh", editor);
     m_refreshButton->setObjectName(QStringLiteral("fieldRefreshButton"));
     actions->addWidget(m_refreshButton);
     actions->addStretch(1);
@@ -121,10 +122,10 @@ void FieldDeviceDialog::buildUi()
 
     auto* footer = new QHBoxLayout;
     footer->addStretch(1);
-    m_saveAllButton = new QPushButton(tr("Save All"), this);
+    m_saveAllButton = makeUiButton("Save All", this);
     m_saveAllButton->setObjectName(QStringLiteral("fieldSaveAllButton"));
     footer->addWidget(m_saveAllButton);
-    m_closeButton = new QPushButton(tr("Close"), this);
+    m_closeButton = makeUiButton("Close", this);
     m_closeButton->setObjectName(QStringLiteral("fieldCloseButton"));
     footer->addWidget(m_closeButton);
     root->addLayout(footer);
@@ -208,8 +209,8 @@ void FieldDeviceDialog::reloadDevices()
         auto* item = new QListWidgetItem(
             QStringLiteral("%1\n%2  |  %3")
                 .arg(device.logicalId,
-                     device.driverId.isEmpty() ? tr("No driver") : device.driverId,
-                     device.resource.isEmpty() ? tr("Not configured") : device.resource),
+                     device.driverId.isEmpty() ? uiText("No driver") : device.driverId,
+                     device.resource.isEmpty() ? uiText("Not configured") : device.resource),
             m_deviceList);
         item->setData(Qt::UserRole, device.logicalId);
         if (device.logicalId == currentId) selection = index;
@@ -224,7 +225,7 @@ void FieldDeviceDialog::selectDevice(int row)
     if (!m_updatingEditor && row != m_selectedRow && m_editorDirty) {
         QString error;
         if (!stageCurrentDevice(&error)) {
-            m_statusLabel->setText(tr("Could not keep the current device changes: %1")
+            m_statusLabel->setText(uiText("Could not keep the current device changes: %1")
                                        .arg(error));
         }
     }
@@ -288,19 +289,19 @@ void FieldDeviceDialog::updateEditor()
     m_refreshButton->setVisible(selected && enumerable);
     m_refreshButton->setText(parsed &&
         *parsed == PicoATE::Core::DeviceConnectionKind::CanSerial
-            ? tr("Scan Devices") : tr("Refresh"));
+            ? uiText("Scan Devices") : uiText("Refresh"));
     if (auto* edit = m_resourceCombo->lineEdit()) {
         const auto kind = m_connectionKind->currentData().toString();
         if (kind == QStringLiteral("canSerial"))
-            edit->setPlaceholderText(tr("Select or enter the device serial number"));
+            edit->setPlaceholderText(uiText("Select or enter the device serial number"));
         else if (kind == QStringLiteral("visa"))
-            edit->setPlaceholderText(tr("Select or enter a VISA resource"));
+            edit->setPlaceholderText(uiText("Select or enter a VISA resource"));
         else if (kind == QStringLiteral("serialPort"))
-            edit->setPlaceholderText(tr("Select or enter a COM port"));
+            edit->setPlaceholderText(uiText("Select or enter a COM port"));
         else if (kind == QStringLiteral("tcpIp"))
-            edit->setPlaceholderText(tr("Enter an IP address or host:port"));
+            edit->setPlaceholderText(uiText("Enter an IP address or host:port"));
         else
-            edit->setPlaceholderText(tr("Enter a connection resource"));
+            edit->setPlaceholderText(uiText("Enter a connection resource"));
     }
     m_refreshButton->setEnabled(selected && enumerable && !m_busy);
     m_applyButton->setEnabled(selected && m_editorDirty && !m_busy);
@@ -341,7 +342,7 @@ void FieldDeviceDialog::startDiscovery(
 {
     m_busy = true;
     updateEditor();
-    m_statusLabel->setText(tr("Scanning resources..."));
+    m_statusLabel->setText(uiText("Scanning resources..."));
     m_refreshButton->setEnabled(false);
     const QPointer<FieldDeviceDialog> guard(this);
     auto* thread = QThread::create([guard, request] {
@@ -374,8 +375,8 @@ void FieldDeviceDialog::finishResourceDiscovery(
         else m_resourceCombo->setEditText(previous);
     }
     m_statusLabel->setText(result.ok()
-        ? tr("Found %1 resource(s)").arg(result.resources.size())
-        : tr("Scan failed: %1").arg(result.errorMessage));
+        ? uiText("Found %1 resource(s)").arg(result.resources.size())
+        : uiText("Scan failed: %1").arg(result.errorMessage));
     updateEditor();
 }
 
@@ -415,15 +416,15 @@ void FieldDeviceDialog::applyCurrentDevice()
 {
     QString error;
     if (!stageCurrentDevice(&error)) {
-        QMessageBox::critical(this, tr("Field Device Configuration"), error);
+        QMessageBox::critical(this, uiText("Field Device Configuration"), error);
         return;
     }
     const auto device = m_devices[m_selectedRow];
     if (!writeStation()) return;
-    m_statusLabel->setText(tr("Saved %1 = %2")
+    m_statusLabel->setText(uiText("Saved %1 = %2")
                                .arg(device.logicalId,
                                     device.resource.isEmpty()
-                                        ? tr("Not configured")
+                                        ? uiText("Not configured")
                                         : device.resource));
 }
 
@@ -432,16 +433,16 @@ bool FieldDeviceDialog::saveAllDevices()
     if (m_editorDirty) {
         QString error;
         if (!stageCurrentDevice(&error)) {
-            QMessageBox::critical(this, tr("Field Device Configuration"), error);
+            QMessageBox::critical(this, uiText("Field Device Configuration"), error);
             return false;
         }
     }
     if (!m_stationDirty) {
-        m_statusLabel->setText(tr("No device changes to save."));
+        m_statusLabel->setText(uiText("No device changes to save."));
         return true;
     }
     if (!writeStation()) return false;
-    m_statusLabel->setText(tr("All device bindings were saved."));
+    m_statusLabel->setText(uiText("All device bindings were saved."));
     return true;
 }
 
@@ -451,7 +452,7 @@ bool FieldDeviceDialog::writeStation()
     if (!file.open(QIODevice::WriteOnly) ||
         file.write(QJsonDocument(m_station).toJson(QJsonDocument::Indented)) < 0 ||
         !file.commit()) {
-        QMessageBox::critical(this, tr("Field Device Configuration"), file.errorString());
+        QMessageBox::critical(this, uiText("Field Device Configuration"), file.errorString());
         return false;
     }
     m_stationDirty = false;
@@ -468,8 +469,8 @@ void FieldDeviceDialog::updateDeviceListItem(int row)
     const auto& device = m_devices[row];
     item->setText(QStringLiteral("%1\n%2  |  %3")
                       .arg(device.logicalId,
-                           device.driverId.isEmpty() ? tr("No driver") : device.driverId,
-                           device.resource.isEmpty() ? tr("Not configured") : device.resource));
+                           device.driverId.isEmpty() ? uiText("No driver") : device.driverId,
+                           device.resource.isEmpty() ? uiText("Not configured") : device.resource));
 }
 
 void FieldDeviceDialog::reject()
@@ -478,12 +479,16 @@ void FieldDeviceDialog::reject()
         QDialog::reject();
         return;
     }
-    const auto choice = QMessageBox::question(
-        this,
-        tr("Field Device Configuration"),
-        tr("Save all device changes before closing?"),
+    QMessageBox confirmation(QMessageBox::Question,
+        uiText("Field Device Configuration"),
+        uiText("Save all device changes before closing?"),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
-        QMessageBox::Save);
+        this);
+    confirmation.setDefaultButton(QMessageBox::Save);
+    confirmation.button(QMessageBox::Save)->setText(uiText("Save"));
+    confirmation.button(QMessageBox::Discard)->setText(uiText("Discard"));
+    confirmation.button(QMessageBox::Cancel)->setText(uiText("Cancel"));
+    const auto choice = confirmation.exec();
     if (choice == QMessageBox::Cancel) return;
     if (choice == QMessageBox::Save && !saveAllDevices()) return;
     QDialog::reject();
