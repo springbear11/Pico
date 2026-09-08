@@ -6,6 +6,7 @@
 #include <QHash>
 
 #include <optional>
+#include <functional>
 
 namespace PicoATE::Core {
 
@@ -47,6 +48,10 @@ class ExecutionResultStore {
 public:
     explicit ExecutionResultStore(const ExecutionPlan& plan);
 
+    using ResultSoFarProvider = std::function<QString(const UutId&, const NodeId&)>;
+    void setResultSoFarProvider(ResultSoFarProvider provider);
+    QString resultSoFar(const UutId& uutId, const NodeId& currentNodeId) const;
+
     void commit(const UutId& uutId,
                 const FrameId& frameId,
                 const NodeId& nodeId,
@@ -72,6 +77,7 @@ private:
 
     const ExecutionPlan& m_plan;
     QHash<QString, QVector<StoredStepResult>> m_results;
+    ResultSoFarProvider m_resultSoFarProvider;
 };
 
 } // namespace PicoATE::Core

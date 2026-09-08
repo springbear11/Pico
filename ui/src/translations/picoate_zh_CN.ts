@@ -562,5 +562,7 @@ Station: %2</source><translation>脚本：%1
     <message><source>Format an integer as decimal, hexadecimal, octal, or binary text.</source><translation>将整数转换为指定进制的文本，可用于显示或后续参数拼接。</translation></message>
     <message><source>Delete</source><translation>删除</translation></message>
     <message><source>Copy</source><translation>复制</translation></message>
+    <message><source>Station allows at most %1 UUT(s)</source><translation>当前工站最多允许 %1 个 UUT</translation></message>
+    <message><source>UUT Result So Far (PASS / FAIL / UNKNOWN)</source><translation>当前 UUT 阶段结果（PASS / FAIL / UNKNOWN）</translation></message>
 </context>
 </TS>

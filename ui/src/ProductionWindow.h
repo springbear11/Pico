@@ -59,6 +59,8 @@ private:
     void buildUi();
     void retranslateUi();
     void applyResponsiveLayout(bool force = false);
+    void requestResponsiveLayoutUpdate();
+    void synchronizeStationUutCapacity(bool resetCount = false);
     void updateCommands();
     void updateState(UiRunState state);
     void updateCompileSummary();
@@ -93,6 +95,9 @@ private:
     void updateOverviewSummary();
 
     StartupSelection m_selection;
+    int m_stationUutCapacity = 1;
+    QAction* m_uutCountAction = nullptr;
+    bool m_responsiveUpdateQueued = false;
     ExecutionViewModel* m_viewModel = nullptr;
     OperatorPromptPresenter* m_operatorPromptPresenter = nullptr;
     UutStepModel* m_resultModel = nullptr;

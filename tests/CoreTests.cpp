@@ -1046,6 +1046,16 @@ private slots:
     void testItemIgnoresSkippedChildrenWhenAggregating();
     void scopedStepResultsFlowAcrossTestItemsPerUut();
     void resultStoreTracksRetryAndLoopHistory();
+    void resultSoFarGatesRegisterWritePerUut_data();
+    void resultSoFarGatesRegisterWritePerUut();
+    void resultSoFarUsesFinalRetriesAndExcludesCurrentAndFuture();
+    void resultSoFarInsideRetriedTestItem();
+    void resultSoFarUnknownIsNotPass();
+    void resultSoFarDoesNotAcceptUnfinishedOrSkippedPredecessors();
+    void resultSoFarIncludesSharedAndSetupFailures();
+    void resultSoFarIncludesPeriodicFailureHistory();
+    void resultSoFarMainPeriodicTaskRespectsExecutionScope();
+    void resultSoFarCannotBeOverriddenByUserVariables();
     void compilerRejectsInvalidStepResultReferencesAndScopedKeys();
     void compilerDeduplicatesMultipleReferencesToSameStep();
     void runtimeResultLookupReportsMissingAndNonPassedSources();
@@ -10524,6 +10534,301 @@ void CoreTests::resultStoreTracksRetryAndLoopHistory()
     QCOMPARE(loopHistory[0].result.outputs.value("value").toInt(), 0);
     QCOMPARE(loopHistory[2].result.outputs.value("value").toInt(), 2);
     QCOMPARE(session.results().latest("uut-1", "root", "004")->result.outputs.value("latest").toInt(), 2);
+}
+
+void CoreTests::resultSoFarGatesRegisterWritePerUut_data()
+{
+    QTest::addColumn<QString>("outcome");
+    QTest::newRow("failed") << QStringLiteral("Failed");
+    QTest::newRow("error") << QStringLiteral("Error");
+    QTest::newRow("timeout") << QStringLiteral("Timeout");
+}
+
+void CoreTests::resultSoFarGatesRegisterWritePerUut()
+{
+    QFETCH(QString, outcome);
+    const auto json = R"json({"id":"result-gate","name":"Result gate","groups":[
+      {"id":"setup","kind":"setup","steps":[{"id":"open","kind":"action"}]},
+      {"id":"main","kind":"main","steps":[
+        {"id":"test","kind":"testItem","retry":{"maxAttempts":1},
+         "errorPolicy":{"onFail":"Continue","onError":"Continue","onTimeout":"Continue"},
+         "steps":[{"id":"probe","kind":"action","parameters":{"outcome":"${var.probeOutcome}"}}]},
+        {"id":"gate","kind":"limit","retry":{"maxAttempts":1},
+         "inputs":{"actual":"${uut.resultSoFar}"},
+         "parameters":{"comparison":"equal","expected":"PASS"},
+         "errorPolicy":{"onFail":"JumpTo","onFailTarget":"end",
+                        "onError":"JumpTo","onErrorTarget":"end",
+                        "onTimeout":"JumpTo","onTimeoutTarget":"end"}},
+        {"id":"write","kind":"action","inputs":{"flag":1},"parameters":{"echoInputs":true}},
+        {"id":"end","kind":"noop"}]},
+      {"id":"cleanup","kind":"cleanup","steps":[{"id":"close","kind":"action"}]}
+    ]})json";
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty() ? QString() : compiled.errors.first().message));
+    ExecutionSession session(compiled.plan);
+    session.addUut("UUT-1").variables.insert("probeOutcome", outcome);
+    session.addUut("UUT-2").variables.insert("probeOutcome", "Passed");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+    for (int i = 0; i < 2; ++i) {
+        const auto& uut = session.uuts()[i];
+        const auto gate = session.results().latest(uut.uutId, "root", "gate");
+        QVERIFY(gate);
+        QCOMPARE(gate->result.outputs.value("actual").toString(), i == 0 ? QString("FAIL") : QString("PASS"));
+        QCOMPARE(uut.outcomeOf("write"), i == 0 ? NodeOutcome::Skipped : NodeOutcome::Passed);
+        QCOMPARE(uut.outcomeOf("end"), NodeOutcome::Passed);
+    }
+    const auto report = session.report();
+    QVERIFY(report.uuts[0].hasError);
+    QVERIFY(!report.uuts[1].hasError);
+
+    ExecutionSession fresh(compiled.plan);
+    fresh.addUut("UUT-1").variables.insert("probeOutcome", "Passed");
+    QVERIFY(!fresh.run().hasError);
+    QCOMPARE(fresh.uuts().first().outcomeOf("write"), NodeOutcome::Passed);
+}
+
+void CoreTests::resultSoFarUsesFinalRetriesAndExcludesCurrentAndFuture()
+{
+    const auto json = R"json({"id":"summary-retry","name":"Summary retry","groups":[
+      {"id":"main","kind":"main","steps":[
+        {"id":"probe","kind":"action","retry":{"maxAttempts":2},"parameters":{"failUntilAttempt":0}},
+        {"id":"read","kind":"limit","retry":{"maxAttempts":2},
+         "inputs":{"actual":"${uut.resultSoFar}"},
+         "parameters":{"comparison":"equal","expected":"${var.expected}"},
+         "errorPolicy":{"onFail":"Continue"}},
+        {"id":"later","kind":"action","parameters":{"outcome":"Failed"},"errorPolicy":{"onFail":"Continue"}}
+      ]},
+      {"id":"cleanup","kind":"cleanup","steps":[{"id":"close","kind":"action","parameters":{"outcome":"Failed"}}]}
+    ]})json";
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compiled.ok());
+    ExecutionSession session(compiled.plan);
+    session.addUut("UUT-1").variables.insert("expected", "force gate retry");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(run.hasError);
+    QCOMPARE(session.uuts().first().outcomeOf("probe"), NodeOutcome::Passed);
+    const auto history = session.results().history("UUT-1", "root", "read");
+    QCOMPARE(history.size(), 2);
+    for (const auto& attempt : history) {
+        QCOMPARE(attempt.result.outputs.value("actual").toString(), QString("PASS"));
+    }
+}
+
+void CoreTests::resultSoFarInsideRetriedTestItem()
+{
+    const auto json = R"json({"id":"summary-parent-retry","name":"Parent retry","groups":[
+      {"id":"main","kind":"main","steps":[
+        {"id":"parent","kind":"testItem","retry":{"maxAttempts":2},"steps":[
+          {"id":"probe","kind":"action","moduleId":"test.test-item-retry-lock","function":"probe",
+           "errorPolicy":{"onFail":"Continue"}},
+          {"id":"gate","kind":"limit","inputs":{"actual":"${uut.resultSoFar}"},
+           "parameters":{"comparison":"equal","expected":"PASS"}}
+        ]},
+        {"id":"after","kind":"action","inputs":{"summary":"${uut.resultSoFar}"},"parameters":{"echoInputs":true}}
+      ]}
+    ]})json";
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compiled.ok());
+    ExecutionSession session(compiled.plan);
+    QVERIFY(session.registerModule(std::make_shared<TestItemRetryLockModule>()));
+    session.addUut("UUT-1");
+    const auto run = session.run();
+    QVERIFY(run.completed);
+    QVERIFY(!run.hasError);
+    const auto history = session.results().history("UUT-1", "root", "parent.gate");
+    QCOMPARE(history.size(), 2);
+    QCOMPARE(history[0].result.outputs.value("actual").toString(), QString("FAIL"));
+    QCOMPARE(history[1].result.outputs.value("actual").toString(), QString("PASS"));
+    const auto after = session.results().latest("UUT-1", "root", "after");
+    QVERIFY(after);
+    QCOMPARE(after->result.outputs.value("summary").toString(), QString("PASS"));
+}
+
+void CoreTests::resultSoFarUnknownIsNotPass()
+{
+    const auto json = R"json({"id":"summary-unknown","name":"Unknown","groups":[
+      {"id":"setup","kind":"setup","steps":[{"id":"open","kind":"action"}]},
+      {"id":"main","kind":"main","steps":[
+        {"id":"first","kind":"action","inputs":{"summary":"${uut.resultSoFar}"},"parameters":{"echoInputs":true}},
+        {"id":"disabled","kind":"action","enabled":false,"parameters":{"outcome":"Failed"}},
+        {"id":"before-loop","kind":"action","inputs":{"summary":"${uut.resultSoFar}"},"parameters":{"echoInputs":true}},
+        {"id":"loop","kind":"loop","loop":{"variable":"i","from":0,"to":1,"step":1},"steps":[
+          {"id":"inside","kind":"action","inputs":{"summary":"${uut.resultSoFar}"},"parameters":{"echoInputs":true}}
+        ]},
+        {"id":"after-loop","kind":"action","inputs":{"summary":"${uut.resultSoFar}"},"parameters":{"echoInputs":true}}
+      ]}
+    ]})json";
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compiled.ok());
+    ExecutionSession session(compiled.plan);
+    session.addUut("UUT-1");
+    QVERIFY(!session.run().hasError);
+    for (const auto& pair : {qMakePair("first", "UNKNOWN"), qMakePair("before-loop", "PASS"),
+                             qMakePair("loop.inside", "UNKNOWN"), qMakePair("after-loop", "PASS")}) {
+        const auto result = session.results().latest("UUT-1", "root", pair.first);
+        QVERIFY(result);
+        QCOMPARE(result->result.outputs.value("summary").toString(), QString(pair.second));
+    }
+    QCOMPARE(session.results().resultSoFar("missing-uut", "after-loop"), QString("UNKNOWN"));
+    QCOMPARE(session.results().resultSoFar("UUT-1", "missing-node"), QString("UNKNOWN"));
+}
+
+void CoreTests::resultSoFarDoesNotAcceptUnfinishedOrSkippedPredecessors()
+{
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(R"({
+      "id":"summary-states","name":"Summary states","groups":[{"id":"main","kind":"main","steps":[
+        {"id":"probe","kind":"action"},{"id":"read","kind":"noop"}
+      ]}]})").object());
+    QVERIFY(compiled.ok());
+    ExecutionSession session(compiled.plan);
+    auto& uut = session.addUut("UUT-1");
+    auto& activation = uut.ensureActivation("probe", "root");
+    QCOMPARE(session.results().resultSoFar("UUT-1", "read"), QString("UNKNOWN"));
+    NodeAttempt passedAttempt;
+    passedAttempt.result.outcome = NodeOutcome::Passed;
+    activation.attempts.push_back(passedAttempt);
+    activation.state = ActivationState::Running;
+    QCOMPARE(session.results().resultSoFar("UUT-1", "read"), QString("UNKNOWN"));
+    activation.state = ActivationState::Passed;
+    QCOMPARE(session.results().resultSoFar("UUT-1", "read"), QString("PASS"));
+    activation.state = ActivationState::Skipped;
+    activation.attempts.last().result.outcome = NodeOutcome::Skipped;
+    QCOMPARE(session.results().resultSoFar("UUT-1", "read"), QString("UNKNOWN"));
+    activation.state = ActivationState::Cancelled;
+    activation.attempts.last().result.outcome = NodeOutcome::Cancelled;
+    QCOMPARE(session.results().resultSoFar("UUT-1", "read"), QString("FAIL"));
+}
+
+void CoreTests::resultSoFarIncludesSharedAndSetupFailures()
+{
+    const auto json = R"json({"id":"summary-shared","name":"Shared","groups":[
+      {"id":"setup","kind":"setup","steps":[{"id":"open","kind":"action"}]},
+      {"id":"main","kind":"main","steps":[
+        {"id":"shared","kind":"action","executionScope":"oncePerBatch",
+         "parameters":{"outcome":"Failed"},"errorPolicy":{"onFail":"Continue"}},
+        {"id":"read","kind":"action","inputs":{"summary":"${uut.resultSoFar}"},"parameters":{"echoInputs":true}}
+      ]}
+    ]})json";
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compiled.ok());
+    ExecutionSession session(compiled.plan);
+    session.addUut("UUT-1");
+    session.addUut("UUT-2");
+    QVERIFY(session.run().completed);
+    for (const auto& uut : session.uuts()) {
+        const auto result = session.results().latest(uut.uutId, "root", "read");
+        QVERIFY(result);
+        QCOMPARE(result->result.outputs.value("summary").toString(), QString("FAIL"));
+    }
+
+    auto setupFailurePlan = compiled.plan;
+    setupFailurePlan.nodes["open"].payload["outcome"] = "Failed";
+    ExecutionSession failedSetup(setupFailurePlan);
+    failedSetup.addUut("UUT-1");
+    const auto failedRun = failedSetup.run();
+    QVERIFY(failedRun.completed);
+    QVERIFY(failedRun.hasError);
+    QCOMPARE(failedSetup.uuts().first().outcomeOf("read"), NodeOutcome::Skipped);
+    QCOMPARE(failedSetup.results().resultSoFar("UUT-1", "read"), QString("FAIL"));
+}
+
+void CoreTests::resultSoFarIncludesPeriodicFailureHistory()
+{
+    const auto json = R"json({"id":"summary-periodic","name":"Periodic","groups":[
+      {"id":"setup","kind":"setup","steps":[
+        {"id":"heartbeat","kind":"action","moduleId":"test.periodic","function":"send",
+         "inputs":{"deviceId":"DEVICE1"},"periodic":{"intervalMs":10,"runImmediately":true}}
+      ]},
+      {"id":"main","kind":"main","steps":[
+        {"id":"wait","kind":"wait","ms":70},
+        {"id":"read","kind":"action","inputs":{"summary":"${uut.resultSoFar}"},"parameters":{"echoInputs":true}}
+      ]}
+    ]})json";
+    SequenceCompiler compiler;
+    const auto compiled = compiler.compileJson(QJsonDocument::fromJson(json).object());
+    QVERIFY(compiled.ok());
+    for (const bool failFirst : {false, true}) {
+        auto module = std::make_shared<PeriodicRecordingModule>();
+        module->failFirst = failFirst;
+        module->clock.start();
+        ExecutionSession session(compiled.plan);
+        QVERIFY(session.registerModule(module));
+        session.addUut("UUT-1");
+        const auto run = session.run();
+        QVERIFY(run.completed);
+        QVERIFY(module->requestIds.size() >= 2);
+        const auto result = session.results().latest("UUT-1", "root", "read");
+        QVERIFY(result);
+        QCOMPARE(result->result.outputs.value("summary").toString(), failFirst ? QString("FAIL") : QString("PASS"));
+    }
+}
+
+void CoreTests::resultSoFarMainPeriodicTaskRespectsExecutionScope()
+{
+    SequenceCompiler compiler;
+    const auto json = QJsonDocument::fromJson(R"({"id":"summary-main-periodic","name":"Main periodic","groups":[
+      {"id":"main","kind":"main","steps":[
+        {"id":"heartbeat","kind":"action","inputs":{"deviceId":"DEVICE1"},
+         "periodic":{"intervalMs":10,"runImmediately":false},
+         "parameters":{"failForUut":"UUT-1"}},
+        {"id":"wait","kind":"wait","ms":70},
+        {"id":"read","kind":"action","inputs":{"summary":"${uut.resultSoFar}"},"parameters":{"echoInputs":true}}
+      ]}
+    ]})").object();
+    for (const bool shared : {false, true}) {
+        auto sequence = json;
+        auto groups = sequence.value("groups").toArray();
+        auto main = groups[0].toObject();
+        auto steps = main.value("steps").toArray();
+        auto heartbeat = steps[0].toObject();
+        heartbeat.insert("executionScope", shared ? "oncePerBatch" : "perUut");
+        steps[0] = heartbeat;
+        main.insert("steps", steps);
+        groups[0] = main;
+        sequence.insert("groups", groups);
+        const auto compiled = compiler.compileJson(sequence);
+        QVERIFY2(compiled.ok(), qPrintable(compiled.errors.isEmpty() ? QString() : compiled.errors.first().message));
+        ExecutionSession session(compiled.plan);
+        session.addUut("UUT-1");
+        session.addUut("UUT-2");
+        QVERIFY(session.run().completed);
+        for (const auto& uut : session.uuts()) {
+            const auto read = session.results().latest(uut.uutId, "root", "read");
+            QVERIFY(read);
+            QCOMPARE(read->result.outputs.value("summary").toString(),
+                     shared || uut.uutId == "UUT-1" ? QString("FAIL") : QString("PASS"));
+        }
+    }
+}
+
+void CoreTests::resultSoFarCannotBeOverriddenByUserVariables()
+{
+    RuntimeVariableContext context;
+    context.uutId = "UUT-1";
+    context.currentNodeId = "gate";
+    context.variables.insert("uut.resultSoFar", "PASS");
+    QVariant value;
+    QVERIFY(RuntimeVariableResolver(context).variableValue("uut.resultSoFar", value));
+    QCOMPARE(value.toString(), QString("UNKNOWN"));
+    ExecutionPlan plan;
+    ExecutionResultStore store(plan);
+    context.resultStore = &store;
+    QVERIFY(RuntimeVariableResolver(context).variableValue("uut.resultSoFar", value));
+    QCOMPARE(value.toString(), QString("UNKNOWN"));
+    store.setResultSoFarProvider([](const UutId& uut, const NodeId& node) {
+        return uut == "UUT-1" && node == "gate" ? QString("FAIL") : QString("UNKNOWN");
+    });
+    QVERIFY(RuntimeVariableResolver(context).variableValue("uut.resultSoFar", value));
+    QCOMPARE(value.toString(), QString("FAIL"));
 }
 
 void CoreTests::compilerRejectsInvalidStepResultReferencesAndScopedKeys()

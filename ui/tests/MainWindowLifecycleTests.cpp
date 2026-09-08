@@ -16,6 +16,7 @@
 #include "RunArtifactWriter.h"
 #include "ProductionWindow.h"
 #include "ProductRoutingDialog.h"
+#include "ProductRoutingScanSupport.h"
 #include "ProportionalHeaderView.h"
 #include "PluginCatalog.h"
 #include "PluginFunctionModel.h"
@@ -54,6 +55,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QImage>
@@ -97,6 +99,7 @@
 #include <QUndoStack>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+#include <QWindow>
 
 #include <algorithm>
 #include <array>
@@ -385,6 +388,11 @@ private slots:
     void adminDisabledSlotsRemainVisible();
     void localizedConfigurationKeepsData();
     void smallScreenRunInfoRemainsReadable();
+    void stationCapacityLimitsToolbar_data();
+    void stationCapacityLimitsToolbar();
+    void scannerYieldsToModalWindows();
+    void stationSavePromptSuspendsScanner();
+    void maximizedRunInformationKeepsFullTextHeight();
     void uutSlotsSuspendScanner_data();
     void uutSlotsSuspendScanner();
     void initTestCase();
@@ -466,6 +474,7 @@ private slots:
     void leavingFlowPromptsOnceAndCanKeepDraft();
     void stepEditorRelocatesDraftAfterSequenceStructureChanges();
     void limitPropertyEditorSwitchesComparisonFieldsAndRemovesStaleValues();
+    void resultSoFarIsAvailableInFxWithoutChangingItsToken();
     void wrapsSelectedStepsInTestItemFromToolbar();
     void copiesAndPastesSelectedItemsFromToolbar();
     void flowBlankClickClearsSelection();
@@ -857,6 +866,316 @@ void MainWindowLifecycleTests::smallScreenRunInfoRemainsReadable()
     }
 }
 
+void MainWindowLifecycleTests::stationCapacityLimitsToolbar_data()
+{
+    QTest::addColumn<bool>("admin");
+    QTest::addColumn<int>("maximum");
+    QTest::newRow("admin-four") << true << 4;
+    QTest::newRow("test-four") << false << 4;
+    QTest::newRow("admin-single") << true << 1;
+    QTest::newRow("test-single") << false << 1;
+}
+
+void MainWindowLifecycleTests::stationCapacityLimitsToolbar()
+{
+    QFETCH(bool, admin);
+    QFETCH(int, maximum);
+    QSettings().clear();
+    QSettings().setValue(QStringLiteral("MainWindow/UutCount"), 63);
+    QTemporaryDir directory;
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile file(stationPath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(QJsonDocument(QJsonObject{
+        {"stationId", "CAPACITY"}, {"uutCount", maximum},
+        {"scanDialogEnabled", false}, {"devices", QJsonArray{}}
+    }).toJson());
+    file.close();
+    const auto sequencePath = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR) +
+                              QStringLiteral("/examples/simple_sequence.json");
+    for (int opening = 0; opening < 2; ++opening) {
+        std::unique_ptr<QMainWindow> window;
+        if (admin) {
+            auto instance = std::make_unique<MainWindow>();
+            QVERIFY(instance->openSequenceFile(sequencePath));
+            QVERIFY(instance->openStationFile(stationPath));
+            window = std::move(instance);
+        } else {
+            StartupSelection selection;
+            selection.mode = UiMode::Test;
+            selection.sequencePath = sequencePath;
+            selection.stationPath = stationPath;
+            selection.scanDialogEnabled = false;
+            window = std::make_unique<ProductionWindow>(selection);
+        }
+        window->resize(1280, 800);
+        window->show();
+        auto* count = window->findChild<QSpinBox*>(admin
+            ? QStringLiteral("uutCountSpinBox") : QStringLiteral("productionUutCountSpinBox"));
+        auto* slotAction = window->findChild<QAction*>(admin
+            ? QStringLiteral("adminUutSlotsAction") : QStringLiteral("productionUutSlotsAction"));
+        auto* scan = window->findChild<ScanDialog*>();
+        QVERIFY(count && slotAction && scan);
+        QCOMPARE(count->maximum(), maximum);
+        QCOMPARE(count->value(), maximum);
+        QTRY_COMPARE(!count->isHidden(), maximum > 1);
+        QCOMPARE(slotAction->isVisible(), maximum > 1);
+        count->setValue(64);
+        QCOMPARE(count->value(), maximum);
+        if (maximum > 1) {
+            count->setValue(2);
+            QCOMPARE(count->maximum(), maximum);
+            QCOMPARE(scan->slotCount(), 2);
+            count->setValue(1);
+            QVERIFY(!count->isHidden());
+            QVERIFY(!slotAction->isVisible());
+            count->setValue(2);
+        }
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(file.readAll()).object().value("uutCount").toInt(), maximum);
+        file.close();
+        if (admin) {
+            auto* document = window->findChild<StationDocument*>();
+            QVERIFY(document);
+            QVERIFY(document->setRootValue(QStringLiteral("model"), QStringLiteral("M2")));
+            QCOMPARE(count->value(), maximum > 1 ? 2 : 1);
+            if (opening == 1) {
+                if (maximum > 1) QVERIFY(document->setRootValue(QStringLiteral("uutCount"), 1));
+                QCOMPARE(count->maximum(), 1);
+                QCOMPARE(count->value(), 1);
+                QTRY_VERIFY(count->isHidden());
+                QVERIFY(!slotAction->isVisible());
+                QVERIFY(document->setRootValue(QStringLiteral("uutCount"), 3));
+                QCOMPARE(count->maximum(), 3);
+                QCOMPARE(count->value(), 3);
+                QTRY_VERIFY(!count->isHidden());
+            }
+            document->undoStack()->setClean();
+        }
+        QVERIFY(window->close());
+    }
+    PicoATE::Core::ProductBatchRouteResolution routed;
+    routed.uutCount = maximum;
+    routed.route.stationPath = stationPath;
+    QCOMPARE(routedUutCount(routed, stationPath, 2), qMin(2, maximum));
+    QCOMPARE(routedUutCount(routed, directory.filePath("other.json"), 1), maximum);
+    QCOMPARE(routedUutCount(routed, stationPath, 64), maximum);
+}
+
+void MainWindowLifecycleTests::scannerYieldsToModalWindows()
+{
+    QMainWindow owner;
+    owner.resize(900, 650);
+    owner.show();
+    ScanDialog scanner(&owner);
+    scanner.setSlotCount(2);
+    scanner.showForNextScan();
+    auto* edit = scanner.findChild<QLineEdit*>(QStringLiteral("barcodeEdit"));
+    QVERIFY(edit);
+    QVERIFY(!(scanner.windowFlags() & Qt::WindowStaysOnTopHint));
+    edit->setText(QStringLiteral("SN0001"));
+    QVERIFY(QMetaObject::invokeMethod(&scanner, "submitBarcode"));
+    edit->setText(QStringLiteral("DRAFT22"));
+    edit->setSelection(1, 3);
+    const auto barcodes = scanner.barcodes();
+
+    QDialog outer(&owner);
+    outer.setWindowModality(Qt::WindowModal);
+    outer.show();
+    QTRY_VERIFY(!scanner.isVisible());
+    QVERIFY(scanner.isScanRequested());
+    QDialog inner(&outer);
+    inner.setWindowModality(Qt::WindowModal);
+    inner.show();
+    inner.accept();
+    QTest::qWait(30);
+    QVERIFY(!scanner.isVisible());
+    QCOMPARE(scanner.barcodes(), barcodes);
+    QCOMPARE(edit->text(), QStringLiteral("DRAFT22"));
+    scanner.showForNextScan();
+    QVERIFY(!scanner.isVisible());
+    QCOMPARE(edit->selectedText(), QStringLiteral("RAF"));
+    outer.accept();
+    QTRY_VERIFY(scanner.isVisible());
+    QCOMPARE(edit->text(), QStringLiteral("DRAFT22"));
+    QCOMPARE(edit->selectedText(), QStringLiteral("RAF"));
+    QCOMPARE(scanner.barcodes(), barcodes);
+
+    auto* destroyedDialog = new QDialog(&owner);
+    destroyedDialog->setWindowModality(Qt::ApplicationModal);
+    destroyedDialog->show();
+    QTRY_VERIFY(!scanner.isVisible());
+    delete destroyedDialog;
+    QTRY_VERIFY(scanner.isVisible());
+
+    QFileDialog fileDialog(&owner);
+    fileDialog.setWindowModality(Qt::WindowModal);
+    const auto fileTitle = QStringLiteral("PicoATE native dialog test %1")
+        .arg(QCoreApplication::applicationPid());
+    fileDialog.setWindowTitle(fileTitle);
+    fileDialog.setDirectory(QDir::tempPath());
+    fileDialog.open();
+#ifdef Q_OS_WIN
+    if (QGuiApplication::platformName() == QStringLiteral("windows")) {
+        QTRY_VERIFY_WITH_TIMEOUT(IsWindowVisible(FindWindowW(nullptr,
+            reinterpret_cast<LPCWSTR>(fileTitle.utf16()))), 5000);
+    }
+#endif
+    QTRY_VERIFY(!scanner.isVisible());
+    fileDialog.reject();
+    QTRY_VERIFY(scanner.isVisible());
+    QCOMPARE(edit->text(), QStringLiteral("DRAFT22"));
+
+    QEvent blocked(QEvent::WindowBlocked);
+    QCoreApplication::sendEvent(owner.windowHandle(), &blocked);
+    QTRY_VERIFY(!scanner.isVisible());
+    QEvent unblocked(QEvent::WindowUnblocked);
+    QCoreApplication::sendEvent(owner.windowHandle(), &unblocked);
+    QTRY_VERIFY(scanner.isVisible());
+
+    outer.show();
+    QTRY_VERIFY(!scanner.isVisible());
+    scanner.cancelCurrentScan();
+    outer.accept();
+    QTest::qWait(60);
+    QVERIFY(!scanner.isVisible());
+    QVERIFY(!scanner.isScanRequested());
+    outer.show();
+    outer.accept();
+    QTest::qWait(60);
+    QVERIFY(!scanner.isVisible());
+
+    outer.show();
+    scanner.showForNextScan();
+    QVERIFY(!scanner.isVisible());
+    outer.accept();
+    QTRY_VERIFY(scanner.isVisible());
+    scanner.hide();
+}
+
+void MainWindowLifecycleTests::stationSavePromptSuspendsScanner()
+{
+    QSettings().clear();
+    QTemporaryDir directory;
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile file(stationPath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"({"stationId":"MODAL-SAVE","uutCount":2,"scanDialogEnabled":true,"devices":[]})");
+    file.close();
+    MainWindow window;
+    QVERIFY(window.openSequenceFile(QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR) +
+                                    QStringLiteral("/examples/simple_sequence.json")));
+    QVERIFY(window.openStationFile(stationPath));
+    window.show();
+    auto* viewModel = window.findChild<ExecutionViewModel*>();
+    window.findChild<QAction*>(QStringLiteral("compileAction"))->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 5000);
+    window.findChild<QAction*>(QStringLiteral("adminScanAction"))->trigger();
+    auto* scanner = window.findChild<ScanDialog*>();
+    auto* edit = scanner->findChild<QLineEdit*>(QStringLiteral("barcodeEdit"));
+    QTRY_VERIFY(scanner->isVisible());
+    edit->setText(QStringLiteral("SN0001"));
+    QVERIFY(QMetaObject::invokeMethod(scanner, "submitBarcode"));
+    edit->setText(QStringLiteral("UNSAVED-SN"));
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
+    tabs->setCurrentIndex(2);
+    auto* model = window.findChild<QLineEdit*>(QStringLiteral("stationModelEdit"));
+    QVERIFY(model);
+    model->setText(QStringLiteral("NEW-MODEL"));
+    QVERIFY(QMetaObject::invokeMethod(model, "textEdited", Q_ARG(QString, model->text())));
+    auto* save = window.findChild<QAction*>(QStringLiteral("saveStationAction"));
+    QVERIFY(save && save->isEnabled());
+    for (bool accept : {false, true}) {
+        bool observed = false;
+        bool hidden = false;
+        QTimer answer;
+        answer.setInterval(10);
+        connect(&answer, &QTimer::timeout, &window, [&] {
+            auto* prompt = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            if (!prompt) return;
+            observed = true;
+            hidden = !scanner->isVisible();
+            answer.stop();
+            prompt->button(accept ? QMessageBox::Save : QMessageBox::Cancel)->click();
+        });
+        answer.start();
+        save->trigger();
+        answer.stop();
+        QVERIFY(observed);
+        QVERIFY(hidden);
+        QTRY_VERIFY(scanner->isVisible());
+        QCOMPARE(edit->text(), QStringLiteral("UNSAVED-SN"));
+        QCOMPARE(scanner->barcodes().first(), QStringLiteral("SN0001"));
+    }
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(QJsonDocument::fromJson(file.readAll()).object().value("model").toString(),
+             QStringLiteral("NEW-MODEL"));
+    file.close();
+    QVERIFY(window.close());
+}
+
+void MainWindowLifecycleTests::maximizedRunInformationKeepsFullTextHeight()
+{
+    QSettings().clear();
+    auto& language = UiLanguage::instance();
+    const auto restoreLanguage = qScopeGuard([&] { language.setChinese(false, false); });
+    QSettings().setValue(QStringLiteral("MainWindow/ResponsiveLayoutMode"), 1);
+    QTemporaryDir directory;
+    const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
+    QFile file(stationPath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"({"stationId":"HEIGHT","uutCount":1,"scanDialogEnabled":false,"devices":[]})");
+    file.close();
+    const auto sequencePath = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR) +
+                              QStringLiteral("/examples/simple_sequence.json");
+    for (bool admin : {true, false}) {
+        std::unique_ptr<QMainWindow> window;
+        if (admin) {
+            auto instance = std::make_unique<MainWindow>();
+            QVERIFY(instance->openSequenceFile(sequencePath));
+            QVERIFY(instance->openStationFile(stationPath));
+            instance->showRunPage();
+            window = std::move(instance);
+        } else {
+            StartupSelection selection;
+            selection.mode = UiMode::Test;
+            selection.sequencePath = sequencePath;
+            selection.stationPath = stationPath;
+            selection.scanDialogEnabled = false;
+            window = std::make_unique<ProductionWindow>(selection);
+        }
+        window->show();
+        auto* sidebar = window->findChild<QScrollArea*>(admin
+            ? QStringLiteral("adminRunSidebar") : QStringLiteral("productionSidebar"));
+        QVERIFY(sidebar && sidebar->widget());
+        for (int state = 0; state < 4; ++state) {
+            QVERIFY(language.setChinese(state != 0, false));
+            if (state == 0) window->resize(1500, 800);
+            if (state == 1) window->showMaximized();
+            if (state == 2) window->showFullScreen();
+            if (state == 3) { window->showNormal(); window->resize(1000, 650); }
+            QTest::qWait(160);
+            const auto labels = sidebar->findChildren<QLabel*>();
+            int checked = 0;
+            for (auto* label : labels) {
+                if (!label->property("runInfoValue").toBool()) continue;
+                ++checked;
+                QVERIFY2(label->contentsRect().height() >= label->fontMetrics().height(),
+                         qPrintable(label->objectName()));
+                QVERIFY(!label->wordWrap());
+            }
+            QCOMPARE(checked, 7);
+            QVERIFY(sidebar->widget()->height() >= sidebar->widget()->layout()->minimumSize().height());
+            const auto screenshots = qEnvironmentVariable("PICOATE_LANGUAGE_SCREENSHOTS");
+            if (!screenshots.isEmpty()) {
+                QVERIFY(window->grab().save(QDir(screenshots).filePath(
+                    QStringLiteral("%1-height-%2.png").arg(admin ? "admin" : "test").arg(state))));
+            }
+        }
+        QVERIFY(window->close());
+    }
+}
+
 void MainWindowLifecycleTests::uutSlotsSuspendScanner_data()
 {
     QTest::addColumn<bool>("admin");
@@ -1038,7 +1357,7 @@ void MainWindowLifecycleTests::languageSwitchPreservesRunningProductionAndScanne
     const auto stationPath = directory.filePath(QStringLiteral("StationSystem.json"));
     QFile station(stationPath);
     QVERIFY(station.open(QIODevice::WriteOnly));
-    station.write(R"({"stationId":"LANG-STATION","model":"M2","scanDialogEnabled":false,"devices":[]})");
+    station.write(R"({"stationId":"LANG-STATION","uutCount":2,"model":"M2","scanDialogEnabled":false,"devices":[]})");
     station.close();
     StartupSelection selection;
     selection.mode = UiMode::Test;
@@ -3351,6 +3670,42 @@ void MainWindowLifecycleTests::stepEditorRelocatesDraftAfterSequenceStructureCha
     QVERIFY(!error->isVisible());
 }
 
+void MainWindowLifecycleTests::resultSoFarIsAvailableInFxWithoutChangingItsToken()
+{
+    auto& language = UiLanguage::instance();
+    const bool wasChinese = language.isChinese();
+    const auto restore = qScopeGuard([&] { language.setChinese(wasChinese, false); });
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto sequencePath = directory.filePath(QStringLiteral("result_gate.json"));
+    QFile file(sequencePath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"({"id":"gate","name":"Gate","groups":[{"id":"main","kind":"main","steps":[
+      {"id":"probe","kind":"action"},
+      {"id":"gate","kind":"limit","inputs":{"actual":""},"parameters":{"comparison":"equal","expected":"PASS"}}
+    ]}]})");
+    file.close();
+    for (const bool chinese : {false, true}) {
+        QVERIFY(language.setChinese(chinese, false));
+        SequenceDocument document;
+        QVERIFY(document.load(sequencePath));
+        StepPropertyEditor editor(&document);
+        const SequenceItemPath path{0, {1}};
+        editor.setCurrentItem(path);
+        editor.show();
+        auto* actual = editor.findChild<QLineEdit*>(QStringLiteral("propertyLimitActualEdit"));
+        QVERIFY(actual);
+        auto* picker = actual->parentWidget()->findChild<QToolButton*>(QStringLiteral("expressionPickerButton"));
+        QVERIFY(picker);
+        QVERIFY(chooseExpression(picker, QStringLiteral("${uut.resultSoFar}")));
+        QCOMPARE(actual->text(), QStringLiteral("${uut.resultSoFar}"));
+        QVERIFY(editor.commitPendingChanges());
+        const auto step = document.objectAt(path);
+        QCOMPARE(step.value("inputs").toObject().value("actual").toString(), QStringLiteral("${uut.resultSoFar}"));
+        QCOMPARE(step.value("parameters").toObject().value("expected").toString(), QStringLiteral("PASS"));
+    }
+}
+
 void MainWindowLifecycleTests::limitPropertyEditorSwitchesComparisonFieldsAndRemovesStaleValues()
 {
     QTemporaryDir directory;
@@ -5246,6 +5601,13 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
     const QString projectDir = QStringLiteral(PICOATE_UI_TEST_PROJECT_DIR);
 
     MainWindow window;
+    QTemporaryDir stationDirectory;
+    const auto capacityPath = stationDirectory.filePath(QStringLiteral("StationSystem.json"));
+    QFile capacityFile(capacityPath);
+    QVERIFY(capacityFile.open(QIODevice::WriteOnly));
+    capacityFile.write(R"({"stationId":"OVERVIEW","uutCount":4,"scanDialogEnabled":false,"devices":[]})");
+    capacityFile.close();
+    QVERIFY(window.openStationFile(capacityPath));
     QVERIFY(window.openSequenceFile(
         projectDir + QStringLiteral("/examples/simple_sequence.json")));
     window.resize(1280, 800);
@@ -5603,9 +5965,7 @@ void MainWindowLifecycleTests::persistsLayoutAndRecentFiles()
              QFileInfo(stationPath).absoluteFilePath());
     QCOMPARE(saved.value(QStringLiteral("MainWindow/WorkspaceTab")).toInt(), 2);
     QCOMPARE(saved.value(QStringLiteral("MainWindow/RunDetailsTab")).toInt(), 3);
-    const int savedUutCount = saved.value(
-        QStringLiteral("MainWindow/UutCount")).toInt();
-    QCOMPARE(savedUutCount, uutCountControlVisible ? 3 : 1);
+    QVERIFY(!saved.contains(QStringLiteral("MainWindow/UutCount")));
 
     MainWindow restored;
     restored.show();
@@ -5632,8 +5992,8 @@ void MainWindowLifecycleTests::persistsLayoutAndRecentFiles()
     auto* restoredUutCount = restored.findChild<QSpinBox*>(
         QStringLiteral("uutCountSpinBox"));
     QVERIFY(restoredUutCount);
-    QCOMPARE(restoredUutCount->isHidden(), !uutCountControlVisible);
-    QCOMPARE(restoredUutCount->value(), savedUutCount);
+    QVERIFY(restoredUutCount->isHidden());
+    QCOMPARE(restoredUutCount->value(), 1);
     QCOMPARE(recentSequences->actions().size(), 1);
     QCOMPARE(recentStations->actions().size(), 1);
     QCOMPARE(recentSequences->actions().first()->toolTip(),
@@ -7559,7 +7919,7 @@ void MainWindowLifecycleTests::productionUutControlsConfigureRuntimeSlots()
         QStringLiteral("StationSystem.json"));
     QFile station(stationPath);
     QVERIFY(station.open(QIODevice::WriteOnly));
-    station.write(R"({"stationId":"runtime-slots","uutCount":2,"scanDialogEnabled":false,"devices":[]})");
+    station.write(R"({"stationId":"runtime-slots","uutCount":4,"scanDialogEnabled":false,"devices":[]})");
     station.close();
 
     StartupSelection selection;
@@ -7584,7 +7944,9 @@ void MainWindowLifecycleTests::productionUutControlsConfigureRuntimeSlots()
     QVERIFY(start);
     QVERIFY(scan);
     QTRY_COMPARE_WITH_TIMEOUT(viewModel->state(), UiRunState::Ready, 3000);
-    QCOMPARE(uutCount->value(), 2);
+    QCOMPARE(uutCount->value(), 4);
+    QCOMPARE(uutCount->maximum(), 4);
+    uutCount->setValue(2);
     QVERIFY(slotAction->isVisible());
     QCOMPARE(slotAction->text(), QStringLiteral("UUT Slots 2/2"));
 

@@ -157,7 +157,7 @@ void configureRunInfoValue(QLabel* label)
     label->setTextInteractionFlags(Qt::NoTextInteraction);
     label->setMinimumWidth(0);
     label->setMinimumHeight(label->fontMetrics().height() + 2);
-    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     label->setProperty("runInfoValue", true);
 }
 

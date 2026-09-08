@@ -63,6 +63,7 @@ public:
                                          std::optional<BreakpointHit> breakpoint = std::nullopt) const;
 
 private:
+    QString resultSoFar(const UutId& uutId, const NodeId& currentNodeId) const;
     bool phaseComplete(const UutExecution& execution, ExecutionPhase phase) const;
     bool phaseHasError(const UutExecution& execution, ExecutionPhase phase) const;
     bool allUutsComplete() const;

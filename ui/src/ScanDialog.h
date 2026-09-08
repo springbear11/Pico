@@ -44,6 +44,8 @@ public:
     QStringList barcodes() const;
     void showForNextScan();
     void cancelCurrentScan();
+    bool isScanRequested() const { return m_visibilityRequested; }
+    void setVisible(bool visible) override;
 
 signals:
     void barcodeAccepted(const QString& barcode);
@@ -78,6 +80,10 @@ private:
     void acceptCompletedBatch();
     int nextEmptySlot(int afterSlot) const;
     bool batchComplete() const;
+    bool blocksScanner(const QWidget* window) const;
+    bool hasBlockingModal() const;
+    void scheduleVisibilityCheck();
+    void refreshVisibility();
 
     QLabel* m_titleLabel = nullptr;
     QLabel* m_progressLabel = nullptr;
@@ -98,6 +104,9 @@ private:
     int m_currentSlot = 0;
     bool m_replaceOnNextInput = false;
     bool m_updatingEdit = false;
+    bool m_visibilityRequested = false;
+    bool m_ownerBlocked = false;
+    bool m_visibilityCheckQueued = false;
 };
 
 } // namespace PicoATE::Ui

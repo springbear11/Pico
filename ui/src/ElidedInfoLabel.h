@@ -20,7 +20,7 @@ public:
     {
         setTextFormat(Qt::PlainText);
         setWordWrap(false);
-        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     }
 
     QString displayText() const
@@ -36,6 +36,15 @@ public:
     QSize minimumSizeHint() const override { return {0, fontMetrics().height() + 2}; }
 
 protected:
+    void changeEvent(QEvent* event) override
+    {
+        QLabel::changeEvent(event);
+        if (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange) {
+            setMinimumHeight(fontMetrics().height() + 2);
+            updateGeometry();
+        }
+    }
+
     void paintEvent(QPaintEvent*) override
     {
         QPainter painter(this);

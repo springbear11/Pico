@@ -214,6 +214,8 @@ private:
     void saveUiSettings() const;
     void resetUiLayout();
     void applyResponsiveLayout(bool force = false);
+    void requestResponsiveLayoutUpdate();
+    void synchronizeAdminUutCapacity(bool resetCount = false);
     void addRecentSequence(const QString& filePath);
     void addRecentStation(const QString& filePath);
     void refreshRecentFileMenus();
@@ -359,6 +361,9 @@ private:
     QString m_newProjectRootPath;
     QStringList m_pendingRoutedSerialNumbers;
     QVector<bool> m_adminUutSlotEnabled;
+    int m_stationUutCapacity = 1;
+    QAction* m_uutCountAction = nullptr;
+    bool m_responsiveUpdateQueued = false;
     QVector<RunRequest::UutInput> m_adminRunUutInputs;
     QString m_activeAdminUutId;
     QString m_activeAdminSerialNumber;

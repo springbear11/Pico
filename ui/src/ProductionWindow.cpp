@@ -502,8 +502,8 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
         m_selection.sequenceLoadMode == SequenceLoadMode::AutoBySn
             ? SnValidationRules{}
             : m_selection.snValidationRules);
-    synchronizeUutSlotCount(
-        StartupSupport::stationUutCount(m_selection.stationPath, 1));
+    m_stationUutCapacity = StartupSupport::stationUutCount(m_selection.stationPath, 1);
+    synchronizeUutSlotCount(m_stationUutCapacity);
     buildUi();
     connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
             this, &ProductionWindow::retranslateUi, Qt::QueuedConnection);
@@ -566,7 +566,17 @@ void ProductionWindow::closeEvent(QCloseEvent* event)
 void ProductionWindow::resizeEvent(QResizeEvent* event)
 {
     QMainWindow::resizeEvent(event);
-    applyResponsiveLayout();
+    requestResponsiveLayoutUpdate();
+}
+
+void ProductionWindow::requestResponsiveLayoutUpdate()
+{
+    if (m_responsiveUpdateQueued) return;
+    m_responsiveUpdateQueued = true;
+    QTimer::singleShot(0, this, [this] {
+        m_responsiveUpdateQueued = false;
+        applyResponsiveLayout();
+    });
 }
 
 void ProductionWindow::applyResponsiveLayout(bool force)
@@ -575,7 +585,10 @@ void ProductionWindow::applyResponsiveLayout(bool force)
         return;
     }
 
-    const bool compact = width() < 1200 || height() < 720;
+    const int sidebarThreshold = m_responsiveLayoutMode == 1 ? 680 : 640;
+    const bool shortSidebar = m_runSidebar && m_runSidebar->isVisible() &&
+                              m_runSidebar->height() < sidebarThreshold;
+    const bool compact = width() < 1200 || height() < 720 || shortSidebar;
     const int mode = compact ? 1 : 0;
     if (!force && m_responsiveLayoutMode == mode) {
         return;
@@ -597,7 +610,8 @@ void ProductionWindow::applyResponsiveLayout(bool force)
         sidebar->setStyleSheet(compact
             ? QStringLiteral("QLabel[runInfoValue=\"true\"] {font-size:13px;}")
             : QStringLiteral("QLabel[runInfoValue=\"true\"] {font-size:14px;}"));
-        if (auto* sidebarLayout = qobject_cast<QVBoxLayout*>(sidebar->layout())) {
+        auto* content = findChild<QWidget*>(QStringLiteral("productionSidebarContent"));
+        if (auto* sidebarLayout = content ? qobject_cast<QVBoxLayout*>(content->layout()) : nullptr) {
             const int margin = compact ? 10 : 18;
             sidebarLayout->setContentsMargins(margin, margin, margin, margin);
             sidebarLayout->setSpacing(compact ? 5 : 14);
@@ -644,7 +658,8 @@ bool ProductionWindow::eventFilter(QObject* watched, QEvent* event)
 {
     if (watched &&
         watched->objectName() == QStringLiteral("productionSidebar") &&
-        event->type() == QEvent::Resize) {
+        (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
+        requestResponsiveLayoutUpdate();
         if (auto* sidebar = qobject_cast<QWidget*>(watched);
             sidebar) {
             auto* brandSlot = findChild<QWidget*>(
@@ -700,13 +715,14 @@ void ProductionWindow::buildUi()
     m_uutCount = new QSpinBox(toolbar);
     m_uutCount->setObjectName(
         QStringLiteral("productionUutCountSpinBox"));
-    m_uutCount->setRange(1, 64);
+    m_uutCount->setRange(1, m_stationUutCapacity);
     m_uutCount->setValue(qMax(1, m_uutSlotEnabled.size()));
     bindUiText(m_uutCount, "prefix", "UUTs ");
     m_uutCount->setAlignment(Qt::AlignCenter);
     m_uutCount->setFixedWidth(88);
     bindUiText(m_uutCount, "toolTip", "Number of physical UUT stations");
-    toolbar->addWidget(m_uutCount);
+    m_uutCountAction = toolbar->addWidget(m_uutCount);
+    m_uutCountAction->setVisible(m_stationUutCapacity > 1);
     m_uutSlotsAction = addUiAction(toolbar, productionToolbarIcon("circle-check"), "UUT Slots");
     m_uutSlotsAction->setObjectName(
         QStringLiteral("productionUutSlotsAction"));
@@ -879,13 +895,20 @@ void ProductionWindow::buildUi()
     contentSplitter->setObjectName(QStringLiteral("productionContentSplitter"));
     contentSplitter->setChildrenCollapsible(false);
 
-    auto* sidebar = new QFrame(contentSplitter);
-    sidebar->setObjectName(QStringLiteral("productionSidebar"));
-    m_runSidebar = sidebar;
-    sidebar->setMinimumWidth(185);
-    sidebar->setMaximumWidth(270);
-    sidebar->installEventFilter(this);
+    auto* sidebarScroll = new QScrollArea(contentSplitter);
+    sidebarScroll->setObjectName(QStringLiteral("productionSidebar"));
+    sidebarScroll->setWidgetResizable(true);
+    sidebarScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    sidebarScroll->setMinimumWidth(185);
+    sidebarScroll->setMaximumWidth(270);
+    sidebarScroll->installEventFilter(this);
+    m_runSidebar = sidebarScroll;
+    auto* sidebar = new QFrame;
+    sidebar->setObjectName(QStringLiteral("productionSidebarContent"));
+    sidebar->setStyleSheet(QStringLiteral("QFrame#productionSidebarContent {background:#ffffff;border:0;}"));
+    sidebarScroll->setWidget(sidebar);
     auto* sidebarLayout = new QVBoxLayout(sidebar);
+    sidebarLayout->setSizeConstraint(QLayout::SetMinimumSize);
     sidebarLayout->setContentsMargins(18, 18, 18, 18);
     sidebarLayout->setSpacing(14);
 
@@ -1317,7 +1340,7 @@ void ProductionWindow::updateCommands()
     m_stopAction->setEnabled(m_viewModel->canStop());
     const int slotCount = qMax(1, m_uutSlotEnabled.size());
     m_uutCount->setEnabled(configurationAvailable);
-    m_uutSlotsAction->setVisible(slotCount > 1);
+    m_uutSlotsAction->setVisible(m_stationUutCapacity > 1 && slotCount > 1);
     m_uutSlotsAction->setEnabled(slotCount > 1 && configurationAvailable);
     m_fieldDeviceAction->setVisible(manualMode);
     m_fieldDeviceAction->setEnabled(manualMode && configurationAvailable);
@@ -1331,6 +1354,7 @@ void ProductionWindow::updateCommands()
 void ProductionWindow::updateState(UiRunState state)
 {
     if (state == UiRunState::Starting) {
+        m_scanDialog->hide();
         m_stopRequested = false;
     } else if (state == UiRunState::Stopping) {
         m_stopRequested = true;
@@ -1617,6 +1641,10 @@ void ProductionWindow::beginRunBatch(const QStringList& serialNumbers)
         showScanDialogWhenReady();
         return;
     }
+    if (serialNumbers.size() > m_stationUutCapacity) {
+        showRoutingError(uiText("Station allows at most %1 UUT(s)").arg(m_stationUutCapacity));
+        return;
+    }
     m_pendingSerialNumbers.clear();
     m_pendingSerialNumbers.reserve(serialNumbers.size());
     for (const auto& serialNumber : serialNumbers) {
@@ -1692,17 +1720,22 @@ void ProductionWindow::beginAutoRoutedRunBatch(
         showRoutingError(details.join(QStringLiteral("\n")));
         return;
     }
-    if (sns.size() != batch.uutCount) {
+    const int requestedCount = routedUutCount(batch, m_selection.stationPath, configuredUutCount());
+    if (sns.size() != requestedCount) {
         showRoutingError(
             uiText("Project %1 provides %2 UUT slot(s), but the scanner has %3")
                 .arg(batch.route.projectName)
-                .arg(batch.uutCount)
+                .arg(requestedCount)
                 .arg(sns.size()));
         return;
     }
     const auto& route = batch.route;
 
-    synchronizeUutSlotCount(batch.uutCount);
+    const bool changedStation = QFileInfo(m_selection.stationPath).absoluteFilePath()
+        .compare(QFileInfo(route.stationPath).absoluteFilePath(), Qt::CaseInsensitive) != 0;
+    m_selection.stationPath = route.stationPath;
+    synchronizeStationUutCapacity(changedStation);
+    synchronizeUutSlotCount(sns.size());
     m_pendingSerialNumbers = sns;
     m_pendingUutSlotEnabled = m_uutSlotEnabled;
     m_runPreparationPending = true;
@@ -1829,17 +1862,36 @@ void ProductionWindow::configureUutSlots()
     }
 }
 
+void ProductionWindow::synchronizeStationUutCapacity(bool resetCount)
+{
+    const int maximum = StartupSupport::stationUutCount(m_selection.stationPath, 1);
+    const bool reset = resetCount || maximum != m_stationUutCapacity;
+    m_stationUutCapacity = maximum;
+    if (m_uutCount) {
+        const QSignalBlocker blocker(m_uutCount);
+        m_uutCount->setRange(1, maximum);
+        if (reset) m_uutCount->setValue(maximum);
+    }
+    if (m_uutCountAction) m_uutCountAction->setVisible(maximum > 1);
+    const int count = configuredUutCount();
+    synchronizeUutSlotCount(count);
+    if (m_scanDialog && m_scanDialog->slotCount() != count) {
+        m_scanDialog->setSlotCount(count);
+        m_scanDialog->setSlotEnabledStates(m_uutSlotEnabled);
+    }
+}
+
 int ProductionWindow::configuredUutCount() const
 {
     return qBound(
         1,
         m_uutCount ? m_uutCount->value() : m_uutSlotEnabled.size(),
-        64);
+        m_stationUutCapacity);
 }
 
 void ProductionWindow::synchronizeUutSlotCount(int slotCount)
 {
-    slotCount = qBound(1, slotCount, 64);
+    slotCount = qBound(1, slotCount, m_stationUutCapacity);
     if (m_uutCount && m_uutCount->value() != slotCount) {
         const QSignalBlocker blocker(m_uutCount);
         m_uutCount->setValue(slotCount);
@@ -2208,7 +2260,7 @@ void ProductionWindow::showUutDetails(
 
 void ProductionWindow::showScanDialogWhenReady()
 {
-    if (m_fieldDeviceDialogOpen || m_uutSlotDialogOpen || m_scanDialog->isVisible()) {
+    if (m_fieldDeviceDialogOpen || m_uutSlotDialogOpen || m_scanDialog->isScanRequested()) {
         return;
     }
     const bool autoRouting =
@@ -2226,10 +2278,10 @@ void ProductionWindow::showScanDialogWhenReady()
             m_selection.productRoutingPath);
         if (routing.ok()) {
             m_scanDialog->setSubmissionValidator(
-                [config = routing.config](const QStringList& proposed,
+                [this, config = routing.config](const QStringList& proposed,
                                           int currentSlot) {
                     return validateAutoRoutedScan(config, proposed,
-                                                  currentSlot);
+                        currentSlot, m_selection.stationPath, configuredUutCount());
                 });
         } else {
             QStringList details;
@@ -2260,7 +2312,7 @@ void ProductionWindow::showScanDialogWhenReady()
             ? m_viewModel->canChangeSources() && !m_runPreparationPending
             : m_viewModel->canRun();
         if (!m_fieldDeviceDialogOpen && !m_uutSlotDialogOpen &&
-            m_selection.scanDialogEnabled && ready && !m_scanDialog->isVisible()) {
+            m_selection.scanDialogEnabled && ready && !m_scanDialog->isScanRequested()) {
             m_scanDialog->showForNextScan();
         }
     });
@@ -2358,6 +2410,7 @@ void ProductionWindow::updateOverviewSummary()
 
 void ProductionWindow::updateStationSummary()
 {
+    synchronizeStationUutCapacity();
     if (!m_stationLabel || !m_modelLabel || !m_customerIdLabel ||
         !m_orderLabel || !m_testerLabel || !m_jigLabel) {
         return;

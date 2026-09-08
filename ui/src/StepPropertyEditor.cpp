@@ -3721,11 +3721,12 @@ void StepPropertyEditor::rebuildExpressionMenu(QMenu* menu, QLineEdit* editor)
     menu->clear();
     int variableCount = 0;
     auto* runtimeMenu = menu->addMenu(tr("Runtime Values"));
-    const std::array<std::pair<QString, QString>, 11> runtimeValues = {{
+    const std::array<std::pair<QString, QString>, 12> runtimeValues = {{
         {tr("Serial Number (SN)"), QStringLiteral("${var.serialNumber}")},
         {tr("Serial Number (legacy alias)"), QStringLiteral("${sn}")},
         {tr("UUT Serial Number"), QStringLiteral("${uut.serialNumber}")},
         {tr("UUT ID"), QStringLiteral("${uut.id}")},
+        {uiText("UUT Result So Far (PASS / FAIL / UNKNOWN)"), QStringLiteral("${uut.resultSoFar}")},
         {tr("UUT Index (0-based)"), QStringLiteral("${uut.index}")},
         {tr("UUT Number (1-based)"), QStringLiteral("${uut.number}")},
         {tr("UUT Slot (1-based)"), QStringLiteral("${uut.slot}")},
@@ -3893,11 +3894,12 @@ void StepPropertyEditor::rebuildPromptExpressionMenu(
     };
 
     auto* runtimeMenu = menu->addMenu(tr("Runtime Values"));
-    const std::array<std::pair<QString, QString>, 11> runtimeValues = {{
+    const std::array<std::pair<QString, QString>, 12> runtimeValues = {{
         {tr("Serial Number (SN)"), QStringLiteral("${var.serialNumber}")},
         {tr("Serial Number (legacy alias)"), QStringLiteral("${sn}")},
         {tr("UUT Serial Number"), QStringLiteral("${uut.serialNumber}")},
         {tr("UUT ID"), QStringLiteral("${uut.id}")},
+        {uiText("UUT Result So Far (PASS / FAIL / UNKNOWN)"), QStringLiteral("${uut.resultSoFar}")},
         {tr("UUT Index (0-based)"), QStringLiteral("${uut.index}")},
         {tr("UUT Number (1-based)"), QStringLiteral("${uut.number}")},
         {tr("UUT Slot (1-based)"), QStringLiteral("${uut.slot}")},

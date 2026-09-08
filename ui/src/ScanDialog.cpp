@@ -4,6 +4,7 @@
 #include "UutSlotConfigurationDialog.h"
 
 #include <QCloseEvent>
+#include <QApplication>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -14,8 +15,10 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QTimer>
+#include <QThread>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QWindow>
 
 #include <algorithm>
 #include <utility>
@@ -43,8 +46,7 @@ void applyBarcodeEditAppearance(QLineEdit* edit, bool storedValue)
 
 ScanDialog::ScanDialog(QWidget* parent)
     : QDialog(parent,
-              Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowTitleHint |
-                  Qt::WindowStaysOnTopHint)
+              Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowTitleHint)
 {
     setObjectName(QStringLiteral("scanDialog"));
     bindUiText(this, "windowTitle", "Scan SN");
@@ -85,7 +87,6 @@ ScanDialog::ScanDialog(QWidget* parent)
     m_barcodeEdit->setMinimumHeight(66);
     m_barcodeEdit->setTextMargins(18, 0, 18, 0);
     m_barcodeEdit->setPlaceholderText(uiText("Scan SN and press Enter"));
-    m_barcodeEdit->installEventFilter(this);
     carousel->addWidget(m_barcodeEdit, 1);
 
     m_nextButton = new QToolButton(this);
@@ -183,6 +184,7 @@ ScanDialog::ScanDialog(QWidget* parent)
     updateUi();
     connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
             this, &ScanDialog::retranslateUi);
+    qApp->installEventFilter(this);
 }
 
 void ScanDialog::setValidationRules(SnValidationRules rules)
@@ -245,11 +247,77 @@ QStringList ScanDialog::barcodes() const
 
 void ScanDialog::showForNextScan()
 {
+    if (m_visibilityRequested && !isVisible() && hasBlockingModal()) {
+        return;
+    }
     resetBatch();
     show();
-    raise();
-    activateWindow();
-    focusBarcodeEdit();
+    if (isVisible()) {
+        raise();
+        activateWindow();
+        focusBarcodeEdit();
+    }
+}
+
+void ScanDialog::setVisible(bool visible)
+{
+    m_visibilityRequested = visible;
+    if (visible) {
+        refreshVisibility();
+    } else {
+        QDialog::setVisible(false);
+    }
+}
+
+bool ScanDialog::blocksScanner(const QWidget* window) const
+{
+    if (!window || window == this || !window->isWindow() || !window->isModal()) {
+        return false;
+    }
+    if (window->windowModality() == Qt::ApplicationModal) return true;
+    for (auto* owner = window->parentWidget(); owner; owner = owner->parentWidget()) {
+        if (parentWidget() && owner->window() == parentWidget()->window()) return true;
+    }
+    return !window->parentWidget();
+}
+
+bool ScanDialog::hasBlockingModal() const
+{
+    if (m_ownerBlocked) return true;
+    for (auto* window : QApplication::topLevelWidgets()) {
+        if (window->isVisible() && blocksScanner(window)) return true;
+    }
+    return false;
+}
+
+void ScanDialog::scheduleVisibilityCheck()
+{
+    if (m_visibilityCheckQueued) return;
+    m_visibilityCheckQueued = true;
+    QTimer::singleShot(0, this, [this] {
+        m_visibilityCheckQueued = false;
+        refreshVisibility();
+    });
+}
+
+void ScanDialog::refreshVisibility()
+{
+    const auto* owner = parentWidget();
+    const bool ownerVisible = !owner || (owner->isVisible() && !owner->isMinimized());
+    if (!m_visibilityRequested || !ownerVisible || hasBlockingModal()) {
+        if (isVisible()) QDialog::setVisible(false);
+        return;
+    }
+    if (isVisible()) return;
+    const bool activate = QGuiApplication::applicationState() == Qt::ApplicationActive;
+    setAttribute(Qt::WA_ShowWithoutActivating, !activate);
+    QDialog::setVisible(true);
+    if (activate) {
+        raise();
+        activateWindow();
+        // Restoring a suspended scanner must not replace the draft or selection.
+        m_barcodeEdit->setFocus(Qt::OtherFocusReason);
+    }
 }
 
 void ScanDialog::cancelCurrentScan()
@@ -265,6 +333,25 @@ void ScanDialog::closeEvent(QCloseEvent* event)
 
 bool ScanDialog::eventFilter(QObject* watched, QEvent* event)
 {
+    if (QThread::currentThread() != thread()) return false;
+    const auto type = event->type();
+    auto* owner = parentWidget();
+    const bool ownerEvent = owner &&
+        (watched == owner || watched == owner->windowHandle());
+    if (ownerEvent && (type == QEvent::WindowBlocked || type == QEvent::WindowUnblocked)) {
+        m_ownerBlocked = type == QEvent::WindowBlocked;
+        if (m_ownerBlocked && isVisible()) QDialog::setVisible(false);
+        scheduleVisibilityCheck();
+    } else if (type == QEvent::Show || type == QEvent::Hide ||
+               type == QEvent::Close || type == QEvent::WindowStateChange) {
+        auto* window = qobject_cast<QWidget*>(watched);
+        if (window && window != this && window->isWindow()) {
+            if (type == QEvent::Show && blocksScanner(window) && isVisible()) {
+                QDialog::setVisible(false);
+            }
+            if (ownerEvent || blocksScanner(window)) scheduleVisibilityCheck();
+        }
+    }
     if (watched == m_barcodeEdit && event->type() == QEvent::KeyPress) {
         const auto* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Return ||
@@ -520,12 +607,13 @@ void ScanDialog::retranslateUi()
 
 void ScanDialog::focusBarcodeEdit()
 {
-    if (!m_barcodeEdit->isEnabled()) {
+    if (!isVisible() || !m_barcodeEdit->isEnabled()) {
         return;
     }
     m_barcodeEdit->setCursorPosition(0);
     m_barcodeEdit->setFocus(Qt::OtherFocusReason);
     QTimer::singleShot(0, m_barcodeEdit, [edit = m_barcodeEdit] {
+        if (!edit->isVisible() || !edit->isEnabled()) return;
         edit->setCursorPosition(0);
         edit->setFocus(Qt::OtherFocusReason);
     });

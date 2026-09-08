@@ -1,0 +1,45 @@
+{
+  "id": "result-so-far-gate",
+  "name": "Result So Far Gate - No Hardware",
+  "groups": [
+    {
+      "id": "main",
+      "kind": "main",
+      "steps": [
+        {
+          "id": "test",
+          "name": "Mock test (UUT-1 fails)",
+          "kind": "action",
+          "parameters": { "failForUut": "UUT-1" },
+          "errorPolicy": { "onFail": "Continue", "onError": "Continue", "onTimeout": "Continue" }
+        },
+        {
+          "id": "gate",
+          "name": "All previous tests passed",
+          "kind": "limit",
+          "retry": { "maxAttempts": 1 },
+          "inputs": { "actual": "${uut.resultSoFar}" },
+          "parameters": { "comparison": "equal", "expected": "PASS" },
+          "errorPolicy": {
+            "onFail": "JumpTo", "onFailTarget": "end",
+            "onError": "JumpTo", "onErrorTarget": "end",
+            "onTimeout": "JumpTo", "onTimeoutTarget": "end"
+          }
+        },
+        {
+          "id": "write",
+          "name": "Mock write success flag (no hardware)",
+          "kind": "action",
+          "inputs": { "flag": 1 },
+          "parameters": { "echoInputs": true }
+        },
+        { "id": "end", "name": "End of success flag block", "kind": "noop" }
+      ]
+    },
+    {
+      "id": "cleanup",
+      "kind": "cleanup",
+      "steps": [{ "id": "cleanup-done", "name": "Cleanup", "kind": "noop" }]
+    }
+  ]
+}

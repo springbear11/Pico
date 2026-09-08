@@ -3,6 +3,7 @@
 #include "PicoATE/Core/MeasurementTypes.h"
 
 #include <QMetaType>
+#include <utility>
 
 namespace PicoATE::Core {
 
@@ -134,6 +135,18 @@ void ExecutionResultStore::commit(const UutId& uutId,
 {
     m_results[resultKey(uutId, frameId, nodeId)].push_back(
         {uutId, frameId, nodeId, attemptIndex, result});
+}
+
+void ExecutionResultStore::setResultSoFarProvider(ResultSoFarProvider provider)
+{
+    m_resultSoFarProvider = std::move(provider);
+}
+
+QString ExecutionResultStore::resultSoFar(const UutId& uutId,
+                                         const NodeId& currentNodeId) const
+{
+    return m_resultSoFarProvider ? m_resultSoFarProvider(uutId, currentNodeId)
+                                : QStringLiteral("UNKNOWN");
 }
 
 StepResultLookup ExecutionResultStore::lookup(

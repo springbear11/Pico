@@ -45,6 +45,33 @@ state and runtime readiness at dispatch time to prevent late popups.
 
 ## Overview and Compact Displays
 
+### Station Capacity and Dialog Safety
+
+Station `uutCount` is the default and maximum toolbar count in both windows.
+The toolbar may temporarily reduce it; it never writes that reduction into
+Station or restores it from the old `MainWindow/UutCount` preference. Opening
+a Station or changing its capacity resets the default. A capacity of one hides
+both count and slot controls. An unchanged capacity preserves a temporary
+reduction while other Station metadata is saved.
+
+Auto routing applies the matched Station's capacity. A reduced count is kept
+only for the same Station, not carried over to a different product. Physical
+slot indexes and engine request semantics remain unchanged.
+
+`ScanDialog` is an owned non-modal window, without system-wide always-on-top.
+It keeps requested visibility separate from temporary suspension, hides for
+modal dialogs that block its owner, and restores only after all blockers close.
+Qt window-blocked notifications also cover native modal windows. Draft text,
+selection and committed barcodes survive suspension. Explicit hiding, cancel,
+and starting a run cancel any pending restoration. Callers use
+`isScanRequested()` to avoid resetting a suspended batch in a late callback.
+
+Responsive sizing uses available sidebar height as well as window size, with
+hysteresis to avoid oscillating between layouts. A restored derived layout-mode
+cache no longer suppresses sizing on new controls. Information rows keep their
+font-metric height; a scrollable sidebar provides a fallback when the available
+height is insufficient instead of clipping glyphs.
+
 Admin preserves the complete physical-slot list for compile previews and each
 run iteration. Disabled slots remain gray, non-interactive cards and navigation
 buttons; they are not submitted for execution or included in result counts.
@@ -80,6 +107,22 @@ exports, prompt inputs/responses and physical slot choices. Build both Debug and
 Release after updating the catalog.
 
 ## Validation (2026-09-08)
+
+Station-capacity/modal follow-up:
+
+- Release: 28 focused window checks passed, including fixture setup/teardown.
+- Debug: 9 new checks passed, including setup/teardown. They cover Station
+  capacities 1 and 4, ignoring a legacy cached count, temporary reductions,
+  live capacity changes, nested dialogs, cancellation, and the actual Station
+  save-confirmation workflow with a partially scanned batch.
+- Native file-dialog coverage waits for its Windows HWND to be visible before
+  cancellation; the original immediate-startup-cancel test hit a qwindows
+  worker-thread crash. The realistic visible-dialog path passed in Release
+  and Debug, alongside synthetic native window-block/unblock notifications.
+- An additional 1.25x Qt scale passed the normal/maximized/fullscreen/restored
+  window checks with Chinese captions and full-height information rows.
+- The CLI/Core/UI-runtime Release CTest selection passed (24/24). Engine and
+  plugin sources are unchanged; this follow-up does not rebuild the installer.
 
 - Debug and Release UI builds completed with 553 finished translations.
 - Release focused window checks: 18 passed, 0 failed, including fixture setup

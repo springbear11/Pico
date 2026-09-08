@@ -81,6 +81,12 @@ bool RuntimeVariableResolver::resolvedValue(const QString& name,
         value = m_context.uutId;
         return true;
     }
+    if (normalized == "uut.resultSoFar") {
+        value = m_context.resultStore
+            ? m_context.resultStore->resultSoFar(m_context.uutId, m_context.currentNodeId)
+            : QStringLiteral("UNKNOWN");
+        return true;
+    }
     if (normalized == "frame.id") {
         value = m_context.frameId;
         return true;

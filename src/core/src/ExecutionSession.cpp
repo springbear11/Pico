@@ -285,6 +285,9 @@ ExecutionSession::ExecutionSession(ExecutionPlan plan,
     , m_errorPolicy(failureHandling)
 {
     m_devices.setRuntimeEventEmitter(&m_events);
+    m_results.setResultSoFarProvider([this](const UutId& uutId, const NodeId& nodeId) {
+        return resultSoFar(uutId, nodeId);
+    });
     m_runner.setRuntimeServices(&m_runtimeServices);
     m_scheduler = std::make_unique<ExecutionGraphScheduler>(
         m_plan,
@@ -723,6 +726,81 @@ ExecutionSessionResult ExecutionSession::run()
     publishCompletedUuts();
     publishSessionState("session finished");
     return result;
+}
+
+QString ExecutionSession::resultSoFar(const UutId& uutId, const NodeId& currentNodeId) const
+{
+    const auto* current = m_plan.node(currentNodeId);
+    if (!current || executionPhaseOf(*current) != ExecutionPhase::Main ||
+        current->periodic.enabled || current->executionScope != NodeExecutionScope::PerUut) {
+        return QStringLiteral("UNKNOWN");
+    }
+    QSet<NodeId> ancestors;
+    for (auto parent = m_plan.structuralParentOf(currentNodeId); parent;
+         parent = m_plan.structuralParentOf(*parent)) {
+        const auto* node = m_plan.node(*parent);
+        if (!node || node->kind == ExecNodeKind::Loop ||
+            node->executionScope != NodeExecutionScope::PerUut) {
+            return QStringLiteral("UNKNOWN");
+        }
+        ancestors.insert(*parent);
+    }
+    const auto uut = std::find_if(m_uuts.cbegin(), m_uuts.cend(),
+        [&uutId](const UutExecution& candidate) { return candidate.uutId == uutId; });
+    if (uut == m_uuts.cend()) return QStringLiteral("UNKNOWN");
+    if (m_stopToken->isStopRequested() || m_stoppedUuts.contains(uutId) ||
+        m_state == ExecutionState::Aborted || m_scheduler->sessionCleanupRequested()) {
+        return QStringLiteral("FAIL");
+    }
+
+    bool failed = false;
+    bool incomplete = false;
+    bool mainResult = false;
+    const auto inspect = [&](const UutExecution& execution, const ExecNode& node, bool main) {
+        const auto step = makeStepReportTree(m_plan, execution, node.id);
+        failed = failed || stepReportHasError(step) || step.outcome == NodeOutcome::Cancelled;
+        // Periodic registration/ticks have no single terminal lifecycle state.
+        const bool settled = node.periodic.enabled || isTerminalActivation(step.state);
+        if (!settled || step.outcome != NodeOutcome::Passed) incomplete = true;
+        if (main && settled && step.outcome == NodeOutcome::Passed) mainResult = true;
+    };
+
+    const auto ordered = orderedNodeIds(m_plan);
+    for (const auto& id : ordered) {
+        const auto* node = m_plan.node(id);
+        if (executionPhaseOf(*node) == ExecutionPhase::Setup && !m_plan.structuralParentOf(id)) {
+            inspect(m_sessionExecution, *node, false);
+        }
+    }
+    // Per-UUT setup heartbeats may keep their tick results on the UUT execution.
+    for (auto activation = uut->activations.cbegin(); activation != uut->activations.cend(); ++activation) {
+        const auto* node = m_plan.node(activation.key());
+        if (node && node->periodic.enabled && executionPhaseOf(*node) == ExecutionPhase::Setup) {
+            inspect(*uut, *node, false);
+        }
+    }
+
+    bool reached = false;
+    for (const auto& id : ordered) {
+        if (id == currentNodeId) { reached = true; break; }
+        const auto* node = m_plan.node(id);
+        if (executionPhaseOf(*node) != ExecutionPhase::Main || ancestors.contains(id)) continue;
+        const auto parent = m_plan.structuralParentOf(id);
+        // Completed containers are evaluated once using the report aggregation;
+        // only ancestors of this read are traversed into the current attempt.
+        if (parent && !ancestors.contains(*parent)) continue;
+        inspect(*uut, *node, true);
+        if (node->periodic.enabled && node->executionScope == NodeExecutionScope::OncePerBatch) {
+            // Shared registration is copied to each UUT, but subsequent ticks
+            // remain on the physical executor. Their failures apply to all UUTs.
+            for (const auto& execution : m_uuts) {
+                const auto shared = makeStepReport(m_plan, execution, id);
+                failed = failed || shared.wasError || shared.outcome == NodeOutcome::Cancelled;
+            }
+        }
+    }
+    if (failed) return QStringLiteral("FAIL");
+    return reached && mainResult && !incomplete ? QStringLiteral("PASS") : QStringLiteral("UNKNOWN");
 }
 
 ExecutionReport ExecutionSession::report() const
