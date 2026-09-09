@@ -283,6 +283,7 @@ Plugin::Json pluginDescription()
                     {{"key", "dlc"}, {"name", "Data Length"}, {"type", "integer"}, {"unit", "byte"}}
                 })}
             },
+            sendAndReadDescription(),
             {
                 {"id", "close"},
                 {"name", "Close CAN"},

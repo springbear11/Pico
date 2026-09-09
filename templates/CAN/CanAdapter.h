@@ -100,4 +100,6 @@ std::unique_ptr<ICanAdapter> createCanAdapter();
 // Each concrete vendor plugin describes only its own functions and parameters.
 Plugin::Json pluginDescription();
 
+Plugin::Json sendAndReadDescription();
+
 } // namespace PicoATE::Plugins::Can

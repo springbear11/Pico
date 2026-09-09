@@ -138,6 +138,7 @@ int main(int argc, char* argv[])
          selection] {
             const auto windowStartedAt = startupTimer.elapsed();
             window = PicoATE::Ui::createMainWindow();
+            window->setAdminAccess(selection.adminAccess);
             auto* const windowPointer = window.get();
             PicoATE::Ui::ApplicationDiagnostics::recordAction(
                 QStringLiteral("ADMIN_STARTUP_WINDOW_CREATED"),

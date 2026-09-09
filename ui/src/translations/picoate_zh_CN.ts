@@ -564,5 +564,41 @@ Station: %2</source><translation>脚本：%1
     <message><source>Copy</source><translation>复制</translation></message>
     <message><source>Station allows at most %1 UUT(s)</source><translation>当前工站最多允许 %1 个 UUT</translation></message>
     <message><source>UUT Result So Far (PASS / FAIL / UNKNOWN)</source><translation>当前 UUT 阶段结果（PASS / FAIL / UNKNOWN）</translation></message>
+    <message><source>Integrity Check</source><translation>完整性校验</translation></message>
+    <message><source>Verify Files</source><translation>重新校验</translation></message>
+    <message><source>Approve Selected</source><translation>授权更新选中项</translation></message>
+    <message><source>File</source><translation>文件</translation></message>
+    <message><source>Baseline SHA-256</source><translation>基准 SHA-256</translation></message>
+    <message><source>Current SHA-256</source><translation>当前 SHA-256</translation></message>
+    <message><source>Matched</source><translation>一致</translation></message>
+    <message><source>Modified</source><translation>已修改</translation></message>
+    <message><source>Missing</source><translation>缺失</translation></message>
+    <message><source>Read error</source><translation>读取失败</translation></message>
+    <message><source>Unverified</source><translation>未验证</translation></message>
+    <message><source>Verifying...</source><translation>正在校验...</translation></message>
+    <message><source>Verified %1 / %2</source><translation>校验一致 %1 / %2</translation></message>
+    <message><source>Attention required</source><translation>待处理</translation></message>
+    <message><source>Runtime directory: %1</source><translation>工具包目录：%1</translation></message>
+    <message><source>Last verified: %1</source><translation>最近校验：%1</translation></message>
+    <message><source>Baseline updated: %1</source><translation>基准更新：%1</translation></message>
+    <message><source>Authorize Baseline Update</source><translation>授权更新基准</translation></message>
+    <message><source>Accept the selected files as the new baseline?</source><translation>确认接受选中文件作为新的校验基准？</translation></message>
+    <message><source>Daily administrator password</source><translation>日期算法管理员密码</translation></message>
+    <message><source>Approval reason</source><translation>更新原因</translation></message>
+    <message><source>Authorize</source><translation>确认授权</translation></message>
+    <message><source>Daily administrator password is required.</source><translation>需要正确的日期算法管理员密码。</translation></message>
+    <message><source>Select files and enter an approval reason.</source><translation>请选择文件并填写更新原因。</translation></message>
+    <message><source>Invalid file selection.</source><translation>选中的文件无效。</translation></message>
+    <message><source>Integrity baseline is busy. Try again.</source><translation>校验基准正在被其他操作使用，请稍后重试。</translation></message>
+    <message><source>Verification cancelled.</source><translation>已取消校验。</translation></message>
+    <message><source>Files or baseline changed since verification. Check again.</source><translation>文件或基准在校验后发生变化，请重新校验。</translation></message>
+    <message><source>Restore missing or unreadable files before approval.</source><translation>请先恢复缺失或无法读取的文件，再进行授权。</translation></message>
+    <message><source>Select both files to establish a new baseline.</source><translation>建立新基准时，需要同时选择 UI 和 Core 两个文件。</translation></message>
+    <message><source>Required file is missing or is not a regular file.</source><translation>必需文件缺失或不是普通文件。</translation></message>
+    <message><source>File changed during verification. Check again.</source><translation>文件在校验期间发生变化，请重新校验。</translation></message>
+    <message><source>Integrity baseline is missing or cannot be read.</source><translation>校验基准不存在或无法读取。</translation></message>
+    <message><source>Integrity baseline is invalid.</source><translation>校验基准格式无效。</translation></message>
+    <message><source>UI/Core integrity verification failed. Test was not started.</source><translation>UI/Core 完整性校验未通过，测试未启动。</translation></message>
+    <message><source>Ask a daily administrator to review the Integrity Check page.</source><translation>请使用日期算法密码登录，由最高权限在完整性校验页确认处理。</translation></message>
 </context>
 </TS>

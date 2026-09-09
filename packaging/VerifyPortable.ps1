@@ -37,6 +37,7 @@ $errors = [System.Collections.Generic.List[string]]::new()
 $requiredFiles = @(
     'PicoATE.UI.exe',
     'PicoATECore.dll',
+    'IntegrityBaseline.json',
     'PicoATE.NativeHost.exe',
     'PicoATE.RegisterImporter.exe',
     'Qt6Core.dll',

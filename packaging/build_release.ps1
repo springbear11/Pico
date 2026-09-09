@@ -70,6 +70,9 @@ try {
     Remove-Item -LiteralPath $portableProjects -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $portableProjects -Force | Out-Null
 
+    & (Join-Path $PSScriptRoot 'GenerateIntegrityBaseline.ps1') `
+        -RuntimeDirectory $portableDirectory -Force
+
     & (Join-Path $PSScriptRoot 'VerifyPortable.ps1') `
         -PortableDirectory $portableDirectory
     if ($LASTEXITCODE -ne 0) {

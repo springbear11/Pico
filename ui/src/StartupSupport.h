@@ -12,6 +12,8 @@ enum class UiMode {
     Admin
 };
 
+enum class AdminAccess { None, Standard, Supervisor };
+
 enum class SequenceLoadMode {
     AutoBySn,
     Manual
@@ -45,6 +47,8 @@ public:
     static bool matchesAdminPassword(
         const QString& input,
         const QDate& date = QDate::currentDate());
+    static AdminAccess adminAccessForPassword(
+        const QString& input, const QDate& date = QDate::currentDate());
 
     static QStringList discoverSequenceFiles(const QString& rootDirectory);
     static QString stationPathForSequence(const QString& sequencePath);

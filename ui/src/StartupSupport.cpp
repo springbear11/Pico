@@ -82,8 +82,14 @@ bool StartupSupport::matchesDailyAdminPassword(const QString& input,
 bool StartupSupport::matchesAdminPassword(const QString& input,
                                           const QDate& date)
 {
-    return input.trimmed() == QStringLiteral("300693") ||
-           matchesDailyAdminPassword(input, date);
+    return adminAccessForPassword(input, date) != AdminAccess::None;
+}
+
+AdminAccess StartupSupport::adminAccessForPassword(const QString& input, const QDate& date)
+{
+    if (input.trimmed() == QStringLiteral("300693")) return AdminAccess::Standard;
+    if (date.isValid() && matchesDailyAdminPassword(input, date)) return AdminAccess::Supervisor;
+    return AdminAccess::None;
 }
 
 QStringList StartupSupport::discoverSequenceFiles(const QString& rootDirectory)

@@ -1,4 +1,6 @@
 #include "CoreExecutionService.h"
+#include "RuntimeIntegrity.h"
+#include "UiLanguage.h"
 
 #include "PluginCatalog.h"
 
@@ -314,6 +316,18 @@ RunServiceResult CoreExecutionService::run(
             QStringLiteral("uuts"),
             QStringLiteral("At least one UUT slot must be enabled")));
         return result;
+    }
+    if (!request.runtimeIntegrityDirectory.isEmpty()) {
+        const auto integrity = RuntimeIntegrity::check(request.runtimeIntegrityDirectory, [&] {
+            return stopToken && stopToken->isStopRequested();
+        });
+        if (!integrity.passed()) {
+            result.stopRequested = integrity.cancelled;
+            result.diagnostics.push_back(error(RuntimeIntegrity::baselineFileName(),
+                uiText("UI/Core integrity verification failed. Test was not started.") + "\n" + integrityFailureText(integrity),
+                uiText("Ask a daily administrator to review the Integrity Check page.")));
+            return result;
+        }
     }
 
     auto runStation = m_compiled->station;

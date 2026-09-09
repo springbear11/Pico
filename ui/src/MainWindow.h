@@ -4,6 +4,7 @@
 #include "ReportHistoryStore.h"
 #include "SequenceDocument.h"
 #include "UiExecutionTypes.h"
+#include "StartupSupport.h"
 
 #include <QMainWindow>
 #include <QElapsedTimer>
@@ -44,6 +45,7 @@ class DeviceStatusModel;
 class ExecutionViewModel;
 class FlowTargetSelector;
 class HistoryModel;
+class IntegrityPage;
 class LoadingSpinner;
 class MeasurementModel;
 class MultiUutOverviewWidget;
@@ -80,6 +82,7 @@ public:
     void showStartupScanDialog();
     void showRunPage();
     void initializeAdminWorkspace();
+    void setAdminAccess(AdminAccess access);
 
 signals:
     void adminWorkspaceReady();
@@ -90,6 +93,7 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    IntegrityPage* m_integrityPage = nullptr;
     enum class HistoryExportFormat { Text, Csv, Xlsx, Pdf };
 
     void buildActions();

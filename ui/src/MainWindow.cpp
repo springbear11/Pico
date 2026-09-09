@@ -1,6 +1,7 @@
 #include "UiTextBinding.h"
 #include "ElidedInfoLabel.h"
 #include "MainWindow.h"
+#include "IntegrityPage.h"
 
 #include "ApplicationDiagnostics.h"
 #include "CoreExecutionService.h"
@@ -3727,6 +3728,22 @@ void MainWindow::applyUndoRedo(bool redo)
     }
     m_selectedSequencePath = restoredPath;
     updateSequenceEditor();
+}
+
+void MainWindow::setAdminAccess(AdminAccess access)
+{
+    if (access == AdminAccess::Supervisor && !m_integrityPage) {
+        m_integrityPage = new IntegrityPage(QCoreApplication::applicationDirPath(), access, m_workspaceTabs);
+        addUiTab(m_workspaceTabs, m_integrityPage, "Integrity Check");
+        connect(m_viewModel, &ExecutionViewModel::commandAvailabilityChanged, m_integrityPage, [this] {
+            m_integrityPage->setRunActive(!m_viewModel->canChangeSources());
+        });
+        m_integrityPage->setRunActive(!m_viewModel->canChangeSources());
+    } else if (access != AdminAccess::Supervisor && m_integrityPage) {
+        m_workspaceTabs->removeTab(m_workspaceTabs->indexOf(m_integrityPage));
+        delete m_integrityPage;
+        m_integrityPage = nullptr;
+    }
 }
 
 void MainWindow::compileSequence()

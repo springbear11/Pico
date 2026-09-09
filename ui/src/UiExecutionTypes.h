@@ -80,6 +80,7 @@ struct RunRequest {
     quint64 requestId = 0;
     int uutCount = 1;
     QString uutPrefix = QStringLiteral("UUT");
+    QString runtimeIntegrityDirectory;
     QVector<UutInput> uuts;
 };
 

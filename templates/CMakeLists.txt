@@ -94,3 +94,15 @@ picoate_add_plugin_category(SCOPE "${CMAKE_SOURCE_DIR}/SCOPE/ScopePluginBridge.c
 picoate_add_plugin_category(MCU "${CMAKE_SOURCE_DIR}/MCU/McuPluginBridge.cpp")
 picoate_add_plugin_category(VISA "${CMAKE_SOURCE_DIR}/VISA/VisaPluginBridge.cpp")
 picoate_add_plugin_category(Modbus "${CMAKE_SOURCE_DIR}/Modbus/ModbusPluginBridge.cpp")
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(PicoATECanBridgeTests
+        tests/CanPluginBridgeTests.cpp
+        CAN/CanPluginBridge.cpp
+    )
+    target_link_libraries(PicoATECanBridgeTests PRIVATE PicoATEPluginSdk)
+    target_include_directories(PicoATECanBridgeTests PRIVATE "${CMAKE_SOURCE_DIR}/CAN")
+    set_target_properties(PicoATECanBridgeTests PROPERTIES FOLDER "Tests")
+    add_test(NAME PicoATECanBridgeTests COMMAND PicoATECanBridgeTests)
+endif()

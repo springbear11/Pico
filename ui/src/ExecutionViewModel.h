@@ -48,6 +48,7 @@ public:
     bool canStop() const;
     bool canTestDeviceConnection() const;
     void shutdown();
+    void setRuntimeIntegrityDirectory(const QString& directory);
 
 public slots:
     void setSequencePath(const QString& path);
@@ -109,6 +110,7 @@ private:
     ExecutionWorker* m_worker = nullptr;
     UiRunState m_state = UiRunState::Empty;
     QString m_sequencePath;
+    QString m_runtimeIntegrityDirectory;
     QByteArray m_sequenceJson;
     QString m_stationPath;
     QByteArray m_stationJson;

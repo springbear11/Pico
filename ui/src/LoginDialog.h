@@ -21,6 +21,7 @@ class LoadingSpinner;
 
 struct StartupSelection {
     UiMode mode = UiMode::Test;
+    AdminAccess adminAccess = AdminAccess::None;
     SequenceLoadMode sequenceLoadMode = SequenceLoadMode::Manual;
     QString projectName;
     QString projectPath;

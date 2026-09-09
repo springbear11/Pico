@@ -485,6 +485,12 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
     m_viewModel = new ExecutionViewModel(this);
 #endif
     m_operatorPromptPresenter = new OperatorPromptPresenter(m_viewModel, this, this);
+    auto integrityDirectory = QCoreApplication::applicationDirPath();
+#if defined(PICOATE_UI_TEST_PROJECT_DIR)
+    const auto testDirectory = QCoreApplication::instance()->property("integrityTestRoot").toString();
+    if (!testDirectory.isEmpty()) integrityDirectory = testDirectory;
+#endif
+    m_viewModel->setRuntimeIntegrityDirectory(integrityDirectory);
     connect(m_viewModel, &ExecutionViewModel::sequencePathChanged,
             m_operatorPromptPresenter,
             &OperatorPromptPresenter::setSequencePath);

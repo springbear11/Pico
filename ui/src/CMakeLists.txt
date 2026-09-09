@@ -12,6 +12,8 @@ add_library(PicoATEUiRuntime STATIC
     FunctionIconProvider.cpp
     FunctionIconProvider.h
     IExecutionService.h
+    RuntimeIntegrity.cpp
+    RuntimeIntegrity.h
     MeasurementDisplay.cpp
     MeasurementDisplay.h
     ProjectResourcePaths.cpp
@@ -103,6 +105,8 @@ qt_add_executable(PicoATEUi WIN32
     FlowTargetSelector.h
     InputWheelGuard.cpp
     InputWheelGuard.h
+    IntegrityPage.cpp
+    IntegrityPage.h
     LoadingSpinner.cpp
     LoadingSpinner.h
     LoginDialog.cpp

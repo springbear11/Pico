@@ -698,6 +698,8 @@ void LoginDialog::submit()
     setPasswordError(false);
 
     m_selection.mode = mode;
+    m_selection.adminAccess = mode == UiMode::Admin
+        ? StartupSupport::adminAccessForPassword(m_passwordEdit->text()) : AdminAccess::None;
     m_selection.sequenceLoadMode = loadMode;
     m_selection.newProjectTemplate = newProjectTemplate;
     m_selection.projectRootPath = QFileInfo(m_projectRootPath)

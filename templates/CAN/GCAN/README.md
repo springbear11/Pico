@@ -6,6 +6,7 @@
 - 自动从插件 DLL 同目录加载 `CHUSBDLL64.dll` 和 `ECanVci64.dll`。
 - 支持 USBCAN-I/II 自动探测、标准波特率、正常/只听/自收发模式。
 - 支持标准帧、扩展帧、ID/mask 接收和实时日志。
+- 支持 `sendAndRead`（Send And Read CAN Frame），在一次加锁调用内发送并匹配回包；参数与边界见 [CAN 通用说明](../README.md)。
 - Close 时关闭设备但不在长驻 Host 运行中卸载厂家 DLL，避免厂家 DLL 的退出诊断污染
   stdout JSON 管道；Host 退出时再统一卸载。
 - 厂商运行库位于 `dependencies/CAN/GCAN/x64`。

@@ -86,12 +86,11 @@ bool readData(const Plugin::Json& value,
                 errorMessage = "data array items must be bytes (0..255)";
                 return false;
             }
-            const auto number = item.get<int>();
-            if (number < 0 || number > 255) {
+            if (item < 0 || item > 255) {
                 errorMessage = "data array items must be bytes (0..255)";
                 return false;
             }
-            data.push_back(static_cast<std::uint8_t>(number));
+            data.push_back(item.get<std::uint8_t>());
         }
         return true;
     }
@@ -176,7 +175,11 @@ bool frameFromInputs(const Plugin::Json& object, Frame& frame, std::string& erro
         return false;
     }
     const auto inputData = object.find("data");
-    if (inputData == object.end() || !readData(*inputData, frame.data, errorMessage)) {
+    if (inputData == object.end()) {
+        errorMessage = "CAN data is missing; provide a byte array or hexadecimal string";
+        return false;
+    }
+    if (!readData(*inputData, frame.data, errorMessage)) {
         return false;
     }
     frame.extended = Plugin::boolValue(object, "extended", frame.id > 0x7FF);
@@ -375,7 +378,8 @@ Plugin::Json execute(const Plugin::Json& request)
         return receiveResponse(result.frame, filterId, filterMask);
     }
 
-    if (function == "requestresponse") {
+    if (function == "requestresponse" || function == "sendandread") {
+        const bool sendAndRead = function == "sendandread";
         Frame transmitFrame;
         std::string message;
         const auto tx = input.find("tx");
@@ -383,15 +387,11 @@ Plugin::Json execute(const Plugin::Json& request)
         if (!frameFromInputs(transmitInput, transmitFrame, message)) {
             return Plugin::errorResponse("InvalidCanFrame", message);
         }
-        PicoATE_Log("CAN_REQUEST send id=0x{:X} data={}",
-                    transmitFrame.id,
-                    dataText(transmitFrame.data));
-        const auto transmitResult = can.transmit(options, transmitFrame);
-        if (!transmitResult.success) {
-            return Plugin::errorResponse(transmitResult.errorCode, transmitResult.errorMessage);
-        }
         std::uint32_t filterId = transmitFrame.id;
-        std::uint32_t filterMask = transmitFrame.extended ? 0x1FFFFFFF : 0x7FF;
+        std::uint32_t filterMask = sendAndRead || transmitFrame.extended ? 0x1FFFFFFF : 0x7FF;
+        if (sendAndRead && !input.contains("rxId")) {
+            return Plugin::errorResponse("InvalidCanFilter", "rxId is required for sendAndRead");
+        }
         if (const auto value = input.find("rxId"); value != input.end()) {
             if (!readUnsigned(*value, filterId) || filterId > 0x1FFFFFFFU) {
                 return Plugin::errorResponse(
@@ -408,27 +408,100 @@ Plugin::Json execute(const Plugin::Json& request)
                         " is invalid; allowed range is 0x00000000 to 0x1FFFFFFF");
             }
         }
-        const auto result = can.receive(options,
-                                        filterId,
-                                        filterMask,
-                                        Plugin::numberValue(input, "timeoutMs", 1000));
+        int timeoutMs = sendAndRead ? 1500 : Plugin::numberValue(input, "timeoutMs", 1000);
+        if (sendAndRead) {
+            if (const auto value = input.find("timeoutMs"); value != input.end()) {
+                if (!value->is_number_integer() || *value < 1 || *value > 60000) {
+                    return Plugin::errorResponse("InvalidCanTimeout",
+                        "timeoutMs value " + jsonValueText(*value) + " must be an integer in 1..60000 ms");
+                }
+                timeoutMs = value->get<int>();
+            }
+        }
+        const auto details = "TX=" + identifierText(transmitFrame.id, transmitFrame.extended) +
+            " RX=" + identifierText(filterId, filterId > 0x7FF) +
+            " MASK=" + identifierText(filterMask, filterMask > 0x7FF) +
+            " channel=" + std::to_string(options.channelIndex) +
+            " timeoutMs=" + std::to_string(timeoutMs);
+        bool transmitted = false;
+        const auto response = [&](Plugin::Json result) {
+            if (sendAndRead) {
+                if (!result["outputs"].is_object()) result["outputs"] = Plugin::Json::object();
+                result["outputs"]["transmitted"] = transmitted;
+                result["outputs"]["txId"] = identifierText(transmitFrame.id, transmitFrame.extended);
+                result["outputs"]["txDataHex"] = dataText(transmitFrame.data);
+            }
+            return result;
+        };
+        // Validate both directions before sending any command to the product.
+        PicoATE_Log("CAN_REQUEST send {} data={}", details, dataText(transmitFrame.data));
+        const auto transmitResult = can.transmit(options, transmitFrame);
+        if (!transmitResult.success) {
+            PicoATE_Log("CAN_REQUEST send failed: {} | {}", transmitResult.errorMessage, details);
+            return response(Plugin::errorResponse(transmitResult.errorCode,
+                transmitResult.errorMessage + " | " + details));
+        }
+        transmitted = true;
+        PicoATE_Log("CAN_REQUEST wait {}", details);
+        const auto result = can.receive(options, filterId, filterMask, timeoutMs);
         if (result.status == ReceiveStatus::Timeout) {
-            return Plugin::response("Timeout", {}, {}, "CanReceiveTimeout", "No response CAN frame received");
+            PicoATE_Log("CAN_REQUEST timeout {}", details);
+            return response(Plugin::response("Timeout", {}, {}, "CanReceiveTimeout",
+                "No response CAN frame received | " + details));
         }
         if (result.status == ReceiveStatus::Error) {
-            return Plugin::errorResponse(result.errorCode, result.errorMessage);
+            PicoATE_Log("CAN_REQUEST receive failed: {} | {}", result.errorMessage, details);
+            return response(Plugin::errorResponse(result.errorCode, result.errorMessage + " | " + details));
         }
         PicoATE_Log("CAN_REQUEST receive id=0x{:X} data={}",
                     result.frame.id,
                     dataText(result.frame.data));
-        return receiveResponse(result.frame, filterId, filterMask);
+        return response(receiveResponse(result.frame, filterId, filterMask));
     }
 
     return Plugin::errorResponse(
-        "UnknownFunction", "Use open, close, status, write, read, requestResponse, or findDevices");
+        "UnknownFunction", "Use open, close, status, write, read, sendAndRead, requestResponse, or findDevices");
 }
 
 } // namespace
+
+Plugin::Json sendAndReadDescription()
+{
+    using Json = Plugin::Json;
+    return {
+        {"id", "sendAndRead"},
+        {"name", "Send And Read CAN Frame"},
+        {"description", "Send one frame and wait for a response matching rxId/rxMask within one serialized call. Open the channel first; use distinct response IDs for different UUTs."},
+        {"timeoutMs", 65000},
+        {"inputs", Json::array({
+            {{"key", "id"}, {"name", "CAN ID"}, {"type", "string"},
+             {"required", true}, {"default", "0x123"}},
+            {{"key", "data"}, {"name", "Frame Data"}, {"type", "hex-bytes"},
+             {"required", true}, {"default", "01 02 03 04"}},
+            {{"key", "extended"}, {"name", "Extended Frame"}, {"type", "boolean"},
+             {"required", false}, {"default", false}},
+            {{"key", "remote"}, {"name", "Remote Frame"}, {"type", "boolean"},
+             {"required", false}, {"default", false}},
+            {{"key", "rxId"}, {"name", "Response CAN ID (0x00000000-0x1FFFFFFF)"}, {"type", "string"},
+             {"required", true}, {"default", ""}},
+            {{"key", "rxMask"}, {"name", "Response Mask (0x1FFFFFFF=Exact)"}, {"type", "string"},
+             {"required", false}, {"default", "0x1FFFFFFF"}},
+            {{"key", "timeoutMs"}, {"name", "Receive Timeout"}, {"type", "integer"},
+             {"required", false}, {"default", 1500}, {"minimum", 1}, {"maximum", 60000}, {"unit", "ms"}}
+        })},
+        {"outputs", Json::array({
+            {{"key", "transmitted"}, {"name", "Transmitted"}, {"type", "boolean"}},
+            {{"key", "id"}, {"name", "Response CAN ID"}, {"type", "string"}},
+            {{"key", "idNumeric"}, {"name", "Response CAN ID Numeric"}, {"type", "integer"}},
+            {{"key", "dataHex"}, {"name", "Response Frame Data"}, {"type", "hex-bytes"}},
+            {{"key", "dlc"}, {"name", "Response Data Length"}, {"type", "integer"}, {"unit", "byte"}},
+            {{"key", "extended"}, {"name", "Response Extended Frame"}, {"type", "boolean"}},
+            {{"key", "timestampUs"}, {"name", "Response Timestamp"}, {"type", "integer"}, {"unit", "us"}},
+            {{"key", "txId"}, {"name", "Sent CAN ID"}, {"type", "string"}},
+            {{"key", "txDataHex"}, {"name", "Sent Frame Data"}, {"type", "hex-bytes"}}
+        })}
+    };
+}
 
 } // namespace PicoATE::Plugins::Can
 

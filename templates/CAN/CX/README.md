@@ -6,6 +6,7 @@ USBCAN-I/II 设备。
 - 不链接厂家 `.lib`。
 - 默认从插件 DLL 同目录加载 64 位 `ControlCAN.dll`。
 - 支持通道 0/1、标准帧/扩展帧和常用经典 CAN 波特率。
+- 支持 `sendAndRead`（Send And Read CAN Frame），在一次加锁调用内发送并匹配回包；参数与边界见 [CAN 通用说明](../README.md)。
 - 默认设备类型为 `4`（USBCAN-II / CANalyst-II 兼容接口）。
 - `gcan_cx_cross_loop_sequence.json` 用于 GCAN 与创芯双通道交叉接线验证。
 

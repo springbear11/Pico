@@ -333,6 +333,11 @@ QVector<RunRequest::UutInput> ExecutionViewModel::activeRunUuts() const
     return uuts;
 }
 
+void ExecutionViewModel::setRuntimeIntegrityDirectory(const QString& directory)
+{
+    if (canChangeSources()) m_runtimeIntegrityDirectory = directory;
+}
+
 void ExecutionViewModel::startRun(RunRequest request)
 {
     if (!canRun()) {
@@ -340,6 +345,7 @@ void ExecutionViewModel::startRun(RunRequest request)
     }
 
     request.requestId = ++m_runRequestId;
+    request.runtimeIntegrityDirectory = m_runtimeIntegrityDirectory;
     m_activeRunRequest = std::move(request);
     m_runIteration = 0;
     m_runIterationCount = qMax(1, m_compileSummary.loopTestCount);

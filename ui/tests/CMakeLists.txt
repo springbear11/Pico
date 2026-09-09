@@ -34,6 +34,10 @@ set_target_properties(PicoATEUiTests
 
 add_test(NAME PicoATEUiTests COMMAND PicoATEUiTests)
 
+qt_add_executable(PicoATEIntegrityTests RuntimeIntegrityTests.cpp)
+target_link_libraries(PicoATEIntegrityTests PRIVATE PicoATEUiRuntime Qt6::Core Qt6::Test)
+add_test(NAME PicoATEIntegrityTests COMMAND PicoATEIntegrityTests)
+
 qt_add_executable(PicoATEUiWindowTests
     ../src/AdminStartupSplash.cpp
     ../src/AdminStartupSplash.h
@@ -43,6 +47,8 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/FlowTargetSelector.h
     ../src/InputWheelGuard.cpp
     ../src/InputWheelGuard.h
+    ../src/IntegrityPage.cpp
+    ../src/IntegrityPage.h
     ../src/LoadingSpinner.cpp
     ../src/LoadingSpinner.h
     ../src/LoginDialog.cpp

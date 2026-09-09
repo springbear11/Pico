@@ -5,6 +5,7 @@
 #include "FieldDeviceDialog.h"
 #include "FlowTargetSelector.h"
 #include "InputWheelGuard.h"
+#include "IntegrityPage.h"
 #include "LoginDialog.h"
 #include "LoadingSpinner.h"
 #include "MainWindow.h"
@@ -385,6 +386,9 @@ class MainWindowLifecycleTests final : public QObject
 
 private slots:
     void titleBarLanguageButtonPreservesNativeWindow();
+    void integrityPageOnlyAppearsForDailyAdmin();
+    void integrityPageApprovesSelectedFilesAndKeepsReadableHashes();
+    void productionIntegrityBlocksUntilBaselineIsApproved();
     void adminDisabledSlotsRemainVisible();
     void localizedConfigurationKeepsData();
     void smallScreenRunInfoRemainsReadable();
@@ -508,6 +512,7 @@ private slots:
 
 private:
     QTemporaryDir m_settingsDirectory;
+    QTemporaryDir m_integrityDirectory;
 };
 
 void MainWindowLifecycleTests::initTestCase()
@@ -522,11 +527,189 @@ void MainWindowLifecycleTests::initTestCase()
                        QSettings::UserScope,
                        m_settingsDirectory.path());
     QSettings().clear();
+    QVERIFY(m_integrityDirectory.isValid());
+    for (const auto& name : RuntimeIntegrity::fileNames()) {
+        QFile file(m_integrityDirectory.filePath(name));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("UI test integrity fixture");
+    }
+    QVERIFY(RuntimeIntegrity::authorize(RuntimeIntegrity::check(m_integrityDirectory.path()),
+        RuntimeIntegrity::fileNames(), AdminAccess::Supervisor,
+        QString::number(StartupSupport::dailyAdminPassword()), "UI test fixture").isEmpty());
+    qApp->setProperty("integrityTestRoot", m_integrityDirectory.path());
 }
 
 void MainWindowLifecycleTests::cleanupTestCase()
 {
     QSettings().clear();
+    qApp->setProperty("integrityTestRoot", QVariant{});
+}
+
+void MainWindowLifecycleTests::integrityPageOnlyAppearsForDailyAdmin()
+{
+    QTemporaryDir loginRoot;
+    LoginDialog login(loginRoot.path());
+    auto* admin = login.findChild<QToolButton*>("loginAdminModeButton");
+    auto* password = login.findChild<QLineEdit*>("loginAdminPassword");
+    auto* submit = login.findChild<QPushButton*>("loginButton");
+    QVERIFY(admin && password && submit);
+    admin->click();
+    password->setText(QString::number(StartupSupport::dailyAdminPassword()));
+    submit->click();
+    QTRY_COMPARE(login.result(), int(QDialog::Accepted));
+    QCOMPARE(login.selection().adminAccess, AdminAccess::Supervisor);
+    auto window = createMainWindow();
+    auto* tabs = window->findChild<QTabWidget*>("workspaceTabs");
+    QVERIFY(tabs);
+    const int originalCount = tabs->count();
+    window->setAdminAccess(AdminAccess::Standard);
+    QCOMPARE(tabs->count(), originalCount);
+    QVERIFY(!window->findChild<IntegrityPage*>());
+    window->setAdminAccess(login.selection().adminAccess);
+    QCOMPARE(tabs->count(), originalCount + 1);
+    auto* page = window->findChild<IntegrityPage*>();
+    QVERIFY(page);
+    QCOMPARE(tabs->indexOf(page), tabs->count() - 1);
+    window->setAdminAccess(AdminAccess::Standard);
+    QCOMPARE(tabs->count(), originalCount);
+    QVERIFY(!window->findChild<IntegrityPage*>());
+    StartupSelection selection;
+    auto production = createProductionWindow(selection);
+    QVERIFY(!production->findChild<IntegrityPage*>());
+}
+
+void MainWindowLifecycleTests::integrityPageApprovesSelectedFilesAndKeepsReadableHashes()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    for (const auto& name : RuntimeIntegrity::fileNames()) {
+        QFile file(dir.filePath(name));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("original runtime");
+    }
+    const auto password = QString::number(StartupSupport::dailyAdminPassword());
+    QVERIFY(RuntimeIntegrity::authorize(RuntimeIntegrity::check(dir.path()), RuntimeIntegrity::fileNames(),
+        AdminAccess::Supervisor, password, "Initial test baseline").isEmpty());
+    auto& language = UiLanguage::instance();
+    const bool wasChinese = language.isChinese();
+    const auto restore = qScopeGuard([&] { language.setChinese(wasChinese, false); });
+    QVERIFY(language.setChinese(false, false));
+    IntegrityPage page(dir.path(), AdminAccess::Supervisor);
+    page.resize(1100, 620);
+    page.show();
+    QTRY_VERIFY(page.report().passed());
+    auto* table = page.findChild<QTableWidget*>("integrityFilesTable");
+    auto* approve = page.findChild<QPushButton*>("integrityApproveButton");
+    QVERIFY(table && approve);
+    QCOMPARE(table->item(0, 2)->text().remove('\n').size(), 64);
+    const auto screenshots = qEnvironmentVariable("PICOATE_INTEGRITY_SCREENSHOTS");
+    if (!screenshots.isEmpty()) {
+        QTest::qWait(50);
+        QVERIFY(page.grab().save(QDir(screenshots).filePath("integrity-en-1100.png")));
+    }
+    QFile ui(dir.filePath("PicoATE.UI.exe"));
+    QVERIFY(ui.open(QIODevice::WriteOnly));
+    ui.write("changed runtime");
+    ui.close();
+    page.refresh();
+    QTRY_VERIFY(!page.busy());
+    QCOMPARE(page.report().files[0].status, IntegrityStatus::Modified);
+    QCOMPARE(table->item(0, 2)->foreground().color(), QColor("#a43838"));
+    QVERIFY(language.setChinese(true, false));
+    page.resize(850, 560);
+    table->selectRow(0);
+    QVERIFY(approve->isEnabled());
+    page.setRunActive(true);
+    QVERIFY(!approve->isEnabled());
+    page.setRunActive(false);
+    if (!screenshots.isEmpty()) {
+        QTest::qWait(50);
+        QVERIFY(page.grab().save(QDir(screenshots).filePath("integrity-zh-850.png")));
+    }
+    bool fixedRejected = false;
+    QTimer::singleShot(40, &page, [&] {
+        auto* dialog = page.findChild<QDialog*>("integrityApprovalDialog");
+        if (!dialog) return;
+        auto* input = dialog->findChild<QLineEdit*>("integrityApprovalPassword");
+        auto* reason = dialog->findChild<QLineEdit*>("integrityApprovalReason");
+        auto* confirm = dialog->findChild<QPushButton*>("integrityConfirmApproval");
+        if (!input || !reason || !confirm) { dialog->reject(); return; }
+        input->setText("300693");
+        reason->setText("Approved UI update");
+        confirm->click();
+        fixedRejected = dialog->isVisible() && input->text().isEmpty();
+        input->setText(password);
+        confirm->click();
+    });
+    approve->click();
+    QVERIFY(fixedRejected);
+    QTRY_VERIFY(!page.busy());
+    QVERIFY(page.report().passed());
+    QCOMPARE(page.report().baseline.value("history").toArray().last().toObject()
+        .value("changes").toArray().size(), 1);
+}
+
+void MainWindowLifecycleTests::productionIntegrityBlocksUntilBaselineIsApproved()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    for (const auto& name : RuntimeIntegrity::fileNames()) {
+        QFile file(dir.filePath(name));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("production integrity fixture");
+    }
+    const auto previousRoot = qApp->property("integrityTestRoot");
+    const auto restoreRoot = qScopeGuard([&] { qApp->setProperty("integrityTestRoot", previousRoot); });
+    qApp->setProperty("integrityTestRoot", dir.path());
+    const bool wasChinese = UiLanguage::instance().isChinese();
+    const auto restoreLanguage = qScopeGuard([&] { UiLanguage::instance().setChinese(wasChinese, false); });
+    QVERIFY(UiLanguage::instance().setChinese(false, false));
+    StartupSelection selection;
+    selection.scanDialogEnabled = false;
+    selection.sequencePath = dir.filePath("sequence.json");
+    selection.stationPath = dir.filePath("StationSystem.json");
+    QFile sequence(selection.sequencePath);
+    QVERIFY(sequence.open(QIODevice::WriteOnly));
+    sequence.write(R"({"id":"guard","name":"Guard","groups":[{"id":"main","kind":"main","steps":[{"id":"done","kind":"noop"}]}]})");
+    sequence.close();
+    QFile station(selection.stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    auto stationObject = StartupSupport::newProjectStationTemplate();
+    stationObject.remove("pluginRegistry");
+    for (const auto* field : {"scanDialogEnabled", "txtLogEnabled", "csvReportEnabled", "xlsxReportEnabled", "pdfReportEnabled"}) {
+        stationObject.insert(field, false);
+    }
+    station.write(QJsonDocument(stationObject).toJson());
+    station.close();
+    auto window = createProductionWindow(selection);
+    window->show();
+    auto* model = window->findChild<ExecutionViewModel*>();
+    auto* start = window->findChild<QAction*>("productionStartAction");
+    QVERIFY(model && start);
+    QTRY_COMPARE(model->state(), UiRunState::Ready);
+    bool errorShown = false;
+    QTimer dismiss;
+    dismiss.setInterval(10);
+    connect(&dismiss, &QTimer::timeout, window.get(), [&] {
+        if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            errorShown = box->text().contains("integrity", Qt::CaseInsensitive);
+            box->accept();
+        }
+    });
+    dismiss.start();
+    start->trigger();
+    QTRY_COMPARE(model->state(), UiRunState::Failed);
+    QTRY_VERIFY(errorShown);
+    dismiss.stop();
+    QVERIFY(model->report().uuts.isEmpty());
+    const auto total = window->findChild<QLabel*>("productionTotalCount");
+    QVERIFY(total);
+    QCOMPARE(total->text(), QString("TOTAL 0"));
+    QVERIFY(RuntimeIntegrity::authorize(RuntimeIntegrity::check(dir.path()), RuntimeIntegrity::fileNames(),
+        AdminAccess::Supervisor, QString::number(StartupSupport::dailyAdminPassword()), "Approved test runtime").isEmpty());
+    start->trigger();
+    QTRY_COMPARE(model->state(), UiRunState::Completed);
+    QCOMPARE(total->text(), QString("TOTAL 1"));
 }
 
 void MainWindowLifecycleTests::titleBarLanguageButtonPreservesNativeWindow()
@@ -6162,6 +6345,7 @@ void MainWindowLifecycleTests::loginDialogDiscoversSequenceAndValidatesAdminPass
     QVERIFY(!spinner->isHidden());
     QTRY_COMPARE(dialog.result(), int(QDialog::Accepted));
     QCOMPARE(dialog.selection().mode, UiMode::Admin);
+    QCOMPARE(dialog.selection().adminAccess, AdminAccess::Standard);
     QCOMPARE(dialog.selection().sequencePath,
              QFileInfo(sequencePath).absoluteFilePath());
     QCOMPARE(dialog.selection().projectName, QStringLiteral("ProductA"));
