@@ -1235,6 +1235,10 @@ void ProductionWindow::buildUi()
             background: #f0f3f5;
             border-radius: 4px;
         }
+        QPushButton#productionOverviewButton:disabled {
+            background: transparent;
+            color: #a0a8ae;
+        }
         QPushButton[productionUutSwitch="true"] {
             background: #ffffff;
             color: #20262b;
@@ -1353,7 +1357,7 @@ void ProductionWindow::updateCommands()
     m_productRoutingAction->setVisible(!manualMode);
     m_productRoutingAction->setEnabled(!manualMode && configurationAvailable);
     if (m_runNavigation) {
-        m_runNavigation->setVisible(slotCount > 1);
+        m_runNavigation->show();
     }
 }
 
@@ -2175,9 +2179,12 @@ void ProductionWindow::rebuildUutNavigation()
             m_uutNavigationLayout->contentsMargins().right());
     }
 
-    const bool multipleSlots = m_overviewModel->rowCount() > 1;
-    m_runNavigation->setVisible(multipleSlots);
-    m_overviewButton->setEnabled(multipleSlots);
+    m_runNavigation->show();
+    m_overviewButton->setEnabled(m_overviewModel->rowCount() > 1);
+    if (m_overviewModel->rowCount() == 1 && m_runStack &&
+        m_runStack->currentWidget() == m_overviewPage) {
+        showUutDetails(m_selectedUutId);
+    }
     const bool showingOverview = m_runStack &&
         m_runStack->currentWidget() == m_overviewPage;
     m_overviewButton->setChecked(showingOverview);

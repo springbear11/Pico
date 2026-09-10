@@ -66,6 +66,8 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/OnOffControl.h
     ../src/OperatorPromptPresenter.cpp
     ../src/OperatorPromptPresenter.h
+    ../src/PromptCountdownWidget.cpp
+    ../src/PromptCountdownWidget.h
     ../src/ParserActualDelegate.cpp
     ../src/ParserActualDelegate.h
     ../src/ScanDialog.cpp

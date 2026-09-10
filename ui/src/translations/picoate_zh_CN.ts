@@ -3,6 +3,10 @@
 <TS version="2.1" language="zh_CN" sourcelanguage="en">
 <context>
     <name>UiShell</name>
+    <message><source>Manual Judgment</source><translation>人工判定</translation></message>
+    <message><source>Value Input</source><translation>信息输入</translation></message>
+    <message><source>Notice</source><translation>提示</translation></message>
+    <message><source>Operator Confirmation</source><translation>人工确认</translation></message>
     <message><source>&amp;File</source><translation>文件(&amp;F)</translation></message>
     <message><source>&amp;Edit</source><translation>编辑(&amp;E)</translation></message>
     <message><source>&amp;Run</source><translation>运行(&amp;R)</translation></message>
@@ -600,5 +604,10 @@ Station: %2</source><translation>脚本：%1
     <message><source>Integrity baseline is invalid.</source><translation>校验基准格式无效。</translation></message>
     <message><source>UI/Core integrity verification failed. Test was not started.</source><translation>UI/Core 完整性校验未通过，测试未启动。</translation></message>
     <message><source>Ask a daily administrator to review the Integrity Check page.</source><translation>请使用日期算法密码登录，由最高权限在完整性校验页确认处理。</translation></message>
+    <message><source>Remaining %1</source><translation>剩余 %1</translation></message>
+    <message><source>Response submitted</source><translation>回复已提交</translation></message>
+    <message><source>Closes automatically later</source><translation>后续自动关闭</translation></message>
+    <message><source>No timeout</source><translation>无超时限制</translation></message>
+    <message><source>Awaiting timeout handling</source><translation>等待超时处理</translation></message>
 </context>
 </TS>

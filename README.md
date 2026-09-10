@@ -95,14 +95,14 @@ out/build/vs2022-qt6-all/portable/Release/PicoATE.Cli/
 生成经过依赖检查和隔离启动验证的 Release 便携包与 Windows 安装包：
 
 ```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\packaging\build_release.ps1 -Version 0.2.0
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\packaging\build_release.ps1 -Version 0.3.1
 ```
 
 输出位置：
 
 ```text
-out/package/PicoATE-Portable-0.2.0-x64.zip
-out/installer/PicoATE-Setup-0.2.0-x64.exe
+out/package/PicoATE-Portable-0.3.1-x64.zip
+out/installer/PicoATE-Setup-0.3.1-x64.exe
 ```
 
 目标电脑不需要 Qt 或 Visual Studio，但仍需安装对应设备的 USB 驱动或 VISA Runtime。完整说明见 [发布与安装包](docs/发布与安装包.md)。

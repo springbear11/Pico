@@ -1,9 +1,11 @@
 #include "OperatorPromptPresenter.h"
+#include "PromptCountdownWidget.h"
 #include "UiLanguage.h"
 
 #include "ExecutionViewModel.h"
 #include "MultiUutOverviewWidget.h"
 #include "ProjectResourcePaths.h"
+#include "ElidedInfoLabel.h"
 
 #include <QCloseEvent>
 #include <QDialog>
@@ -16,6 +18,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QSet>
+#include <QScreen>
 #include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -42,12 +45,26 @@ public:
         setMinimumWidth(420);
 
         auto* layout = new QVBoxLayout(this);
-        layout->setContentsMargins(28, 24, 28, 24);
-        layout->setSpacing(20);
+        layout->setContentsMargins(24, 20, 24, 20);
+        layout->setSpacing(14);
+
+        auto* header = new QHBoxLayout;
+        header->setSpacing(12);
+        auto* contextLabel = new ElidedInfoLabel({}, this);
+        contextLabel->setMaximumCharacters(0);
+        m_contextLabel = contextLabel;
+        m_contextLabel->setObjectName(QStringLiteral("operatorPromptContext"));
+        m_countdown = new PromptCountdownWidget(this);
+        m_countdown->setCompact(true);
+        header->addWidget(m_contextLabel, 1);
+        header->addWidget(m_countdown, 0, Qt::AlignRight);
+        layout->addLayout(header);
 
         m_messageLabel = new QLabel(this);
         m_messageLabel->setObjectName(QStringLiteral("operatorPromptMessage"));
         m_messageLabel->setWordWrap(true);
+        m_messageLabel->setAlignment(Qt::AlignCenter);
+        m_messageLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
         m_messageLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
         layout->addWidget(m_messageLabel);
 
@@ -59,6 +76,7 @@ public:
         m_inputEdit = new QLineEdit(this);
         m_inputEdit->setObjectName(QStringLiteral("operatorPromptInput"));
         m_inputEdit->setMinimumHeight(40);
+        m_inputEdit->setAlignment(Qt::AlignCenter);
         layout->addWidget(m_inputEdit);
 
         m_inputErrorLabel = new QLabel(this);
@@ -68,12 +86,13 @@ public:
 
         m_statusLabel = new QLabel(this);
         m_statusLabel->setObjectName(QStringLiteral("operatorPromptWaitingLabel"));
+        m_statusLabel->setAlignment(Qt::AlignCenter);
+        m_statusLabel->setWordWrap(true);
         layout->addWidget(m_statusLabel);
 
         auto* buttons = new QHBoxLayout;
         buttons->setContentsMargins(0, 0, 0, 0);
         buttons->setSpacing(10);
-        buttons->addStretch(1);
         m_failButton = new QPushButton(this);
         m_failButton->setObjectName(QStringLiteral("operatorPromptFailButton"));
         m_passButton = new QPushButton(this);
@@ -84,13 +103,15 @@ public:
             button->setDefault(false);
             button->setAutoDefault(false);
             button->setFocusPolicy(Qt::NoFocus);
-            buttons->addWidget(button);
+            button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            buttons->addWidget(button, 1);
         }
         layout->addLayout(buttons);
 
         setStyleSheet(QStringLiteral(
             "QDialog#operatorPromptDialog { background: #ffffff; }"
-            "QLabel#operatorPromptMessage { color: #172033; font-size: 15px; }"
+            "QLabel#operatorPromptContext { color: #344048; font-size: 14px; font-weight:600; }"
+            "QLabel#operatorPromptMessage { color: #26323a; font-size: 17px; font-weight:600; padding:10px 0; }"
             "QLabel#operatorPromptImage { background: #f5f7fa; border: 1px solid #dce2e8; }"
             "QLabel#operatorPromptImageError { color: #b42318; font-size: 12px; }"
             "QLabel#operatorPromptWaitingLabel { color: #5f6b7a; font-size: 12px; }"
@@ -100,15 +121,20 @@ public:
             "QLineEdit#operatorPromptInput:focus { border-color: #2f7ed8; }"
             "QLineEdit#operatorPromptInput[invalid=\"true\"] { border-color: #b42318; "
             "background: #fff7f6; }"
-            "QPushButton#operatorPromptConfirmButton { min-width: 96px; min-height: 34px; "
-            "background: #2f7ed8; color: white; border: 0; border-radius: 4px; padding: 0 18px; }"
-            "QPushButton#operatorPromptConfirmButton:hover { background: #246fbe; }"
-            "QPushButton#operatorPromptPassButton { min-width: 104px; min-height: 36px; "
-            "background: #15803d; color: white; border: 0; border-radius: 4px; padding: 0 20px; }"
-            "QPushButton#operatorPromptPassButton:hover { background: #166534; }"
-            "QPushButton#operatorPromptFailButton { min-width: 104px; min-height: 36px; "
-            "background: #b42318; color: white; border: 0; border-radius: 4px; padding: 0 20px; }"
-            "QPushButton#operatorPromptFailButton:hover { background: #912018; }"));
+            "QPushButton#operatorPromptConfirmButton { min-width:0; min-height:38px; max-height:38px; "
+            "background:#2f7ed8; color:white; border:0; border-radius:4px; padding:0 14px; font-weight:600; }"
+            "QPushButton#operatorPromptConfirmButton:hover { background:#246fbe; }"
+            "QPushButton#operatorPromptPassButton { min-width:0; min-height:38px; max-height:38px; "
+            "background:#15803d; color:white; border:0; border-radius:4px; padding:0 14px; font-weight:600; }"
+            "QPushButton#operatorPromptPassButton:hover { background:#166534; }"
+            "QPushButton#operatorPromptPassButton:pressed { background:#14532d; }"
+            "QPushButton#operatorPromptFailButton { min-width:0; min-height:38px; max-height:38px; "
+            "background:#b42318; color:white; border:0; border-radius:4px; padding:0 14px; font-weight:600; }"
+            "QPushButton#operatorPromptFailButton:hover { background:#912018; }"
+            "QPushButton#operatorPromptFailButton:pressed { background:#7b1b14; }"
+            "QPushButton#operatorPromptConfirmButton:disabled,"
+            "QPushButton#operatorPromptPassButton:disabled,"
+            "QPushButton#operatorPromptFailButton:disabled { color:#eef1f2; background:#aeb6bb; }"));
     }
 
     QPushButton* confirmButton() const { return m_confirmButton; }
@@ -171,6 +197,8 @@ public:
                    const QString& sequencePath)
     {
         m_promptDetails = event.details;
+        m_uutId = event.uutId;
+        m_countdown->configure(event);
         const auto mode = event.details.value("mode").toString();
         m_currentInstanceId = event.details.value("promptInstanceId").toString();
         setWindowTitle(event.details.value("title").toString().isEmpty()
@@ -205,7 +233,7 @@ public:
             event.details.value("passText", QStringLiteral("PASS")).toString());
         m_failButton->setText(
             event.details.value("failText", QStringLiteral("FAIL")).toString());
-        m_statusLabel->setVisible(notice || judgment);
+        m_statusLabel->hide();
         m_statusLabel->setText(notice
             ? tr("The test continues while this instruction remains visible.")
             : tr("Select the observed result."));
@@ -217,6 +245,8 @@ public:
     void setResponsePending(bool pending)
     {
         m_responsePending = pending;
+        m_countdown->setResponsePending(pending);
+        m_inputEdit->setEnabled(!pending);
         for (auto* button : {m_confirmButton, m_passButton, m_failButton}) {
             button->setEnabled(!pending);
         }
@@ -278,12 +308,18 @@ private:
         m_confirmButton->setText(buttonText("confirmText", m_isInput ? "Submit" : "OK"));
         m_passButton->setText(buttonText("passText", "PASS"));
         m_failButton->setText(buttonText("failText", "FAIL"));
+        const auto mode = m_promptDetails.value(QStringLiteral("mode")).toString();
+        const auto caption = mode == "judgment" ? uiText("Manual Judgment") : mode == "input"
+            ? uiText("Value Input") : mode == "notice" ? uiText("Notice") : uiText("Operator Confirmation");
+        m_contextLabel->setText(m_uutId.isEmpty() ? caption : m_uutId + " | " + caption);
+        m_contextLabel->setToolTip(m_contextLabel->text());
         const bool notice = m_promptDetails.value(QStringLiteral("mode"))
                                 .toString() == QStringLiteral("notice");
         m_statusLabel->setText(m_responsePending
             ? uiText("Recording operator response...")
             : (notice ? uiText("The test continues while this instruction remains visible.")
                       : uiText("Select the observed result.")));
+        m_statusLabel->setVisible(m_responsePending);
         if (m_promptDetails.value(QStringLiteral("title")).toString().isEmpty()) {
             setWindowTitle(uiText("Message"));
         }
@@ -322,8 +358,8 @@ private:
         }
 
         m_imageLabel->setObjectName(QStringLiteral("operatorPromptImage"));
-        constexpr int maximumImageWidth = 760;
-        constexpr int maximumImageHeight = 420;
+        constexpr int maximumImageWidth = 480;
+        const int maximumImageHeight = qMin(260, qMax(80, screen()->availableGeometry().height() - 320));
         if (pixmap.width() > maximumImageWidth ||
             pixmap.height() > maximumImageHeight) {
             pixmap = pixmap.scaled(maximumImageWidth,
@@ -335,6 +371,9 @@ private:
     }
 
     QLabel* m_messageLabel = nullptr;
+    QLabel* m_contextLabel = nullptr;
+    QString m_uutId;
+    PromptCountdownWidget* m_countdown = nullptr;
     QLabel* m_imageLabel = nullptr;
     QLineEdit* m_inputEdit = nullptr;
     QLabel* m_inputErrorLabel = nullptr;
@@ -468,12 +507,15 @@ void OperatorPromptPresenter::setOverviewHost(
             });
 }
 
-void OperatorPromptPresenter::showPrompt(const PicoATE::Core::RuntimeEvent& event)
+void OperatorPromptPresenter::showPrompt(const PicoATE::Core::RuntimeEvent& source)
 {
-    const auto instanceId = event.details.value("promptInstanceId").toString();
+    const auto instanceId = source.details.value("promptInstanceId").toString();
     if (instanceId.isEmpty()) {
         return;
     }
+    const auto previous = m_activePromptEvents.constFind(instanceId);
+    const auto event = PromptCountdownWidget::withTiming(source,
+        previous == m_activePromptEvents.cend() ? nullptr : &previous.value());
     m_activePromptEvents.insert(instanceId, event);
     if (m_dialogs.contains(instanceId) ||
         (m_overviewHost && m_overviewHost->hasOperatorPrompt(instanceId))) {

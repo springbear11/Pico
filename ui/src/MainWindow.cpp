@@ -6727,6 +6727,9 @@ void MainWindow::buildLayout()
         QPushButton#adminBackToUutOverview:checked {
             background: #f0f3f5; border-radius: 4px;
         }
+        QPushButton#adminBackToUutOverview:disabled {
+            background: transparent; color: #a0a8ae;
+        }
         QPushButton[adminUutSwitch="true"] {
             background: #ffffff; border: 1px solid #c7ced3; border-radius: 4px;
             color: #20262b; min-height: 30px; padding: 1px 12px;
@@ -7506,9 +7509,13 @@ void MainWindow::rebuildAdminUutButtons()
 
     m_adminBackToOverview->setEnabled(
         ShowAdminUutOverview && m_uutOverviewModel->rowCount() > 1);
+    if (m_uutOverviewModel->rowCount() == 1 && m_adminRunStack &&
+        m_adminRunStack->currentWidget() == m_adminRunOverviewPage) {
+        showAdminUutDetails(m_selectedAdminUutId);
+    }
     if (m_adminRunStack &&
         m_adminRunStack->currentWidget() == m_adminRunOverviewPage &&
-        m_uutOverviewModel->rowCount() > 1) {
+        m_uutOverviewModel->rowCount() > 0) {
         m_adminUutNavigationGroup->setExclusive(false);
         for (auto* button : m_adminUutNavigationGroup->buttons()) {
             button->setChecked(false);

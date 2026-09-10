@@ -23,11 +23,17 @@ public:
         setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     }
 
+    void setMaximumCharacters(int count)
+    {
+        m_maximumCharacters = qMax(0, count);
+        update();
+    }
+
     QString displayText() const
     {
         const auto characters = text().toUcs4();
-        const auto shortened = characters.size() > 24
-            ? QString::fromUcs4(characters.constData(), 24) + QChar(0x2026)
+        const auto shortened = m_maximumCharacters > 0 && characters.size() > m_maximumCharacters
+            ? QString::fromUcs4(characters.constData(), m_maximumCharacters) + QChar(0x2026)
             : text();
         return fontMetrics().elidedText(shortened, Qt::ElideRight,
                                         qMax(0, contentsRect().width() - 2));
@@ -69,6 +75,8 @@ protected:
             QApplication::clipboard()->setText(text());
         }
     }
+private:
+    int m_maximumCharacters = 24;
 };
 
 } // namespace PicoATE::Ui

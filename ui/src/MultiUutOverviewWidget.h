@@ -24,6 +24,7 @@ class MultiUutOverviewWidget final : public QWidget
 
 public:
     explicit MultiUutOverviewWidget(QWidget* parent = nullptr);
+    ~MultiUutOverviewWidget() override;
 
     void setModel(UutOverviewModel* model);
     UutOverviewModel* model() const;
@@ -63,6 +64,7 @@ private:
     void updateSummary();
     void restoreOperatorPrompt(QAbstractButton* card);
     void restoreBatchOperatorPrompt();
+    void rememberPromptInput(const QString& instanceId, const QString& text);
     void updateBatchPromptGeometry();
     void setCleanupActive(bool active,
                           const QString& currentStep = {},
@@ -73,6 +75,7 @@ private:
     struct ActivePrompt {
         PicoATE::Core::RuntimeEvent event;
         QString sequencePath;
+        bool responsePending = false;
     };
 
     UutOverviewModel* m_model = nullptr;

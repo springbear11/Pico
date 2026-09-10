@@ -1,5 +1,7 @@
 #include "UiTextBinding.h"
 #include "MultiUutOverviewWidget.h"
+#include "PromptCountdownWidget.h"
+#include "ElidedInfoLabel.h"
 
 #include "LoadingSpinner.h"
 #include "ProjectResourcePaths.h"
@@ -811,6 +813,7 @@ public:
         const QString&,
         PicoATE::Core::OperatorPromptResponse,
         const QVariantMap&)>;
+    using InputHandler = std::function<void(const QString&, const QString&)>;
 
     explicit UutOverviewPromptOverlay(
         QWidget* parent = nullptr,
@@ -821,50 +824,75 @@ public:
         setAttribute(Qt::WA_StyledBackground, true);
         setFocusPolicy(Qt::StrongFocus);
 
-        auto* layout = new QVBoxLayout(this);
-        layout->setContentsMargins(18, 14, 18, 14);
-        layout->setSpacing(7);
+        m_panel = new QFrame(this);
+        m_panel->setObjectName(QStringLiteral("uutOverviewPromptPanel"));
+        m_panel->setAttribute(Qt::WA_StyledBackground, true);
+        m_panelLayout = new QVBoxLayout(m_panel);
+        m_panelLayout->setContentsMargins(16, 16, 16, 16);
+        m_panelLayout->setSpacing(12);
+        m_panelLayout->setSizeConstraint(QLayout::SetNoConstraint);
+        auto* header = new QHBoxLayout;
+        header->setSpacing(8);
 
-        m_contextLabel = new QLabel(this);
+        auto* contextLabel = new ElidedInfoLabel({}, m_panel);
+        contextLabel->setMaximumCharacters(0);
+        m_contextLabel = contextLabel;
         m_contextLabel->setObjectName(
             QStringLiteral("uutOverviewPromptContext"));
-        m_contextLabel->setAlignment(Qt::AlignCenter);
-        layout->addWidget(m_contextLabel);
+        m_countdown = new PromptCountdownWidget(m_panel);
+        m_countdown->setCompact(true);
+        header->addWidget(m_contextLabel, 1);
+        header->addWidget(m_countdown, 0, Qt::AlignRight);
+        m_panelLayout->addLayout(header);
+        m_bodyScroll = new QScrollArea(m_panel);
+        m_bodyScroll->setObjectName(QStringLiteral("uutOverviewPromptScroll"));
+        m_bodyScroll->setFrameShape(QFrame::NoFrame);
+        m_bodyScroll->setWidgetResizable(true);
+        m_bodyScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_bodyContent = new QWidget(m_bodyScroll);
+        m_bodyContent->setObjectName(QStringLiteral("uutOverviewPromptBody"));
+        auto* layout = new QVBoxLayout(m_bodyContent);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(10);
+        layout->setAlignment(Qt::AlignTop);
+        m_bodyScroll->setWidget(m_bodyContent);
+        m_panelLayout->addWidget(m_bodyScroll);
 
-        m_titleLabel = new QLabel(this);
+        m_titleLabel = new QLabel(m_bodyContent);
         m_titleLabel->setObjectName(QStringLiteral("uutOverviewPromptTitle"));
         m_titleLabel->setAlignment(Qt::AlignCenter);
         m_titleLabel->setWordWrap(true);
         layout->addWidget(m_titleLabel);
 
-        m_messageLabel = new QLabel(this);
+        m_messageLabel = new QLabel(m_bodyContent);
         m_messageLabel->setObjectName(
             QStringLiteral("uutOverviewPromptMessage"));
         m_messageLabel->setAlignment(Qt::AlignCenter);
         m_messageLabel->setWordWrap(true);
         m_messageLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        layout->addWidget(m_messageLabel, 1);
+        m_messageLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        layout->addWidget(m_messageLabel);
 
-        m_imageLabel = new QLabel(this);
+        m_imageLabel = new QLabel(m_bodyContent);
         m_imageLabel->setObjectName(QStringLiteral("uutOverviewPromptImage"));
         m_imageLabel->setAlignment(Qt::AlignCenter);
         m_imageLabel->setMaximumHeight(80);
         layout->addWidget(m_imageLabel, 0, Qt::AlignCenter);
 
-        m_inputEdit = new QLineEdit(this);
+        m_inputEdit = new QLineEdit(m_bodyContent);
         m_inputEdit->setObjectName(QStringLiteral("uutOverviewPromptInput"));
         m_inputEdit->setAlignment(Qt::AlignCenter);
         m_inputEdit->setMinimumHeight(40);
         layout->addWidget(m_inputEdit);
 
-        m_inputErrorLabel = new QLabel(this);
+        m_inputErrorLabel = new QLabel(m_bodyContent);
         m_inputErrorLabel->setObjectName(
             QStringLiteral("uutOverviewPromptInputError"));
         m_inputErrorLabel->setAlignment(Qt::AlignCenter);
         m_inputErrorLabel->setWordWrap(true);
         layout->addWidget(m_inputErrorLabel);
 
-        m_statusLabel = new QLabel(this);
+        m_statusLabel = new QLabel(m_bodyContent);
         m_statusLabel->setObjectName(
             QStringLiteral("uutOverviewPromptStatus"));
         m_statusLabel->setAlignment(Qt::AlignCenter);
@@ -874,24 +902,23 @@ public:
         auto* buttons = new QHBoxLayout;
         buttons->setContentsMargins(0, 0, 0, 0);
         buttons->setSpacing(8);
-        buttons->addStretch(1);
-        m_failButton = new QPushButton(this);
+        m_failButton = new QPushButton(m_panel);
         m_failButton->setObjectName(
             QStringLiteral("uutOverviewPromptFailButton"));
-        m_passButton = new QPushButton(this);
+        m_passButton = new QPushButton(m_panel);
         m_passButton->setObjectName(
             QStringLiteral("uutOverviewPromptPassButton"));
-        m_confirmButton = new QPushButton(this);
+        m_confirmButton = new QPushButton(m_panel);
         m_confirmButton->setObjectName(
             QStringLiteral("uutOverviewPromptConfirmButton"));
         for (auto* button : {m_failButton, m_passButton, m_confirmButton}) {
             button->setDefault(false);
             button->setAutoDefault(false);
             button->setMinimumHeight(32);
-            buttons->addWidget(button);
+            button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            buttons->addWidget(button, 1);
         }
-        buttons->addStretch(1);
-        layout->addLayout(buttons);
+        m_panelLayout->addLayout(buttons);
 
         connect(m_confirmButton, &QPushButton::clicked, this, [this] {
             submit(m_isInput
@@ -906,18 +933,22 @@ public:
         });
         connect(m_inputEdit, &QLineEdit::returnPressed,
                 m_confirmButton, &QPushButton::click);
+        connect(m_inputEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
+            if (!m_configuring && m_inputHandler) m_inputHandler(m_instanceId, text);
+        });
 
         setStyleSheet(QStringLiteral(
             "QWidget#uutOverviewPromptOverlay,"
             "QWidget#multiUutOverviewPromptOverlay{"
-            "background:rgba(226,242,252,250);border:2px solid #6ea8ca;"
-            "border-radius:7px;}"
+            "background:transparent;border:0;}"
+            "QFrame#uutOverviewPromptPanel{background:#ffffff;border:1px solid #c8d3dc;border-radius:6px;}"
+            "QWidget#uutOverviewPromptBody,QScrollArea#uutOverviewPromptScroll{background:#ffffff;border:0;}"
             "QLabel#uutOverviewPromptContext{color:#45677b;font-size:13px;"
             "font-weight:700;}"
-            "QLabel#uutOverviewPromptTitle{color:#172b38;font-size:18px;"
+            "QLabel#uutOverviewPromptTitle{color:#172b38;font-size:14px;"
             "font-weight:700;}"
             "QLabel#uutOverviewPromptMessage{color:#263e4d;font-size:16px;"
-            "font-weight:600;}"
+            "font-weight:600;padding:6px 0;}"
             "QLabel#uutOverviewPromptStatus{color:#506f82;font-size:12px;"
             "font-weight:600;}"
             "QLabel#uutOverviewPromptInputError{color:#a43838;font-size:12px;"
@@ -928,22 +959,32 @@ public:
             "QLineEdit#uutOverviewPromptInput:focus{border-color:#3f5968;}"
             "QLineEdit#uutOverviewPromptInput[invalid=\"true\"]{"
             "border-color:#a43838;background:#fff5f5;}"
-            "QPushButton#uutOverviewPromptConfirmButton{min-width:88px;"
-            "background:#252b30;color:#ffffff;border:0;border-radius:4px;"
-            "padding:0 14px;font-size:14px;font-weight:700;}"
-            "QPushButton#uutOverviewPromptPassButton{min-width:82px;"
+            "QPushButton#uutOverviewPromptConfirmButton{min-width:0;min-height:36px;max-height:36px;"
+            "background:#2f7ed8;color:#ffffff;border:0;border-radius:4px;"
+            "padding:0 8px;font-size:14px;font-weight:600;}"
+            "QPushButton#uutOverviewPromptConfirmButton:hover{background:#246fbe;}"
+            "QPushButton#uutOverviewPromptPassButton{min-width:0;min-height:36px;max-height:36px;"
             "background:#2f7548;color:#ffffff;border:0;border-radius:4px;"
-            "padding:0 12px;font-size:14px;font-weight:700;}"
-            "QPushButton#uutOverviewPromptFailButton{min-width:82px;"
+            "padding:0 8px;font-size:14px;font-weight:600;}"
+            "QPushButton#uutOverviewPromptPassButton:hover{background:#28653e;}"
+            "QPushButton#uutOverviewPromptPassButton:pressed{background:#215534;}"
+            "QPushButton#uutOverviewPromptFailButton{min-width:0;min-height:36px;max-height:36px;"
             "background:#a43838;color:#ffffff;border:0;border-radius:4px;"
-            "padding:0 12px;font-size:14px;font-weight:700;}"
-            "QPushButton:disabled{background:#aeb6bb;color:#eef1f2;}"));
+            "padding:0 8px;font-size:14px;font-weight:600;}"
+            "QPushButton#uutOverviewPromptFailButton:hover{background:#902e2e;}"
+            "QPushButton#uutOverviewPromptFailButton:pressed{background:#7c2828;}"
+            "QPushButton#uutOverviewPromptConfirmButton:disabled,"
+            "QPushButton#uutOverviewPromptPassButton:disabled,"
+            "QPushButton#uutOverviewPromptFailButton:disabled{background:#aeb6bb;color:#eef1f2;}"));
+        m_panel->show();
     }
 
     void setResponseHandler(ResponseHandler handler)
     {
         m_responseHandler = std::move(handler);
     }
+
+    void setInputHandler(InputHandler handler) { m_inputHandler = std::move(handler); }
 
     void retranslatePrompt()
     {
@@ -970,6 +1011,8 @@ public:
         if (m_promptDetails.value(QStringLiteral("title")).toString().trimmed().isEmpty()) {
             m_titleLabel->setText(uiText("Operator Action"));
         }
+        m_statusLabel->setVisible(m_responsePending);
+        updatePanelGeometry();
     }
 
     void configure(const PicoATE::Core::RuntimeEvent& event,
@@ -977,7 +1020,15 @@ public:
                    const QString& serialNumber,
                    int batchParticipantCount = 0)
     {
+        const auto nextId = event.details.value(QStringLiteral("promptInstanceId")).toString();
+        const bool sameInstance = nextId == m_instanceId && !nextId.isEmpty();
+        const auto draft = m_inputEdit->text();
+        const bool pending = sameInstance && m_responsePending;
+        m_configuring = true;
+        if (!sameInstance) m_backdrop = {};
+        if (m_backdrop.isNull()) captureBackdrop();
         m_promptDetails = event.details;
+        m_countdown->configure(event);
         m_batchParticipantCount = batchParticipantCount;
         if (!m_languageConnected) {
             connect(&UiLanguage::instance(), &UiLanguage::languageChanged,
@@ -1007,6 +1058,7 @@ public:
         const auto title = event.details.value(
             QStringLiteral("title")).toString().trimmed();
         m_titleLabel->setText(title.isEmpty() ? uiText("Operator Action") : title);
+        m_titleLabel->setVisible(!title.isEmpty() && title != QStringLiteral("Message"));
         m_messageLabel->setText(event.details.value(
             QStringLiteral("message"), event.message).toString());
         updateImage(event.details.value(QStringLiteral("image")).toString(),
@@ -1015,7 +1067,7 @@ public:
         m_inputEdit->setVisible(m_isInput);
         m_inputEdit->setPlaceholderText(event.details.value(
             QStringLiteral("inputPlaceholder")).toString());
-        m_inputEdit->setText(event.details.value(
+        m_inputEdit->setText(sameInstance ? draft : event.details.value(
             QStringLiteral("defaultValue")).toString());
         setInputError({});
 
@@ -1030,11 +1082,12 @@ public:
             QStringLiteral("passText"), uiText("PASS")).toString());
         m_failButton->setText(event.details.value(
             QStringLiteral("failText"), uiText("FAIL")).toString());
-        m_statusLabel->setVisible(notice || judgment);
+        m_statusLabel->hide();
         m_statusLabel->setText(notice
             ? uiText("The test continues while this instruction is displayed.")
             : uiText("Select the observed result for this UUT."));
-        setResponsePending(false);
+        m_configuring = false;
+        setResponsePending(pending);
         retranslatePrompt();
     }
 
@@ -1044,6 +1097,7 @@ public:
     void setResponsePending(bool pending)
     {
         m_responsePending = pending;
+        m_countdown->setResponsePending(pending);
         for (auto* button : {m_confirmButton, m_passButton, m_failButton}) {
             button->setEnabled(!pending);
         }
@@ -1052,15 +1106,75 @@ public:
             m_statusLabel->show();
             m_statusLabel->setText(uiText("Recording operator response..."));
         }
+        m_statusLabel->setVisible(pending);
+        updatePanelGeometry();
     }
 
 protected:
     void mousePressEvent(QMouseEvent* event) override { event->accept(); }
     void mouseReleaseEvent(QMouseEvent* event) override { event->accept(); }
+    void showEvent(QShowEvent* event) override
+    {
+        QWidget::showEvent(event);
+        updatePanelGeometry();
+        if (m_backdrop.isNull()) {
+            QTimer::singleShot(0, this, [this] {
+                if (isVisible() && m_backdrop.isNull()) {
+                    captureBackdrop();
+                    update();
+                }
+            });
+        }
+    }
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QWidget::resizeEvent(event);
+        updatePanelGeometry();
+    }
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        if (!m_backdrop.isNull()) painter.drawPixmap(rect(), m_backdrop);
+        painter.fillRect(rect(), QColor(231, 239, 245, 160));
+    }
 
 private:
+    void captureBackdrop()
+    {
+        if (!parentWidget() || !parentWidget()->isVisible()) return;
+        const bool visible = isVisible();
+        if (visible) hide();
+        const auto source = parentWidget()->grab();
+        // Cache only a small, softened snapshot; never blur a live widget tree.
+        m_backdrop = source.scaled(qMax(1, source.width() / 12), qMax(1, source.height() / 12),
+                                  Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        if (visible) show();
+    }
+
+    void updatePanelGeometry()
+    {
+        if (!m_panel || !m_bodyContent) return;
+        const int panelWidth = qMax(1, qMin(m_batchParticipantCount > 0 ? 480 : 360, width() - 28));
+        m_panel->setFixedWidth(panelWidth);
+        const int contentWidth = qMax(1, panelWidth - 46);
+        auto* contentLayout = m_bodyContent->layout();
+        contentLayout->activate();
+        int bodyHeight = contentLayout->heightForWidth(contentWidth);
+        if (bodyHeight < 0) bodyHeight = contentLayout->sizeHint().height();
+        const int headerHeight = qMax(m_contextLabel->sizeHint().height(), m_countdown->sizeHint().height());
+        const bool buttons = !m_confirmButton->isHidden() || !m_passButton->isHidden();
+        const int fixedHeight = 32 + headerHeight + (buttons ? 36 + 24 : 12);
+        m_bodyScroll->setFixedHeight(qMax(1, qMin(qBound(40, bodyHeight, 240), height() - 28 - fixedHeight)));
+        m_panelLayout->activate();
+        const int panelHeight = qMin(qMax(1, height() - 28), m_panelLayout->sizeHint().height());
+        m_panel->resize(panelWidth, panelHeight);
+        m_panel->move((width() - panelWidth) / 2, (height() - panelHeight) / 2);
+    }
+
     void submit(PicoATE::Core::OperatorPromptResponse response)
     {
+        if (m_responsePending) return;
         QVariantMap values;
         if (response == PicoATE::Core::OperatorPromptResponse::Submitted &&
             !inputValues(values)) {
@@ -1122,6 +1236,7 @@ private:
         if (!message.isEmpty()) {
             m_inputEdit->setFocus(Qt::OtherFocusReason);
         }
+        updatePanelGeometry();
     }
 
     void updateImage(const QString& image, const QString& sequencePath)
@@ -1143,6 +1258,14 @@ private:
     }
 
     QLabel* m_contextLabel = nullptr;
+    QFrame* m_panel = nullptr;
+    QVBoxLayout* m_panelLayout = nullptr;
+    QScrollArea* m_bodyScroll = nullptr;
+    QWidget* m_bodyContent = nullptr;
+    QPixmap m_backdrop;
+    InputHandler m_inputHandler;
+    bool m_configuring = false;
+    PromptCountdownWidget* m_countdown = nullptr;
     QLabel* m_titleLabel = nullptr;
     QLabel* m_messageLabel = nullptr;
     QLabel* m_imageLabel = nullptr;
@@ -1358,14 +1481,18 @@ public:
     void showOperatorPrompt(
         const PicoATE::Core::RuntimeEvent& event,
         const QString& sequencePath,
-        UutOverviewPromptOverlay::ResponseHandler responseHandler)
+        UutOverviewPromptOverlay::ResponseHandler responseHandler,
+        UutOverviewPromptOverlay::InputHandler inputHandler,
+        bool pending)
     {
         if (!m_promptOverlay) {
             m_promptOverlay = new UutOverviewPromptOverlay(this);
         }
         m_promptOverlay->setResponseHandler(std::move(responseHandler));
-        m_promptOverlay->configure(event, sequencePath, m_entry.serialNumber);
+        m_promptOverlay->setInputHandler(std::move(inputHandler));
         m_promptOverlay->setGeometry(rect().adjusted(2, 2, -2, -2));
+        m_promptOverlay->configure(event, sequencePath, m_entry.serialNumber);
+        m_promptOverlay->setResponsePending(pending);
         m_promptOverlay->show();
         m_promptOverlay->raise();
         update();
@@ -1823,6 +1950,18 @@ MultiUutOverviewWidget::MultiUutOverviewWidget(QWidget* parent)
         "QLabel#uutOverviewMetric{color:#6b7780;font-weight:600;}"));
 }
 
+MultiUutOverviewWidget::~MultiUutOverviewWidget()
+{
+    // Input-method focus-out can emit edits from children during QWidget teardown,
+    // after our prompt cache has already been destroyed.
+    for (auto* child : findChildren<QWidget*>()) {
+        if (auto* overlay = dynamic_cast<UutOverviewPromptOverlay*>(child)) {
+            overlay->setInputHandler({});
+            overlay->setResponseHandler({});
+        }
+    }
+}
+
 void MultiUutOverviewWidget::setModel(UutOverviewModel* model)
 {
     if (m_model == model) {
@@ -1957,13 +2096,22 @@ void MultiUutOverviewWidget::resetRuntimeState()
 }
 
 bool MultiUutOverviewWidget::presentOperatorPrompt(
-    const PicoATE::Core::RuntimeEvent& event,
+    const PicoATE::Core::RuntimeEvent& source,
     const QString& sequencePath)
 {
-    const auto instanceId = event.details.value(
+    const auto instanceId = source.details.value(
         QStringLiteral("promptInstanceId")).toString();
     if (!isVisible() || instanceId.isEmpty()) {
         return false;
+    }
+
+    const auto previous = m_activePrompts.constFind(instanceId);
+    auto event = PromptCountdownWidget::withTiming(source,
+        previous == m_activePrompts.cend() ? nullptr : &previous->event);
+    const bool pending = previous != m_activePrompts.cend() && previous->responsePending;
+    if (previous != m_activePrompts.cend()) {
+        event.details.insert(QStringLiteral("defaultValue"),
+                             previous->event.details.value(QStringLiteral("defaultValue")));
     }
 
     if (isOncePerBatchPrompt(event)) {
@@ -1976,16 +2124,19 @@ bool MultiUutOverviewWidget::presentOperatorPrompt(
             }
         }
 
-        m_activePrompts.insert(instanceId, ActivePrompt{event, sequencePath});
+        m_activePrompts.insert(instanceId, ActivePrompt{event, sequencePath, pending});
         m_currentBatchPromptId = instanceId;
         updateCleanupOverlayVisibility();
         if (!m_batchPromptOverlay) {
             m_batchPromptOverlay = new UutOverviewPromptOverlay(
-                m_cardsHost,
+                m_cleanupOverlayHost,
                 QStringLiteral("multiUutOverviewPromptOverlay"));
         }
         auto* overlay = static_cast<UutOverviewPromptOverlay*>(
             m_batchPromptOverlay);
+        overlay->setInputHandler([this](const QString& id, const QString& text) {
+            rememberPromptInput(id, text);
+        });
         overlay->setResponseHandler(
             [this](const QString& responseInstanceId,
                    PicoATE::Core::OperatorPromptResponse response,
@@ -2010,6 +2161,7 @@ bool MultiUutOverviewWidget::presentOperatorPrompt(
             sequencePath,
             {},
             qMax(1, participantCount));
+        overlay->setResponsePending(pending);
         updateBatchPromptGeometry();
         overlay->show();
         overlay->raise();
@@ -2034,7 +2186,7 @@ bool MultiUutOverviewWidget::presentOperatorPrompt(
         }
     }
 
-    m_activePrompts.insert(instanceId, ActivePrompt{event, sequencePath});
+    m_activePrompts.insert(instanceId, ActivePrompt{event, sequencePath, pending});
     m_currentPromptByUut.insert(event.uutId, instanceId);
     updateCleanupOverlayVisibility();
     card->showOperatorPrompt(
@@ -2046,7 +2198,9 @@ bool MultiUutOverviewWidget::presentOperatorPrompt(
             emit operatorPromptResponseRequested(responseInstanceId,
                                                   response,
                                                   values);
-        });
+        },
+        [this](const QString& id, const QString& text) { rememberPromptInput(id, text); },
+        pending);
     return true;
 }
 
@@ -2090,10 +2244,11 @@ bool MultiUutOverviewWidget::setOperatorPromptResponsePending(
     const QString& instanceId,
     bool pending)
 {
-    const auto prompt = m_activePrompts.constFind(instanceId);
-    if (prompt == m_activePrompts.constEnd()) {
+    const auto prompt = m_activePrompts.find(instanceId);
+    if (prompt == m_activePrompts.end()) {
         return false;
     }
+    prompt->responsePending = pending;
     if (isOncePerBatchPrompt(prompt->event)) {
         if (m_currentBatchPromptId != instanceId || !m_batchPromptOverlay) {
             return false;
@@ -2155,7 +2310,7 @@ void MultiUutOverviewWidget::rebuildCards()
         return;
     }
     const int cardCount = m_model->rowCount();
-    const int columns = cardCount <= 4 ? 2 : 3;
+    const int columns = cardCount == 1 ? 1 : cardCount <= 4 ? 2 : 3;
     const int gridRows = qMax(1, (cardCount + columns - 1) / columns);
     const bool centeredPair = cardCount == 2;
     const int firstCardRow = centeredPair ? 1 : 0;
@@ -2295,6 +2450,7 @@ bool MultiUutOverviewWidget::eventFilter(QObject* watched, QEvent* event)
     if (watched == m_cleanupOverlayHost &&
         (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
         updateCleanupOverlayGeometry();
+        updateBatchPromptGeometry();
     }
     if (watched == m_cardsHost &&
         (event->type() == QEvent::Resize || event->type() == QEvent::Show ||
@@ -2370,6 +2526,14 @@ void MultiUutOverviewWidget::updateSummary()
                   .arg(running).arg(passed).arg(failed).arg(waiting));
 }
 
+void MultiUutOverviewWidget::rememberPromptInput(const QString& instanceId, const QString& text)
+{
+    const auto prompt = m_activePrompts.find(instanceId);
+    if (prompt != m_activePrompts.end()) {
+        prompt->event.details.insert(QStringLiteral("defaultValue"), text);
+    }
+}
+
 void MultiUutOverviewWidget::restoreOperatorPrompt(QAbstractButton* button)
 {
     auto* card = static_cast<UutOverviewCard*>(button);
@@ -2390,7 +2554,9 @@ void MultiUutOverviewWidget::restoreOperatorPrompt(QAbstractButton* button)
             emit operatorPromptResponseRequested(responseInstanceId,
                                                   response,
                                                   values);
-        });
+        },
+        [this](const QString& id, const QString& text) { rememberPromptInput(id, text); },
+        prompt->responsePending);
 }
 
 void MultiUutOverviewWidget::restoreBatchOperatorPrompt()
@@ -2408,10 +2574,13 @@ void MultiUutOverviewWidget::restoreBatchOperatorPrompt()
     }
     if (!m_batchPromptOverlay) {
         m_batchPromptOverlay = new UutOverviewPromptOverlay(
-            m_cardsHost,
+            m_cleanupOverlayHost,
             QStringLiteral("multiUutOverviewPromptOverlay"));
     }
     auto* overlay = static_cast<UutOverviewPromptOverlay*>(m_batchPromptOverlay);
+    overlay->setInputHandler([this](const QString& id, const QString& text) {
+        rememberPromptInput(id, text);
+    });
     overlay->setResponseHandler(
         [this](const QString& responseInstanceId,
                PicoATE::Core::OperatorPromptResponse response,
@@ -2420,12 +2589,21 @@ void MultiUutOverviewWidget::restoreBatchOperatorPrompt()
                                                   response,
                                                   values);
         });
-    const int participantCount = m_model ? m_model->rowCount() : m_cards.size();
+    int participantCount = 0;
+    if (m_model) {
+        for (int row = 0; row < m_model->rowCount(); ++row) {
+            const auto entry = m_model->entryAt(row);
+            if (entry && entry->enabled) ++participantCount;
+        }
+    } else {
+        participantCount = m_cards.size();
+    }
     overlay->configure(
         prompt->event,
         prompt->sequencePath,
         {},
         qMax(1, participantCount));
+    overlay->setResponsePending(prompt->responsePending);
     updateBatchPromptGeometry();
     overlay->show();
     overlay->raise();
@@ -2504,10 +2682,10 @@ void MultiUutOverviewWidget::updateCleanupOverlayGeometry()
 
 void MultiUutOverviewWidget::updateBatchPromptGeometry()
 {
-    if (!m_batchPromptOverlay || !m_cardsHost) {
+    if (!m_batchPromptOverlay || !m_cleanupOverlayHost) {
         return;
     }
-    m_batchPromptOverlay->setGeometry(m_cardsHost->rect());
+    m_batchPromptOverlay->setGeometry(m_cleanupOverlayHost->rect());
     m_batchPromptOverlay->raise();
 }
 

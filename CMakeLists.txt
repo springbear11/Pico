@@ -9,7 +9,7 @@ else()
 endif()
 
 project(${PICOATE_PROJECT_NAME}
-    VERSION 0.3.0
+    VERSION 0.3.1
     DESCRIPTION "Small ATE execution runtime core"
     LANGUAGES CXX
 )

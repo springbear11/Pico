@@ -11,6 +11,7 @@
 #include "MainWindow.h"
 #include "MultiUutOverviewWidget.h"
 #include "OperatorPromptPresenter.h"
+#include "PromptCountdownWidget.h"
 #include "ParserActualDelegate.h"
 #include "ProjectResourcePaths.h"
 #include "ReportExporter.h"
@@ -491,6 +492,12 @@ private slots:
     void flowToolbarExpandsAndCollapsesAtPhaseFirstLevel();
     void flowDropTargetPrefersTestItemInterior();
     void operatorPromptDialogCannotBeDismissedByKeyboardOrWindowControls();
+    void promptCountdownTracksRequestAndModes();
+    void promptCountdownSurvivesRehostingAndRebuilds();
+    void sharedPromptHasCompactCountdown();
+    void compactPromptPanelsPreserveStateAndBounds();
+    void singleUutNavigationStaysVisible_data();
+    void singleUutNavigationStaysVisible();
     void operatorPromptDialogValidatesInputMode();
     void operatorPromptDialogReusesKeyForJudgment();
     void operatorPromptsUseTheirMatchingOverviewCards();
@@ -8804,6 +8811,414 @@ void MainWindowLifecycleTests::productionWindowShowsSkippedStepsAndCleanupAfterF
     QCOMPARE(yieldChart->property("yieldPercent").toDouble(), 0.0);
 }
 
+void MainWindowLifecycleTests::promptCountdownTracksRequestAndModes()
+{
+    using namespace PicoATE::Core;
+    const bool wasChinese = UiLanguage::instance().isChinese();
+    const auto restore = qScopeGuard([&] { UiLanguage::instance().setChinese(wasChinese, false); });
+    QVERIFY(UiLanguage::instance().setChinese(false, false));
+    RuntimeEvent event;
+    event.kind = RuntimeEventKind::OperatorPromptRequested;
+    event.details = {{"promptInstanceId", "timed"}, {"mode", "confirm"}, {"timeoutMs", 3000}};
+    PromptCountdownWidget widget;
+    widget.resize(400, 40);
+    widget.show();
+    auto* progress = widget.findChild<QProgressBar*>("promptTimeoutProgress");
+    auto* label = widget.findChild<QLabel*>("promptTimeoutLabel");
+    QVERIFY(progress && label);
+    QTRY_COMPARE(progress->height(), 7);
+    // Cold Debug widget creation can consume the whole short test timeout.
+    event.timestampUtc = QDateTime::currentDateTimeUtc().addMSecs(-1500);
+    widget.configure(PromptCountdownWidget::withTiming(event));
+    QVERIFY(widget.remainingMs() > 800 && widget.remainingMs() <= 1500);
+    const auto before = widget.remainingMs();
+    const auto beforeValue = progress->value();
+    QTest::qWait(160);
+    QVERIFY(widget.remainingMs() < before);
+    QVERIFY(progress->value() < beforeValue);
+    QVERIFY(UiLanguage::instance().setChinese(true, false));
+    QVERIFY(label->text().contains(QStringLiteral("剩余")));
+    QVERIFY(widget.remainingMs() < before);
+    widget.setResponsePending(true);
+    const auto frozen = widget.remainingMs();
+    QTest::qWait(120);
+    QCOMPARE(widget.remainingMs(), frozen);
+    QVERIFY(label->text().contains(QStringLiteral("已提交")));
+    event.details["promptInstanceId"] = "unlimited";
+    event.details["timeoutMs"] = 0;
+    widget.configure(event);
+    QCOMPARE(widget.remainingMs(), qint64(-1));
+    QCOMPARE(label->text(), QStringLiteral("无超时限制"));
+    event.details["promptInstanceId"] = "condition-notice";
+    event.details["mode"] = "notice";
+    event.details["timeoutMs"] = 60000;
+    widget.configure(event);
+    QCOMPARE(widget.remainingMs(), qint64(-1));
+    QCOMPARE(label->text(), QStringLiteral("后续自动关闭"));
+    event.details["promptInstanceId"] = "expired";
+    event.details["mode"] = "judgment";
+    event.details["timeoutMs"] = 100;
+    widget.configure(event);
+    QCOMPARE(widget.remainingMs(), qint64(0));
+    QCOMPARE(progress->value(), 0);
+    QVERIFY(widget.isVisible());
+    QCOMPARE(label->text(), QStringLiteral("等待超时处理"));
+}
+
+void MainWindowLifecycleTests::promptCountdownSurvivesRehostingAndRebuilds()
+{
+    using namespace PicoATE::Core;
+    QWidget owner;
+    auto* layout = new QVBoxLayout(&owner);
+    auto* stack = new QStackedWidget(&owner);
+    auto* details = new QWidget(stack);
+    auto* overview = new MultiUutOverviewWidget(stack);
+    auto* model = new UutOverviewModel(&owner);
+    stack->addWidget(details);
+    stack->addWidget(overview);
+    layout->addWidget(stack);
+    overview->setModel(model);
+    QVector<RunRequest::UutInput> uuts;
+    for (int i = 1; i <= 2; ++i) {
+        RunRequest::UutInput uut;
+        uut.uutId = QString("UUT-%1").arg(i);
+        uuts.push_back(uut);
+    }
+    model->resetForRun({}, uuts);
+    owner.resize(1100, 680);
+    owner.show();
+    ExecutionViewModel viewModel;
+    OperatorPromptPresenter presenter(&viewModel, &owner);
+    presenter.setOverviewHost(overview);
+    RuntimeEvent event;
+    event.kind = RuntimeEventKind::OperatorPromptRequested;
+    event.timestampUtc = QDateTime::currentDateTimeUtc().addMSecs(-15000);
+    event.uutId = "UUT-1";
+    event.nodeId = "input";
+    event.details = {{"promptInstanceId", "input-1"}, {"mode", "input"}, {"timeoutMs", 120000},
+        {"message", "Enter the measured voltage"}, {"inputType", "number"}};
+    presenter.applyRuntimeEvents({event});
+    auto* dialog = owner.findChild<QDialog*>("operatorPromptDialog");
+    QVERIFY(dialog);
+    auto* countdown = dialog->findChild<PromptCountdownWidget*>();
+    QVERIFY(countdown);
+    QVERIFY(countdown->remainingMs() <= 105000);
+    dialog->findChild<QLineEdit*>("operatorPromptInput")->setText("13.75");
+    const auto screenshotDir = qEnvironmentVariable("PICOATE_PROMPT_COUNTDOWN_SCREENSHOTS");
+    if (!screenshotDir.isEmpty()) {
+        QTest::qWait(50);
+        QVERIFY(dialog->grab().save(QDir(screenshotDir).filePath("dialog-countdown.png")));
+    }
+    QTest::qWait(130);
+    const auto before = countdown->remainingMs();
+    event.timestampUtc = QDateTime::currentDateTimeUtc();
+    presenter.applyRuntimeEvents({event});
+    QVERIFY(countdown->remainingMs() <= before);
+    stack->setCurrentWidget(overview);
+    presenter.rehostActivePromptsInOverview();
+    QTRY_VERIFY(overview->isVisible());
+    auto* card = owner.findChild<QAbstractButton*>("uutOverviewCard_1");
+    QVERIFY(card);
+    auto* hosted = card->findChild<PromptCountdownWidget*>();
+    QVERIFY(hosted && hosted->isVisible());
+    QVERIFY(hosted->remainingMs() <= before);
+    QCOMPARE(card->findChild<QLineEdit*>("uutOverviewPromptInput")->text(), QString("13.75"));
+    const auto beforeRebuild = hosted->remainingMs();
+    QPointer<QAbstractButton> oldCard(card);
+    model->resetForRun({}, uuts);
+    QTRY_VERIFY(oldCard.isNull());
+    card = owner.findChild<QAbstractButton*>("uutOverviewCard_1");
+    QVERIFY(card);
+    hosted = card->findChild<PromptCountdownWidget*>();
+    QVERIFY(hosted && hosted->isVisible());
+    QVERIFY(hosted->remainingMs() <= beforeRebuild);
+    stack->setCurrentWidget(details);
+    QTest::qWait(150);
+    stack->setCurrentWidget(overview);
+    presenter.rehostActivePromptsInOverview();
+    QVERIFY(hosted->remainingMs() <= beforeRebuild - 100);
+    if (!screenshotDir.isEmpty()) {
+        QTest::qWait(50);
+        QVERIFY(owner.grab().save(QDir(screenshotDir).filePath("card-countdown.png")));
+    }
+    presenter.closeAll();
+    QVERIFY(!hosted->isVisible());
+    viewModel.shutdown();
+}
+
+void MainWindowLifecycleTests::sharedPromptHasCompactCountdown()
+{
+    using namespace PicoATE::Core;
+    QWidget owner;
+    auto* layout = new QVBoxLayout(&owner);
+    auto* overview = new MultiUutOverviewWidget(&owner);
+    auto* model = new UutOverviewModel(&owner);
+    overview->setModel(model);
+    layout->addWidget(overview);
+    QVector<RunRequest::UutInput> uuts;
+    for (int i = 1; i <= 4; ++i) {
+        RunRequest::UutInput uut;
+        uut.uutId = QString("UUT-%1").arg(i);
+        uuts.push_back(uut);
+    }
+    model->resetForRun({}, uuts);
+    owner.resize(1100, 760);
+    owner.show();
+    QTest::qWait(30);
+    RuntimeEvent event;
+    event.kind = RuntimeEventKind::OperatorPromptRequested;
+    event.timestampUtc = QDateTime::currentDateTimeUtc().addMSecs(-5000);
+    event.uutId = "UUT-1";
+    event.details = {{"promptInstanceId", "batch-judgment"}, {"mode", "judgment"}, {"timeoutMs", 30000},
+        {"executionScope", "oncePerBatch"}, {"message", "Confirm the indicators on all UUTs"}};
+    QVERIFY(overview->presentOperatorPrompt(event, {}));
+    auto* overlay = owner.findChild<QWidget*>("multiUutOverviewPromptOverlay");
+    QVERIFY(overlay);
+    auto* countdown = overlay->findChild<PromptCountdownWidget*>();
+    auto* pass = overlay->findChild<QPushButton*>("uutOverviewPromptPassButton");
+    QVERIFY(countdown && pass);
+    QVERIFY(countdown->remainingMs() > 22000 && countdown->remainingMs() <= 25000);
+    QTRY_VERIFY(countdown->geometry().bottom() < pass->geometry().top());
+    QVERIFY(!countdown->findChild<QProgressBar*>()->isVisible());
+    const auto clock = countdown->findChild<QLabel*>("promptTimeoutIcon")->pixmap().toImage();
+    QVERIFY(clock.hasAlphaChannel());
+    QCOMPARE(clock.pixelColor(0, 0).alpha(), 0);
+    const auto before = countdown->remainingMs();
+    QTest::qWait(150);
+    event.timestampUtc = QDateTime::currentDateTimeUtc();
+    QVERIFY(overview->presentOperatorPrompt(event, {}));
+    QVERIFY(countdown->remainingMs() < before);
+    const auto screenshotDir = qEnvironmentVariable("PICOATE_PROMPT_COUNTDOWN_SCREENSHOTS");
+    if (!screenshotDir.isEmpty()) {
+        QVERIFY(owner.grab().save(QDir(screenshotDir).filePath("shared-countdown.png")));
+    }
+    QVERIFY(overview->closeOperatorPrompt("batch-judgment"));
+    QVERIFY(!countdown->isVisible());
+}
+
+void MainWindowLifecycleTests::compactPromptPanelsPreserveStateAndBounds()
+{
+    using namespace PicoATE::Core;
+    MultiUutOverviewWidget overview;
+    UutOverviewModel model;
+    overview.setModel(&model);
+    QVector<RunRequest::UutInput> uuts;
+    for (int i = 1; i <= 4; ++i) {
+        RunRequest::UutInput uut;
+        uut.uutId = QString("UUT-%1").arg(i);
+        uuts.push_back(uut);
+    }
+    model.resetForRun({}, uuts);
+    overview.resize(1100, 740);
+    overview.show();
+    QTest::qWait(30);
+    RuntimeEvent event;
+    event.kind = RuntimeEventKind::OperatorPromptRequested;
+    event.timestampUtc = QDateTime::currentDateTimeUtc();
+    event.uutId = "UUT-2";
+    event.details = {{"promptInstanceId", "compact-input"}, {"mode", "input"},
+        {"timeoutMs", 60000}, {"inputType", "number"}, {"message", "Enter measured voltage"}};
+    QVERIFY(overview.presentOperatorPrompt(event, {}));
+    auto* card = overview.findChild<QAbstractButton*>("uutOverviewCard_2");
+    QVERIFY(card);
+    auto* mask = card->findChild<QWidget*>("uutOverviewPromptOverlay");
+    auto* panel = mask->findChild<QFrame*>("uutOverviewPromptPanel");
+    QTRY_VERIFY(mask->rect().contains(panel->geometry()));
+    QTRY_VERIFY(qAbs(panel->geometry().center().x() - mask->rect().center().x()) <= 1);
+    QTRY_VERIFY(qAbs(panel->geometry().center().y() - mask->rect().center().y()) <= 1);
+    QVERIFY(panel->width() <= 360);
+    QVERIFY(panel->height() < mask->height() - 20);
+    QSignalSpy selected(&overview, &MultiUutOverviewWidget::uutActivated);
+    QSignalSpy responses(&overview, &MultiUutOverviewWidget::operatorPromptResponseRequested);
+    QTest::mouseClick(mask, Qt::LeftButton, Qt::NoModifier, QPoint(6, 6));
+    QCOMPARE(selected.count(), 0);
+    QCOMPARE(responses.count(), 0);
+    card->findChild<QLineEdit*>("uutOverviewPromptInput")->setText("13.82");
+    QPointer<QAbstractButton> oldCard(card);
+    model.resetForRun({}, uuts);
+    QTRY_VERIFY(oldCard.isNull());
+    card = overview.findChild<QAbstractButton*>("uutOverviewCard_2");
+    QCOMPARE(card->findChild<QLineEdit*>("uutOverviewPromptInput")->text(), QString("13.82"));
+    QVERIFY(overview.setOperatorPromptResponsePending("compact-input", true));
+    oldCard = card;
+    model.resetForRun({}, uuts);
+    QTRY_VERIFY(oldCard.isNull());
+    card = overview.findChild<QAbstractButton*>("uutOverviewCard_2");
+    QVERIFY(!card->findChild<QLineEdit*>("uutOverviewPromptInput")->isEnabled());
+    QVERIFY(!card->findChild<QPushButton*>("uutOverviewPromptConfirmButton")->isEnabled());
+    QVERIFY(overview.closeOperatorPrompt("compact-input"));
+
+    event.details = {{"promptInstanceId", "long-shared"}, {"mode", "input"},
+        {"timeoutMs", 60000}, {"executionScope", "oncePerBatch"},
+        {"message", QString("Long operator instruction with all required details. ").repeated(25)}};
+    QVERIFY(overview.presentOperatorPrompt(event, {}));
+    overview.resize(780, 520);
+    mask = overview.findChild<QWidget*>("multiUutOverviewPromptOverlay");
+    panel = mask->findChild<QFrame*>("uutOverviewPromptPanel");
+    auto* scroll = panel->findChild<QScrollArea*>("uutOverviewPromptScroll");
+    auto* confirm = panel->findChild<QPushButton*>("uutOverviewPromptConfirmButton");
+    QTRY_VERIFY(mask->rect().contains(panel->geometry()));
+    QTRY_VERIFY(panel->rect().contains(confirm->geometry()));
+    QTRY_VERIFY(qAbs(panel->geometry().center().y() - mask->rect().center().y()) <= 1);
+    QTRY_VERIFY(scroll->verticalScrollBar()->maximum() > 0);
+    panel->findChild<QLineEdit*>("uutOverviewPromptInput")->setText("batch draft");
+    model.resetForRun({}, uuts);
+    QTest::qWait(30);
+    QCOMPARE(panel->findChild<QLineEdit*>("uutOverviewPromptInput")->text(), QString("batch draft"));
+    QVERIFY(overview.setOperatorPromptResponsePending("long-shared", true));
+    model.resetForRun({}, uuts);
+    QTest::qWait(30);
+    QVERIFY(!confirm->isEnabled());
+    QVERIFY(overview.closeOperatorPrompt("long-shared"));
+
+    auto& language = UiLanguage::instance();
+    const auto restoreLanguage = qScopeGuard([&] { language.setChinese(false, false); });
+    QVERIFY(language.setChinese(true, false));
+    overview.resize(1100, 740);
+    QTest::qWait(30);
+    const QStringList modes{"judgment", "notice", "input", "confirm"};
+    const QStringList messages{QStringLiteral("请确认终端风扇是否正常启动"),
+        QStringLiteral("请保持门禁开启，等待后续测试完成"),
+        QStringLiteral("请输入当前测得的输出电压"), QStringLiteral("请连接测试线缆并确认")};
+    for (int i = 0; i < modes.size(); ++i) {
+        event.uutId = QString("UUT-%1").arg(i + 1);
+        event.timestampUtc = QDateTime::currentDateTimeUtc();
+        event.details = {{"promptInstanceId", QString("compact-preview-%1").arg(i)},
+            {"mode", modes[i]}, {"timeoutMs", 30000}, {"message", messages[i]}};
+        QVERIFY(overview.presentOperatorPrompt(event, {}));
+    }
+    QTest::qWait(100);
+    const auto screenshotDir = qEnvironmentVariable("PICOATE_PROMPT_COUNTDOWN_SCREENSHOTS");
+    if (!screenshotDir.isEmpty()) {
+        QVERIFY(overview.grab().save(QDir(screenshotDir).filePath("four-uuts-compact-zh.png")));
+    }
+    for (int i = 1; i <= 4; ++i) {
+        card = overview.findChild<QAbstractButton*>(QString("uutOverviewCard_%1").arg(i));
+        mask = card->findChild<QWidget*>("uutOverviewPromptOverlay");
+        panel = mask->findChild<QFrame*>("uutOverviewPromptPanel");
+        QVERIFY(mask->rect().contains(panel->geometry()));
+        auto* text = panel->findChild<QLabel*>("uutOverviewPromptMessage");
+        QVERIFY(text->height() >= text->fontMetrics().height());
+    }
+    card = overview.findChild<QAbstractButton*>("uutOverviewCard_2");
+    QCOMPARE(card->findChild<QLabel*>("promptTimeoutLabel")->text(), QStringLiteral("后续自动关闭"));
+
+    auto* retiringOverview = new MultiUutOverviewWidget;
+    retiringOverview->setModel(&model);
+    retiringOverview->resize(900, 640);
+    retiringOverview->show();
+    event.details = {{"promptInstanceId", "teardown-input"}, {"mode", "input"},
+        {"executionScope", "oncePerBatch"}, {"message", "Input during teardown"}};
+    QVERIFY(retiringOverview->presentOperatorPrompt(event, {}));
+    QPointer<QLineEdit> retiringInput = retiringOverview->findChild<QLineEdit*>("uutOverviewPromptInput");
+    QVERIFY(retiringInput);
+    QObject observer;
+    bool teardownEditDelivered = false;
+    connect(retiringOverview, &QObject::destroyed, &observer, [&] {
+        if (retiringInput) {
+            teardownEditDelivered = true;
+            retiringInput->setText("Late input-method commit");
+        }
+    });
+    delete retiringOverview;
+    QVERIFY(teardownEditDelivered);
+    QVERIFY(retiringInput.isNull());
+}
+
+void MainWindowLifecycleTests::singleUutNavigationStaysVisible_data()
+{
+    QTest::addColumn<bool>("production");
+    QTest::newRow("admin") << false;
+    QTest::newRow("test") << true;
+}
+
+void MainWindowLifecycleTests::singleUutNavigationStaysVisible()
+{
+    QFETCH(bool, production);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const auto sequencePath = dir.filePath("sequence.json");
+    QFile sequence(sequencePath);
+    QVERIFY(sequence.open(QIODevice::WriteOnly));
+    sequence.write(R"({"id":"single-nav","name":"Single UUT Navigation","groups":[{"id":"main","kind":"main","steps":[{"id":"done","kind":"noop"}]}]})");
+    sequence.close();
+    const auto stationPath = dir.filePath("StationSystem.json");
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(R"({"stationId":"NAV","uutCount":2,"scanDialogEnabled":false,"devices":[]})");
+    station.close();
+    std::unique_ptr<QWidget> window;
+    if (production) {
+        StartupSelection selection;
+        selection.sequencePath = sequencePath;
+        selection.stationPath = stationPath;
+        selection.scanDialogEnabled = false;
+        window = createProductionWindow(selection);
+    } else {
+        auto admin = createMainWindow();
+        QVERIFY(admin->openStationFile(stationPath));
+        QVERIFY(admin->openSequenceFile(sequencePath));
+        admin->findChild<QAction*>("compileAction")->trigger();
+        admin->showRunPage();
+        window = std::move(admin);
+    }
+    window->resize(1200, 820);
+    window->show();
+    auto* model = window->findChild<ExecutionViewModel*>();
+    QVERIFY(model);
+    QTRY_COMPARE(model->state(), UiRunState::Ready);
+    auto* count = window->findChild<QSpinBox*>(production ? "productionUutCountSpinBox" : "uutCountSpinBox");
+    auto* navigation = window->findChild<QWidget*>(production ? "productionUutNavigation" : "adminUutDetailNavigation");
+    auto* overviewButton = window->findChild<QPushButton*>(production ? "productionOverviewButton" : "adminBackToUutOverview");
+    auto* overviewModel = window->findChild<UutOverviewModel*>();
+    auto* stack = window->findChild<QStackedWidget*>(production ? "productionRunStack" : "adminRunStack");
+    auto* overviewPage = window->findChild<QWidget*>(production ? "productionRunOverviewPage" : "adminRunOverviewPage");
+    auto* detailsPage = window->findChild<QWidget*>(production ? "productionRunDetailPage" : "adminRunDetailPage");
+    QVERIFY(count && navigation && overviewButton && overviewModel && stack && overviewPage && detailsPage);
+    QVERIFY(navigation->isVisible());
+    const auto navigationHeight = navigation->height();
+    for (int iteration = 0; iteration < 2; ++iteration) {
+        count->setValue(1);
+        QTRY_COMPARE(overviewModel->rowCount(), 1);
+        QTRY_VERIFY(navigation->isVisible());
+        QTRY_VERIFY(overviewButton->isVisible());
+        QTRY_VERIFY(!overviewButton->isEnabled());
+        QTRY_COMPARE(stack->currentWidget(), detailsPage);
+        QTRY_COMPARE(overviewButton->palette().color(QPalette::Disabled, QPalette::ButtonText),
+                     QColor(QStringLiteral("#a0a8ae")));
+        const auto screenshotDir = qEnvironmentVariable("PICOATE_RELEASE_SCREENSHOTS");
+        if (iteration == 0 && !screenshotDir.isEmpty()) {
+            QVERIFY(window->grab().save(QDir(screenshotDir).filePath(production
+                ? "test-single-uut.png" : "admin-single-uut.png")));
+        }
+        QCOMPARE(navigation->height(), navigationHeight);
+        overviewButton->click();
+        QTRY_COMPARE(stack->currentWidget(), detailsPage);
+        QVERIFY(!overviewButton->isChecked());
+        auto* group = window->findChild<QButtonGroup*>(production ? "productionUutNavigationGroup" : "adminUutNavigationGroup");
+        QVERIFY(group && group->buttons().size() == 1);
+        group->buttons().first()->click();
+        QTRY_COMPARE(stack->currentWidget(), detailsPage);
+        QVERIFY(navigation->isVisible());
+        count->setValue(2);
+        QTRY_COMPARE(overviewModel->rowCount(), 2);
+        QVERIFY(navigation->isVisible());
+        QTRY_VERIFY(overviewButton->isEnabled());
+        overviewButton->click();
+        QTRY_COMPARE(stack->currentWidget(), overviewPage);
+        QVERIFY(overviewButton->isChecked());
+    }
+    count->setValue(1);
+    QTRY_VERIFY(!overviewButton->isEnabled());
+    auto* run = window->findChild<QAction*>(production ? "productionStartAction" : "runAction");
+    QVERIFY(run);
+    run->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(model->report().completed, 10000);
+    QTRY_COMPARE(stack->currentWidget(), detailsPage);
+    QVERIFY(overviewButton->isVisible());
+    QVERIFY(!overviewButton->isEnabled());
+}
+
 void MainWindowLifecycleTests::operatorPromptDialogCannotBeDismissedByKeyboardOrWindowControls()
 {
     QTemporaryDir project;
@@ -9001,6 +9416,23 @@ void MainWindowLifecycleTests::operatorPromptDialogReusesKeyForJudgment()
     QVERIFY(!fail->isHidden());
     QCOMPARE(pass->text(), QStringLiteral("Looks Good"));
     QCOMPARE(fail->text(), QStringLiteral("Fault Found"));
+
+    auto* countdown = dialog->findChild<PromptCountdownWidget*>();
+    auto* hint = dialog->findChild<QLabel*>(QStringLiteral("operatorPromptWaitingLabel"));
+    QVERIFY(countdown && hint);
+    QVERIFY(!hint->isVisible());
+    auto* message = dialog->findChild<QLabel*>(QStringLiteral("operatorPromptMessage"));
+    QTRY_VERIFY(countdown->geometry().bottom() < message->geometry().top());
+    auto* timeoutText = countdown->findChild<QLabel*>(QStringLiteral("promptTimeoutLabel"));
+    QTRY_VERIFY(timeoutText->contentsRect().width() >= timeoutText->fontMetrics().horizontalAdvance(timeoutText->text()));
+    auto* clockIcon = countdown->findChild<QLabel*>(QStringLiteral("promptTimeoutIcon"));
+    QTRY_VERIFY(timeoutText->geometry().left() - clockIcon->geometry().right() <= 8);
+    QTRY_VERIFY(countdown->geometry().bottom() < pass->geometry().top());
+    QVERIFY(countdown->geometry().bottom() < fail->geometry().top());
+    const auto screenshotDir = qEnvironmentVariable("PICOATE_PROMPT_COUNTDOWN_SCREENSHOTS");
+    if (!screenshotDir.isEmpty()) {
+        QVERIFY(dialog->grab().save(QDir(screenshotDir).filePath("judgment-compact.png")));
+    }
 
     PicoATE::Core::RuntimeEvent oldNoticeClosed;
     oldNoticeClosed.kind = PicoATE::Core::RuntimeEventKind::OperatorPromptClosed;
@@ -9327,9 +9759,11 @@ void MainWindowLifecycleTests::oncePerBatchOperatorPromptCoversAllOverviewCards(
         QStringLiteral("multiUutOverviewPromptOverlay"));
     QVERIFY(cardsHost);
     QVERIFY(overlay);
-    QCOMPARE(overlay->parentWidget(), cardsHost);
+    auto* cardsScroll = owner.findChild<QScrollArea*>(QStringLiteral("multiUutOverviewScroll"));
+    QVERIFY(cardsScroll);
+    QCOMPARE(overlay->parentWidget(), cardsScroll->viewport());
     QTRY_VERIFY(overlay->isVisible());
-    QTRY_COMPARE(overlay->geometry(), cardsHost->rect());
+    QTRY_COMPARE(overlay->geometry(), cardsScroll->viewport()->rect());
     QCOMPARE(overlay->findChild<QLabel*>(
                  QStringLiteral("uutOverviewPromptContext"))->text(),
              QStringLiteral("ALL 4 UUTs  |  ONCE PER BATCH"));
