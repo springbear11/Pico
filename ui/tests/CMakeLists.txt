@@ -72,6 +72,8 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/ParserActualDelegate.h
     ../src/ScanDialog.cpp
     ../src/ScanDialog.h
+    ../src/UutNavigationStatus.cpp
+    ../src/UutNavigationStatus.h
     ../src/UutSlotConfigurationDialog.cpp
     ../src/UutSlotConfigurationDialog.h
     ../src/SequenceEditorTreeView.cpp
@@ -88,6 +90,7 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/TitleBarLanguageButton.h
     ../src/MultiUutOverviewWidget.cpp
     ../src/MultiUutOverviewWidget.h
+    ../src/OverviewProgressWidgets.h
     ../src/StepPropertyEditor.cpp
     ../src/StepPropertyEditor.h
     ../src/StationPropertyEditor.cpp

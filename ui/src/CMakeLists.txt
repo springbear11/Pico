@@ -121,6 +121,7 @@ qt_add_executable(PicoATEUi WIN32
     TitleBarLanguageButton.h
     MultiUutOverviewWidget.cpp
     MultiUutOverviewWidget.h
+    OverviewProgressWidgets.h
     OnOffControl.cpp
     OnOffControl.h
     PicoATE.qrc
@@ -140,6 +141,8 @@ qt_add_executable(PicoATEUi WIN32
     ProportionalHeaderView.h
     ScanDialog.cpp
     ScanDialog.h
+    UutNavigationStatus.cpp
+    UutNavigationStatus.h
     UutSlotConfigurationDialog.cpp
     UutSlotConfigurationDialog.h
     SequenceEditorTreeView.cpp

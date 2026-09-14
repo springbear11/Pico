@@ -79,6 +79,8 @@
     <message><source>UUT OVERVIEW</source><translation>多工位总览</translation></message>
     <message><source>UNIT UNDER TEST</source><translation>产品信息</translation></message>
     <message><source>BATCH STATUS</source><translation>整体状态</translation></message>
+    <message><source>OVERALL TEST STATUS</source><translation>整体测试状态</translation></message>
+    <message><source>TOTAL PROGRESS</source><translation>总进度</translation></message>
     <message><source>STATION</source><translation>工站</translation></message>
     <message><source>MODEL</source><translation>产品型号</translation></message>
     <message><source>CUSTOMER ID</source><translation>客户编号</translation></message>
@@ -120,6 +122,7 @@
     <message><source>Running</source><translation>运行中</translation></message>
     <message><source>RUN</source><translation>运行</translation></message>
     <message><source>WAITING</source><translation>等待中</translation></message>
+    <message><source>SCANNED</source><translation>已扫码</translation></message>
     <message><source>Waiting</source><translation>等待中</translation></message>
     <message><source>WAIT</source><translation>等待</translation></message>
     <message><source>PASS</source><translation>成功</translation></message>

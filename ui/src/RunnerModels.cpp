@@ -1031,10 +1031,12 @@ void UutOverviewModel::setSessionElapsedMs(qint64 elapsedMs)
 void UutOverviewModel::setReport(const PicoATE::Core::ExecutionReport& report)
 {
     QHash<PicoATE::Core::UutId, UutOverviewEntry> previousEntries;
+    QHash<PicoATE::Core::UutId, QSet<PicoATE::Core::NodeId>> previousCompleted;
     QVector<UutOverviewEntry> previousOrder;
     previousOrder.reserve(m_rows.size());
     for (const auto& row : std::as_const(m_rows)) {
         previousEntries.insert(row.entry.uutId, row.entry);
+        previousCompleted.insert(row.entry.uutId, row.completedNodes);
         previousOrder.push_back(row.entry);
     }
     beginResetModel();
@@ -1063,6 +1065,9 @@ void UutOverviewModel::setReport(const PicoATE::Core::ExecutionReport& report)
             row.entry.recentSteps = previous->recentSteps;
             row.entry.periodicTasks = previous->periodicTasks;
             if (!uut.completed) {
+                // Retried steps may be pending in a report snapshot again.
+                row.completedNodes = previousCompleted.value(uut.uutId);
+                row.entry.progress = previous->progress;
                 row.entry.retryActive = previous->retryActive;
                 row.entry.retryAttempt = previous->retryAttempt;
                 row.entry.retryMaxAttempts = previous->retryMaxAttempts;
@@ -1081,6 +1086,7 @@ void UutOverviewModel::setReport(const PicoATE::Core::ExecutionReport& report)
             findFirstFailedReportStep(uut.steps, row.entry);
         }
         collectTerminalStepIds(uut.steps, row.knownNodes, row.terminalNodes);
+        row.completedNodes.unite(row.terminalNodes);
         if (uut.completed) {
             if (uut.outcome == PicoATE::Core::NodeOutcome::Cancelled ||
                 report.state == PicoATE::Core::ExecutionState::Aborted) {
@@ -1230,6 +1236,7 @@ void UutOverviewModel::applyRuntimeEvents(
         if (terminalEvent) {
             if (contributesToUutProgress) {
                 row.terminalNodes.insert(event.nodeId);
+                row.completedNodes.insert(event.nodeId);
             }
             appendRecentOverviewStep(
                 row.entry.recentSteps,
@@ -1554,7 +1561,7 @@ void UutOverviewModel::updateDerivedValues(Row& row)
         return;
     }
     row.entry.completedSteps = qMax(
-        row.entry.completedSteps, static_cast<int>(row.terminalNodes.size()));
+        row.entry.completedSteps, static_cast<int>(row.completedNodes.size()));
     if (row.entry.totalSteps <= 0) {
         row.entry.totalSteps = qMax(m_previewStepCount,
                                     static_cast<int>(row.knownNodes.size()));

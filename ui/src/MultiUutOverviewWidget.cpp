@@ -2,6 +2,7 @@
 #include "MultiUutOverviewWidget.h"
 #include "PromptCountdownWidget.h"
 #include "ElidedInfoLabel.h"
+#include "OverviewProgressWidgets.h"
 
 #include "LoadingSpinner.h"
 #include "ProjectResourcePaths.h"
@@ -32,6 +33,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <optional>
 #include <utility>
 
 using PicoATE::Ui::uiText;
@@ -41,7 +43,6 @@ namespace PicoATE::Ui {
 
 namespace {
 
-constexpr int PairCardMinimumHeight = 280;
 constexpr int PairCardMaximumHeight = 460;
 constexpr double PairCardHeightRatio = 0.82;
 
@@ -1145,10 +1146,8 @@ private:
         if (!parentWidget() || !parentWidget()->isVisible()) return;
         const bool visible = isVisible();
         if (visible) hide();
-        const auto source = parentWidget()->grab();
         // Cache only a small, softened snapshot; never blur a live widget tree.
-        m_backdrop = source.scaled(qMax(1, source.width() / 12), qMax(1, source.height() / 12),
-                                  Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        m_backdrop = softenedOverviewSnapshot(parentWidget());
         if (visible) show();
     }
 
@@ -1373,18 +1372,10 @@ public:
             m_recentStateLabels[index]->hide();
             m_recentStepLabels[index]->hide();
         }
-        m_progressPercentLabel = new QLabel(this);
-        m_progressPercentLabel->setObjectName(
-            QStringLiteral("uutOverviewPercent"));
-        m_progressPercentLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        m_progressPercentLabel->setMinimumWidth(78);
-        auto progressFont = m_progressPercentLabel->font();
-        progressFont.setPointSize(progressFont.pointSize() + 11);
-        progressFont.setBold(true);
-        m_progressPercentLabel->setFont(progressFont);
+        m_progressRing = new UutProgressRing(this);
         auto* progressBlock = new QVBoxLayout;
         progressBlock->setSpacing(0);
-        progressBlock->addWidget(m_progressPercentLabel);
+        progressBlock->addWidget(m_progressRing, 0, Qt::AlignRight | Qt::AlignVCenter);
         m_retryLabel = new QLabel(this);
         m_retryLabel->setObjectName(QStringLiteral("uutOverviewRetry"));
         m_retryLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -1395,13 +1386,6 @@ public:
 
         m_periodicPanel = new PeriodicTaskStatusPanel(false, this);
         layout->addWidget(m_periodicPanel);
-
-        m_progress = new QProgressBar(this);
-        m_progress->setObjectName(QStringLiteral("uutOverviewProgress"));
-        m_progress->setRange(0, 100);
-        m_progress->setTextVisible(false);
-        m_progress->setFixedHeight(9);
-        layout->addWidget(m_progress);
 
         auto* footer = new QGridLayout;
         footer->setContentsMargins(0, 0, 0, 0);
@@ -1437,7 +1421,7 @@ public:
 
         for (auto* label : {m_uutLabel, m_stateLabel, m_serialLabel,
                             m_stepCaptionLabel, m_currentStateLabel, m_stepLabel,
-                            m_progressPercentLabel, m_retryLabel,
+                            m_retryLabel,
                             m_completedCaptionLabel,
                             m_progressLabel, m_errorCaptionLabel, m_errorLabel,
                             m_durationCaptionLabel, m_durationLabel}) {
@@ -1450,32 +1434,58 @@ public:
             m_recentStepLabels[index]->setAttribute(
                 Qt::WA_TransparentForMouseEvents);
         }
+        m_resultOverlay = new UutResultOverlay(this);
     }
 
-    void setCenteredRow(bool centered)
+    QAbstractButton* resultOverlay() const { return m_resultOverlay; }
+
+    std::optional<bool> terminalResult() const
     {
-        setSizePolicy(QSizePolicy::Expanding,
-                      centered ? QSizePolicy::Fixed
-                               : QSizePolicy::Expanding);
-        if (!centered) {
-            setMinimumHeight(260);
-            setMaximumHeight(QWIDGETSIZE_MAX);
-        }
+        if (!m_entry.enabled || m_entry.retryActive) return std::nullopt;
+        if (m_entry.state == UutOverviewState::Passed) return true;
+        if (m_entry.state == UutOverviewState::Failed || m_entry.state == UutOverviewState::Stopped) return false;
+        return std::nullopt;
     }
 
-    void setPairLayoutHeight(int availableHeight)
+    void setResultOverlayVisible(bool visible)
     {
-        const int targetHeight = qBound(
-            PairCardMinimumHeight,
-            qRound(qMax(0, availableHeight) * PairCardHeightRatio),
-            PairCardMaximumHeight);
-        if (minimumHeight() == targetHeight &&
-            maximumHeight() == targetHeight) {
+        const auto result = terminalResult();
+        if (!visible || !result.has_value()) {
+            m_resultOverlay->hide();
             return;
         }
-        setMinimumHeight(targetHeight);
-        setMaximumHeight(targetHeight);
-        updateGeometry();
+        m_resultOverlay->setResult(*result, m_entry.uutId, m_entry.serialNumber);
+        m_resultOverlay->setGeometry(rect());
+        if (m_resultOverlay->isHidden()) {
+            m_resultOverlay->setBackdrop({});
+            m_resultOverlay->show();
+            m_resultOverlay->raise();
+            // Capture only after a new card has a visible, laid-out surface.
+            QTimer::singleShot(0, this, [this] {
+                if (!m_resultOverlay->isVisible()) return;
+                const bool promptVisible = m_promptOverlay && !m_promptOverlay->isHidden();
+                if (promptVisible) m_promptOverlay->hide();
+                m_resultOverlay->hide();
+                m_resultOverlay->setBackdrop(softenedOverviewSnapshot(this));
+                m_resultOverlay->show();
+                m_resultOverlay->raise();
+                if (promptVisible) { m_promptOverlay->show(); m_promptOverlay->raise(); }
+            });
+        }
+        // An operator prompt remains actionable even if completion events arrive first.
+        if (m_promptOverlay && !m_promptOverlay->isHidden()) m_promptOverlay->raise();
+    }
+
+    QSize contentMinimumSize(int width) const
+    {
+        const auto minimum = layout()->totalMinimumSize().expandedTo(QSize(300, 260));
+        return minimum.expandedTo(QSize(width, layout()->totalHeightForWidth(qMax(width, minimum.width()))));
+    }
+
+    void setViewportCellSize(const QSize& size)
+    {
+        if (this->size() != size || minimumSize() != size || maximumSize() != size)
+            setFixedSize(size);
     }
 
     void showOperatorPrompt(
@@ -1706,11 +1716,8 @@ public:
             m_recentStepLabels[recentRow]->hide();
             ++recentRow;
         }
-        if (m_progress->value() != entry.progress) {
-            m_progress->setValue(entry.progress);
-        }
-        setTextIfChanged(m_progressPercentLabel,
-                         QStringLiteral("%1%").arg(entry.progress));
+        m_progressRing->setProgress(entry.completedSteps, entry.totalSteps,
+            entry.retryActive ? UutOverviewState::Running : entry.state);
         const bool showRetry = entry.retryActive && entry.retryAttempt > 0 &&
                                entry.retryMaxAttempts > 1;
         m_retryLabel->setVisible(showRetry);
@@ -1758,12 +1765,6 @@ public:
                 "border-radius:4px;padding:5px 10px;font-weight:700;")
                 .arg(colors.background.name(), colors.accent.name(),
                      colors.border.name()));
-            m_progress->setStyleSheet(QStringLiteral(
-                "QProgressBar{background:#e3e8eb;border:0;border-radius:4px;}"
-                "QProgressBar::chunk{background:%1;border-radius:4px;}")
-                .arg(colors.accent.name()));
-            m_progressPercentLabel->setStyleSheet(
-                QStringLiteral("color:%1;").arg(colors.accent.name()));
         }
         m_errorLabel->setStyleSheet(
             hasError
@@ -1789,6 +1790,7 @@ protected:
     void resizeEvent(QResizeEvent* event) override
     {
         QAbstractButton::resizeEvent(event);
+        if (m_resultOverlay) m_resultOverlay->setGeometry(rect());
         if (m_promptOverlay) {
             m_promptOverlay->setGeometry(rect().adjusted(2, 2, -2, -2));
             if (m_promptOverlay->isVisible()) {
@@ -1837,11 +1839,10 @@ private:
     QLabel* m_stepLabel = nullptr;
     std::array<QLabel*, 2> m_recentStateLabels{};
     std::array<QLabel*, 2> m_recentStepLabels{};
-    QLabel* m_progressPercentLabel = nullptr;
+    UutProgressRing* m_progressRing = nullptr;
     QLabel* m_retryLabel = nullptr;
     ResourceStatusBadge* m_resourceBadge = nullptr;
     PeriodicTaskStatusPanel* m_periodicPanel = nullptr;
-    QProgressBar* m_progress = nullptr;
     QLabel* m_completedCaptionLabel = nullptr;
     QLabel* m_progressLabel = nullptr;
     QLabel* m_errorCaptionLabel = nullptr;
@@ -1849,6 +1850,7 @@ private:
     QLabel* m_durationCaptionLabel = nullptr;
     QLabel* m_durationLabel = nullptr;
     UutOverviewPromptOverlay* m_promptOverlay = nullptr;
+    UutResultOverlay* m_resultOverlay = nullptr;
     bool m_initialized = false;
 };
 
@@ -1876,18 +1878,21 @@ MultiUutOverviewWidget::MultiUutOverviewWidget(QWidget* parent)
     root->setSpacing(12);
 
     auto* header = new QHBoxLayout;
+    header->setSpacing(18);
     auto* title = makeUiLabel("UUT OVERVIEW", this);
     title->setObjectName(QStringLiteral("multiUutOverviewTitle"));
     auto titleFont = title->font();
     titleFont.setPointSize(titleFont.pointSize() + 4);
     titleFont.setBold(true);
     title->setFont(titleFont);
-    m_summaryLabel = new QLabel(this);
-    m_summaryLabel->setObjectName(QStringLiteral("multiUutOverviewSummary"));
-    m_summaryLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     header->addWidget(title);
     header->addStretch(1);
-    header->addWidget(m_summaryLabel);
+    m_elapsedLabel = new QLabel(this);
+    m_elapsedLabel->setObjectName(QStringLiteral("multiUutOverviewElapsed"));
+    m_elapsedLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_elapsedLabel->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
+    header->addWidget(m_elapsedLabel);
+    setElapsedText(m_elapsedText);
     root->addLayout(header);
 
     m_sharedResourcePanel = new ResourceStatusPanel(true, this);
@@ -1897,13 +1902,18 @@ MultiUutOverviewWidget::MultiUutOverviewWidget(QWidget* parent)
     root->addWidget(m_sharedPeriodicPanel);
 
     auto* scroll = new QScrollArea(this);
+    m_cardsScroll = scroll;
     scroll->setObjectName(QStringLiteral("multiUutOverviewScroll"));
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_cardsHost = new QWidget(scroll);
     m_cardsHost->setObjectName(QStringLiteral("multiUutOverviewCards"));
+    m_cardsHost->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     m_cardsHost->installEventFilter(this);
     m_cardsLayout = new QGridLayout(m_cardsHost);
+    m_cardsLayout->setSizeConstraint(QLayout::SetNoConstraint);
     m_cardsLayout->setContentsMargins(0, 0, 0, 0);
     m_cardsLayout->setHorizontalSpacing(14);
     m_cardsLayout->setVerticalSpacing(14);
@@ -1934,13 +1944,13 @@ MultiUutOverviewWidget::MultiUutOverviewWidget(QWidget* parent)
         refreshCards();
         refreshSharedPeriodicTasks();
         refreshSharedResources();
-        updateSummary();
+        setElapsedText(m_elapsedText);
     }, Qt::QueuedConnection);
 
     setStyleSheet(QStringLiteral(
         "QWidget#multiUutOverview{background:#f4f6f7;}"
         "QLabel#multiUutOverviewTitle{color:#263139;}"
-        "QLabel#multiUutOverviewSummary{color:#65737c;font-weight:600;}"
+        "QLabel#multiUutOverviewElapsed{color:#344048;font-size:16px;font-weight:600;}"
         "QLabel#uutOverviewSerial{color:#5e6b73;font-weight:600;}"
         "QLabel#uutOverviewCaption,QLabel#uutOverviewStepCaption{"
         "color:#7b878e;font-size:10px;font-weight:700;}"
@@ -1959,6 +1969,18 @@ MultiUutOverviewWidget::~MultiUutOverviewWidget()
             overlay->setInputHandler({});
             overlay->setResponseHandler({});
         }
+        if (auto* result = dynamic_cast<UutResultOverlay*>(child)) {
+            disconnect(result, nullptr, this, nullptr);
+        }
+    }
+}
+
+void MultiUutOverviewWidget::setElapsedText(const QString& elapsed)
+{
+    m_elapsedText = elapsed.trimmed().isEmpty() ? QStringLiteral("00:00.000") : elapsed.trimmed();
+    const auto text = uiText("Elapsed %1").arg(m_elapsedText);
+    if (m_elapsedLabel->text() != text) {
+        m_elapsedLabel->setText(text);
     }
 }
 
@@ -1971,6 +1993,7 @@ void MultiUutOverviewWidget::setModel(UutOverviewModel* model)
         disconnect(m_model, nullptr, this, nullptr);
     }
     m_model = model;
+    m_dismissedResults.clear();
     if (m_model) {
         connect(m_model, &QAbstractItemModel::modelReset,
                 this, &MultiUutOverviewWidget::rebuildCards);
@@ -2087,6 +2110,10 @@ void MultiUutOverviewWidget::beginStopTransition()
 
 void MultiUutOverviewWidget::resetRuntimeState()
 {
+    m_dismissedResults.clear();
+    for (auto* card : std::as_const(m_cards)) {
+        static_cast<UutOverviewCard*>(card)->setResultOverlayVisible(false);
+    }
     m_stopTransitionRequested = false;
     setCleanupActive(false);
     if (auto* overlay = static_cast<CleanupProgressOverlay*>(
@@ -2280,6 +2307,7 @@ void MultiUutOverviewWidget::clearOperatorPrompts()
 
 void MultiUutOverviewWidget::rebuildCards()
 {
+    pruneResultDismissals();
     if (!isVisible()) {
         m_rebuildPending = true;
         return;
@@ -2304,13 +2332,12 @@ void MultiUutOverviewWidget::rebuildCards()
     m_gridRowCount = 0;
     m_gridColumnCount = 0;
     if (!m_model) {
-        updateSummary();
         refreshSharedPeriodicTasks();
         refreshSharedResources();
         return;
     }
     const int cardCount = m_model->rowCount();
-    const int columns = cardCount == 1 ? 1 : cardCount <= 4 ? 2 : 3;
+    const int columns = cardCount <= 2 ? qMax(1, cardCount) : qMin(3, (cardCount + 1) / 2);
     const int gridRows = qMax(1, (cardCount + columns - 1) / columns);
     const bool centeredPair = cardCount == 2;
     const int firstCardRow = centeredPair ? 1 : 0;
@@ -2339,7 +2366,6 @@ void MultiUutOverviewWidget::rebuildCards()
     }
     for (int row = 0; row < m_model->rowCount(); ++row) {
         auto* card = new UutOverviewCard(m_cardsHost);
-        card->setCenteredRow(centeredPair);
         card->setObjectName(QStringLiteral("uutOverviewCard_%1").arg(row + 1));
         if (const auto entry = m_model->entryAt(row)) {
             card->setEntry(*entry);
@@ -2354,6 +2380,14 @@ void MultiUutOverviewWidget::rebuildCards()
             refreshCards();
             emit uutActivated(m_selectedUutId);
         });
+        connect(card->resultOverlay(), &QAbstractButton::clicked, this, [this, card] {
+            if (!m_cards.contains(card)) return;
+            const auto result = card->terminalResult();
+            if (!result.has_value()) return;
+            m_dismissedResults.insert(card->uutId(), *result);
+            card->setResultOverlayVisible(false);
+        });
+        refreshResultOverlay(card);
         restoreOperatorPrompt(card);
         m_cardsLayout->addWidget(card,
                                  firstCardRow + row / columns,
@@ -2363,9 +2397,8 @@ void MultiUutOverviewWidget::rebuildCards()
     }
     m_gridRowCount = centeredPair ? 3 : gridRows;
     m_gridColumnCount = columns;
-    updatePairCardHeights();
+    updateCardLayout();
     restoreBatchOperatorPrompt();
-    updateSummary();
     refreshSharedPeriodicTasks();
     refreshSharedResources();
     updateCleanupOverlayGeometry();
@@ -2382,6 +2415,7 @@ void MultiUutOverviewWidget::refreshCards()
 
 void MultiUutOverviewWidget::refreshCardRange(int firstRow, int lastRow)
 {
+    pruneResultDismissals();
     if (!isVisible()) {
         m_refreshPending = true;
         return;
@@ -2402,8 +2436,37 @@ void MultiUutOverviewWidget::refreshCardRange(int firstRow, int lastRow)
         card->setEntry(*entry);
         card->setChecked(entry->uutId == m_selectedUutId);
         card->setEnabled(entry->enabled);
+        refreshResultOverlay(card);
     }
-    updateSummary();
+    updateCardLayout();
+}
+
+void MultiUutOverviewWidget::pruneResultDismissals()
+{
+    if (!m_model) {
+        m_dismissedResults.clear();
+        return;
+    }
+    for (auto it = m_dismissedResults.begin(); it != m_dismissedResults.end();) {
+        const auto entry = m_model->entryAt(m_model->rowForUut(it.key()));
+        const bool terminal = entry && entry->enabled && !entry->retryActive &&
+            (entry->state == UutOverviewState::Passed || entry->state == UutOverviewState::Failed ||
+             entry->state == UutOverviewState::Stopped);
+        if (!terminal || (entry->state == UutOverviewState::Passed) != it.value()) {
+            it = m_dismissedResults.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void MultiUutOverviewWidget::refreshResultOverlay(QAbstractButton* button)
+{
+    auto* card = static_cast<UutOverviewCard*>(button);
+    const auto result = card->terminalResult();
+    const auto dismissed = m_dismissedResults.constFind(card->uutId());
+    card->setResultOverlayVisible(result.has_value() &&
+        (dismissed == m_dismissedResults.cend() || *dismissed != *result));
 }
 
 void MultiUutOverviewWidget::refreshPeriodicCountdowns()
@@ -2451,14 +2514,13 @@ bool MultiUutOverviewWidget::eventFilter(QObject* watched, QEvent* event)
         (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
         updateCleanupOverlayGeometry();
         updateBatchPromptGeometry();
+        updateCardLayout();
     }
     if (watched == m_cardsHost &&
         (event->type() == QEvent::Resize || event->type() == QEvent::Show ||
          event->type() == QEvent::LayoutRequest)) {
         updateBatchPromptGeometry();
-        if (event->type() == QEvent::Resize || event->type() == QEvent::Show) {
-            updatePairCardHeights();
-        }
+        updateCardLayout();
     }
     return QWidget::eventFilter(watched, event);
 }
@@ -2474,56 +2536,34 @@ void MultiUutOverviewWidget::showEvent(QShowEvent* event)
     updateCleanupOverlayGeometry();
     updateCleanupOverlayVisibility();
     updateBatchPromptGeometry();
-    updatePairCardHeights();
+    updateCardLayout();
 }
 
-void MultiUutOverviewWidget::updatePairCardHeights()
+void MultiUutOverviewWidget::updateCardLayout()
 {
-    if (!m_cardsHost || m_cards.size() != 2) {
-        return;
-    }
-    const int availableHeight = m_cardsHost->height();
+    if (!m_cardsScroll || m_updatingCardLayout) return;
+    m_updatingCardLayout = true;
+    const int count = m_cards.size();
+    const int columns = count <= 2 ? qMax(1, count) : qMin(3, (count + 1) / 2);
+    const int rows = qMax(1, (count + columns - 1) / columns);
+    constexpr int spacing = 14;
+    const auto available = m_cardsScroll->viewport()->size();
+    int cellWidth = qMax(1, (available.width() - spacing * (columns - 1)) / columns);
     for (auto* button : std::as_const(m_cards)) {
-        static_cast<UutOverviewCard*>(button)->setPairLayoutHeight(
-            availableHeight);
+        cellWidth = qMax(cellWidth, static_cast<UutOverviewCard*>(button)->contentMinimumSize(0).width());
     }
-}
-
-void MultiUutOverviewWidget::updateSummary()
-{
-    int running = 0;
-    int passed = 0;
-    int failed = 0;
-    int waiting = 0;
-    int disabled = 0;
-    if (m_model) {
-        for (int row = 0; row < m_model->rowCount(); ++row) {
-            const auto entry = m_model->entryAt(row);
-            if (!entry) {
-                continue;
-            }
-            if (entry->retryActive) {
-                ++running;
-                continue;
-            }
-            switch (entry->state) {
-            case UutOverviewState::Disabled: ++disabled; break;
-            case UutOverviewState::Running:
-            case UutOverviewState::Paused: ++running; break;
-            case UutOverviewState::Passed: ++passed; break;
-            case UutOverviewState::Failed:
-            case UutOverviewState::Stopped: ++failed; break;
-            case UutOverviewState::Waiting: ++waiting; break;
-            }
-        }
-    }
-    m_summaryLabel->setText(
-        disabled > 0
-            ? uiText("RUNNING %1   PASS %2   FAIL %3   WAITING %4   DISABLED %5")
-                  .arg(running).arg(passed).arg(failed).arg(waiting)
-                  .arg(disabled)
-            : uiText("RUNNING %1   PASS %2   FAIL %3   WAITING %4")
-                  .arg(running).arg(passed).arg(failed).arg(waiting));
+    int cellHeight = qMax(1, (available.height() - spacing * (qMin(rows, 2) - 1)) / qMin(rows, 2));
+    if (count == 2) cellHeight = qMin(PairCardMaximumHeight,
+                                    qRound(qMax(1, available.height() - spacing * 2) * PairCardHeightRatio));
+    for (auto* button : std::as_const(m_cards))
+        cellHeight = qMax(cellHeight, static_cast<UutOverviewCard*>(button)->contentMinimumSize(cellWidth).height());
+    // Preserve every field and its original font/placement, even when the viewport is too small.
+    m_cardsHost->setMinimumSize(count ? cellWidth * columns + spacing * (columns - 1) : 0,
+                               count ? cellHeight * rows + spacing * (rows - 1) + (count == 2 ? spacing * 2 : 0) : 0);
+    for (auto* button : std::as_const(m_cards))
+        static_cast<UutOverviewCard*>(button)->setViewportCellSize(QSize(cellWidth, cellHeight));
+    m_cardsLayout->activate();
+    m_updatingCardLayout = false;
 }
 
 void MultiUutOverviewWidget::rememberPromptInput(const QString& instanceId, const QString& text)

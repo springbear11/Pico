@@ -8,6 +8,7 @@
 #include "ExecutionViewModel.h"
 #include "FieldDeviceDialog.h"
 #include "MultiUutOverviewWidget.h"
+#include "OverviewProgressWidgets.h"
 #include "OperatorPromptPresenter.h"
 #include "ParserActualDelegate.h"
 #include "ProductRoutingDialog.h"
@@ -17,6 +18,7 @@
 #include "RunnerModels.h"
 #include "RunArtifactWriter.h"
 #include "ScanDialog.h"
+#include "UutNavigationStatus.h"
 #include "UutSlotConfigurationDialog.h"
 #include "YieldDonutWidget.h"
 
@@ -235,28 +237,20 @@ public:
         root->setSpacing(10);
 
         auto* stateArea = new QWidget(this);
+        m_stateArea = stateArea;
         stateArea->setObjectName(
             QStringLiteral("productionOverviewSummaryStateArea"));
         stateArea->setMinimumWidth(170);
-        stateArea->setMaximumWidth(205);
         auto* stateLayout = new QVBoxLayout(stateArea);
         stateLayout->setContentsMargins(0, 0, 0, 0);
         stateLayout->setSpacing(3);
-        auto* stateCaption = makeUiLabel("BATCH STATUS", stateArea);
-        stateCaption->setObjectName(
-            QStringLiteral("productionOverviewSummaryCaption"));
-        m_stateLabel = new QLabel(uiText("WAITING"), stateArea);
+        m_stateLabel = new BatchStatusProgressLabel(stateArea);
+        m_stateLabel->setText(uiText("WAITING"));
         m_stateLabel->setObjectName(
             QStringLiteral("productionOverviewSummaryState"));
         m_stateLabel->setAlignment(Qt::AlignCenter);
-        m_stateLabel->setMinimumWidth(112);
-        m_elapsedLabel = new QLabel(uiText("Elapsed 00:00.000"), stateArea);
-        m_elapsedLabel->setObjectName(
-            QStringLiteral("productionOverviewSummaryElapsed"));
-        stateLayout->addWidget(stateCaption);
-        stateLayout->addWidget(m_stateLabel);
-        stateLayout->addWidget(m_elapsedLabel);
-        root->addWidget(stateArea);
+        stateLayout->addWidget(m_stateLabel, 1);
+        root->addWidget(stateArea, 2);
 
         root->addWidget(createDivider());
 
@@ -343,15 +337,12 @@ public:
         m_stateLabel->setText(
             productionOverviewStateText(state, stopRequested));
 
-        m_stateLabel->setStyleSheet(runStatusStyle(state, stopRequested) + QStringLiteral("padding:5px 10px;font-size:20px;font-weight:700;"));
+        m_stateLabel->setState(state, stopRequested);
     }
 
-    void setElapsedText(const QString& elapsed)
+    void setStepCounts(qint64 completed, qint64 total)
     {
-        const auto text = uiText("Elapsed %1").arg(elapsed);
-        if (m_elapsedLabel->text() != text) {
-            m_elapsedLabel->setText(text);
-        }
+        m_stateLabel->setStepCounts(completed, total);
     }
 
     void setStationDetails(const QString& station,
@@ -385,6 +376,15 @@ public:
         m_yieldPassed = passed;
         m_yieldFailed = failed;
         m_yieldChart->setCounts(passed, failed);
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        if (m_stateArea) {
+            m_stateArea->setMaximumWidth(qMax(170, contentsRect().width() * 2 / 9));
+        }
+        QFrame::resizeEvent(event);
     }
 
 private:
@@ -450,8 +450,8 @@ private:
         }
     }
 
-    QLabel* m_stateLabel = nullptr;
-    QLabel* m_elapsedLabel = nullptr;
+    QWidget* m_stateArea = nullptr;
+    BatchStatusProgressLabel* m_stateLabel = nullptr;
     YieldDonutWidget* m_yieldChart = nullptr;
     QLabel* m_stationLabel = nullptr;
     QLabel* m_modelLabel = nullptr;
@@ -502,6 +502,7 @@ ProductionWindow::ProductionWindow(StartupSelection selection, QWidget* parent)
     m_logProxy->setSourceModel(m_logModel);
     m_runArtifactWriter = std::make_unique<RunArtifactWriter>();
     m_scanDialog = new ScanDialog(this);
+    m_uutNavigationStatus = new UutNavigationStatus(m_overviewModel, m_scanDialog, m_viewModel, this);
     // Auto routing must see the raw SN before any product-specific Station
     // rules are applied. The matched Station is validated in beginAutoRoutedRun.
     m_scanDialog->setValidationRules(
@@ -1189,7 +1190,6 @@ void ProductionWindow::buildUi()
             font-size: 10px;
             font-weight: 700;
         }
-        QLabel#productionOverviewSummaryElapsed { color: #344048; font-size: 15px; font-weight: 700; }
         QLabel[productionOverviewValue="true"] {
             color: #253139;
             font-size: 14px;
@@ -2126,7 +2126,7 @@ void ProductionWindow::rebuildUutNavigation()
     definitions.reserve(m_overviewModel->rowCount());
     auto buttonFont = m_overviewButton->font();
     buttonFont.setBold(true);
-    int commonButtonWidth = 92;
+    int commonButtonWidth = 100;
     for (int row = 0; row < m_overviewModel->rowCount(); ++row) {
         const auto entry = m_overviewModel->entryAt(row);
         if (!entry) {
@@ -2134,12 +2134,10 @@ void ProductionWindow::rebuildUutNavigation()
         }
         const auto prefix = QStringLiteral("UUT%1").arg(row + 1);
         const auto serialNumber = entry->serialNumber.trimmed();
-        const auto text = serialNumber.isEmpty()
-            ? prefix
-            : QStringLiteral("%1-%2").arg(prefix, serialNumber);
+        const auto text = prefix;
         commonButtonWidth = qMax(
             commonButtonWidth,
-            QFontMetrics(buttonFont).horizontalAdvance(text) + 30);
+            QFontMetrics(buttonFont).horizontalAdvance(text) + 48);
         definitions.push_back(
             {entry->uutId, serialNumber, text, entry->enabled});
     }
@@ -2169,6 +2167,7 @@ void ProductionWindow::rebuildUutNavigation()
                 : uiText("%1 | Disabled for this run").arg(definition.uutId));
         m_uutNavigationGroup->addButton(button, row + 1);
         m_uutNavigationLayout->addWidget(button);
+        m_uutNavigationStatus->bind(button, row);
         button->show();
     }
     if (auto* host = m_uutNavigationLayout->parentWidget()) {
@@ -2344,8 +2343,8 @@ void ProductionWindow::updateElapsedTime()
                                 .arg(minutes, 2, 10, QLatin1Char('0'))
                                 .arg(seconds, 2, 10, QLatin1Char('0'))
                                 .arg(milliseconds, 3, 10, QLatin1Char('0')));
-    if (m_overviewSummary) {
-        m_overviewSummary->setElapsedText(m_elapsedLabel->text());
+    if (m_uutOverview) {
+        m_uutOverview->setElapsedText(m_elapsedLabel->text());
     }
 }
 
@@ -2381,13 +2380,15 @@ void ProductionWindow::updateOverviewSummary()
     m_overviewSummary->setRunState(
         m_viewModel ? m_viewModel->state() : UiRunState::Empty,
         m_stopRequested);
-    m_overviewSummary->setElapsedText(labelText(m_elapsedLabel));
+    m_uutOverview->setElapsedText(labelText(m_elapsedLabel));
     m_overviewSummary->setStationDetails(
         labelText(m_stationLabel), labelText(m_modelLabel),
         labelText(m_customerIdLabel), labelText(m_orderLabel),
         labelText(m_testerLabel), labelText(m_jigLabel));
     m_overviewSummary->setYieldCounts(m_passedUnits, m_failedUnits);
 
+    qint64 completedSteps = 0;
+    qint64 totalSteps = 0;
     int running = 0;
     int passed = 0;
     int failed = 0;
@@ -2395,9 +2396,11 @@ void ProductionWindow::updateOverviewSummary()
     if (m_overviewModel) {
         for (int row = 0; row < m_overviewModel->rowCount(); ++row) {
             const auto entry = m_overviewModel->entryAt(row);
-            if (!entry) {
+            if (!entry || !entry->enabled) {
                 continue;
             }
+            totalSteps += qMax(0, entry->totalSteps);
+            completedSteps += qBound(0, entry->completedSteps, qMax(0, entry->totalSteps));
             switch (entry->state) {
             case UutOverviewState::Disabled:
                 break;
@@ -2419,6 +2422,7 @@ void ProductionWindow::updateOverviewSummary()
         }
     }
     m_overviewSummary->setCounts(running, passed, failed, waiting);
+    m_overviewSummary->setStepCounts(completedSteps, totalSteps);
 }
 
 void ProductionWindow::updateStationSummary()

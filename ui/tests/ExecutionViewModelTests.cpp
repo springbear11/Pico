@@ -425,6 +425,7 @@ private slots:
     void uutStepModelResetsLoopAndRetryPresentation();
     void uutStepModelBuildsSingleUutPhaseLayout();
     void uutOverviewModelTracksIndependentRuntimeState();
+    void uutOverviewProgressSurvivesReportRefresh();
     void uutOverviewModelKeepsDisabledPhysicalSlots();
     void uutOverviewModelPreservesFailureAcrossSharedCleanup();
     void uutStepModelFiltersSelectedUutAndKeepsSessionPhases();
@@ -2551,6 +2552,57 @@ void ExecutionViewModelTests::uutStepModelBuildsSingleUutPhaseLayout()
     QVERIFY(measure.isValid());
     QCOMPARE(model.data(model.parent(measure)).toString(), QStringLiteral("MAIN"));
     QCOMPARE(model.data(measure).toString(), QStringLiteral("Measure"));
+}
+
+void ExecutionViewModelTests::uutOverviewProgressSurvivesReportRefresh()
+{
+    using namespace PicoATE::Core;
+    StepReport first;
+    first.stepId = "first";
+    first.nodePath = "main.first";
+    StepReport second;
+    second.stepId = "second";
+    second.nodePath = "main.second";
+    UutReport uut;
+    uut.uutId = "UUT-1";
+    uut.steps = {first, second};
+    ExecutionReport preview;
+    preview.uuts = {uut};
+    UutOverviewModel model;
+    model.resetForRun(preview, {});
+    RuntimeEvent event;
+    event.uutId = "UUT-1";
+    event.nodeId = "main.first";
+    event.kind = RuntimeEventKind::NodeStateChanged;
+    event.activationState = ActivationState::Passed;
+    event.outcome = NodeOutcome::Passed;
+    model.applyRuntimeEvents({event, event});
+    QCOMPARE(model.entryAt(0)->completedSteps, 1);
+    model.setReport(preview);
+    QCOMPARE(model.entryAt(0)->completedSteps, 1);
+    QCOMPARE(model.entryAt(0)->progress, 50);
+    event.kind = RuntimeEventKind::RetryScheduled;
+    event.activationState = ActivationState::Running;
+    event.details = {{"maxAttempts", 3}, {"retryAttemptIndex", 1}};
+    model.applyRuntimeEvents({event});
+    model.setReport(preview);
+    QCOMPARE(model.entryAt(0)->completedSteps, 1);
+    QCOMPARE(model.entryAt(0)->progress, 50);
+    event.nodeId = "heartbeat";
+    event.kind = RuntimeEventKind::NodeStateChanged;
+    event.activationState = ActivationState::Passed;
+    event.details = {{"periodicInvocation", true}};
+    model.applyRuntimeEvents({event});
+    QCOMPARE(model.entryAt(0)->completedSteps, 1);
+    event.nodeId = "main.second";
+    event.activationState = ActivationState::Skipped;
+    event.details.clear();
+    model.applyRuntimeEvents({event});
+    QCOMPARE(model.entryAt(0)->completedSteps, 2);
+    QCOMPARE(model.entryAt(0)->progress, 100);
+    model.resetForRun(preview, {});
+    QCOMPARE(model.entryAt(0)->completedSteps, 0);
+    QCOMPARE(model.entryAt(0)->progress, 0);
 }
 
 void ExecutionViewModelTests::uutOverviewModelTracksIndependentRuntimeState()

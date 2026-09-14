@@ -63,6 +63,7 @@ class StationSettingsEditor;
 class StepPropertyEditor;
 class UutStepModel;
 class UutOverviewModel;
+class UutNavigationStatus;
 class UutRuntimeTimelineProxyModel;
 class YieldDonutWidget;
 
@@ -241,6 +242,7 @@ private:
     HistoryModel* m_historyModel = nullptr;
     UutStepModel* m_uutStepModel = nullptr;
     UutOverviewModel* m_uutOverviewModel = nullptr;
+    UutNavigationStatus* m_uutNavigationStatus = nullptr;
     UutRuntimeTimelineProxyModel* m_runtimeTimelineProxy = nullptr;
     AttemptModel* m_attemptModel = nullptr;
     MeasurementModel* m_measurementModel = nullptr;

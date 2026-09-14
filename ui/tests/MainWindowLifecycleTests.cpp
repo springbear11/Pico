@@ -10,6 +10,7 @@
 #include "LoadingSpinner.h"
 #include "MainWindow.h"
 #include "MultiUutOverviewWidget.h"
+#include "OverviewProgressWidgets.h"
 #include "OperatorPromptPresenter.h"
 #include "PromptCountdownWidget.h"
 #include "ParserActualDelegate.h"
@@ -498,6 +499,15 @@ private slots:
     void compactPromptPanelsPreserveStateAndBounds();
     void singleUutNavigationStaysVisible_data();
     void singleUutNavigationStaysVisible();
+    void overviewStatusAndElapsedLayout_data();
+    void overviewStatusAndElapsedLayout();
+    void uutNavigationReflectsScanningAndResults_data();
+    void uutNavigationReflectsScanningAndResults();
+    void overviewSixUutsPreserveCardLayout_data();
+    void overviewSixUutsPreserveCardLayout();
+    void overviewProgressWidgetsRenderCountsAndOutcomes();
+    void batchStatusSchemeAPreservesHierarchy();
+    void uutResultOverlaysDismissAndReset();
     void operatorPromptDialogValidatesInputMode();
     void operatorPromptDialogReusesKeyForJudgment();
     void operatorPromptsUseTheirMatchingOverviewCards();
@@ -850,6 +860,12 @@ void MainWindowLifecycleTests::adminDisabledSlotsRemainVisible()
     QCOMPARE(overview->model()->rowCount(), 4);
     QCOMPARE(overview->model()->entryAt(0)->state, UutOverviewState::Disabled);
     QCOMPARE(overview->model()->entryAt(2)->state, UutOverviewState::Disabled);
+    auto* batchProgress = window.findChild<QLabel*>("adminOverviewSummaryState");
+    QVERIFY(batchProgress);
+    const int enabledTotal = overview->model()->entryAt(1)->totalSteps +
+                             overview->model()->entryAt(3)->totalSteps;
+    QTRY_COMPARE(batchProgress->property("totalSteps").toLongLong(), qint64(enabledTotal));
+    QCOMPARE(batchProgress->property("progressPercent").toInt(), 100);
     const auto screenshots = qEnvironmentVariable("PICOATE_LANGUAGE_SCREENSHOTS");
     if (!screenshots.isEmpty()) {
         window.resize(1366, 768);
@@ -5535,6 +5551,10 @@ void MainWindowLifecycleTests::multiUutOverviewShowsRetryAndRecentSteps()
     QCOMPARE(currentState->text(), QStringLiteral("RETRY"));
     QCOMPARE(latestRecent->text(), QStringLiteral("Configure Device"));
     QCOMPARE(earlierRecent->text(), QStringLiteral("Open Device"));
+    auto* ring = card->findChild<QWidget*>("uutOverviewProgressRing");
+    QVERIFY(ring);
+    QCOMPARE(ring->property("centerText").toString(), QString("2 / 3"));
+    QVERIFY(!card->findChild<QProgressBar*>("uutOverviewProgress"));
 
     RuntimeEvent sharedPeriodic;
     sharedPeriodic.kind = RuntimeEventKind::PeriodicTaskStateChanged;
@@ -5592,6 +5612,7 @@ void MainWindowLifecycleTests::multiUutOverviewShowsRetryAndRecentSteps()
     QCOMPARE(currentStep->text(), QStringLiteral("Read Registers"));
 
     RuntimeEvent acquiredResource;
+    QCOMPARE(ring->property("centerText").toString(), QString("2 / 3"));
     acquiredResource.kind = RuntimeEventKind::ResourceStateChanged;
     acquiredResource.uutId = QStringLiteral("UUT-1");
     acquiredResource.nodeId = QStringLiteral("main.third");
@@ -5670,6 +5691,7 @@ void MainWindowLifecycleTests::multiUutOverviewShowsRetryAndRecentSteps()
     finalFailedAttempt.activationState = ActivationState::Failed;
     finalFailedAttempt.details.insert(QStringLiteral("retryAttemptIndex"), 3);
     model.applyRuntimeEvents({finalFailedAttempt});
+    QVERIFY(ring->property("centerText").toString().contains('/'));
 
     RuntimeEvent cleanup = retry;
     cleanup.uutId.clear();
@@ -5694,6 +5716,8 @@ void MainWindowLifecycleTests::multiUutOverviewShowsRetryAndRecentSteps()
     failedUut.outcome = NodeOutcome::Failed;
     failedUut.details.insert(QStringLiteral("hasError"), true);
     model.applyRuntimeEvents({failedUut});
+    QCOMPARE(ring->property("resultMark").toString(), QString(QChar(0x00d7)));
+    QCOMPARE(ring->property("centerText").toString(), QString("2 / 3"));
     QTRY_COMPARE(caption->text(), QStringLiteral("FAILED STEP"));
     QCOMPARE(currentState->text(), QStringLiteral("FAIL"));
     QCOMPARE(currentStep->text(), QStringLiteral("Read Registers"));
@@ -5984,8 +6008,8 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
         QStringLiteral("uutOverviewSerial"));
     auto* cardStepCaption = secondCard->findChild<QLabel*>(
         QStringLiteral("uutOverviewCaption"));
-    auto* cardPercent = secondCard->findChild<QLabel*>(
-        QStringLiteral("uutOverviewPercent"));
+    auto* cardRing = secondCard->findChild<QWidget*>(
+        QStringLiteral("uutOverviewProgressRing"));
     auto* cardError = secondCard->findChild<QLabel*>(
         QStringLiteral("uutOverviewError"));
     auto* cardRecent = secondCard->findChild<QLabel*>(
@@ -5993,13 +6017,13 @@ void MainWindowLifecycleTests::adminMultiUutRunShowsOverviewAndNavigatesToDetail
     QVERIFY(cardState);
     QVERIFY(cardSerial);
     QVERIFY(cardStepCaption);
-    QVERIFY(cardPercent);
+    QVERIFY(cardRing);
     QVERIFY(cardError);
     QVERIFY(cardRecent);
     QVERIFY(!cardState->text().isEmpty());
     QVERIFY(cardSerial->text().startsWith(QStringLiteral("SN")));
     QVERIFY(!cardStepCaption->text().isEmpty());
-    QVERIFY(cardPercent->text().endsWith(QLatin1Char('%')));
+    QVERIFY(!cardRing->property("centerText").toString().contains(QLatin1Char('%')));
     QVERIFY(!cardError->isHidden());
     QVERIFY(!cardError->text().isEmpty());
     QVERIFY(!cardRecent->isHidden());
@@ -8183,8 +8207,7 @@ void MainWindowLifecycleTests::productionUutControlsConfigureRuntimeSlots()
     QCOMPARE(overviewStation->text(), QStringLiteral("runtime-slots"));
     QCOMPARE(overviewWaiting->text(), QStringLiteral("4"));
     QCOMPARE(overviewStatus->text(), QStringLiteral("READY"));
-    QVERIFY(overviewStatus->styleSheet().contains(
-        QStringLiteral("border:1px solid")));
+    QCOMPARE(overviewStatus->property("progressPercent").toInt(), 0);
     auto* overviewButton = window.findChild<QPushButton*>(
         QStringLiteral("productionOverviewButton"));
     QVERIFY(overviewButton);
@@ -8251,6 +8274,11 @@ void MainWindowLifecycleTests::productionUutControlsConfigureRuntimeSlots()
     QCOMPARE(disabledFinal->uutId, QStringLiteral("UUT-3"));
     QCOMPARE(disabledFinal->state, UutOverviewState::Disabled);
     QVERIFY(!disabledFinal->enabled);
+    const int enabledTotal = overviewModel->entryAt(0)->totalSteps +
+                             overviewModel->entryAt(1)->totalSteps +
+                             overviewModel->entryAt(3)->totalSteps;
+    QTRY_COMPARE(overviewStatus->property("totalSteps").toLongLong(), qint64(enabledTotal));
+    QCOMPARE(overviewStatus->property("progressPercent").toInt(), 100);
     QCOMPARE(stack->currentWidget(), overviewPage);
 
     auto* uut2Button = window.findChild<QPushButton*>(
@@ -9217,6 +9245,948 @@ void MainWindowLifecycleTests::singleUutNavigationStaysVisible()
     QTRY_COMPARE(stack->currentWidget(), detailsPage);
     QVERIFY(overviewButton->isVisible());
     QVERIFY(!overviewButton->isEnabled());
+}
+
+void MainWindowLifecycleTests::uutNavigationReflectsScanningAndResults_data()
+{
+    QTest::addColumn<bool>("production");
+    QTest::newRow("admin") << false;
+    QTest::newRow("test") << true;
+}
+
+void MainWindowLifecycleTests::uutNavigationReflectsScanningAndResults()
+{
+    using namespace PicoATE::Core;
+    QFETCH(bool, production);
+    QTemporaryDir dir;
+    const auto sequencePath = dir.filePath("sequence.json");
+    QFile sequence(sequencePath);
+    QVERIFY(sequence.open(QIODevice::WriteOnly));
+    sequence.write(R"({"id":"navigation-status","name":"Navigation Status","groups":[{"id":"main","kind":"main","steps":[{"id":"wait","kind":"wait","ms":800}]}]})");
+    sequence.close();
+    const auto stationPath = dir.filePath("StationSystem.json");
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(R"({"stationId":"ATE-01","model":"Terminal","uutCount":4,"scanDialogEnabled":false,"devices":[]})");
+    station.close();
+    std::unique_ptr<QWidget> window;
+    if (production) {
+        StartupSelection selection;
+        selection.sequencePath = sequencePath;
+        selection.stationPath = stationPath;
+        selection.scanDialogEnabled = false;
+        window = createProductionWindow(selection);
+    } else {
+        auto admin = createMainWindow();
+        QVERIFY(admin->openStationFile(stationPath));
+        QVERIFY(admin->openSequenceFile(sequencePath));
+        admin->findChild<QAction*>("compileAction")->trigger();
+        admin->showRunPage();
+        window = std::move(admin);
+    }
+    window->resize(1280, 850);
+    window->show();
+    auto* execution = window->findChild<ExecutionViewModel*>();
+    auto* scanner = window->findChild<ScanDialog*>();
+    auto* overview = window->findChild<MultiUutOverviewWidget*>();
+    QVERIFY(execution && scanner && overview);
+    QTRY_COMPARE(execution->state(), UiRunState::Ready);
+    auto* model = overview->model();
+    QTRY_COMPARE(model->rowCount(), 4);
+    const auto buttonAt = [&](int row) {
+        return window->findChild<QPushButton*>(QString(production ? "productionUutButton_%1" : "adminUutButton_%1").arg(row));
+    };
+    const auto stateAt = [&](int row) { return buttonAt(row)->property("uutNavigationState").toString(); };
+    const auto capture = [&](const QString& suffix) {
+        const auto output = qEnvironmentVariable("PICOATE_UUT_NAVIGATION_SCREENSHOTS");
+        if (output.isEmpty()) return true;
+        QTest::qWait(30);
+        auto* navigation = window->findChild<QWidget*>(production ? "productionUutNavigation" : "adminUutDetailNavigation");
+        return navigation && navigation->grab().save(QDir(output).filePath(
+            QString(production ? "test-" : "admin-") + suffix + ".png"));
+    };
+    const int width = buttonAt(1)->width();
+    for (int row = 1; row <= 4; ++row) {
+        QTRY_VERIFY(buttonAt(row)->isVisible());
+        QCOMPARE(buttonAt(row)->text(), QString("UUT%1").arg(row));
+        QCOMPARE(buttonAt(row)->width(), width);
+        QCOMPARE(stateAt(row), QString("idle"));
+        QVERIFY(!buttonAt(row)->icon().isNull());
+    }
+    scanner->setSlotCount(4);
+    scanner->showForNextScan();
+    auto* edit = scanner->findChild<QLineEdit*>("barcodeEdit");
+    QVERIFY(edit);
+    QSignalSpy progress(scanner, &ScanDialog::batchProgressChanged);
+    SnValidationRules rules;
+    rules.allowedRegex = QStringLiteral("^[A-Z0-9]+$");
+    scanner->setValidationRules(rules);
+    edit->setText("!");
+    QTest::keyClick(edit, Qt::Key_Return);
+    QCOMPARE(progress.size(), 0);
+    QCOMPARE(stateAt(1), QString("idle"));
+    const QString sn1 = "BTSN123456789012345678901";
+    const QString sn2 = "BTSN123456789012345678902";
+    const QString sn3 = "BTSN123456789012345678903";
+    edit->setText(sn1);
+    QTest::keyClick(edit, Qt::Key_Return);
+    QCOMPARE(stateAt(1), QString("scanned"));
+    QCOMPARE(buttonAt(1)->property("uutNavigationColor").value<QColor>(), QColor("#397eac"));
+    QCOMPARE(buttonAt(1)->text(), QString("UUT1"));
+    QCOMPARE(buttonAt(1)->width(), width);
+    QVERIFY(buttonAt(1)->toolTip().contains(sn1));
+    QVERIFY(capture("scanned"));
+    edit->setText(sn1);
+    QTest::keyClick(edit, Qt::Key_Return);
+    QCOMPARE(stateAt(2), QString("idle"));
+    QVERIFY(QMetaObject::invokeMethod(scanner, "undoLastScan"));
+    QCOMPARE(stateAt(1), QString("idle"));
+    edit->setText(sn1);
+    QTest::keyClick(edit, Qt::Key_Return);
+    QVERIFY(QMetaObject::invokeMethod(scanner, "clearBatch"));
+    QCOMPARE(stateAt(1), QString("idle"));
+    scanner->setSlotEnabledStates({true, true, true, false});
+    QCOMPARE(stateAt(4), QString("disabled"));
+    QVERIFY(!buttonAt(4)->isEnabled());
+    for (const auto& serial : {sn1, sn2, sn3}) {
+        edit->setText(serial);
+        QTest::keyClick(edit, Qt::Key_Return);
+    }
+    QVERIFY(execution->state() == UiRunState::Starting || execution->state() == UiRunState::Running);
+    for (int row = 1; row <= 3; ++row) {
+        QCOMPARE(stateAt(row), QString("running"));
+        QCOMPARE(buttonAt(row)->property("uutNavigationColor").value<QColor>(), QColor("#d8a61a"));
+    }
+    QCOMPARE(stateAt(4), QString("disabled"));
+    QVERIFY(capture("running"));
+    QTRY_VERIFY_WITH_TIMEOUT(execution->state() == UiRunState::Completed || execution->state() == UiRunState::Failed, 10000);
+    QCOMPARE(execution->state(), UiRunState::Completed);
+    for (int row = 1; row <= 3; ++row) {
+        QTRY_COMPARE(stateAt(row), QString("passed"));
+        QCOMPARE(buttonAt(row)->text(), QString("UUT%1").arg(row));
+        QCOMPARE(buttonAt(row)->width(), width);
+    }
+    QCOMPARE(execution->report().uuts[0].serialNumber, sn1);
+    QCOMPARE(execution->report().uuts[1].serialNumber, sn2);
+    QCOMPARE(execution->report().uuts[2].serialNumber, sn3);
+    buttonAt(2)->click();
+    QVERIFY(buttonAt(2)->isChecked());
+    QCOMPARE(stateAt(2), QString("passed"));
+    auto* detailsModel = window->findChild<UutStepModel*>();
+    QCOMPARE(detailsModel->visibleUutId(), QString("UUT-2"));
+
+    // UI-only event fixtures cover a late failure and background task activity.
+    RuntimeEvent failed;
+    failed.kind = RuntimeEventKind::UutCompleted;
+    failed.uutId = "UUT-2";
+    failed.outcome = NodeOutcome::Failed;
+    model->applyRuntimeEvents({failed});
+    QCOMPARE(stateAt(2), QString("failed"));
+    QCOMPARE(buttonAt(2)->property("uutNavigationColor").value<QColor>(), QColor("#a43838"));
+    RuntimeEvent periodic;
+    periodic.kind = RuntimeEventKind::PeriodicTaskStateChanged;
+    periodic.uutId = "UUT-2";
+    periodic.nodeId = "heartbeat";
+    periodic.periodicTaskId = "heartbeat-2";
+    periodic.periodicTaskState = PeriodicTaskState::Running;
+    model->applyRuntimeEvents({periodic});
+    QCOMPARE(stateAt(2), QString("failed"));
+    QVERIFY(capture("results"));
+    for (int row : {1, 2}) {
+        const auto pixels = buttonAt(row)->icon().pixmap(QSize(18, 18)).toImage();
+        QCOMPARE(pixels.pixelColor(pixels.width() / 2, pixels.height() / 2),
+                 buttonAt(row)->property("uutNavigationColor").value<QColor>());
+    }
+    auto& language = UiLanguage::instance();
+    const auto restoreLanguage = qScopeGuard([&] { language.setChinese(false, false); });
+    language.setChinese(true, false);
+    QTest::qWait(20);
+    QCOMPARE(buttonAt(2)->text(), QString("UUT2"));
+    QCOMPARE(stateAt(2), QString("failed"));
+    scanner->showForNextScan();
+    QCOMPARE(stateAt(1), QString("passed"));
+    QCOMPARE(stateAt(2), QString("failed"));
+    edit->setText("NEWBATCH01");
+    QTest::keyClick(edit, Qt::Key_Return);
+    QCOMPARE(stateAt(1), QString("scanned"));
+    QCOMPARE(stateAt(2), QString("idle"));
+    QCOMPARE(stateAt(4), QString("disabled"));
+    QVERIFY(buttonAt(1)->toolTip().contains(uiText("SCANNED")));
+    scanner->cancelCurrentScan();
+    QCOMPARE(stateAt(1), QString("idle"));
+}
+
+void MainWindowLifecycleTests::overviewSixUutsPreserveCardLayout_data()
+{
+    QTest::addColumn<bool>("production");
+    QTest::addColumn<bool>("chinese");
+    QTest::newRow("admin-en") << false << false;
+    QTest::newRow("admin-zh") << false << true;
+    QTest::newRow("test-en") << true << false;
+    QTest::newRow("test-zh") << true << true;
+}
+
+void MainWindowLifecycleTests::overviewSixUutsPreserveCardLayout()
+{
+    using namespace PicoATE::Core;
+    QFETCH(bool, production);
+    QFETCH(bool, chinese);
+    auto& language = UiLanguage::instance();
+    const auto restore = qScopeGuard([&] { language.setChinese(false, false); });
+    language.setChinese(chinese, false);
+    QTemporaryDir dir;
+    const auto sequencePath = dir.filePath("sequence.json");
+    QFile sequence(sequencePath);
+    QVERIFY(sequence.open(QIODevice::WriteOnly));
+    sequence.write(R"({"id":"grid-preview","name":"Grid Preview","groups":[{"id":"main","kind":"main","steps":[{"id":"check","kind":"noop","name":"Check terminal status and register readback"}]}]})");
+    sequence.close();
+    const auto stationPath = dir.filePath("StationSystem.json");
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(R"({"stationId":"ATE-01","model":"Terminal","uutCount":6,"scanDialogEnabled":false,"devices":[]})");
+    station.close();
+    std::unique_ptr<QWidget> window;
+    if (production) {
+        StartupSelection selection;
+        selection.sequencePath = sequencePath;
+        selection.stationPath = stationPath;
+        selection.scanDialogEnabled = false;
+        window = createProductionWindow(selection);
+    } else {
+        auto admin = createMainWindow();
+        QVERIFY(admin->openStationFile(stationPath));
+        QVERIFY(admin->openSequenceFile(sequencePath));
+        admin->findChild<QAction*>("compileAction")->trigger();
+        admin->showRunPage();
+        window = std::move(admin);
+    }
+    window->show();
+    auto* overview = window->findChild<MultiUutOverviewWidget*>();
+    QVERIFY(overview);
+    auto* model = overview->model();
+    auto* scroll = overview->findChild<QScrollArea*>("multiUutOverviewScroll");
+    QVERIFY(model && scroll);
+    QTRY_COMPARE(model->rowCount(), 6);
+    QTRY_VERIFY(overview->isVisible());
+    const auto prefix = QString(production ? "test" : "admin") + (chinese ? "-zh" : "-en");
+    const auto screenshotDir = qEnvironmentVariable("PICOATE_OVERVIEW_WIDTH_SCREENSHOTS");
+    QFont originalNameFont, originalStateFont;
+    for (const int count : {2, 3, 4, 5, 6, 7, 8, 9, 12}) {
+        ExecutionReport report;
+        QVector<RunRequest::UutInput> inputs;
+        QVector<RuntimeEvent> events;
+        for (int row = 0; row < count; ++row) {
+            UutReport uut;
+            uut.uutId = QString("UUT-%1").arg(row + 1);
+            uut.serialNumber = QString("BTSN123456789012345678%1").arg(row);
+            StepReport step;
+            step.stepId = "check";
+            step.nodePath = "main.check";
+            step.displayName = "Check terminal status and register readback";
+            step.state = ActivationState::Running;
+            uut.steps.push_back(step);
+            report.uuts.push_back(uut);
+            RunRequest::UutInput input;
+            input.uutId = uut.uutId;
+            input.variables.insert("serialNumber", uut.serialNumber);
+            input.enabled = row != 6;
+            inputs.push_back(input);
+            if (row != 6) {
+                RuntimeEvent task;
+                task.kind = RuntimeEventKind::PeriodicTaskStateChanged;
+                task.uutId = uut.uutId;
+                task.nodeId = "heartbeat";
+                task.nodeDisplayName = "Terminal heartbeat";
+                task.periodicTaskId = uut.uutId + "-heartbeat";
+                task.periodicTaskState = PeriodicTaskState::Waiting;
+                task.periodicIntervalMs = 5000;
+                task.periodicNextDueAtUtc = QDateTime::currentDateTimeUtc().addSecs(5);
+                task.outcome = NodeOutcome::Passed;
+                events.push_back(task);
+                RuntimeEvent resource;
+                resource.kind = RuntimeEventKind::ResourceStateChanged;
+                resource.uutId = uut.uutId;
+                resource.nodeId = "main.check";
+                resource.requestId = uut.uutId + "-resource";
+                resource.resourceLeaseId = uut.uutId + "-lease";
+                resource.resourceState = row % 2 ? ResourceRuntimeState::Waiting : ResourceRuntimeState::Acquired;
+                resource.resourceIds = {"MODBUS_TCP", "CAN1"};
+                resource.resourceBlockingUutIds = {"UUT-1"};
+                resource.resourceWaitingSinceUtc = QDateTime::currentDateTimeUtc();
+                events.push_back(resource);
+            }
+        }
+        model->resetForRun(report, inputs);
+        model->applyRuntimeEvents(events);
+        for (const auto size : {QSize(1600, 900), QSize(1280, 720), QSize(1024, 640)}) {
+            window->resize(size);
+            QTest::qWait(80);
+            QVERIFY(window->width() <= size.width());
+            QVERIFY(window->height() <= size.height());
+            const QString context = prefix + QString(" %1 UUTs %2x%3 viewport %4x%5")
+                .arg(count).arg(window->width()).arg(window->height())
+                .arg(scroll->viewport()->width()).arg(scroll->viewport()->height());
+            if ((count == 4 || count == 6) && !screenshotDir.isEmpty()) {
+                QVERIFY(window->grab().save(QDir(screenshotDir).filePath(prefix + QString("-%1-uut-%2.png").arg(count).arg(size.width()))));
+            }
+            if (count > 6) {
+                QVERIFY2(scroll->verticalScrollBar()->isVisible(), qPrintable(context));
+                QVERIFY(scroll->verticalScrollBar()->maximum() > 0);
+            }
+            QVector<QRect> positions;
+            for (int row = 0; row < count; ++row) {
+                auto* card = overview->findChild<QAbstractButton*>(QString("uutOverviewCard_%1").arg(row + 1));
+                QVERIFY(card && card->isVisible());
+                const QRect bounds(card->mapTo(scroll->viewport(), QPoint()), card->size());
+                QVERIFY2(card->parentWidget()->rect().contains(card->geometry()), qPrintable(context));
+                const int columns = count <= 2 ? count : qMin(3, (count + 1) / 2);
+                if (row % columns && row > 0) {
+                    QCOMPARE(bounds.top(), positions.last().top());
+                    QVERIFY(bounds.left() > positions.last().right());
+                }
+                for (const auto& previous : positions) QVERIFY(!previous.intersects(bounds));
+                positions.push_back(bounds);
+                if (row == 6) QVERIFY(!card->isEnabled());
+                for (const auto& name : {"uutOverviewName", "uutOverviewState", "uutOverviewSerial",
+                                         "uutOverviewStepCaption", "uutOverviewCurrentState", "uutOverviewStep",
+                                         "uutOverviewError", "uutOverviewCaption", "uutOverviewProgressRing"}) {
+                    auto* child = card->findChild<QWidget*>(name);
+                    QVERIFY(child && child->isVisible());
+                    const QRect childBounds(child->mapTo(card, QPoint()), child->size());
+                    QVERIFY2(card->rect().contains(childBounds), qPrintable(context + " " + name));
+                }
+                auto* ring = card->findChild<QWidget*>("uutOverviewProgressRing");
+                QCOMPARE(ring->size(), QSize(112, 112));
+                QVERIFY(!card->property("compactLayout").isValid());
+                auto* title = card->findChild<QLabel*>("uutOverviewName");
+                auto* state = card->findChild<QLabel*>("uutOverviewState");
+                if (count == 2 && row == 0 && size.width() == 1600) {
+                    originalNameFont = title->font();
+                    originalStateFont = state->font();
+                }
+                QCOMPARE(title->font(), originalNameFont);
+                QCOMPARE(state->font(), originalStateFont);
+                for (auto* caption : card->findChildren<QLabel*>("uutOverviewCaption"))
+                    QVERIFY2(caption->isVisible(), qPrintable(context + " hidden footer caption"));
+                if (row != 6) {
+                    auto* resource = card->findChild<QWidget*>("uutOverviewResourceBadge");
+                    auto* sn = card->findChild<QLabel*>("uutOverviewSerial");
+                    auto* periodic = card->findChild<QWidget*>("uutOverviewPeriodicPanel");
+                    auto* taskCaption = periodic->findChild<QLabel*>("periodicTaskCaption");
+                    auto* lastResult = periodic->findChild<QLabel*>("uutOverviewPeriodicResult");
+                    QVERIFY(resource->isVisible() && periodic->isVisible());
+                    QCOMPARE(resource->size(), QSize(118, 48));
+                    QVERIFY(resource->geometry().bottom() < sn->geometry().top());
+                    QVERIFY(taskCaption->isVisible());
+                    QVERIFY(lastResult->isVisible());
+                }
+                const auto visibleLabels = card->findChildren<QLabel*>();
+                for (auto* label : visibleLabels) {
+                    if (!label->isVisible() || label->text().isEmpty()) continue;
+                    const QRect labelBounds(label->mapTo(card, QPoint()), label->size());
+                    QVERIFY2(card->rect().contains(labelBounds), qPrintable(context + " " + label->objectName()));
+                    QVERIFY2(label->height() >= label->fontMetrics().height(),
+                             qPrintable(context + " clipped " + label->objectName() +
+                                 QString(" height %1 font %2").arg(label->height()).arg(label->fontMetrics().height())));
+                }
+            }
+            if (count == 6 && !screenshotDir.isEmpty()) {
+                QVERIFY(window->grab().save(QDir(screenshotDir).filePath(prefix + QString("-six-%1.png").arg(size.width()))));
+            }
+            if (count == 6) {
+                RuntimeEvent prompt;
+                prompt.kind = RuntimeEventKind::OperatorPromptRequested;
+                prompt.uutId = "UUT-1";
+                prompt.details = {{"promptInstanceId", "grid-prompt"}, {"mode", "judgment"},
+                                  {"message", "Confirm terminal operation"}};
+                QVERIFY(overview->presentOperatorPrompt(prompt, sequencePath));
+                QTest::qWait(20);
+                auto* panel = overview->findChild<QWidget*>("uutOverviewPromptPanel");
+                auto* pass = panel ? panel->findChild<QPushButton*>("uutOverviewPromptPassButton") : nullptr;
+                QVERIFY(panel && pass && pass->isVisible());
+                QVERIFY2(panel->parentWidget()->rect().contains(panel->geometry()), qPrintable(context));
+                QVERIFY2(panel->rect().contains(QRect(pass->mapTo(panel, QPoint()), pass->size())), qPrintable(context));
+                QVERIFY(pass->height() >= 26);
+                if (size.width() == 1024 && !screenshotDir.isEmpty())
+                    QVERIFY(window->grab().save(QDir(screenshotDir).filePath(prefix + "-six-prompt.png")));
+                QVERIFY(overview->closeOperatorPrompt("grid-prompt"));
+            }
+        }
+        if (count == 6) {
+            for (int row = 0; row < 2; ++row) {
+                report.uuts[row].completed = true;
+                report.uuts[row].outcome = row ? NodeOutcome::Failed : NodeOutcome::Passed;
+                report.uuts[row].hasError = row != 0;
+            }
+            model->setReport(report);
+            window->resize(1280, 720);
+            QTest::qWait(80);
+            if (!screenshotDir.isEmpty()) QVERIFY(window->grab().save(QDir(screenshotDir).filePath(prefix + "-six-results.png")));
+            window->showMaximized();
+            QTest::qWait(80);
+            for (int row = 1; row <= 6; ++row) {
+                auto* card = overview->findChild<QAbstractButton*>(QString("uutOverviewCard_%1").arg(row));
+                QVERIFY(card->parentWidget()->rect().contains(card->geometry()));
+                QCOMPARE(card->findChild<QWidget*>("uutOverviewProgressRing")->size(), QSize(112, 112));
+            }
+            if (!screenshotDir.isEmpty()) QVERIFY(window->grab().save(QDir(screenshotDir).filePath(prefix + "-six-maximized.png")));
+            window->showNormal();
+        }
+    }
+}
+
+void MainWindowLifecycleTests::overviewStatusAndElapsedLayout_data()
+{
+    QTest::addColumn<bool>("production");
+    QTest::newRow("admin") << false;
+    QTest::newRow("test") << true;
+}
+
+void MainWindowLifecycleTests::overviewStatusAndElapsedLayout()
+{
+    QFETCH(bool, production);
+    QTemporaryDir dir;
+    const auto sequencePath = dir.filePath("sequence.json");
+    QFile sequence(sequencePath);
+    QVERIFY(sequence.open(QIODevice::WriteOnly));
+    sequence.write(R"({"id":"status-preview","name":"Status Preview","groups":[{"id":"main","kind":"main","steps":[{"id":"ready","kind":"noop","name":"Ready for testing"}]}]})");
+    sequence.close();
+    const auto stationPath = dir.filePath("StationSystem.json");
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(R"({"stationId":"ATE-01","model":"Terminal","customerId":"NA","order":"NA","tester":"NA","jigNo":"01","uutCount":4,"scanDialogEnabled":false,"devices":[]})");
+    station.close();
+    std::unique_ptr<QWidget> window;
+    if (production) {
+        StartupSelection selection;
+        selection.sequencePath = sequencePath;
+        selection.stationPath = stationPath;
+        selection.scanDialogEnabled = false;
+        window = createProductionWindow(selection);
+    } else {
+        auto admin = createMainWindow();
+        QVERIFY(admin->openStationFile(stationPath));
+        QVERIFY(admin->openSequenceFile(sequencePath));
+        admin->findChild<QAction*>("compileAction")->trigger();
+        admin->showRunPage();
+        window = std::move(admin);
+    }
+    window->resize(1280, 850);
+    window->show();
+    const auto prefix = production ? QStringLiteral("production") : QStringLiteral("admin");
+    auto* summary = window->findChild<QWidget*>(prefix + "OverviewSummary");
+    auto* state = window->findChild<QWidget*>(prefix + "OverviewSummaryStateArea");
+    auto* fields = window->findChild<QWidget*>(prefix + "OverviewSummaryStationArea");
+    auto* counts = window->findChild<QWidget*>(prefix + "OverviewSummaryCountArea");
+    auto* yield = window->findChild<QWidget*>(prefix + "OverviewYieldChart");
+    auto* stateLabel = window->findChild<QLabel*>(prefix + "OverviewSummaryState");
+    auto* overview = window->findChild<MultiUutOverviewWidget*>();
+    QVERIFY(overview);
+    auto* elapsed = overview->findChild<QLabel*>("multiUutOverviewElapsed");
+    auto* title = overview->findChild<QLabel*>("multiUutOverviewTitle");
+    QVERIFY(summary && state && fields && counts && yield);
+    QVERIFY(stateLabel && overview && elapsed && title);
+    QVERIFY(!summary->findChild<QLabel*>(prefix + "OverviewSummaryElapsed"));
+    QVERIFY(!overview->findChild<QLabel*>("multiUutOverviewSummary"));
+    QTRY_VERIFY(summary->isVisible());
+    QCOMPARE(stateLabel->property("completedSteps").toLongLong(), qint64(0));
+    QCOMPARE(stateLabel->property("totalSteps").toLongLong(), qint64(4));
+    QCOMPARE(stateLabel->property("progressPercent").toInt(), 0);
+    for (int row = 1; row <= 4; ++row) {
+        auto* card = overview->findChild<QAbstractButton*>(QString("uutOverviewCard_%1").arg(row));
+        QVERIFY(card);
+        auto* ring = card->findChild<QWidget*>("uutOverviewProgressRing");
+        QVERIFY(ring);
+        QCOMPARE(ring->property("centerText").toString(), QString("0 / 1"));
+        QVERIFY(!card->findChild<QLabel*>("uutOverviewPercent"));
+        QVERIFY(!card->findChild<QProgressBar*>("uutOverviewProgress"));
+    }
+    for (const auto& metric : {"Running", "Pass", "Fail", "Waiting"}) {
+        auto* countLabel = summary->findChild<QLabel*>(prefix + "Overview" + metric + "Value");
+        QVERIFY(countLabel && countLabel->isVisible());
+    }
+    for (const int width : {1280, 1600, 980, 1280}) {
+        window->resize(width, 850);
+        QTest::qWait(80);
+        if (width >= 1280) {
+            const double fraction = double(state->width()) / summary->width();
+            QVERIFY2(fraction >= 0.20 && fraction <= 0.24, qPrintable(QString::number(fraction)));
+        }
+        QVERIFY(state->geometry().right() < fields->geometry().left());
+        QVERIFY(fields->geometry().right() < counts->geometry().left());
+        QVERIFY(counts->geometry().right() < yield->geometry().left());
+        QVERIFY(summary->rect().contains(yield->geometry()));
+        QVERIFY(stateLabel->height() >= 64);
+        QVERIFY(state->rect().contains(stateLabel->geometry()));
+        QVERIFY(overview->rect().contains(elapsed->geometry()));
+        QVERIFY(overview->width() - elapsed->geometry().right() <= 5);
+        QVERIFY(qAbs(elapsed->geometry().center().y() - title->geometry().center().y()) <= 2);
+        QCOMPARE(elapsed->font().weight(), QFont::DemiBold);
+        QCOMPARE(elapsed->font().pixelSize(), 16);
+    }
+    const auto screenshotDir = qEnvironmentVariable("PICOATE_OVERVIEW_WIDTH_SCREENSHOTS");
+    if (!screenshotDir.isEmpty()) {
+        QTest::qWait(100);
+        QVERIFY(window->grab().save(QDir(screenshotDir).filePath(prefix + "-overview-refined.png")));
+    }
+    auto* run = window->findChild<QAction*>(production ? "productionStartAction" : "runAction");
+    auto* viewModel = window->findChild<ExecutionViewModel*>();
+    auto* sourceElapsed = window->findChild<QLabel*>(production ? "productionElapsedLabel" : "adminElapsedLabel");
+    QVERIFY(run && viewModel && sourceElapsed);
+    run->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(viewModel->report().completed, 10000);
+    QTRY_COMPARE(elapsed->text(), uiText("Elapsed %1").arg(sourceElapsed->text()));
+    QTRY_COMPARE(stateLabel->property("completedSteps").toLongLong(), qint64(4));
+    QCOMPARE(stateLabel->property("totalSteps").toLongLong(), qint64(4));
+    QCOMPARE(stateLabel->property("progressPercent").toInt(), 100);
+    if (!screenshotDir.isEmpty()) {
+        QTest::qWait(80);
+        QVERIFY(window->grab().save(QDir(screenshotDir).filePath(prefix + "-completed-results.png")));
+    }
+
+    // Different sequence sizes verify weighted totals and disabled-slot exclusion.
+    PicoATE::Core::ExecutionReport mixed;
+    QVector<RunRequest::UutInput> inputs;
+    const int totals[] = {13, 13, 7, 100};
+    const int done[] = {8, 13, 7, 0};
+    for (int row = 0; row < 4; ++row) {
+        PicoATE::Core::UutReport uut;
+        uut.uutId = QString("UUT-%1").arg(row + 1);
+        uut.serialNumber = QString("BTSN0000000%1").arg(row + 1);
+        uut.completed = row == 1 || row == 2;
+        uut.hasError = row == 2;
+        uut.outcome = row == 2 ? PicoATE::Core::NodeOutcome::Failed :
+            row == 1 ? PicoATE::Core::NodeOutcome::Passed : PicoATE::Core::NodeOutcome::Unknown;
+        for (int stepIndex = 0; stepIndex < totals[row]; ++stepIndex) {
+            PicoATE::Core::StepReport step;
+            step.stepId = QString("step%1").arg(stepIndex + 1);
+            step.nodePath = "main." + step.stepId;
+            step.displayName = QString("Read Register %1").arg(stepIndex + 1);
+            if (stepIndex < done[row]) {
+                step.state = PicoATE::Core::ActivationState::Passed;
+                step.outcome = PicoATE::Core::NodeOutcome::Passed;
+            }
+            if (row == 2 && stepIndex == done[row] - 1) {
+                step.state = PicoATE::Core::ActivationState::Failed;
+                step.outcome = PicoATE::Core::NodeOutcome::Failed;
+                PicoATE::Core::AttemptReport attempt;
+                attempt.index = 1;
+                attempt.outcome = PicoATE::Core::NodeOutcome::Failed;
+                attempt.errorCode = "LIMIT_FAIL";
+                step.attempts.push_back(attempt);
+            }
+            uut.steps.push_back(step);
+        }
+        mixed.uuts.push_back(uut);
+        RunRequest::UutInput input;
+        input.uutId = uut.uutId;
+        input.enabled = row != 3;
+        inputs.push_back(input);
+    }
+    overview->model()->resetForRun(mixed, inputs);
+    overview->model()->setReport(mixed);
+    PicoATE::Core::RuntimeEvent active;
+    active.kind = PicoATE::Core::RuntimeEventKind::NodeStateChanged;
+    active.uutId = "UUT-1";
+    active.nodeId = "main.step9";
+    active.nodeDisplayName = "Read Modbus Registers";
+    active.activationState = PicoATE::Core::ActivationState::Running;
+    overview->model()->applyRuntimeEvents({active});
+    auto* overviewButton = window->findChild<QPushButton*>(production ? "productionOverviewButton" : "adminBackToUutOverview");
+    overviewButton->click();
+    QTRY_COMPARE(stateLabel->property("completedSteps").toLongLong(), qint64(28));
+    QCOMPARE(stateLabel->property("totalSteps").toLongLong(), qint64(33));
+    QCOMPARE(stateLabel->property("progressPercent").toInt(), 84);
+    QTest::qWait(100);
+    auto* runningCard = overview->findChild<QAbstractButton*>("uutOverviewCard_1");
+    auto* passedCard = overview->findChild<QAbstractButton*>("uutOverviewCard_2");
+    auto* failedCard = overview->findChild<QAbstractButton*>("uutOverviewCard_3");
+    auto* disabledCard = overview->findChild<QAbstractButton*>("uutOverviewCard_4");
+    QVERIFY(runningCard && passedCard && failedCard && disabledCard);
+    QCOMPARE(runningCard->findChild<QWidget*>("uutOverviewProgressRing")->property("centerText").toString(), QString("8 / 13"));
+    QCOMPARE(passedCard->findChild<QWidget*>("uutOverviewProgressRing")->property("centerText").toString(), QString("13 / 13"));
+    QCOMPARE(passedCard->findChild<QWidget*>("uutOverviewProgressRing")->property("resultMark").toString(), QString(QChar(0x2713)));
+    QCOMPARE(failedCard->findChild<QWidget*>("uutOverviewProgressRing")->property("centerText").toString(), QString("7 / 7"));
+    QCOMPARE(failedCard->findChild<QWidget*>("uutOverviewProgressRing")->property("resultMark").toString(), QString(QChar(0x00d7)));
+    QCOMPARE(disabledCard->findChild<QWidget*>("uutOverviewProgressRing")->property("centerText").toString(), QString("--"));
+    if (!screenshotDir.isEmpty()) {
+        window->resize(1280, 1000);
+        QTest::qWait(100);
+        auto* batch = dynamic_cast<BatchStatusProgressLabel*>(stateLabel);
+        QVERIFY(batch);
+        batch->setText(uiText("TESTING"));
+        batch->setState(UiRunState::Running, false);
+        overview->setElapsedText("01:23.456");
+        QVERIFY(window->grab().save(QDir(screenshotDir).filePath(prefix + "-progress-widgets.png")));
+        auto* passOverlay = passedCard->findChild<QAbstractButton*>("uutOverviewResultOverlay");
+        auto* failOverlay = failedCard->findChild<QAbstractButton*>("uutOverviewResultOverlay");
+        QVERIFY(passOverlay && failOverlay);
+        QTest::mouseClick(passOverlay, Qt::LeftButton);
+        QTest::mouseClick(failOverlay, Qt::LeftButton);
+        QVERIFY(window->grab().save(QDir(screenshotDir).filePath(prefix + "-dismissed-results.png")));
+    }
+
+    MultiUutOverviewWidget clockPreview;
+    clockPreview.setElapsedText("01:23.456");
+    auto* clockText = clockPreview.findChild<QLabel*>("multiUutOverviewElapsed");
+    auto& language = UiLanguage::instance();
+    const auto restoreLanguage = qScopeGuard([&] { language.setChinese(false, false); });
+    QVERIFY(language.setChinese(true, false));
+    QTRY_COMPARE(clockText->text(), uiText("Elapsed %1").arg("01:23.456"));
+    QTest::qWait(60);
+    auto* translatedBatch = dynamic_cast<BatchStatusProgressLabel*>(stateLabel);
+    QVERIFY(translatedBatch);
+    QCOMPARE(translatedBatch->titleText(), QString::fromUtf8("整体测试状态"));
+    QCOMPARE(translatedBatch->progressCaption(), QString::fromUtf8("总进度"));
+    if (!screenshotDir.isEmpty()) {
+        translatedBatch->setText(uiText("TESTING"));
+        translatedBatch->setState(UiRunState::Running, false);
+        QVERIFY(window->grab().save(QDir(screenshotDir).filePath(prefix + "-scheme-a-zh.png")));
+    }
+    QVERIFY(language.setChinese(false, false));
+    QTRY_COMPARE(clockText->text(), QStringLiteral("Elapsed 01:23.456"));
+}
+
+void MainWindowLifecycleTests::overviewProgressWidgetsRenderCountsAndOutcomes()
+{
+    BatchStatusProgressLabel batch;
+    batch.resize(300, 76);
+    batch.setText("TESTING");
+    batch.setState(UiRunState::Running, false);
+    batch.setStepCounts(2, 5);
+    QCOMPARE(batch.property("progressPercent").toInt(), 40);
+    const auto at = [](const QImage& image, int x, int y) {
+        return image.pixelColor(qRound(x * image.devicePixelRatio()), qRound(y * image.devicePixelRatio()));
+    };
+    const auto barImage = batch.grab().toImage();
+    const auto track = batch.progressTrackRect();
+    QCOMPARE(at(barImage, 2, batch.height() / 2), batch.accentColor());
+    QCOMPARE(at(barImage, batch.width() - 8, batch.height() / 2), batch.surfaceColor());
+    QCOMPARE(at(barImage, qRound(track.left() + 8), qRound(track.center().y())), batch.accentColor());
+    QCOMPARE(at(barImage, qRound(track.left() + track.width() * 0.75), qRound(track.center().y())), QColor("#e8ecef"));
+    batch.setStepCounts(0, 0);
+    QCOMPARE(batch.property("progressPercent").toInt(), 0);
+    batch.setStepCounts(12, 10);
+    QCOMPARE(batch.property("progressPercent").toInt(), 100);
+
+    UutProgressRing ring;
+    ring.setProgress(0, 4, UutOverviewState::Waiting);
+    auto pixels = ring.grab().toImage();
+    const auto emptyRing = pixels;
+    for (const QPoint point : {QPoint(56, 8), QPoint(104, 56), QPoint(56, 104), QPoint(8, 56)}) {
+        QVERIFY(at(pixels, point.x(), point.y()).red() < 240);
+    }
+    ring.setProgress(2, 4, UutOverviewState::Running);
+    QCOMPARE(ring.property("centerText").toString(), QString("2 / 4"));
+    pixels = ring.grab().toImage();
+    QCOMPARE(at(pixels, 104, 56), QColor("#a87500"));
+    QCOMPARE(at(pixels, 8, 56), at(emptyRing, 8, 56));
+    QVERIFY(ring.property("resultMark").toString().isEmpty());
+    const auto coloredCenterPixels = [&at](const QImage& image, const QColor& color) {
+        int count = 0;
+        for (int y = 32; y < 80; ++y) {
+            for (int x = 32; x < 80; ++x) count += at(image, x, y) == color;
+        }
+        return count;
+    };
+    ring.setProgress(4, 4, UutOverviewState::Passed);
+    QCOMPARE(ring.property("centerText").toString(), QString("4 / 4"));
+    QCOMPARE(ring.property("resultMark").toString(), QString(QChar(0x2713)));
+    const auto markRect = ring.property("resultMarkRect").toRectF();
+    QVERIFY(QRectF(ring.rect()).contains(markRect));
+    QVERIFY(markRect.center().x() > ring.width() * 0.75);
+    QVERIFY(markRect.center().y() < ring.height() * 0.4);
+    QCOMPARE(markRect.size(), QSizeF(24, 24));
+    QVERIFY(qAbs(QLineF(QPointF(56, 56), markRect.center()).length() - 48) < 1);
+    const auto coloredMarkPixels = [&at, markRect](const QImage& image, const QColor& color) {
+        const auto interior = markRect.adjusted(4, 4, -4, -4).toAlignedRect();
+        int count = 0;
+        for (int y = interior.top(); y <= interior.bottom(); ++y) {
+            for (int x = interior.left(); x <= interior.right(); ++x) count += at(image, x, y) == color;
+        }
+        return count;
+    };
+    pixels = ring.grab().toImage();
+    QCOMPARE(coloredCenterPixels(pixels, QColor("#2f7548")), 0);
+    QVERIFY(coloredMarkPixels(pixels, QColor("#2f7548")) > 5);
+    ring.setProgress(2, 4, UutOverviewState::Failed);
+    QCOMPARE(ring.property("centerText").toString(), QString("2 / 4"));
+    QCOMPARE(ring.property("resultMark").toString(), QString(QChar(0x00d7)));
+    QCOMPARE(ring.property("progressPercent").toInt(), 50);
+    pixels = ring.grab().toImage();
+    QCOMPARE(coloredCenterPixels(pixels, QColor("#a43838")), 0);
+    QVERIFY(coloredMarkPixels(pixels, QColor("#a43838")) > 5);
+    ring.setProgress(1, 4, UutOverviewState::Stopped);
+    QCOMPARE(ring.property("centerText").toString(), QString("1 / 4"));
+    QCOMPARE(ring.property("resultMark").toString(), QString(QChar(0x00d7)));
+    ring.setProgress(0, 4, UutOverviewState::Disabled);
+    QCOMPARE(ring.property("centerText").toString(), QString("--"));
+    QVERIFY(ring.property("resultMark").toString().isEmpty());
+    ring.setProgress(0, 0, UutOverviewState::Waiting);
+    QCOMPARE(ring.property("progressPercent").toInt(), 0);
+    QCOMPARE(ring.property("centerText").toString(), QString("0 / 0"));
+    QVERIFY(ring.property("resultMarkRect").toRectF().isEmpty());
+    QVERIFY(ring.testAttribute(Qt::WA_TransparentForMouseEvents));
+
+    UutResultOverlay result;
+    result.resize(300, 240);
+    result.setResult(true, "UUT-1");
+    batch.setText("COMPLETED");
+    batch.setStepCounts(4, 4);
+    batch.setState(UiRunState::Completed, false);
+    QCOMPARE(at(batch.grab().toImage(), 2, batch.height() / 2), overviewResultColor(true));
+    const auto resultPanel = result.panelRect();
+    QCOMPARE(at(result.grab().toImage(), resultPanel.left() + 12, resultPanel.top() + 10), overviewResultColor(true));
+    result.setResult(false, "UUT-1");
+    batch.setState(UiRunState::Failed, false);
+    QCOMPARE(at(batch.grab().toImage(), 2, batch.height() / 2), overviewResultColor(false));
+    QCOMPARE(at(result.grab().toImage(), resultPanel.left() + 12, resultPanel.top() + 10), overviewResultColor(false));
+    result.setResult(false, "UUT-1", "BTSN1234567890123456789012");
+    QCOMPARE(result.contextText(), QString("UUT-1 - BTSN1234567890123456789012"));
+    QCOMPARE(result.property("resultContext").toString(), result.contextText());
+    QVERIFY(result.panelRect().contains(result.contextRect()));
+    QVERIFY(result.panelRect().contains(result.resultTextRect()));
+    QVERIFY(result.contextRect().bottom() < result.resultTextRect().top());
+    QVERIFY(qAbs(result.contextRect().center().x() - result.panelRect().center().x()) <= 1);
+    const auto longSn = QString(80, QLatin1Char('9'));
+    result.setResult(false, "UUT-1", longSn);
+    QVERIFY(result.toolTip().contains(longSn));
+    result.setResult(false, "UUT-1");
+    QCOMPARE(result.contextText(), QString("UUT-1"));
+}
+
+void MainWindowLifecycleTests::batchStatusSchemeAPreservesHierarchy()
+{
+    auto& language = UiLanguage::instance();
+    const auto restore = qScopeGuard([&] { language.setChinese(false, false); });
+    BatchStatusProgressLabel batch;
+    batch.show();
+    const auto states = QVector<QPair<UiRunState, const char*>>{
+        {UiRunState::Ready, "READY"}, {UiRunState::Starting, "STARTING"},
+        {UiRunState::Running, "TESTING"}, {UiRunState::Paused, "PAUSED"},
+        {UiRunState::Stopping, "STOPPING"}, {UiRunState::Completed, "COMPLETED"},
+        {UiRunState::Failed, "COMPLETED"}, {UiRunState::CompileFailed, "WAITING"}};
+    for (const bool chinese : {false, true}) {
+        language.setChinese(chinese, false);
+        for (const auto& item : states) {
+            batch.setText(uiText(item.second));
+            batch.setState(item.first, false);
+            batch.setStepCounts(28, 33);
+            QCOMPARE(batch.property("progressPercent").toInt(), 84);
+            QCOMPARE(batch.property("statusTitle").toString(), uiText("OVERALL TEST STATUS"));
+            QVERIFY(batch.accessibleName().contains(uiText("OVERALL TEST STATUS")));
+            for (const auto size : {QSize(170, 88), QSize(240, 96), QSize(360, 106)}) {
+                batch.resize(size);
+                const auto bounds = QRectF(batch.rect());
+                for (const auto& region : {batch.titleRect(), batch.stateIconRect(), batch.stateTextRect(),
+                                           batch.percentageRect(), batch.progressTrackRect()}) {
+                    QVERIFY(region.width() > 0 && region.height() > 0);
+                    QVERIFY(bounds.contains(region));
+                }
+                QVERIFY(batch.titleRect().bottom() < batch.stateTextRect().top());
+                QVERIFY(batch.stateIconRect().right() < batch.stateTextRect().left());
+                QVERIFY(batch.stateTextRect().right() < batch.percentageRect().left());
+                QVERIFY(batch.stateTextRect().bottom() < batch.progressTrackRect().top());
+                QCOMPARE(batch.progressTrackRect().height(), qreal(6));
+                QVERIFY(batch.progressTrackRect().width() >= 20);
+                const auto picture = batch.grab().toImage();
+                const auto icon = batch.stateIconRect().toAlignedRect();
+                int colored = 0;
+                const auto dpr = picture.devicePixelRatio();
+                for (int y = qCeil(icon.top() * dpr); y < icon.bottom() * dpr; ++y) {
+                    for (int x = qCeil(icon.left() * dpr); x < icon.right() * dpr; ++x)
+                        colored += picture.pixelColor(x, y) == batch.accentColor();
+                }
+                QVERIFY(colored > 5);
+            }
+        }
+    }
+    batch.setState(UiRunState::Completed, true);
+    QCOMPARE(batch.accentColor(), overviewResultColor(false));
+    batch.setStepCounts(0, 0);
+    QCOMPARE(batch.property("progressPercent").toInt(), 0);
+}
+
+void MainWindowLifecycleTests::uutResultOverlaysDismissAndReset()
+{
+    using namespace PicoATE::Core;
+    QWidget owner;
+    auto* layout = new QVBoxLayout(&owner);
+    auto* stack = new QStackedWidget(&owner);
+    auto* details = new QWidget(stack);
+    auto* overview = new MultiUutOverviewWidget(stack);
+    UutOverviewModel model;
+    overview->setModel(&model);
+    stack->addWidget(overview);
+    stack->addWidget(details);
+    layout->addWidget(stack);
+    owner.resize(1100, 760);
+    owner.show();
+    StepReport step;
+    step.stepId = "check";
+    step.nodePath = "main.check";
+    step.displayName = "Check Voltage";
+    ExecutionReport preview;
+    QVector<RunRequest::UutInput> inputs;
+    for (int row = 1; row <= 4; ++row) {
+        UutReport uut;
+        uut.uutId = QString("UUT-%1").arg(row);
+        uut.serialNumber = row < 3 ? QString("BTSN0000000%1").arg(row) : QString{};
+        uut.steps = {step};
+        preview.uuts.push_back(uut);
+        RunRequest::UutInput input;
+        input.uutId = uut.uutId;
+        input.variables.insert("serialNumber", uut.serialNumber);
+        input.enabled = row != 4;
+        inputs.push_back(input);
+    }
+    model.resetForRun(preview, inputs);
+    QTest::qWait(50);
+    const auto cardAt = [overview](int row) {
+        return overview->findChild<QAbstractButton*>(QString("uutOverviewCard_%1").arg(row));
+    };
+    const auto layerAt = [&cardAt](int row) {
+        return cardAt(row)->findChild<QAbstractButton*>("uutOverviewResultOverlay");
+    };
+    RuntimeEvent failedStep;
+    failedStep.uutId = "UUT-2";
+    failedStep.nodeId = "main.check";
+    failedStep.kind = RuntimeEventKind::NodeStateChanged;
+    failedStep.activationState = ActivationState::Failed;
+    failedStep.outcome = NodeOutcome::Failed;
+    model.applyRuntimeEvents({failedStep});
+    QVERIFY(layerAt(2)->isHidden());
+
+    auto completed = preview;
+    for (int index = 0; index < 3; ++index) {
+        auto& uut = completed.uuts[index];
+        uut.completed = true;
+        uut.outcome = index == 0 ? NodeOutcome::Passed : index == 1 ? NodeOutcome::Failed : NodeOutcome::Cancelled;
+        uut.hasError = index != 0;
+        uut.steps[0].state = index == 0 ? ActivationState::Passed : index == 1 ? ActivationState::Failed : ActivationState::Cancelled;
+        uut.steps[0].outcome = uut.outcome;
+    }
+    model.setReport(completed);
+    QTest::qWait(30);
+    for (int row = 1; row <= 3; ++row) {
+        QVERIFY(layerAt(row)->isVisible());
+        QCOMPARE(layerAt(row)->geometry(), cardAt(row)->rect());
+        QCOMPARE(layerAt(row)->text(), uiText(row == 1 ? "PASS" : "FAIL"));
+        auto* result = dynamic_cast<UutResultOverlay*>(layerAt(row));
+        QVERIFY(result);
+        QCOMPARE(result->contextText(), row < 3 ? QString("UUT-%1 - BTSN0000000%1").arg(row)
+                                              : QString("UUT-%1").arg(row));
+        QVERIFY(result->contextRect().bottom() < result->resultTextRect().top());
+        const auto panel = result->panelRect();
+        QVERIFY(result->rect().contains(panel));
+        QVERIFY(panel.width() <= 300 && panel.height() <= 144);
+        QVERIFY(panel.width() < result->width() * 0.65);
+        QVERIFY(panel.height() < result->height() * 0.5);
+        QVERIFY(qAbs(panel.center().x() - result->rect().center().x()) <= 1);
+        QVERIFY(qAbs(panel.center().y() - result->rect().center().y()) <= 1);
+        const auto pixels = layerAt(row)->grab().toImage();
+        const qreal dpr = pixels.devicePixelRatio();
+        QCOMPARE(pixels.pixelColor(qRound((panel.left() + 1) * dpr), qRound(panel.center().y() * dpr)), overviewResultColor(row == 1));
+        QVERIFY(pixels.pixelColor(qRound(10 * dpr), qRound(10 * dpr)) != overviewResultColor(row == 1));
+        int white = 0;
+        int contextWhite = 0;
+        for (int y = qCeil(panel.top() * dpr); y < panel.bottom() * dpr; ++y) {
+            for (int x = qCeil(panel.left() * dpr); x < panel.right() * dpr; ++x) white += pixels.pixelColor(x, y) == QColor(Qt::white);
+        }
+        QVERIFY(white > 100);
+        const auto context = result->contextRect();
+        for (int y = qCeil(context.top() * dpr); y <= context.bottom() * dpr; ++y) {
+            for (int x = qCeil(context.left() * dpr); x <= context.right() * dpr; ++x)
+                contextWhite += pixels.pixelColor(x, y) == QColor(Qt::white);
+        }
+        QVERIFY(contextWhite > 10);
+    }
+    QVERIFY(layerAt(4)->isHidden());
+    QSignalSpy navigation(overview, &MultiUutOverviewWidget::uutActivated);
+    QSignalSpy promptResponse(overview, &MultiUutOverviewWidget::operatorPromptResponseRequested);
+    QTest::mouseClick(layerAt(1), Qt::LeftButton, Qt::NoModifier, QPoint(12, 12));
+    QVERIFY(layerAt(1)->isHidden());
+    QVERIFY(layerAt(2)->isVisible());
+    QCOMPARE(navigation.count(), 0);
+    QCOMPARE(promptResponse.count(), 0);
+    QCOMPARE(model.entryAt(0)->state, UutOverviewState::Passed);
+
+    QPointer<QAbstractButton> previousCard = cardAt(1);
+    model.setReport(completed);
+    QTRY_VERIFY(previousCard.isNull());
+    QVERIFY(layerAt(1)->isHidden());
+    stack->setCurrentWidget(details);
+    model.setReport(completed);
+    stack->setCurrentWidget(overview);
+    QTest::qWait(30);
+    QVERIFY(layerAt(1)->isHidden());
+    QVERIFY(layerAt(2)->isVisible());
+    QTest::mouseClick(cardAt(1), Qt::LeftButton);
+    QCOMPARE(navigation.count(), 1);
+
+    // A late correction from PASS to FAIL must not remain acknowledged as PASS.
+    auto corrected = completed;
+    corrected.uuts[0].outcome = NodeOutcome::Failed;
+    corrected.uuts[0].hasError = true;
+    corrected.uuts[0].steps[0].state = ActivationState::Failed;
+    corrected.uuts[0].steps[0].outcome = NodeOutcome::Failed;
+    model.setReport(corrected);
+    QTest::qWait(30);
+    QVERIFY(layerAt(1)->isVisible());
+    QCOMPARE(layerAt(1)->text(), uiText("FAIL"));
+    QTest::mouseClick(layerAt(1), Qt::LeftButton, Qt::NoModifier,
+                      QPoint(layerAt(1)->width() - 12, layerAt(1)->height() - 12));
+    QVERIFY(layerAt(1)->isHidden());
+
+    // Real prompts stay above the read-only result, including shared prompts.
+    RuntimeEvent request;
+    request.kind = RuntimeEventKind::OperatorPromptRequested;
+    request.uutId = "UUT-2";
+    request.details = {{"promptInstanceId", "result-priority"}, {"mode", "judgment"}, {"message", "Confirm fixture state"}};
+    QVERIFY(overview->presentOperatorPrompt(request, {}));
+    auto* prompt = cardAt(2)->findChild<QWidget*>("uutOverviewPromptOverlay");
+    auto* top = cardAt(2)->childAt(cardAt(2)->rect().center());
+    QVERIFY(top == prompt || prompt->isAncestorOf(top));
+    QVERIFY(overview->closeOperatorPrompt("result-priority"));
+    QCOMPARE(cardAt(2)->childAt(cardAt(2)->rect().center()), layerAt(2));
+    request.details["promptInstanceId"] = "shared-result-priority";
+    request.details["executionScope"] = "oncePerBatch";
+    QVERIFY(overview->presentOperatorPrompt(request, {}));
+    prompt = overview->findChild<QWidget*>("multiUutOverviewPromptOverlay");
+    top = overview->childAt(cardAt(2)->mapTo(overview, cardAt(2)->rect().center()));
+    QVERIFY(top == prompt || prompt->isAncestorOf(top));
+    QVERIFY(overview->closeOperatorPrompt("shared-result-priority"));
+    QCOMPARE(promptResponse.count(), 0);
+
+    owner.resize(980, 680);
+    QTest::qWait(30);
+    QCOMPARE(layerAt(2)->geometry(), cardAt(2)->rect());
+    const auto resizedPanel = dynamic_cast<UutResultOverlay*>(layerAt(2))->panelRect();
+    QVERIFY(qAbs(resizedPanel.center().x() - layerAt(2)->rect().center().x()) <= 1);
+    QVERIFY(qAbs(resizedPanel.center().y() - layerAt(2)->rect().center().y()) <= 1);
+    auto& language = UiLanguage::instance();
+    const auto restoreLanguage = qScopeGuard([&] { language.setChinese(false, false); });
+    QVERIFY(language.setChinese(true, false));
+    QTRY_COMPARE(layerAt(2)->text(), uiText("FAIL"));
+    QVERIFY(layerAt(1)->isHidden());
+    QVERIFY(language.setChinese(false, false));
+
+    // New scan/run previews also clear acknowledgements while Overview is hidden.
+    stack->setCurrentWidget(details);
+    model.resetForRun(preview, inputs);
+    model.setReport(corrected);
+    stack->setCurrentWidget(overview);
+    QTest::qWait(30);
+    QVERIFY(layerAt(1)->isVisible());
+    overview->resetRuntimeState();
+    for (int row = 1; row <= 4; ++row) QVERIFY(layerAt(row)->isHidden());
+    model.resetForRun(preview, inputs);
+    QTest::qWait(30);
+    for (int row = 1; row <= 4; ++row) QVERIFY(layerAt(row)->isHidden());
+    model.setReport(completed);
+    QTest::qWait(30);
+    QVERIFY(layerAt(1)->isVisible());
+    QVERIFY(layerAt(2)->isVisible());
 }
 
 void MainWindowLifecycleTests::operatorPromptDialogCannotBeDismissedByKeyboardOrWindowControls()

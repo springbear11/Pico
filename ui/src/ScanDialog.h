@@ -48,6 +48,7 @@ public:
     void setVisible(bool visible) override;
 
 signals:
+    void batchProgressChanged(const QStringList& barcodes, const QVector<bool>& enabledStates);
     void barcodeAccepted(const QString& barcode);
     void barcodesAccepted(const QStringList& barcodes);
 
@@ -97,6 +98,8 @@ private:
     SnValidationRules m_validationRules;
     ScanSubmissionValidator m_submissionValidator;
     QStringList m_barcodes{QString{}};
+    QStringList m_notifiedBarcodes;
+    QVector<bool> m_notifiedEnabledStates;
     QVector<bool> m_slotEnabledStates{true};
     QVector<ScanChange> m_history;
     QString m_batchContext;

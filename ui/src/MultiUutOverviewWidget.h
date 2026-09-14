@@ -12,6 +12,7 @@ class QEvent;
 class QLabel;
 class QGridLayout;
 class QShowEvent;
+class QScrollArea;
 class QTimer;
 
 namespace PicoATE::Ui {
@@ -30,6 +31,7 @@ public:
     UutOverviewModel* model() const;
     void setSelectedUutId(const PicoATE::Core::UutId& uutId);
     PicoATE::Core::UutId selectedUutId() const;
+    void setElapsedText(const QString& elapsed);
     void applyRuntimeEvents(
         const QVector<PicoATE::Core::RuntimeEvent>& events);
     void beginStopTransition();
@@ -60,9 +62,10 @@ private:
     void refreshPeriodicCountdowns();
     void refreshSharedPeriodicTasks();
     void refreshSharedResources();
-    void updatePairCardHeights();
-    void updateSummary();
+    void updateCardLayout();
     void restoreOperatorPrompt(QAbstractButton* card);
+    void refreshResultOverlay(QAbstractButton* card);
+    void pruneResultDismissals();
     void restoreBatchOperatorPrompt();
     void rememberPromptInput(const QString& instanceId, const QString& text);
     void updateBatchPromptGeometry();
@@ -79,8 +82,10 @@ private:
     };
 
     UutOverviewModel* m_model = nullptr;
-    QLabel* m_summaryLabel = nullptr;
+    QLabel* m_elapsedLabel = nullptr;
+    QString m_elapsedText = QStringLiteral("00:00.000");
     QWidget* m_cardsHost = nullptr;
+    QScrollArea* m_cardsScroll = nullptr;
     QGridLayout* m_cardsLayout = nullptr;
     QWidget* m_sharedPeriodicPanel = nullptr;
     QWidget* m_sharedResourcePanel = nullptr;
@@ -89,6 +94,7 @@ private:
     QTimer* m_periodicRefreshTimer = nullptr;
     QTimer* m_cleanupOverlayDelayTimer = nullptr;
     QVector<QAbstractButton*> m_cards;
+    QHash<PicoATE::Core::UutId, bool> m_dismissedResults;
     QHash<QString, ActivePrompt> m_activePrompts;
     QHash<PicoATE::Core::UutId, QString> m_currentPromptByUut;
     QWidget* m_batchPromptOverlay = nullptr;
@@ -102,6 +108,7 @@ private:
     QString m_cleanupCurrentStep;
     int m_gridRowCount = 0;
     int m_gridColumnCount = 0;
+    bool m_updatingCardLayout = false;
 };
 
 } // namespace PicoATE::Ui

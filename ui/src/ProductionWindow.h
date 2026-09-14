@@ -37,6 +37,7 @@ class RuntimeTimelineModel;
 class RunArtifactWriter;
 class ScanDialog;
 class UutOverviewModel;
+class UutNavigationStatus;
 class UutRuntimeTimelineProxyModel;
 class UutStepModel;
 class YieldDonutWidget;
@@ -102,6 +103,7 @@ private:
     OperatorPromptPresenter* m_operatorPromptPresenter = nullptr;
     UutStepModel* m_resultModel = nullptr;
     UutOverviewModel* m_overviewModel = nullptr;
+    UutNavigationStatus* m_uutNavigationStatus = nullptr;
     RuntimeTimelineModel* m_logModel = nullptr;
     UutRuntimeTimelineProxyModel* m_logProxy = nullptr;
     std::unique_ptr<RunArtifactWriter> m_runArtifactWriter;

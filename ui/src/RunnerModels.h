@@ -157,6 +157,7 @@ private:
     struct Row {
         UutOverviewEntry entry;
         QSet<PicoATE::Core::NodeId> terminalNodes;
+        QSet<PicoATE::Core::NodeId> completedNodes;
         QSet<PicoATE::Core::NodeId> knownNodes;
         PicoATE::Core::NodeId retryNodeId;
         PicoATE::Core::NodeId failedParentNodeId;

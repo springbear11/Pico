@@ -571,6 +571,11 @@ void ScanDialog::updateUi()
     m_undoButton->setVisible(batchMode);
     m_clearButton->setVisible(batchMode);
     m_slotEnabledButton->setVisible(batchMode);
+    if (m_notifiedBarcodes != m_barcodes || m_notifiedEnabledStates != m_slotEnabledStates) {
+        m_notifiedBarcodes = m_barcodes;
+        m_notifiedEnabledStates = m_slotEnabledStates;
+        emit batchProgressChanged(m_barcodes, m_slotEnabledStates);
+    }
 }
 
 void ScanDialog::retranslateUi()
