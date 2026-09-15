@@ -19,7 +19,7 @@
 #include <QWidget>
 
 #ifndef PICOATE_VERSION
-#define PICOATE_VERSION "0.3.2"
+#define PICOATE_VERSION "1.0.0"
 #endif
 
 namespace {

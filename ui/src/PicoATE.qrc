@@ -11,6 +11,7 @@
         <file alias="Mode-Engineer-Selected.png">assets/Mode-Engineer-Selected.png</file>
     </qresource>
     <qresource prefix="/icons">
+        <file alias="settings-2.svg">assets/lucide/settings-2.svg</file>
         <file alias="save.svg">assets/lucide/save.svg</file>
         <file alias="undo-2.svg">assets/lucide/undo-2.svg</file>
         <file alias="redo-2.svg">assets/lucide/redo-2.svg</file>

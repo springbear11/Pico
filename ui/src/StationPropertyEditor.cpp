@@ -1,4 +1,5 @@
 #include "StationPropertyEditor.h"
+#include "RuntimeIntegrity.h"
 
 #include "LoadingSpinner.h"
 #include "OnOffControl.h"
@@ -26,6 +27,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QThread>
@@ -349,11 +351,6 @@ void StationPropertyEditor::buildDevicePage()
 
     m_deviceTypeCombo = new QComboBox(content);
     m_deviceTypeCombo->setObjectName(QStringLiteral("deviceTypeCombo"));
-    for (const auto* type : {"CAN", "DMM", "PSU", "SCOPE", "MCU",
-                             "SERIAL", "MODBUS", "PLUGIN"}) {
-        m_deviceTypeCombo->addItem(QString::fromLatin1(type),
-                                   QString::fromLatin1(type));
-    }
     form->addRow(tr("Type"), m_deviceTypeCombo);
 
     m_pluginCombo = new QComboBox(content);
@@ -577,6 +574,28 @@ void StationPropertyEditor::loadStation()
     m_loading = false;
 }
 
+void StationPropertyEditor::reloadDeviceTypes(const QString& selectedType)
+{
+    QStringList types;
+    for (const auto& plugin : m_plugins) {
+        const auto type = PluginCatalog::deviceType(plugin);
+        if (!type.isEmpty()) types.push_back(type);
+    }
+    if (m_document) {
+        for (int row = 0; row < m_document->deviceCount(); ++row) {
+            types.push_back(normalizedType(valueWithAlias(m_document->deviceAt(row),
+                QStringLiteral("deviceType"), QStringLiteral("type"))));
+        }
+    }
+    if (!selectedType.isEmpty()) types.push_back(normalizedType(selectedType));
+    types.removeDuplicates();
+    types.sort();
+    const QSignalBlocker blocker(m_deviceTypeCombo);
+    m_deviceTypeCombo->clear();
+    for (const auto& type : types) m_deviceTypeCombo->addItem(type, type);
+    m_deviceTypeCombo->setCurrentIndex(m_deviceTypeCombo->findData(normalizedType(selectedType)));
+}
+
 void StationPropertyEditor::loadDevice()
 {
     m_loading = true;
@@ -596,12 +615,7 @@ void StationPropertyEditor::loadDevice()
             loadedDevice.value(QStringLiteral("enabled")).toBool(true));
     }
 
-    int typeIndex = m_deviceTypeCombo->findData(m_loadedDeviceType);
-    if (typeIndex < 0 && !m_loadedDeviceType.isEmpty()) {
-        m_deviceTypeCombo->addItem(m_loadedDeviceType, m_loadedDeviceType);
-        typeIndex = m_deviceTypeCombo->count() - 1;
-    }
-    m_deviceTypeCombo->setCurrentIndex(typeIndex < 0 ? 0 : typeIndex);
+    reloadDeviceTypes(m_loadedDeviceType);
     reloadPluginChoices(m_loadedDriverId);
     auto kind = device.value(QStringLiteral("connectionKind")).toString();
     if (!PicoATE::Core::deviceConnectionKindFromString(kind)) {
@@ -703,7 +717,13 @@ void StationPropertyEditor::refreshResources()
     const QPointer<StationPropertyEditor> guard(this);
     auto* thread = QThread::create([guard, request] {
         PicoATE::Core::SystemDeviceDiscoveryService service;
-        const auto result = service.discover(request);
+        PicoATE::Core::DeviceDiscoveryResult result;
+        if (!request.pluginDllPath.isEmpty()) {
+            result.errorMessage = RuntimeIntegrity::pluginAccessError(
+                RuntimeIntegrity::check(QCoreApplication::applicationDirPath()), {request.pluginDllPath});
+            if (!result.errorMessage.isEmpty()) result.errorCode = QStringLiteral("PluginNotApproved");
+        }
+        if (result.ok()) result = service.discover(request);
         if (guard) {
             QMetaObject::invokeMethod(guard, [guard, result] {
                 if (guard) guard->finishResourceDiscovery(result);
@@ -758,13 +778,13 @@ void StationPropertyEditor::reloadPluginChoices(const QString& selectedModuleId)
             return plugin.moduleId == effectiveSelected;
         });
     if ((selectedPlugin != m_plugins.cend() &&
-         selectedPlugin->category.compare(type, Qt::CaseInsensitive) != 0) ||
+         PluginCatalog::deviceType(*selectedPlugin).compare(type, Qt::CaseInsensitive) != 0) ||
         (selectedPlugin == m_plugins.cend() && type != m_loadedDeviceType)) {
         effectiveSelected.clear();
     }
     m_pluginCombo->clear();
     for (const auto& plugin : m_plugins) {
-        if (plugin.category.trimmed().compare(type, Qt::CaseInsensitive) != 0) {
+        if (PluginCatalog::deviceType(plugin).compare(type, Qt::CaseInsensitive) != 0) {
             continue;
         }
         m_pluginCombo->addItem(plugin.moduleId, plugin.moduleId);

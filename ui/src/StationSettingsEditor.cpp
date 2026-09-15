@@ -1,4 +1,5 @@
 #include "StationSettingsEditor.h"
+#include "RunInformation.h"
 #include "UiTextBinding.h"
 
 #include "LoadingSpinner.h"
@@ -15,42 +16,7 @@
 #include <QResizeEvent>
 #include <QVBoxLayout>
 
-#include <initializer_list>
-
 namespace PicoATE::Ui {
-
-namespace {
-
-QString metadataValue(const QJsonObject& metadata,
-                      std::initializer_list<const char*> keys)
-{
-    for (const auto* key : keys) {
-        const auto value = metadata.value(QString::fromLatin1(key))
-                               .toString().trimmed();
-        if (!value.isEmpty()) {
-            return value;
-        }
-    }
-    return {};
-}
-
-void setMetadataValue(QJsonObject& metadata,
-                      const QString& key,
-                      const QString& value,
-                      std::initializer_list<const char*> aliases)
-{
-    for (const auto* alias : aliases) {
-        metadata.remove(QString::fromLatin1(alias));
-    }
-    const auto trimmed = value.trimmed();
-    if (trimmed.isEmpty()) {
-        metadata.remove(key);
-    } else {
-        metadata.insert(key, trimmed);
-    }
-}
-
-} // namespace
 
 StationSettingsEditor::StationSettingsEditor(StationDocument* document,
                                              QWidget* parent)
@@ -82,26 +48,12 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
 
     m_stationIdEdit = new QLineEdit(this);
     m_stationIdEdit->setObjectName(QStringLiteral("stationBasicIdEdit"));
+    m_stationIdEdit->setReadOnly(true);
+    bindUiText(m_stationIdEdit, "toolTip", "Computer name (automatic)");
     addUiRow(form, "Station ID", m_stationIdEdit);
     m_stationModelEdit = new QLineEdit(this);
     m_stationModelEdit->setObjectName(QStringLiteral("stationModelEdit"));
     addUiRow(form, "Model", m_stationModelEdit);
-    m_customerIdEdit = new QLineEdit(this);
-    m_customerIdEdit->setObjectName(QStringLiteral("stationCustomerIdEdit"));
-    addUiRow(form, "Customer ID", m_customerIdEdit);
-
-    m_jigNoEdit = new QLineEdit(this);
-    m_jigNoEdit->setObjectName(QStringLiteral("stationJigNoEdit"));
-    bindUiText(m_jigNoEdit, "placeholderText", "Fixture or jig identifier");
-    addUiRow(form, "Jig No", m_jigNoEdit);
-    m_orderEdit = new QLineEdit(this);
-    m_orderEdit->setObjectName(QStringLiteral("stationOrderEdit"));
-    bindUiText(m_orderEdit, "placeholderText", "Production or work order");
-    addUiRow(form, "Order", m_orderEdit);
-    m_testerEdit = new QLineEdit(this);
-    m_testerEdit->setObjectName(QStringLiteral("stationTesterEdit"));
-    bindUiText(m_testerEdit, "placeholderText", "Tester or operator name");
-    addUiRow(form, "Tester", m_testerEdit);
 
     m_snLengthEdit = new QLineEdit(this);
     m_snLengthEdit->setObjectName(QStringLiteral("stationSnLengthEdit"));
@@ -206,7 +158,6 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     const auto markPending = [this] { markPendingChanges(); };
     connect(m_stationIdEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_stationModelEdit, &QLineEdit::textEdited, this, markPending);
-    connect(m_customerIdEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_stopOnFailureSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_scanDialogSwitch, &QAbstractButton::toggled, this, markPending);
     connect(m_loopTestSwitch, &QAbstractButton::toggled, this, [this] {
@@ -234,9 +185,6 @@ StationSettingsEditor::StationSettingsEditor(StationDocument* document,
     connect(m_snPatternEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_snAllowedRegexEdit, &QLineEdit::textEdited, this, markPending);
     connect(m_uutCountEdit, &QLineEdit::textEdited, this, markPending);
-    connect(m_jigNoEdit, &QLineEdit::textEdited, this, markPending);
-    connect(m_orderEdit, &QLineEdit::textEdited, this, markPending);
-    connect(m_testerEdit, &QLineEdit::textEdited, this, markPending);
     if (m_document) {
         connect(m_document, &StationDocument::documentChanged,
                 this, &StationSettingsEditor::reload);
@@ -274,7 +222,6 @@ void StationSettingsEditor::setEditable(bool editable)
     const bool valid = m_document && !m_document->isEmpty();
     for (auto* field : {static_cast<QWidget*>(m_stationIdEdit),
                         static_cast<QWidget*>(m_stationModelEdit),
-                        static_cast<QWidget*>(m_customerIdEdit),
                         static_cast<QWidget*>(m_stopOnFailureSwitch),
                         static_cast<QWidget*>(m_scanDialogSwitch),
                         static_cast<QWidget*>(m_loopTestSwitch),
@@ -287,10 +234,7 @@ void StationSettingsEditor::setEditable(bool editable)
                         static_cast<QWidget*>(m_browseReportOutputButton),
                         static_cast<QWidget*>(m_snLengthEdit),
                         static_cast<QWidget*>(m_snPatternEdit),
-                        static_cast<QWidget*>(m_snAllowedRegexEdit),
-                        static_cast<QWidget*>(m_jigNoEdit),
-                        static_cast<QWidget*>(m_orderEdit),
-                        static_cast<QWidget*>(m_testerEdit)}) {
+                        static_cast<QWidget*>(m_snAllowedRegexEdit)}) {
         field->setEnabled(m_editable && valid);
     }
     if (!m_pendingChanges) {
@@ -337,17 +281,9 @@ bool StationSettingsEditor::commitPendingChanges()
         return false;
     }
     auto root = m_document->rootObject();
-    auto metadata = root.value(QStringLiteral("metadata")).toObject();
-    setMetadataValue(metadata, QStringLiteral("jigNo"), m_jigNoEdit->text(),
-                     {"fixtureId", "fixture"});
-    setMetadataValue(metadata, QStringLiteral("order"), m_orderEdit->text(),
-                     {"orderNumber"});
-    setMetadataValue(metadata, QStringLiteral("tester"), m_testerEdit->text(),
-                     {"operator"});
-    root.insert(QStringLiteral("stationId"), m_stationIdEdit->text().trimmed());
+    root.insert(QStringLiteral("stationId"), computerStationId());
     root.remove(QStringLiteral("id"));
     root.insert(QStringLiteral("model"), m_stationModelEdit->text().trimmed());
-    root.insert(QStringLiteral("customerId"), m_customerIdEdit->text().trimmed());
     root.remove(QStringLiteral("name"));
     root.insert(QStringLiteral("stopOnFailure"), m_stopOnFailureSwitch->isChecked());
     root.insert(QStringLiteral("scanDialogEnabled"), m_scanDialogSwitch->isChecked());
@@ -383,7 +319,6 @@ bool StationSettingsEditor::commitPendingChanges()
     } else {
         root.insert(QStringLiteral("snAllowedRegex"), snAllowedRegex);
     }
-    root.insert(QStringLiteral("metadata"), metadata);
     m_document->replaceRootObject(std::move(root));
     m_errorLabel->hide();
     setPendingChanges(false);
@@ -405,8 +340,6 @@ bool StationSettingsEditor::focusField(const QString& path)
     } else if (path == QStringLiteral("model") ||
                path == QStringLiteral("name")) {
         field = m_stationModelEdit;
-    } else if (path == QStringLiteral("customerId")) {
-        field = m_customerIdEdit;
     } else if (path == QStringLiteral("stopOnFailure")) {
         field = m_stopOnFailureSwitch;
     } else if (path == QStringLiteral("scanDialogEnabled")) {
@@ -433,18 +366,6 @@ bool StationSettingsEditor::focusField(const QString& path)
         field = m_snPatternEdit;
     } else if (path == QStringLiteral("snAllowedRegex")) {
         field = m_snAllowedRegexEdit;
-    } else if (path.startsWith(QStringLiteral("metadata"))) {
-        if (path.contains(QStringLiteral("jigNo")) ||
-            path.contains(QStringLiteral("fixture"))) {
-            field = m_jigNoEdit;
-        } else if (path.contains(QStringLiteral("order"))) {
-            field = m_orderEdit;
-        } else if (path.contains(QStringLiteral("tester")) ||
-                   path.contains(QStringLiteral("operator"))) {
-            field = m_testerEdit;
-        } else {
-            field = m_jigNoEdit;
-        }
     }
     if (!field) {
         return false;
@@ -461,12 +382,9 @@ void StationSettingsEditor::reload()
     m_loading = true;
     const auto root = m_document ? m_document->rootObject() : QJsonObject{};
     const bool valid = !root.isEmpty();
-    m_stationIdEdit->setText(root.value(QStringLiteral("stationId")).toString(
-        root.value(QStringLiteral("id")).toString()));
+    m_stationIdEdit->setText(computerStationId());
     m_stationModelEdit->setText(root.value(QStringLiteral("model")).toString(
         root.value(QStringLiteral("name")).toString()));
-    m_customerIdEdit->setText(
-        root.value(QStringLiteral("customerId")).toString());
     m_stopOnFailureSwitch->setChecked(
         root.value(QStringLiteral("stopOnFailure")).toBool(true));
     m_scanDialogSwitch->setChecked(
@@ -495,17 +413,9 @@ void StationSettingsEditor::reload()
         root.value(QStringLiteral("snPattern")).toString());
     m_snAllowedRegexEdit->setText(
         root.value(QStringLiteral("snAllowedRegex")).toString());
-    const auto metadata = root.value(QStringLiteral("metadata")).toObject();
-    m_jigNoEdit->setText(metadataValue(
-        metadata, {"jigNo", "fixtureId", "fixture"}));
-    m_orderEdit->setText(metadataValue(
-        metadata, {"order", "orderNumber"}));
-    m_testerEdit->setText(metadataValue(
-        metadata, {"tester", "operator"}));
 
     for (auto* field : {static_cast<QWidget*>(m_stationIdEdit),
                         static_cast<QWidget*>(m_stationModelEdit),
-                        static_cast<QWidget*>(m_customerIdEdit),
                         static_cast<QWidget*>(m_stopOnFailureSwitch),
                         static_cast<QWidget*>(m_scanDialogSwitch),
                         static_cast<QWidget*>(m_loopTestSwitch),
@@ -519,10 +429,7 @@ void StationSettingsEditor::reload()
                         static_cast<QWidget*>(m_browseReportOutputButton),
                         static_cast<QWidget*>(m_snLengthEdit),
                         static_cast<QWidget*>(m_snPatternEdit),
-                        static_cast<QWidget*>(m_snAllowedRegexEdit),
-                        static_cast<QWidget*>(m_jigNoEdit),
-                        static_cast<QWidget*>(m_orderEdit),
-                        static_cast<QWidget*>(m_testerEdit)}) {
+                        static_cast<QWidget*>(m_snAllowedRegexEdit)}) {
         field->setEnabled(m_editable && valid);
     }
     m_loopTestCountEdit->setEnabled(

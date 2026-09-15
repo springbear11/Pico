@@ -74,6 +74,7 @@ private:
     void beginAutoRoutedRunBatch(const QStringList& serialNumbers);
     void startResolvedRun();
     void configureUutSlots();
+    void configureRunInformation();
     int configuredUutCount() const;
     void synchronizeUutSlotCount(int slotCount);
     void updateUutSlotAction();
@@ -100,6 +101,8 @@ private:
     QAction* m_uutCountAction = nullptr;
     bool m_responsiveUpdateQueued = false;
     ExecutionViewModel* m_viewModel = nullptr;
+    QAction* m_runInformationAction = nullptr;
+    RunInformation m_runInformation;
     OperatorPromptPresenter* m_operatorPromptPresenter = nullptr;
     UutStepModel* m_resultModel = nullptr;
     UutOverviewModel* m_overviewModel = nullptr;

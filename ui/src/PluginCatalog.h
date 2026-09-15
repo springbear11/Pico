@@ -118,13 +118,15 @@ public:
                                                  const QString& dllPath,
                                                  int abiVersion);
     static QStringList discoverPluginFiles(const QString& rootDirectory);
+    static QString deviceType(const PluginManifest& plugin);
     static bool nativeHostSupportsDescribe(const QString& nativeHostProgram,
                                            int timeoutMs = 3000,
                                            QString* errorMessage = nullptr);
     static PluginScanResult scanPlugins(const QString& rootDirectory,
                                         const QString& nativeHostProgram,
                                         const QString& registryFilePath,
-                                        int timeoutMs = 5000);
+                                        int timeoutMs = 5000,
+                                        const QString& integrityDirectory = {});
     static bool saveRegistry(const QString& filePath,
                              const QVector<PluginManifest>& plugins,
                              QString* errorMessage = nullptr);

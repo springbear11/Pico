@@ -1,5 +1,9 @@
 # UI/Core Integrity Check
 
+This document records the initial implementation. The current versioned
+UI/Core/PicoATE-plugin scope and authorization behavior are described in
+[Software Versions and Plugin Approval](software-integrity.md).
+
 ## Scope
 
 This first version checks only `PicoATE.UI.exe` and `PicoATECore.dll` using SHA-256.

@@ -266,6 +266,7 @@ void ExecutionViewModel::compile()
     request.sequenceJson = m_sequenceJson;
     request.stationPath = m_stationPath;
     request.stationJson = m_stationJson;
+    if (m_runInformation) request.stationIdOverride = m_runInformation->stationId;
     setState(UiRunState::Compiling);
 
     QPointer<ExecutionWorker> worker(m_worker);
@@ -338,6 +339,16 @@ void ExecutionViewModel::setRuntimeIntegrityDirectory(const QString& directory)
     if (canChangeSources()) m_runtimeIntegrityDirectory = directory;
 }
 
+void ExecutionViewModel::setRunInformation(const RunInformation& information)
+{
+    if (canChangeSources()) m_runInformation = information;
+}
+
+std::optional<RunInformation> ExecutionViewModel::activeRunInformation() const
+{
+    return m_activeRunRequest.runInformation;
+}
+
 void ExecutionViewModel::startRun(RunRequest request)
 {
     if (!canRun()) {
@@ -346,6 +357,7 @@ void ExecutionViewModel::startRun(RunRequest request)
 
     request.requestId = ++m_runRequestId;
     request.runtimeIntegrityDirectory = m_runtimeIntegrityDirectory;
+    request.runInformation = m_runInformation;
     m_activeRunRequest = std::move(request);
     m_runIteration = 0;
     m_runIterationCount = qMax(1, m_compileSummary.loopTestCount);
@@ -470,6 +482,7 @@ void ExecutionViewModel::testDeviceConnection(const QString& deviceId, int timeo
     request.stationPath = m_stationPath;
     request.stationJson = m_stationJson;
     request.deviceId = deviceId.trimmed();
+    request.runtimeIntegrityDirectory = m_runtimeIntegrityDirectory;
     request.timeoutMs = qBound(100, timeoutMs, 60000);
     m_stopToken = std::make_shared<PicoATE::Core::StopToken>();
     m_stateBeforeDeviceTest = m_state;

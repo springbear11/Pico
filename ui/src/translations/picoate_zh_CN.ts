@@ -84,14 +84,14 @@
     <message><source>STATION</source><translation>工站</translation></message>
     <message><source>MODEL</source><translation>产品型号</translation></message>
     <message><source>CUSTOMER ID</source><translation>客户编号</translation></message>
-    <message><source>ORDER</source><translation>订单号</translation></message>
+    <message><source>ORDER</source><translation>工单号</translation></message>
     <message><source>TESTER</source><translation>测试人员</translation></message>
     <message><source>JIG NO.</source><translation>治具编号</translation></message>
     <message><source>Station ID</source><translation>工站编号</translation></message>
     <message><source>Station</source><translation>工站</translation></message>
     <message><source>Model</source><translation>产品型号</translation></message>
     <message><source>Customer ID</source><translation>客户编号</translation></message>
-    <message><source>Order</source><translation>订单号</translation></message>
+    <message><source>Order</source><translation>工单号</translation></message>
     <message><source>Tester</source><translation>测试人员</translation></message>
     <message><source>Jig No.</source><translation>治具编号</translation></message>
     <message><source>OVERALL RESULT</source><translation>测试结果</translation></message>
@@ -117,6 +117,14 @@
     <message><source>Save All</source><translation>全部保存</translation></message>
     <message><source>Save all</source><translation>全部保存</translation></message>
     <message><source>Apply</source><translation>应用</translation></message>
+    <message><source>Basic Information</source><translation>基础信息</translation></message>
+    <message><source>Configure basic information</source><translation>配置基础信息</translation></message>
+    <message><source>Computer name (automatic)</source><translation>计算机名称（自动获取）</translation></message>
+    <message><source>Load Previous</source><translation>导入上次配置</translation></message>
+    <message><source>Cannot save Model: %1</source><translation>无法保存型号：%1</translation></message>
+    <message><source>Current information was applied, but the previous configuration could not be remembered.</source><translation>本次信息已生效，但无法记录为上次配置。</translation></message>
+    <message><source>Select a saved Station without pending edits to change Model</source><translation>请先选择已保存的工站，并处理尚未完成的工站编辑后再更改型号</translation></message>
+    <message><source>Failed to reload Station</source><translation>重新加载工站配置失败</translation></message>
     <message><source>Cancel</source><translation>取消</translation></message>
     <message><source>RUNNING</source><translation>运行中</translation></message>
     <message><source>Running</source><translation>运行中</translation></message>
@@ -590,23 +598,33 @@ Station: %2</source><translation>脚本：%1
     <message><source>Baseline updated: %1</source><translation>基准更新：%1</translation></message>
     <message><source>Authorize Baseline Update</source><translation>授权更新基准</translation></message>
     <message><source>Accept the selected files as the new baseline?</source><translation>确认接受选中文件作为新的校验基准？</translation></message>
-    <message><source>Daily administrator password</source><translation>日期算法管理员密码</translation></message>
+    <message><source>Authorization password</source><translation>授权密码</translation></message>
     <message><source>Approval reason</source><translation>更新原因</translation></message>
     <message><source>Authorize</source><translation>确认授权</translation></message>
-    <message><source>Daily administrator password is required.</source><translation>需要正确的日期算法管理员密码。</translation></message>
+    <message><source>Authorization password is invalid or privileges are insufficient.</source><translation>授权密码不正确或权限不足。</translation></message>
     <message><source>Select files and enter an approval reason.</source><translation>请选择文件并填写更新原因。</translation></message>
     <message><source>Invalid file selection.</source><translation>选中的文件无效。</translation></message>
     <message><source>Integrity baseline is busy. Try again.</source><translation>校验基准正在被其他操作使用，请稍后重试。</translation></message>
     <message><source>Verification cancelled.</source><translation>已取消校验。</translation></message>
     <message><source>Files or baseline changed since verification. Check again.</source><translation>文件或基准在校验后发生变化，请重新校验。</translation></message>
     <message><source>Restore missing or unreadable files before approval.</source><translation>请先恢复缺失或无法读取的文件，再进行授权。</translation></message>
-    <message><source>Select both files to establish a new baseline.</source><translation>建立新基准时，需要同时选择 UI 和 Core 两个文件。</translation></message>
+    <message><source>Select all files to establish or upgrade the baseline.</source><translation>建立或升级基准时，请选择全部文件进行授权。</translation></message>
     <message><source>Required file is missing or is not a regular file.</source><translation>必需文件缺失或不是普通文件。</translation></message>
     <message><source>File changed during verification. Check again.</source><translation>文件在校验期间发生变化，请重新校验。</translation></message>
     <message><source>Integrity baseline is missing or cannot be read.</source><translation>校验基准不存在或无法读取。</translation></message>
     <message><source>Integrity baseline is invalid.</source><translation>校验基准格式无效。</translation></message>
-    <message><source>UI/Core integrity verification failed. Test was not started.</source><translation>UI/Core 完整性校验未通过，测试未启动。</translation></message>
-    <message><source>Ask a daily administrator to review the Integrity Check page.</source><translation>请使用日期算法密码登录，由最高权限在完整性校验页确认处理。</translation></message>
+    <message><source>Software integrity verification failed. Test was not started.</source><translation>软件完整性校验未通过，测试未启动。</translation></message>
+    <message><source>Component Versions / SHA-256</source><translation>组件版本 / SHA-256</translation></message>
+    <message><source>Baseline Version</source><translation>基准版本</translation></message>
+    <message><source>Current Version</source><translation>当前版本</translation></message>
+    <message><source>Not approved</source><translation>未授权</translation></message>
+    <message><source>Upgrade the baseline to include component versions and plugin DLLs.</source><translation>请由具备授权权限的管理员升级基准，纳入组件版本和 Pico 插件 DLL。</translation></message>
+    <message><source>Plugin directories must not be links or redirected paths.</source><translation>插件目录不允许使用链接或重定向路径。</translation></message>
+    <message><source>Plugin inventory changed during verification. Check again.</source><translation>校验期间插件清单发生变化，请重新校验。</translation></message>
+    <message><source>Plugin is outside the approved inventory: %1</source><translation>插件不在授权清单内：%1</translation></message>
+    <message><source>Plugin registry is invalid. Scan approved plugins again.</source><translation>插件注册表无效，请重新扫描已授权的插件。</translation></message>
+    <message><source>Missing plugin entries will be removed from the approved inventory.</source><translation>选中的缺失插件将从授权清单中移除。</translation></message>
+    <message><source>Ask an authorized administrator to review the Integrity Check page.</source><translation>请由具备授权权限的管理员在完整性校验页确认处理。</translation></message>
     <message><source>Remaining %1</source><translation>剩余 %1</translation></message>
     <message><source>Response submitted</source><translation>回复已提交</translation></message>
     <message><source>Closes automatically later</source><translation>后续自动关闭</translation></message>

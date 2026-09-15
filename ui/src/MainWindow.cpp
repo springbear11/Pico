@@ -22,6 +22,7 @@
 #include "ReportHistoryStore.h"
 #include "RunnerModels.h"
 #include "RunArtifactWriter.h"
+#include "RunInformationDialog.h"
 #include "ScanDialog.h"
 #include "UutNavigationStatus.h"
 #include "UutSlotConfigurationDialog.h"
@@ -1005,18 +1006,6 @@ QString adminOverviewStateStyle(UiRunState state, bool stopRequested)
     }
 }
 
-QString stationMetadataValue(const QVariantMap& metadata,
-                             std::initializer_list<const char*> keys)
-{
-    for (const auto* key : keys) {
-        const auto value = metadata.value(QString::fromLatin1(key)).toString().trimmed();
-        if (!value.isEmpty()) {
-            return value;
-        }
-    }
-    return QStringLiteral("--");
-}
-
 QString firstExistingPath(const QStringList& candidates)
 {
     for (const auto& candidate : candidates) {
@@ -1042,7 +1031,7 @@ QString firstDescribeCapableNativeHost(const QStringList& candidates)
 class AdminOverviewSummaryWidget final : public QFrame
 {
 public:
-    explicit AdminOverviewSummaryWidget(QWidget* parent = nullptr)
+    explicit AdminOverviewSummaryWidget(QAction* informationAction, QWidget* parent = nullptr)
         : QFrame(parent)
     {
         setObjectName(QStringLiteral("adminOverviewSummary"));
@@ -1097,6 +1086,8 @@ public:
         m_jigLabel = addField(
             stationLayout, 2, 2, "JIG NO.",
             QStringLiteral("adminOverviewJigValue"));
+        stationLayout->addWidget(makeRunInformationButton(informationAction, stationArea,
+            QStringLiteral("adminOverviewRunInfoButton")), 0, 3, 2, 1, Qt::AlignTop | Qt::AlignRight);
         for (int column = 0; column < 3; ++column) {
             stationLayout->setColumnStretch(column, 1);
         }
@@ -3733,6 +3724,7 @@ void MainWindow::applyUndoRedo(bool redo)
 
 void MainWindow::setAdminAccess(AdminAccess access)
 {
+    m_viewModel->setRuntimeIntegrityDirectory(QCoreApplication::applicationDirPath());
     if (access == AdminAccess::Supervisor && !m_integrityPage) {
         m_integrityPage = new IntegrityPage(QCoreApplication::applicationDirPath(), access, m_workspaceTabs);
         addUiTab(m_workspaceTabs, m_integrityPage, "Integrity Check");
@@ -4029,6 +4021,7 @@ void MainWindow::startAdminRunWithSerial(const QString& serialNumber)
             .arg(enabledUutSlotCount(m_adminUutSlotEnabled))
             .arg(m_activeAdminUutId));
     m_adminRunUutInputs = inputs;
+    updateAdminStationSummary();
     m_viewModel->runUuts(inputs);
     showRunPage();
 }
@@ -4082,6 +4075,7 @@ void MainWindow::startAdminRunWithSerials(const QStringList& serialNumbers)
             .arg(enabledUutSlotCount(m_adminUutSlotEnabled))
             .arg(m_activeAdminUutId));
     m_adminRunUutInputs = inputs;
+    updateAdminStationSummary();
     m_viewModel->runUuts(inputs);
     showRunPage();
 }
@@ -4110,7 +4104,7 @@ void MainWindow::beginAdminRunIteration(int iteration, int totalIterations)
         m_sequenceDocument ? m_sequenceDocument->filePath() : QString{},
         m_stationDocument ? m_stationDocument->rootObject() : QJsonObject{},
         m_stationDocument ? m_stationDocument->filePath() : QString{},
-        m_activeAdminSerialNumber);
+        m_activeAdminSerialNumber, m_viewModel->activeRunInformation());
     QVector<RunArtifactUutContext> artifactUuts;
     for (const auto& input : m_viewModel->activeRunUuts()) {
         auto serialNumber = input.variables.value(
@@ -4326,7 +4320,7 @@ void MainWindow::scanPlugins(bool interactive)
     statusBar()->showMessage(uiText("Scanning plugins..."));
     auto result = std::make_shared<PluginScanResult>();
     auto* worker = QThread::create(
-        [result, pluginDirectory, nativeHostCandidates, registryPath] {
+        [result, pluginDirectory, nativeHostCandidates, registryPath, applicationDirectory] {
             const auto nativeHost = firstDescribeCapableNativeHost(
                 nativeHostCandidates);
             if (nativeHost.isEmpty()) {
@@ -4338,7 +4332,7 @@ void MainWindow::scanPlugins(bool interactive)
                 return;
             }
             *result = PluginCatalog::scanPlugins(
-                pluginDirectory, nativeHost, registryPath, 5000);
+                pluginDirectory, nativeHost, registryPath, 5000, applicationDirectory);
         });
     m_pluginScanThread = worker;
     connect(worker, &QThread::finished, this,
@@ -5434,6 +5428,10 @@ void MainWindow::updateWindowTitle()
 
 void MainWindow::buildActions()
 {
+    m_runInformationAction = makeUiAction(QIcon(QStringLiteral(":/icons/settings-2.svg")), "Basic Information", this);
+    m_runInformationAction->setObjectName(QStringLiteral("adminRunInformationAction"));
+    bindUiText(m_runInformationAction, "toolTip", "Configure basic information");
+    connect(m_runInformationAction, &QAction::triggered, this, &MainWindow::configureRunInformation);
     auto* fileMenu = addUiMenu(menuBar(), "&File");
     auto* editMenu = addUiMenu(menuBar(), "&Edit");
     auto* runMenu = addUiMenu(menuBar(), "&Run");
@@ -6249,7 +6247,7 @@ void MainWindow::buildLayout()
     overviewLayout->setContentsMargins(0, 0, 0, 0);
     overviewLayout->setSpacing(8);
     m_adminOverviewSummary = new AdminOverviewSummaryWidget(
-        m_adminRunOverviewPage);
+        m_runInformationAction, m_adminRunOverviewPage);
     overviewLayout->addWidget(m_adminOverviewSummary);
     m_adminUutOverview = new MultiUutOverviewWidget(m_adminRunOverviewPage);
     m_adminUutOverview->setModel(m_uutOverviewModel);
@@ -6362,7 +6360,11 @@ void MainWindow::buildLayout()
     sidebarLayout->setSpacing(12);
     auto* unitTitle = makeUiLabel("UNIT UNDER TEST", sidebar);
     unitTitle->setObjectName(QStringLiteral("adminSectionTitle"));
-    sidebarLayout->addWidget(unitTitle);
+    auto* informationHeading = new QHBoxLayout;
+    informationHeading->addWidget(unitTitle, 1);
+    informationHeading->addWidget(makeRunInformationButton(m_runInformationAction, sidebar,
+        QStringLiteral("adminDetailRunInfoButton")));
+    sidebarLayout->addLayout(informationHeading);
     auto* unitDetails = new QFormLayout;
     unitDetails->setObjectName(QStringLiteral("adminRunInfoForm"));
     unitDetails->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
@@ -6383,8 +6385,11 @@ void MainWindow::buildLayout()
     m_adminCustomerIdLabel->setObjectName(
         QStringLiteral("adminCustomerIdLabel"));
     m_adminOrderLabel = new ElidedInfoLabel(uiText("--"), sidebar);
+    m_adminOrderLabel->setObjectName(QStringLiteral("adminOrderLabel"));
     m_adminTesterLabel = new ElidedInfoLabel(uiText("--"), sidebar);
+    m_adminTesterLabel->setObjectName(QStringLiteral("adminTesterLabel"));
     m_adminJigLabel = new ElidedInfoLabel(uiText("--"), sidebar);
+    m_adminJigLabel->setObjectName(QStringLiteral("adminJigLabel"));
     for (auto* label : {m_adminSerialLabel, m_adminStationLabel, m_adminModelLabel,
                        m_adminCustomerIdLabel, m_adminOrderLabel, m_adminTesterLabel,
                        m_adminJigLabel}) {
@@ -6848,6 +6853,7 @@ void MainWindow::updateCommandState()
         return;
     }
     const bool canChangeSources = m_viewModel->canChangeSources();
+    m_runInformationAction->setEnabled(canChangeSources);
     m_openSequenceAction->setEnabled(canChangeSources);
     m_openStationAction->setEnabled(canChangeSources);
     m_newProjectAction->setEnabled(canChangeSources);
@@ -7191,30 +7197,42 @@ void MainWindow::updateAdminRunState(UiRunState state)
 void MainWindow::updateAdminStationSummary()
 {
     if (!m_adminStationLabel || !m_adminModelLabel ||
-        !m_adminCustomerIdLabel || !m_stationDocument ||
-        m_stationDocument->filePath().isEmpty()) {
+        !m_adminCustomerIdLabel || !m_stationDocument) {
         return;
     }
-    const auto result = PicoATE::Core::loadStationConfigFile(
-        m_stationDocument->filePath());
-    const auto stationId = result.config.stationId.isEmpty()
-        ? QFileInfo(m_stationDocument->filePath()).completeBaseName()
-        : result.config.stationId;
-    m_adminStationLabel->setText(stationId);
-    m_adminModelLabel->setText(result.config.model.trimmed().isEmpty()
-                                   ? uiText("--")
-                                   : result.config.model.trimmed());
-    m_adminCustomerIdLabel->setText(
-        result.config.customerId.trimmed().isEmpty()
-            ? uiText("--")
-            : result.config.customerId.trimmed());
-    m_adminOrderLabel->setText(stationMetadataValue(
-        result.config.metadata, {"order", "orderNumber"}));
-    m_adminTesterLabel->setText(stationMetadataValue(
-        result.config.metadata, {"tester", "operator"}));
-    m_adminJigLabel->setText(stationMetadataValue(
-        result.config.metadata, {"jigNo", "fixtureId", "fixture"}));
+    const auto root = m_stationDocument->rootObject();
+    m_runInformation.stationId = computerStationId();
+    m_runInformation.model = root.value(QStringLiteral("model")).toString(root.value(QStringLiteral("name")).toString()).trimmed();
+    const auto display = [](const QString& value) { return value.isEmpty() ? uiText("--") : value; };
+    m_adminStationLabel->setText(display(m_runInformation.stationId));
+    m_adminModelLabel->setText(display(m_runInformation.model));
+    m_adminCustomerIdLabel->setText(display(m_runInformation.customerId));
+    m_adminOrderLabel->setText(display(m_runInformation.order));
+    m_adminTesterLabel->setText(display(m_runInformation.tester));
+    m_adminJigLabel->setText(display(m_runInformation.jigNo));
+    m_viewModel->setRunInformation(m_runInformation);
     updateAdminOverviewSummary();
+}
+
+void MainWindow::configureRunInformation()
+{
+    if (!m_viewModel->canChangeSources()) return;
+    updateAdminStationSummary();
+    const auto path = m_stationDocument->filePath();
+    const bool editable = !path.isEmpty() && !m_stationDocument->isModified() &&
+        !m_stationSettingsEditor->hasPendingChanges() && !m_stationPropertyEditor->hasPendingChanges();
+    RunInformationDialog dialog(m_runInformation, editable, [this, path](const QString& model, QString* error) {
+        if (!saveStationModel(path, model, error)) return false;
+        if (!m_stationDocument->load(path)) {
+            if (error) *error = uiText("Failed to reload Station");
+            return false;
+        }
+        return true;
+    }, this);
+    if (dialog.exec() == QDialog::Accepted) {
+        m_runInformation = dialog.information();
+        updateAdminStationSummary();
+    }
 }
 
 void MainWindow::updateAdminProgress()

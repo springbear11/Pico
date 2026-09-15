@@ -21,6 +21,8 @@ struct IntegrityFile {
     QString error;
     qint64 size = 0;
     IntegrityStatus status = IntegrityStatus::Unverified;
+    QString expectedVersion;
+    QString actualVersion;
 };
 
 struct IntegrityReport {
@@ -32,6 +34,7 @@ struct IntegrityReport {
     QVector<IntegrityFile> files;
     bool baselineExists = false;
     bool cancelled = false;
+    QString inventoryError;
 
     bool passed() const;
 };
@@ -40,7 +43,9 @@ class RuntimeIntegrity final {
 public:
     using Cancel = std::function<bool()>;
     static QString baselineFileName();
-    static QStringList fileNames();
+    static QStringList fileNames(const QString& directory = {});
+    static QString fileVersion(const QString& path);
+    static QString pluginAccessError(const IntegrityReport& report, const QStringList& dllPaths);
     static IntegrityReport check(const QString& directory, const Cancel& cancel = {});
     static QString authorize(const IntegrityReport& reviewed, const QStringList& selected,
                              AdminAccess access, const QString& password, const QString& reason,

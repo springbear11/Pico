@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(PicoATE.Plugins LANGUAGES CXX)
+project(PicoATE.Plugins VERSION 1.0.0 LANGUAGES CXX)
+if(WIN32)
+    enable_language(RC)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -55,6 +58,13 @@ function(picoate_add_plugin_category category entry_source)
             ${vendor_sources}
         )
         target_link_libraries(${target_name} PRIVATE PicoATEPluginSdk)
+        if(WIN32)
+            set(PLUGIN_FILENAME "PicoATE.${category}.${vendor}.dll")
+            string(REPLACE "." "," PLUGIN_VERSION_NUMBERS "${PROJECT_VERSION}.0")
+            configure_file("${CMAKE_SOURCE_DIR}/common/PluginVersion.rc.in"
+                "${CMAKE_CURRENT_BINARY_DIR}/${target_name}_version.rc" @ONLY)
+            target_sources(${target_name} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/${target_name}_version.rc")
+        endif()
         target_include_directories(${target_name} PRIVATE
             "${category_dir}"
             "${vendor_dir}"

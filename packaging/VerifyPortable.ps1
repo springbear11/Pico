@@ -105,6 +105,42 @@ if (Test-Path -LiteralPath $registryPath -PathType Leaf) {
     }
 }
 
+$baselinePath = Join-Path $portable 'IntegrityBaseline.json'
+if (Test-Path -LiteralPath $baselinePath -PathType Leaf) {
+    try {
+        $baseline = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+        if ($baseline.schemaVersion -ne 2 -or $baseline.algorithm -ne 'SHA-256') { throw 'Expected versioned integrity baseline schema 2' }
+        $inventory = @('PicoATE.UI.exe','PicoATECore.dll')
+        if (Test-Path -LiteralPath (Join-Path $portable 'plugins') -PathType Container) {
+            $inventory += @(Get-ChildItem -LiteralPath (Join-Path $portable 'plugins') -Recurse -Force -File |
+                Where-Object { $_.Name -like 'PicoATE.*.dll' } |
+                ForEach-Object { $_.FullName.Substring($portable.Length+1).Replace('\','/') })
+        }
+        $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($entry in $baseline.files) {
+            $relative = [string]$entry.path
+            $segments = $relative.Split('/')
+            if ($relative -match '^plugins/(?:[^/:\\]+/)*[^/:\\]+\.dll$' -and
+                '.' -notin $segments -and '..' -notin $segments -and
+                [IO.Path]::GetFileName($relative) -notlike 'PicoATE.*.dll') { continue }
+            if ($entry.path -notin $inventory -or -not $seen.Add($entry.path)) { throw "Unknown, missing or duplicate baseline file: $($entry.path)" }
+            $file = Join-Path $portable $entry.path
+            if ((Get-Item -LiteralPath $file -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked baseline file: $file" }
+            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ine $entry.sha256) { throw "SHA-256 mismatch: $($entry.path)" }
+            $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($file)
+            $version = ''
+            if ($info.FileVersion) {
+                $version = "$($info.FileMajorPart).$($info.FileMinorPart).$($info.FileBuildPart)"
+                if ($info.FilePrivatePart) { $version += ".$($info.FilePrivatePart)" }
+            }
+            if ($version -cne $entry.version) { throw "Component version mismatch: $($entry.path)" }
+        }
+        if ($seen.Count -ne $inventory.Count) { throw 'Integrity baseline does not cover all PicoATE plugin DLLs' }
+    } catch {
+        $errors.Add("Integrity baseline verification failed: $($_.Exception.Message)")
+    }
+}
+
 $dumpbin = Find-DumpBin
 if (-not $dumpbin) {
     $errors.Add('dumpbin.exe was not found; PE dependency verification could not run')

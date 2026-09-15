@@ -64,6 +64,7 @@ private:
     void reload();
     void loadStation();
     void loadDevice();
+    void reloadDeviceTypes(const QString& selectedType);
     void reloadPluginChoices(const QString& selectedModuleId = {});
     void reloadConnectionKinds(const QString& selectedKind = {});
     void refreshResources();

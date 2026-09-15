@@ -47,7 +47,6 @@ private:
     QFormLayout* m_form = nullptr;
     QLineEdit* m_stationIdEdit = nullptr;
     QLineEdit* m_stationModelEdit = nullptr;
-    QLineEdit* m_customerIdEdit = nullptr;
     QAbstractButton* m_stopOnFailureSwitch = nullptr;
     QAbstractButton* m_scanDialogSwitch = nullptr;
     QAbstractButton* m_loopTestSwitch = nullptr;
@@ -62,9 +61,6 @@ private:
     QLineEdit* m_snLengthEdit = nullptr;
     QLineEdit* m_snPatternEdit = nullptr;
     QLineEdit* m_snAllowedRegexEdit = nullptr;
-    QLineEdit* m_jigNoEdit = nullptr;
-    QLineEdit* m_orderEdit = nullptr;
-    QLineEdit* m_testerEdit = nullptr;
     QLabel* m_errorLabel = nullptr;
     QLabel* m_title = nullptr;
     bool m_editable = true;

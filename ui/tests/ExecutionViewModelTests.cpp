@@ -406,6 +406,7 @@ private slots:
     void deviceConnectionTestRunsOffUiThreadAndCancels();
     void coreServiceCompilesAndRunsSimpleSequence();
     void coreServiceRunsExplicitScannedUut();
+    void runInformationOverridesMetadataWithoutChangingStation();
     void coreServiceSkipsDisabledUutAndPreservesPhysicalSlotVariables();
     void startupSupportDiscoversSequencesAndValidatesDailyPassword();
     void newProjectTemplatesUseProductionDefaults();
@@ -902,6 +903,109 @@ void ExecutionViewModelTests::coreServiceRunsExplicitScannedUut()
     QCOMPARE(duplicate.diagnostics.first().path, QStringLiteral("uuts"));
 }
 
+void ExecutionViewModelTests::runInformationOverridesMetadataWithoutChangingStation()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath("StationSystem.json");
+    const QJsonObject station{{"stationId", "LEGACY-PC"}, {"model", "OLD-MODEL"}, {"customerId", "OLD-CUSTOMER"},
+        {"metadata", QJsonObject{{"order", "OLD-ORDER"}, {"tester", "OLD-TESTER"}, {"jigNo", "OLD-JIG"}, {"extra", 42}}},
+        {"devices", QJsonArray{}}, {"snLength", 24}};
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(QJsonDocument(station).toJson());
+    file.close();
+    QString error;
+    QVERIFY2(saveStationModel(path, "NEW-MODEL", &error), qPrintable(error));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const auto savedBytes = file.readAll();
+    file.close();
+    auto expectedStation = station;
+    expectedStation["model"] = "NEW-MODEL";
+    QCOMPARE(QJsonDocument::fromJson(savedBytes).object(), expectedStation);
+
+    CoreExecutionService service;
+    CompileRequest compile;
+    compile.sequencePath = directory.filePath("sequence.json");
+    compile.stationPath = path;
+    compile.stationJson = savedBytes;
+    compile.sequenceJson = R"({"id":"run-info","name":"Run Info","variables":[
+      {"name":"customerId","type":"string","scope":"perUut","values":["OLD","OLD","OLD","OLD"]},
+      {"name":"order","type":"string","scope":"shared","value":"OLD"}
+    ],"groups":[{"id":"main","kind":"main","steps":[
+      {"id":"customer","kind":"limit","inputs":{"actual":"${var.customerId}"},"parameters":{"comparison":"equal","expected":"C001"}},
+      {"id":"order","kind":"limit","inputs":{"actual":"${var.order}"},"parameters":{"comparison":"equal","expected":"WO001"}}
+    ]}]})";
+    const auto compiled = service.compile(compile);
+    QVERIFY2(compiled.success, qPrintable(compiled.diagnostics.isEmpty() ? QString{} : compiled.diagnostics.first().message));
+    RunRequest request;
+    RunInformation information;
+    information.model = "NEW-MODEL";
+    information.customerId = "C001";
+    information.order = "WO001";
+    information.tester = "OPERATOR";
+    information.jigNo = "JIG002";
+    request.runInformation = information;
+    for (int row = 0; row < 4; ++row) {
+        RunRequest::UutInput input;
+        input.uutId = QString("UUT-%1").arg(row + 1);
+        input.slotIndex = row;
+        input.enabled = row != 2;
+        input.variables = {{"sn", QString("SN%1").arg(row + 1)},
+                           {"serialNumber", QString("SN%1").arg(row + 1)}, {"order", "STALE"}};
+        request.uuts.push_back(input);
+    }
+    const auto result = service.run(request, std::make_shared<PicoATE::Core::StopToken>());
+    QVERIFY(result.executed);
+    QVERIFY(!result.report.hasError);
+    QCOMPARE(result.report.uuts.size(), 3);
+    QCOMPARE(result.report.uuts[2].uutId, QString("UUT-4"));
+    QCOMPARE(result.report.metadata.stationId, computerStationId());
+    QCOMPARE(result.report.metadata.customerId, information.customerId);
+    QCOMPARE(result.report.metadata.order, information.order);
+    QCOMPARE(result.report.metadata.tester, information.tester);
+    QCOMPARE(result.report.metadata.jigNo, information.jigNo);
+    QCOMPARE(result.report.metadata.model, information.model);
+    QCOMPARE(result.report.uuts[0].serialNumber, QString("SN1"));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), savedBytes);
+    file.close();
+
+    RunInformation empty;
+    empty.model = "NEW-MODEL";
+    request.runInformation = empty;
+    const auto blank = service.run(request, std::make_shared<PicoATE::Core::StopToken>());
+    QVERIFY(blank.executed);
+    QVERIFY(blank.report.metadata.customerId.isEmpty());
+    QVERIFY(blank.report.metadata.order.isEmpty());
+    QVERIFY(blank.report.metadata.tester.isEmpty());
+    QVERIFY(blank.report.metadata.jigNo.isEmpty());
+    const auto context = runArtifactContextFromDocuments({}, compile.sequencePath, station, path, "SN1", empty);
+    QCOMPARE(context.stationId, computerStationId());
+    QVERIFY(context.customerId.isEmpty());
+    QVERIFY(context.order.isEmpty());
+
+    StationDocument document;
+    QVERIFY(document.initializeNew(QJsonObject{{"model", "AUTO-ID"}, {"devices", QJsonArray{}}}));
+    QCOMPARE(document.rootObject().value("stationId").toString(), computerStationId());
+    QVERIFY(!document.isModified());
+    QVERIFY(!document.setRootValue("stationId", "MANUAL-ID"));
+    QCOMPARE(document.rootObject().value("stationId").toString(), computerStationId());
+    auto missingId = expectedStation;
+    missingId.remove("stationId");
+    compile.stationJson = QJsonDocument(missingId).toJson();
+    compile.stationIdOverride = computerStationId();
+    QVERIFY(service.compile(compile).success);
+    request.runInformation.reset();
+    const auto automaticId = service.run(request, std::make_shared<PicoATE::Core::StopToken>());
+    QVERIFY(automaticId.executed);
+    QCOMPARE(automaticId.report.metadata.stationId, computerStationId());
+    compile.stationIdOverride.clear();
+    QVERIFY(service.compile(compile).success);
+    const auto legacyId = service.run(request, std::make_shared<PicoATE::Core::StopToken>());
+    QVERIFY(legacyId.executed);
+    QVERIFY(legacyId.report.metadata.stationId.isEmpty());
+}
+
 void ExecutionViewModelTests::coreServiceSkipsDisabledUutAndPreservesPhysicalSlotVariables()
 {
     CoreExecutionService service;
@@ -1124,8 +1228,7 @@ void ExecutionViewModelTests::newProjectTemplatesUseProductionDefaults()
              QStringLiteral("NA"));
     QCOMPARE(stationRoot.value(QStringLiteral("model")).toString(),
              QStringLiteral("NA"));
-    QCOMPARE(stationRoot.value(QStringLiteral("customerId")).toString(),
-             QStringLiteral("NA"));
+    QVERIFY(!stationRoot.contains(QStringLiteral("customerId")));
     QVERIFY(!stationRoot.contains(QStringLiteral("name")));
     QVERIFY(stationRoot.value(QStringLiteral("stopOnFailure")).toBool());
     QVERIFY(stationRoot.value(QStringLiteral("scanDialogEnabled")).toBool());
@@ -1140,13 +1243,7 @@ void ExecutionViewModelTests::newProjectTemplatesUseProductionDefaults()
     QCOMPARE(stationRoot.value(QStringLiteral("snAllowedRegex")).toString(),
              QStringLiteral("^[A-Z0-9]+$"));
     QVERIFY(stationRoot.value(QStringLiteral("devices")).toArray().isEmpty());
-    const auto metadata = stationRoot.value(QStringLiteral("metadata")).toObject();
-    QCOMPARE(metadata.value(QStringLiteral("jigNo")).toString(),
-             QStringLiteral("NA"));
-    QCOMPARE(metadata.value(QStringLiteral("order")).toString(),
-             QStringLiteral("NA"));
-    QCOMPARE(metadata.value(QStringLiteral("tester")).toString(),
-             QStringLiteral("NA"));
+    QVERIFY(!stationRoot.contains(QStringLiteral("metadata")));
 
     SequenceDocument sequence;
     StationDocument station;

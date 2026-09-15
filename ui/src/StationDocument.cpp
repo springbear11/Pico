@@ -382,6 +382,7 @@ bool StationDocument::replaceDevice(int row, QJsonObject device)
 
 bool StationDocument::commitRoot(QJsonObject root, const QString& commandText)
 {
+    if (!root.isEmpty()) root.insert(QStringLiteral("stationId"), computerStationId());
     if (root == m_root) {
         return false;
     }
@@ -392,6 +393,7 @@ bool StationDocument::commitRoot(QJsonObject root, const QString& commandText)
 
 void StationDocument::applyCommandRoot(QJsonObject root)
 {
+    if (!root.isEmpty()) root.insert(QStringLiteral("stationId"), computerStationId());
     m_root = std::move(root);
     ++m_revision;
     validate();
@@ -500,6 +502,7 @@ int StationDocument::previousEmptyDeviceRow(int row) const
 
 void StationDocument::acceptRoot(QJsonObject root, QString filePath)
 {
+    root.insert(QStringLiteral("stationId"), computerStationId());
     if (!root.contains(QStringLiteral("pluginRegistry"))) {
         root.insert(QStringLiteral("pluginRegistry"),
                     QStringLiteral("plugins/PluginRegistry.json"));

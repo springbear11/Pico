@@ -17,6 +17,7 @@
 #include "PicoATE/Core/StationConfig.h"
 #include "RunnerModels.h"
 #include "RunArtifactWriter.h"
+#include "RunInformationDialog.h"
 #include "ScanDialog.h"
 #include "UutNavigationStatus.h"
 #include "UutSlotConfigurationDialog.h"
@@ -146,18 +147,6 @@ QString productionStateStyle(UiRunState state)
     }
 }
 
-QString metadataValue(const QVariantMap& metadata,
-                      std::initializer_list<const char*> keys)
-{
-    for (const auto* key : keys) {
-        const auto value = metadata.value(QString::fromLatin1(key)).toString().trimmed();
-        if (!value.isEmpty()) {
-            return value;
-        }
-    }
-    return QStringLiteral("--");
-}
-
 void collectStepStates(
     const PicoATE::Core::StepReport& step,
     QHash<PicoATE::Core::NodeId, PicoATE::Core::ActivationState>& states)
@@ -224,7 +213,7 @@ QString productionOverviewStateText(UiRunState state, bool stopRequested)
 class ProductionOverviewSummaryWidget final : public QFrame
 {
 public:
-    explicit ProductionOverviewSummaryWidget(QWidget* parent = nullptr)
+    explicit ProductionOverviewSummaryWidget(QAction* informationAction, QWidget* parent = nullptr)
         : QFrame(parent)
     {
         setObjectName(QStringLiteral("productionOverviewSummary"));
@@ -280,6 +269,8 @@ public:
         m_jigLabel = addField(
             stationLayout, 2, 2, "JIG NO.",
             QStringLiteral("productionOverviewJigValue"));
+        stationLayout->addWidget(makeRunInformationButton(informationAction, stationArea,
+            QStringLiteral("productionOverviewRunInfoButton")), 0, 3, 2, 1, Qt::AlignTop | Qt::AlignRight);
         for (int column = 0; column < 3; ++column) {
             stationLayout->setColumnStretch(column, 1);
         }
@@ -697,6 +688,10 @@ void ProductionWindow::retranslateUi()
 
 void ProductionWindow::buildUi()
 {
+    m_runInformationAction = makeUiAction(QIcon(QStringLiteral(":/icons/settings-2.svg")), "Basic Information", this);
+    m_runInformationAction->setObjectName(QStringLiteral("productionRunInformationAction"));
+    bindUiText(m_runInformationAction, "toolTip", "Configure basic information");
+    connect(m_runInformationAction, &QAction::triggered, this, &ProductionWindow::configureRunInformation);
     auto* central = new QWidget(this);
     central->setObjectName(QStringLiteral("productionCentral"));
     auto* layout = new QVBoxLayout(central);
@@ -921,13 +916,16 @@ void ProductionWindow::buildUi()
 
     auto* unitTitle = makeUiLabel("UNIT UNDER TEST", sidebar);
     unitTitle->setObjectName(QStringLiteral("productionSectionTitle"));
-    sidebarLayout->addWidget(unitTitle);
+    auto* informationHeading = new QHBoxLayout;
+    informationHeading->addWidget(unitTitle, 1);
+    informationHeading->addWidget(makeRunInformationButton(m_runInformationAction, sidebar,
+        QStringLiteral("productionDetailRunInfoButton")));
+    sidebarLayout->addLayout(informationHeading);
 
     const auto stationResult = PicoATE::Core::loadStationConfigFile(m_selection.stationPath);
-    const auto stationId = stationResult.config.stationId.isEmpty()
-        ? QFileInfo(m_selection.stationPath).completeBaseName()
-        : stationResult.config.stationId;
-    const auto& metadata = stationResult.config.metadata;
+    const auto stationId = computerStationId();
+    m_runInformation.model = stationResult.config.model.trimmed();
+    m_viewModel->setRunInformation(m_runInformation);
 
     auto* details = new QFormLayout;
     details->setObjectName(QStringLiteral("productionRunInfoForm"));
@@ -946,18 +944,14 @@ void ProductionWindow::buildUi()
                                   : stationResult.config.model.trimmed(),
                               sidebar);
     m_modelLabel->setObjectName(QStringLiteral("productionModelLabel"));
-    m_customerIdLabel = new ElidedInfoLabel(
-        stationResult.config.customerId.trimmed().isEmpty()
-            ? uiText("--")
-            : stationResult.config.customerId.trimmed(),
-        sidebar);
+    m_customerIdLabel = new ElidedInfoLabel(uiText("--"), sidebar);
     m_customerIdLabel->setObjectName(
         QStringLiteral("productionCustomerIdLabel"));
-    m_orderLabel = new ElidedInfoLabel(metadataValue(metadata, {"order", "orderNumber"}), sidebar);
+    m_orderLabel = new ElidedInfoLabel(uiText("--"), sidebar);
     m_orderLabel->setObjectName(QStringLiteral("productionOrderLabel"));
-    m_testerLabel = new ElidedInfoLabel(metadataValue(metadata, {"tester", "operator"}), sidebar);
+    m_testerLabel = new ElidedInfoLabel(uiText("--"), sidebar);
     m_testerLabel->setObjectName(QStringLiteral("productionTesterLabel"));
-    m_jigLabel = new ElidedInfoLabel(metadataValue(metadata, {"jigNo", "fixtureId", "fixture"}), sidebar);
+    m_jigLabel = new ElidedInfoLabel(uiText("--"), sidebar);
     m_jigLabel->setObjectName(QStringLiteral("productionJigLabel"));
     for (auto* value : {m_serialLabel, m_stationLabel, m_modelLabel,
                         m_customerIdLabel, m_orderLabel, m_testerLabel,
@@ -1009,7 +1003,7 @@ void ProductionWindow::buildUi()
     auto* overviewLayout = new QVBoxLayout(m_overviewPage);
     overviewLayout->setContentsMargins(0, 0, 0, 0);
     overviewLayout->setSpacing(8);
-    m_overviewSummary = new ProductionOverviewSummaryWidget(m_overviewPage);
+    m_overviewSummary = new ProductionOverviewSummaryWidget(m_runInformationAction, m_overviewPage);
     overviewLayout->addWidget(m_overviewSummary);
     m_uutOverview = new MultiUutOverviewWidget(m_overviewPage);
     m_uutOverview->setObjectName(
@@ -1343,6 +1337,7 @@ void ProductionWindow::updateCommands()
         m_selection.sequenceLoadMode == SequenceLoadMode::Manual;
     const bool manualStart = manualMode && !m_selection.scanDialogEnabled;
     const bool configurationAvailable = m_viewModel->canChangeSources();
+    m_runInformationAction->setEnabled(configurationAvailable);
     m_startAction->setVisible(manualStart);
     m_startAction->setEnabled(manualStart && m_viewModel->canRun());
     m_pauseAction->setEnabled(m_viewModel->canPause());
@@ -1840,6 +1835,7 @@ void ProductionWindow::startResolvedRun()
     m_runUutInputs = inputs;
     m_selectedUutId = m_activeUutId;
     resetPreviewForUuts(m_runUutInputs, uutCount > 1);
+    updateStationSummary();
     m_viewModel->runUuts(inputs);
 }
 
@@ -1984,7 +1980,7 @@ void ProductionWindow::beginRunIteration(int iteration, int totalIterations)
         m_selection.sequencePath,
         stationObject,
         m_selection.stationPath,
-        m_activeSerialNumber);
+        m_activeSerialNumber, m_viewModel->activeRunInformation());
     QVector<RunArtifactUutContext> artifactUuts;
     for (const auto& input : m_viewModel->activeRunUuts()) {
         auto serialNumber = input.variables.value(
@@ -2434,23 +2430,30 @@ void ProductionWindow::updateStationSummary()
     }
     const auto stationResult = PicoATE::Core::loadStationConfigFile(
         m_selection.stationPath);
-    const auto stationId = stationResult.config.stationId.isEmpty()
-        ? QFileInfo(m_selection.stationPath).completeBaseName()
-        : stationResult.config.stationId;
-    const auto& metadata = stationResult.config.metadata;
-    m_stationLabel->setText(stationId.isEmpty() ? uiText("--") : stationId);
-    m_modelLabel->setText(stationResult.config.model.trimmed().isEmpty()
-                              ? uiText("--")
-                              : stationResult.config.model.trimmed());
-    m_customerIdLabel->setText(
-        stationResult.config.customerId.trimmed().isEmpty()
-            ? uiText("--")
-            : stationResult.config.customerId.trimmed());
-    m_orderLabel->setText(metadataValue(metadata, {"order", "orderNumber"}));
-    m_testerLabel->setText(metadataValue(metadata, {"tester", "operator"}));
-    m_jigLabel->setText(metadataValue(
-        metadata, {"jigNo", "fixtureId", "fixture"}));
+    m_runInformation.stationId = computerStationId();
+    m_runInformation.model = stationResult.config.model.trimmed();
+    const auto display = [](const QString& value) { return value.isEmpty() ? uiText("--") : value; };
+    m_stationLabel->setText(display(m_runInformation.stationId));
+    m_modelLabel->setText(display(m_runInformation.model));
+    m_customerIdLabel->setText(display(m_runInformation.customerId));
+    m_orderLabel->setText(display(m_runInformation.order));
+    m_testerLabel->setText(display(m_runInformation.tester));
+    m_jigLabel->setText(display(m_runInformation.jigNo));
+    m_viewModel->setRunInformation(m_runInformation);
     updateOverviewSummary();
+}
+
+void ProductionWindow::configureRunInformation()
+{
+    if (!m_viewModel->canChangeSources()) return;
+    updateStationSummary();
+    const auto path = m_selection.stationPath;
+    RunInformationDialog dialog(m_runInformation, QFileInfo(path).isFile(),
+        [path](const QString& model, QString* error) { return saveStationModel(path, model, error); }, this);
+    if (dialog.exec() == QDialog::Accepted) {
+        m_runInformation = dialog.information();
+        updateStationSummary();
+    }
 }
 
 void ProductionWindow::openProductRoutingConfiguration()

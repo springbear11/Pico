@@ -17,6 +17,7 @@
 #include "ProjectResourcePaths.h"
 #include "ReportExporter.h"
 #include "RunArtifactWriter.h"
+#include "RunInformationDialog.h"
 #include "ProductionWindow.h"
 #include "ProductRoutingDialog.h"
 #include "ProductRoutingScanSupport.h"
@@ -56,6 +57,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QFileDialog>
@@ -390,6 +392,7 @@ private slots:
     void titleBarLanguageButtonPreservesNativeWindow();
     void integrityPageOnlyAppearsForDailyAdmin();
     void integrityPageApprovesSelectedFilesAndKeepsReadableHashes();
+    void integrityPageShowsVersionedPluginInventory();
     void productionIntegrityBlocksUntilBaselineIsApproved();
     void adminDisabledSlotsRemainVisible();
     void localizedConfigurationKeepsData();
@@ -419,6 +422,7 @@ private slots:
     void stationConnectionActionUpdatesStatus();
     void stationDeviceApplyPreservesDllPathWhenModelIsUnchanged();
     void stationPropertyEditorUsesTypedIdsAndFilteredDrivers();
+    void stationDeviceTypesFollowPluginFilenames();
     void stationPropertyEditorKeepsCanChannelOptionsIndependent();
     void stationPropertyEditorPreservesCanIdentityWhenEditingFirstGroup();
     void stationNewCanKeepsTableEnabledStateWhenDraftIsSaved();
@@ -501,6 +505,9 @@ private slots:
     void singleUutNavigationStaysVisible();
     void overviewStatusAndElapsedLayout_data();
     void overviewStatusAndElapsedLayout();
+    void runtimeInformationConfiguration_data();
+    void runtimeInformationConfiguration();
+    void runtimeInformationDialogPreservesCancelAndFailedSave();
     void uutNavigationReflectsScanningAndResults_data();
     void uutNavigationReflectsScanningAndResults();
     void overviewSixUutsPreserveCardLayout_data();
@@ -618,7 +625,8 @@ void MainWindowLifecycleTests::integrityPageApprovesSelectedFilesAndKeepsReadabl
     auto* table = page.findChild<QTableWidget*>("integrityFilesTable");
     auto* approve = page.findChild<QPushButton*>("integrityApproveButton");
     QVERIFY(table && approve);
-    QCOMPARE(table->item(0, 2)->text().remove('\n').size(), 64);
+    QCOMPARE(table->columnCount(), 6);
+    QCOMPARE(table->item(0, 4)->text().remove('\n').size(), 64);
     const auto screenshots = qEnvironmentVariable("PICOATE_INTEGRITY_SCREENSHOTS");
     if (!screenshots.isEmpty()) {
         QTest::qWait(50);
@@ -631,7 +639,7 @@ void MainWindowLifecycleTests::integrityPageApprovesSelectedFilesAndKeepsReadabl
     page.refresh();
     QTRY_VERIFY(!page.busy());
     QCOMPARE(page.report().files[0].status, IntegrityStatus::Modified);
-    QCOMPARE(table->item(0, 2)->foreground().color(), QColor("#a43838"));
+    QCOMPARE(table->item(0, 4)->foreground().color(), QColor("#a43838"));
     QVERIFY(language.setChinese(true, false));
     page.resize(850, 560);
     table->selectRow(0);
@@ -644,6 +652,7 @@ void MainWindowLifecycleTests::integrityPageApprovesSelectedFilesAndKeepsReadabl
         QVERIFY(page.grab().save(QDir(screenshots).filePath("integrity-zh-850.png")));
     }
     bool fixedRejected = false;
+    bool genericAuthorizationPrompt = false;
     QTimer::singleShot(40, &page, [&] {
         auto* dialog = page.findChild<QDialog*>("integrityApprovalDialog");
         if (!dialog) return;
@@ -651,19 +660,83 @@ void MainWindowLifecycleTests::integrityPageApprovesSelectedFilesAndKeepsReadabl
         auto* reason = dialog->findChild<QLineEdit*>("integrityApprovalReason");
         auto* confirm = dialog->findChild<QPushButton*>("integrityConfirmApproval");
         if (!input || !reason || !confirm) { dialog->reject(); return; }
+        genericAuthorizationPrompt = input->placeholderText() == uiText("Authorization password");
         input->setText("300693");
         reason->setText("Approved UI update");
         confirm->click();
         fixedRejected = dialog->isVisible() && input->text().isEmpty();
+        for (const auto* label : dialog->findChildren<QLabel*>()) {
+            genericAuthorizationPrompt = genericAuthorizationPrompt &&
+                !label->text().contains("daily", Qt::CaseInsensitive) &&
+                !label->text().contains(QStringLiteral("日期"));
+        }
         input->setText(password);
         confirm->click();
     });
     approve->click();
     QVERIFY(fixedRejected);
+    QVERIFY(genericAuthorizationPrompt);
     QTRY_VERIFY(!page.busy());
     QVERIFY(page.report().passed());
     QCOMPARE(page.report().baseline.value("history").toArray().last().toObject()
         .value("changes").toArray().size(), 1);
+}
+
+void MainWindowLifecycleTests::integrityPageShowsVersionedPluginInventory()
+{
+    const auto runtime = qEnvironmentVariable("PICOATE_VERSIONED_RUNTIME");
+    if (runtime.isEmpty()) QSKIP("Set PICOATE_VERSIONED_RUNTIME after building release components");
+    QTemporaryDir dir;
+    const auto names = RuntimeIntegrity::fileNames(runtime);
+    for (const auto& name : names) {
+        QVERIFY(QDir().mkpath(QFileInfo(dir.filePath(name)).absolutePath()));
+        QVERIFY(QFile::copy(QDir(runtime).filePath(name), dir.filePath(name)));
+    }
+    QFile vendor(dir.filePath("plugins/ControlCAN.dll"));
+    QVERIFY(vendor.open(QIODevice::WriteOnly));
+    vendor.write("vendor library is not part of the integrity inventory");
+    vendor.close();
+    const auto password = QString::number(StartupSupport::dailyAdminPassword());
+    QVERIFY(RuntimeIntegrity::authorize(RuntimeIntegrity::check(dir.path()), names,
+        AdminAccess::Supervisor, password, "UI test baseline").isEmpty());
+    QVERIFY(QFile::copy(dir.filePath("plugins/PicoATE.Modbus.Tcp.dll"), dir.filePath("plugins/PicoATE.NewDriver.dll")));
+    QFile modified(dir.filePath("plugins/PicoATE.CAN.CX.dll"));
+    QVERIFY(modified.open(QIODevice::Append));
+    modified.write("modified fixture");
+    modified.close();
+    IntegrityPage page(dir.path(), AdminAccess::Supervisor);
+    page.resize(1250, 680);
+    page.show();
+    QTRY_VERIFY(!page.report().files.isEmpty() && !page.busy());
+    auto* table = page.findChild<QTableWidget*>("integrityFilesTable");
+    QVERIFY(table);
+    QCOMPARE(table->rowCount(), names.size() + 1);
+    QCOMPARE(table->item(0, 1)->text(), QString("1.0.0"));
+    QCOMPARE(table->item(1, 2)->text(), QString("1.0.0"));
+    int added = -1;
+    for (int row = 0; row < table->rowCount(); ++row) {
+        QVERIFY(table->item(row, 0)->text() != "plugins/ControlCAN.dll");
+        if (table->item(row, 0)->text() == "plugins/PicoATE.NewDriver.dll") added = row;
+    }
+    QVERIFY(added >= 0);
+    QCOMPARE(page.report().files[added].status, IntegrityStatus::Unverified);
+    const auto screenshots = qEnvironmentVariable("PICOATE_INTEGRITY_SCREENSHOTS");
+    if (!screenshots.isEmpty()) {
+        QTest::qWait(50);
+        QVERIFY(page.grab().save(QDir(screenshots).filePath("integrity-components.png")));
+    }
+    table->selectRow(added);
+    QTimer::singleShot(20, &page, [&] {
+        auto* dialog = page.findChild<QDialog*>("integrityApprovalDialog");
+        if (!dialog) return;
+        dialog->findChild<QLineEdit*>("integrityApprovalPassword")->setText(password);
+        dialog->findChild<QLineEdit*>("integrityApprovalReason")->setText("Approve new driver only");
+        dialog->findChild<QPushButton*>("integrityConfirmApproval")->click();
+    });
+    page.findChild<QPushButton*>("integrityApproveButton")->click();
+    QTRY_VERIFY(!page.busy());
+    QCOMPARE(page.report().files[added].status, IntegrityStatus::Matched);
+    QVERIFY(!page.report().passed());
 }
 
 void MainWindowLifecycleTests::productionIntegrityBlocksUntilBaselineIsApproved()
@@ -4532,9 +4605,84 @@ void MainWindowLifecycleTests::stationPropertyEditorUsesTypedIdsAndFilteredDrive
                  .value(QStringLiteral("channelIndex")).toInt(),
              0);
 
-    typeCombo->setCurrentIndex(typeCombo->findData(QStringLiteral("PSU")));
-    QCOMPARE(pluginCombo->currentText(), QStringLiteral("No compatible driver found"));
+    QVERIFY(typeCombo->findData(QStringLiteral("PSU")) < 0);
+    typeCombo->setCurrentIndex(typeCombo->findData(QStringLiteral("DMM")));
+    QCOMPARE(pluginCombo->currentData().toString(), QStringLiteral("plugin.dmm.keysight"));
     QVERIFY(pluginCombo->findData(QStringLiteral("plugin.can.gcan")) < 0);
+}
+
+void MainWindowLifecycleTests::stationDeviceTypesFollowPluginFilenames()
+{
+    StationDocument document;
+    QVERIFY(document.initializeNew(QJsonObject{{"stationId", "types"}, {"devices", QJsonArray{
+        QJsonObject{{"deviceId", "PLUGIN1"}, {"deviceType", "PLUGIN"}, {"enabled", false}},
+        QJsonObject{{"deviceId", "LEGACY1"}, {"deviceType", "LEGACY"}, {"enabled", false}}
+    }}}));
+    const auto plugin = [](const QString& id, const QString& path, const QString& category) {
+        PluginManifest result;
+        result.moduleId = id;
+        result.name = id;
+        result.dllPath = path;
+        result.category = category;
+        result.connectionKinds = {QStringLiteral("serialPort")};
+        return result;
+    };
+    const auto can = plugin("plugin.can.gcan", "D:/plugins/PicoATE.CAN.GCAN.dll", "Other");
+    const auto dmm = plugin("plugin.dmm.keysight", "D:/plugins/PicoATE.DMM.KEYSIGHT34410A.dll", "Other");
+    const auto dmm2 = plugin("plugin.dmm.hantek", "D:/plugins/picoate.dmm.HANTEK.DLL", "DMM");
+    auto load = plugin("plugin.eload.test", "D:/plugins/PicoATE.ELOAD.Test.dll", "Power Supplies");
+    PluginFunctionDefinition open;
+    open.id = "open";
+    PluginParameterDefinition mode;
+    mode.key = "mode";
+    mode.name = "Mode";
+    mode.type = PluginParameterType::Enumeration;
+    mode.defaultValue = "safe";
+    mode.options = {{"Safe", "safe"}, {"Fast", "fast"}};
+    open.inputs.push_back(mode);
+    load.functions.push_back(open);
+    const QVector<PluginManifest> registry{can, dmm, dmm2, load,
+        builtInDataParserManifest(), builtInValueToolsManifest()};
+    QCOMPARE(PluginCatalog::deviceType(can), QString("CAN"));
+    QCOMPARE(PluginCatalog::deviceType(dmm), QString("DMM"));
+    QCOMPARE(PluginCatalog::deviceType(load), QString("ELOAD"));
+    StationPropertyEditor editor(&document);
+    editor.setPluginRegistry(registry);
+    editor.setCurrentDevice(0);
+    auto* types = editor.findChild<QComboBox*>("deviceTypeCombo");
+    auto* drivers = editor.findChild<QComboBox*>("devicePluginCombo");
+    auto* connection = editor.findChild<QComboBox*>("deviceConnectionKindCombo");
+    QVERIFY(types && drivers && connection);
+    QStringList choices;
+    for (int row = 0; row < types->count(); ++row) choices.push_back(types->itemData(row).toString());
+    QCOMPARE(choices, QStringList({"CAN", "DMM", "ELOAD", "LEGACY", "PLUGIN"}));
+    QVERIFY(!editor.hasPendingChanges());
+    QVERIFY(!document.isModified());
+    StationDeviceModel model(&document);
+    model.setPluginRegistry(registry);
+    QCOMPARE(model.pluginsForType("DMM").size(), 2);
+    QCOMPARE(model.pluginsForType("ELOAD").size(), 1);
+    QCOMPARE(model.pluginsForType("Power Supplies").size(), 0);
+    types->setCurrentIndex(types->findData("ELOAD"));
+    QCOMPARE(drivers->count(), 1);
+    QCOMPARE(drivers->currentData().toString(), load.moduleId);
+    QCOMPARE(connection->currentData().toString(), QString("serialPort"));
+    auto* option = editor.findChild<QComboBox*>("deviceOption_mode");
+    QVERIFY(option);
+    option->setCurrentIndex(option->findData("fast"));
+    QVERIFY(editor.commitPendingChanges());
+    const auto saved = document.deviceAt(editor.currentDeviceRow());
+    QCOMPARE(saved.value("deviceType").toString(), QString("ELOAD"));
+    QCOMPARE(saved.value("deviceId").toString(), QString("ELOAD1"));
+    QCOMPARE(saved.value("driverId").toString(), load.moduleId);
+    QCOMPARE(saved.value("options").toObject().value("mode").toString(), QString("fast"));
+    const auto root = document.rootObject();
+    editor.setPluginRegistry({can, dmm, dmm2});
+    QCOMPARE(types->currentData().toString(), QString("ELOAD"));
+    QCOMPARE(drivers->currentData().toString(), load.moduleId);
+    QVERIFY(types->findData("LEGACY") >= 0);
+    QCOMPARE(document.rootObject(), root);
+    QVERIFY(!editor.hasPendingChanges());
 }
 
 void MainWindowLifecycleTests::stationPropertyEditorKeepsCanChannelOptionsIndependent()
@@ -6493,7 +6641,7 @@ void MainWindowLifecycleTests::newProjectTemplateSavesSequenceAndStationTogether
     QCOMPARE(sequence->rootObject().value(QStringLiteral("id")).toString(),
              QStringLiteral("templateproduct-sequence"));
     QCOMPARE(station->rootObject().value(QStringLiteral("stationId")).toString(),
-             QStringLiteral("templateproduct-station"));
+             computerStationId());
 
     const auto projects = PicoATE::Core::discoverProductProjects(projectsRoot);
     QCOMPARE(projects.size(), 1);
@@ -7040,10 +7188,10 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     QVERIFY(snPattern);
     QVERIFY(snAllowedRegex);
     QVERIFY(model);
-    QVERIFY(customerId);
-    QVERIFY(jigNo);
-    QVERIFY(order);
-    QVERIFY(tester);
+    QVERIFY(!customerId);
+    QVERIFY(!jigNo);
+    QVERIFY(!order);
+    QVERIFY(!tester);
     QVERIFY(settingsEditor);
     QVERIFY(!window.findChild<QPushButton*>(
         QStringLiteral("applyStationSettingsButton")));
@@ -7100,10 +7248,10 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     uutCount->setText(QStringLiteral("65"));
     QVERIFY(!uutCount->hasAcceptableInput());
     QCOMPARE(model->text(), QStringLiteral("Legacy Model"));
-    QCOMPARE(customerId->text(), QStringLiteral("OLD-CUSTOMER"));
-    QCOMPARE(jigNo->text(), QStringLiteral("JIG-01"));
-    QCOMPARE(order->text(), QStringLiteral("ORDER-01"));
-    QCOMPARE(tester->text(), QStringLiteral("Tester A"));
+    QVERIFY(!settingsEditor->focusField(QStringLiteral("customerId")));
+    QVERIFY(!settingsEditor->focusField(QStringLiteral("metadata.jigNo")));
+    QVERIFY(!settingsEditor->focusField(QStringLiteral("metadata.order")));
+    QVERIFY(!settingsEditor->focusField(QStringLiteral("metadata.tester")));
     stopOnFailure->setChecked(false);
     scanEnabled->setChecked(false);
     loopEnabled->setChecked(true);
@@ -7114,10 +7262,6 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
     snPattern->setText(QStringLiteral("BTSN*"));
     snAllowedRegex->setText(QStringLiteral("^[A-Z0-9]+$"));
     model->setText(QStringLiteral("PICO-M3"));
-    customerId->setText(QStringLiteral("CUSTOMER-03"));
-    jigNo->setText(QStringLiteral("JIG-02"));
-    order->setText(QStringLiteral("ORDER-02"));
-    tester->setText(QStringLiteral("Tester B"));
     QVERIFY(settingsEditor->hasPendingChanges());
     QVERIFY(settingsEditor->commitPendingChanges());
     QCOMPARE(document->rootObject().value(QStringLiteral("stopOnFailure")).toBool(),
@@ -7141,16 +7285,16 @@ void MainWindowLifecycleTests::stationScanDialogTogglePersists()
              QStringLiteral("PICO-M3"));
     QCOMPARE(document->rootObject().value(
                  QStringLiteral("customerId")).toString(),
-             QStringLiteral("CUSTOMER-03"));
+             QStringLiteral("OLD-CUSTOMER"));
     QVERIFY(!document->rootObject().contains(QStringLiteral("name")));
     const auto metadata = document->rootObject()
                               .value(QStringLiteral("metadata")).toObject();
     QCOMPARE(metadata.value(QStringLiteral("jigNo")).toString(),
-             QStringLiteral("JIG-02"));
+             QStringLiteral("JIG-01"));
     QCOMPARE(metadata.value(QStringLiteral("order")).toString(),
-             QStringLiteral("ORDER-02"));
+             QStringLiteral("ORDER-01"));
     QCOMPARE(metadata.value(QStringLiteral("tester")).toString(),
-             QStringLiteral("Tester B"));
+             QStringLiteral("Tester A"));
     QCOMPARE(metadata.value(QStringLiteral("customField")).toString(),
              QStringLiteral("preserved"));
     QString errorMessage;
@@ -7747,9 +7891,9 @@ void MainWindowLifecycleTests::adminStartsOnProductionDashboardAndOpensScannerOn
     window.resize(1600, 900);
     QTest::qWait(20);
     QVERIFY(headerMatchesRunColumns());
-    QCOMPARE(stationLabel->text(), QStringLiteral("bench-01"));
+    QCOMPARE(stationLabel->text(), computerStationId());
     QCOMPARE(modelLabel->text(), QStringLiteral("PICO-M1"));
-    QCOMPARE(customerIdLabel->text(), QStringLiteral("CUSTOMER-01"));
+    QCOMPARE(customerIdLabel->text(), QStringLiteral("--"));
     QVERIFY(scanDialog->isHidden());
     QVERIFY(!scanAction->isEnabled());
 
@@ -7971,9 +8115,9 @@ void MainWindowLifecycleTests::productionWindowPreloadsFlowAndRunsWithoutScanner
     QVERIFY(dataSplitter);
     QVERIFY(sidebar);
     QVERIFY(scan);
-    QCOMPARE(stationLabel->text(), QStringLiteral("line-1"));
+    QCOMPARE(stationLabel->text(), computerStationId());
     QCOMPARE(modelLabel->text(), QStringLiteral("PICO-M2"));
-    QCOMPARE(customerIdLabel->text(), QStringLiteral("CUSTOMER-02"));
+    QCOMPARE(customerIdLabel->text(), QStringLiteral("--"));
     QCOMPARE(contentSplitter->orientation(), Qt::Horizontal);
     QCOMPARE(dataSplitter->orientation(), Qt::Vertical);
     QCOMPARE(brandLogo->accessibleName(), QStringLiteral("SINEXCEL"));
@@ -8204,7 +8348,7 @@ void MainWindowLifecycleTests::productionUutControlsConfigureRuntimeSlots()
     QVERIFY(overviewWaiting);
     QTRY_VERIFY(!sidebar->isVisible());
     QVERIFY(overviewSummary->isVisible());
-    QCOMPARE(overviewStation->text(), QStringLiteral("runtime-slots"));
+    QCOMPARE(overviewStation->text(), computerStationId());
     QCOMPARE(overviewWaiting->text(), QStringLiteral("4"));
     QCOMPARE(overviewStatus->text(), QStringLiteral("READY"));
     QCOMPARE(overviewStatus->property("progressPercent").toInt(), 0);
@@ -9245,6 +9389,270 @@ void MainWindowLifecycleTests::singleUutNavigationStaysVisible()
     QTRY_COMPARE(stack->currentWidget(), detailsPage);
     QVERIFY(overviewButton->isVisible());
     QVERIFY(!overviewButton->isEnabled());
+}
+
+void MainWindowLifecycleTests::runtimeInformationDialogPreservesCancelAndFailedSave()
+{
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("RunInformation/Previous"));
+    settings.remove(QString{});
+    settings.setValue("schemaVersion", 1);
+    settings.setValue("customerId", "PREVIOUS");
+    settings.setValue("order", "PREVIOUS-ORDER");
+    settings.setValue("stationId", "DO-NOT-IMPORT");
+    settings.setValue("model", "DO-NOT-IMPORT");
+    settings.sync();
+    RunInformation current;
+    current.model = "CURRENT-MODEL";
+    RunInformationDialog dialog(current, true, [](const QString&, QString* error) {
+        *error = QStringLiteral("Read-only Station");
+        return false;
+    });
+    dialog.show();
+    auto* customer = dialog.findChild<QLineEdit*>("runInfoCustomer");
+    auto* model = dialog.findChild<QLineEdit*>("runInfoModel");
+    auto* station = dialog.findChild<QLineEdit*>("runInfoStation");
+    QVERIFY(customer && model && station);
+    QVERIFY(customer->text().isEmpty());
+    QVERIFY(station->isReadOnly());
+    dialog.findChild<QPushButton*>("runInfoLoadPrevious")->click();
+    QCOMPARE(customer->text(), QString("PREVIOUS"));
+    QCOMPARE(model->text(), QString("CURRENT-MODEL"));
+    QCOMPARE(station->text(), computerStationId());
+    customer->setText("UNSAVED");
+    model->setText("CANNOT-SAVE");
+    QSignalSpy accepted(&dialog, &QDialog::accepted);
+    QTimer::singleShot(0, &dialog, [&] {
+        if (auto* warning = dialog.findChild<QMessageBox*>()) warning->accept();
+    });
+    dialog.accept();
+    QCOMPARE(accepted.count(), 0);
+    QVERIFY(dialog.isVisible());
+    QCOMPARE(dialog.information().customerId, QString{});
+    QCOMPARE(dialog.information().model, QString("CURRENT-MODEL"));
+    settings.sync();
+    QCOMPARE(settings.value("customerId").toString(), QString("PREVIOUS"));
+    dialog.reject();
+
+    auto& language = UiLanguage::instance();
+    const auto restore = qScopeGuard([&] { language.setChinese(false, false); });
+    language.setChinese(true, false);
+    RunInformationDialog translated(current, false, {});
+    translated.show();
+    QCOMPARE(translated.windowTitle(), QString::fromUtf8("基础信息"));
+    QCOMPARE(translated.findChild<QPushButton*>("runInfoLoadPrevious")->text(), QString::fromUtf8("导入上次配置"));
+    const auto output = qEnvironmentVariable("PICOATE_RUN_INFO_SCREENSHOTS");
+    if (!output.isEmpty()) QVERIFY(translated.grab().save(QDir(output).filePath("dialog-zh.png")));
+    translated.reject();
+}
+
+void MainWindowLifecycleTests::runtimeInformationConfiguration_data()
+{
+    QTest::addColumn<bool>("production");
+    QTest::addColumn<int>("uutCount");
+    QTest::newRow("admin-single") << false << 1;
+    QTest::newRow("admin-multi") << false << 4;
+    QTest::newRow("test-single") << true << 1;
+    QTest::newRow("test-multi") << true << 4;
+}
+
+void MainWindowLifecycleTests::runtimeInformationConfiguration()
+{
+    QFETCH(bool, production);
+    QFETCH(int, uutCount);
+    QSettings settings;
+    settings.remove(QStringLiteral("RunInformation/Previous"));
+    QTemporaryDir dir;
+    const auto sequencePath = dir.filePath("sequence.json");
+    QFile sequence(sequencePath);
+    QVERIFY(sequence.open(QIODevice::WriteOnly));
+    sequence.write(R"({"id":"info-ui","name":"Information","groups":[{"id":"main","kind":"main","steps":[{"id":"wait","kind":"wait","ms":400}]}]})");
+    sequence.close();
+    const auto stationPath = dir.filePath("StationSystem.json");
+    const QJsonObject original{{"stationId", "LEGACY-PC"}, {"model", "INITIAL"}, {"customerId", "LEGACY-CUSTOMER"},
+        {"metadata", QJsonObject{{"order", "LEGACY-ORDER"}, {"tester", "LEGACY-TESTER"}, {"jigNo", "LEGACY-JIG"}}},
+        {"uutCount", uutCount}, {"scanDialogEnabled", false}, {"devices", QJsonArray{}},
+        {"txtLogEnabled", true}, {"csvReportEnabled", true}, {"xlsxReportEnabled", true},
+        {"pdfReportEnabled", true}, {"reportOutputDirectory", dir.filePath("reports")}};
+    QFile station(stationPath);
+    QVERIFY(station.open(QIODevice::WriteOnly));
+    station.write(QJsonDocument(original).toJson());
+    station.close();
+    const auto makeWindow = [&]() -> std::unique_ptr<QWidget> {
+        if (production) {
+            StartupSelection selection;
+            selection.sequencePath = sequencePath;
+            selection.stationPath = stationPath;
+            selection.scanDialogEnabled = false;
+            return createProductionWindow(selection);
+        }
+        auto window = createMainWindow();
+        if (!window->openStationFile(stationPath) || !window->openSequenceFile(sequencePath)) return {};
+        window->findChild<QAction*>("compileAction")->trigger();
+        window->showRunPage();
+        return window;
+    };
+    auto window = makeWindow();
+    QVERIFY(window);
+    window->resize(1280, 850);
+    window->show();
+    const auto prefix = QString(production ? "production" : "admin");
+    auto* execution = window->findChild<ExecutionViewModel*>();
+    QTRY_COMPARE(execution->state(), UiRunState::Ready);
+    auto* action = window->findChild<QAction*>(prefix + "RunInformationAction");
+    auto* button = window->findChild<QToolButton*>(prefix + (uutCount == 1 ? "DetailRunInfoButton" : "OverviewRunInfoButton"));
+    QVERIFY(action && button);
+    QVERIFY(action->isEnabled());
+    QTRY_VERIFY(button->isVisible());
+    QVERIFY(!button->icon().isNull());
+    QCOMPARE(button->size(), QSize(28, 28));
+    const auto label = [&](const QString& suffix) { return window->findChild<QLabel*>(prefix + suffix); };
+    for (const auto& suffix : {"StationLabel", "ModelLabel", "CustomerIdLabel", "OrderLabel", "TesterLabel", "JigLabel"})
+        QVERIFY2(label(suffix), suffix);
+    QCOMPARE(label("StationLabel")->text(), computerStationId());
+    QCOMPARE(label("ModelLabel")->text(), QString("INITIAL"));
+    for (const auto& suffix : {"CustomerIdLabel", "OrderLabel", "TesterLabel", "JigLabel"})
+        QCOMPARE(label(suffix)->text(), QString("--"));
+    if (!production) {
+        auto* id = window->findChild<QLineEdit*>("stationBasicIdEdit");
+        QVERIFY(id && id->isReadOnly());
+        QCOMPARE(id->text(), computerStationId());
+    }
+    auto* scanner = window->findChild<ScanDialog*>();
+    scanner->setSlotCount(uutCount);
+    scanner->showForNextScan();
+    auto* scanEdit = scanner->findChild<QLineEdit*>("barcodeEdit");
+    scanEdit->setText("UNSUBMITTED-SN");
+    bool modalChecked = false;
+    QTimer::singleShot(0, window.get(), [&] {
+        auto* dialog = window->findChild<RunInformationDialog*>("runInformationDialog");
+        if (!dialog) return;
+        QTest::qWait(20);
+        auto* id = dialog->findChild<QLineEdit*>("runInfoStation");
+        modalChecked = id && id->isReadOnly() && id->text() == computerStationId() && !scanner->isVisible();
+        dialog->findChild<QLineEdit*>("runInfoCustomer")->setText("CUSTOMER-NEW");
+        dialog->findChild<QLineEdit*>("runInfoOrder")->setText("WO-001");
+        dialog->findChild<QLineEdit*>("runInfoTester")->setText("OPERATOR-NEW");
+        dialog->findChild<QLineEdit*>("runInfoJig")->setText("JIG-NEW");
+        const auto output = qEnvironmentVariable("PICOATE_RUN_INFO_SCREENSHOTS");
+        if (!output.isEmpty()) dialog->grab().save(QDir(output).filePath(prefix + "-dialog.png"));
+        dialog->accept();
+    });
+    button->click();
+    QVERIFY(modalChecked);
+    QTRY_VERIFY(scanner->isVisible());
+    QCOMPARE(scanEdit->text(), QString("UNSUBMITTED-SN"));
+    QCOMPARE(label("CustomerIdLabel")->text(), QString("CUSTOMER-NEW"));
+    QCOMPARE(label("OrderLabel")->text(), QString("WO-001"));
+    QVERIFY(station.open(QIODevice::ReadOnly));
+    QCOMPARE(QJsonDocument::fromJson(station.readAll()).object(), original);
+    station.close();
+    scanner->cancelCurrentScan();
+    bool editedModel = false;
+    QTimer::singleShot(0, window.get(), [&] {
+        auto* dialog = window->findChild<RunInformationDialog*>("runInformationDialog");
+        if (!dialog) return;
+        auto* model = dialog->findChild<QLineEdit*>("runInfoModel");
+        editedModel = !model->isReadOnly();
+        model->setText("MODEL-NEW");
+        dialog->accept();
+    });
+    action->trigger();
+    QVERIFY(editedModel);
+    QCOMPARE(label("ModelLabel")->text(), QString("MODEL-NEW"));
+    QVERIFY(station.open(QIODevice::ReadOnly));
+    auto expected = original;
+    expected["model"] = "MODEL-NEW";
+    QCOMPARE(QJsonDocument::fromJson(station.readAll()).object(), expected);
+    station.close();
+    if (!production) window->findChild<QAction*>("compileAction")->trigger();
+    QTRY_COMPARE(execution->state(), UiRunState::Ready);
+    const auto output = qEnvironmentVariable("PICOATE_RUN_INFO_SCREENSHOTS");
+    if (!output.isEmpty()) window->grab().save(QDir(output).filePath(prefix + QString("-%1-uut.png").arg(uutCount)));
+    window->findChild<QAction*>(production ? "productionStartAction" : "runAction")->trigger();
+    QVERIFY(!action->isEnabled());
+    QVERIFY(execution->activeRunInformation().has_value());
+    QCOMPARE(execution->activeRunInformation()->customerId, QString("CUSTOMER-NEW"));
+    RunInformation attemptedEdit;
+    attemptedEdit.customerId = "MID-RUN-CHANGE";
+    execution->setRunInformation(attemptedEdit);
+    QCOMPARE(execution->activeRunInformation()->customerId, QString("CUSTOMER-NEW"));
+    QTRY_VERIFY_WITH_TIMEOUT(execution->report().completed, 10000);
+    const auto metadata = execution->report().metadata;
+    QCOMPARE(metadata.stationId, computerStationId());
+    QCOMPARE(metadata.model, QString("MODEL-NEW"));
+    QCOMPARE(metadata.customerId, QString("CUSTOMER-NEW"));
+    QCOMPARE(metadata.order, QString("WO-001"));
+    QCOMPARE(metadata.tester, QString("OPERATOR-NEW"));
+    QCOMPARE(metadata.jigNo, QString("JIG-NEW"));
+    QVERIFY(metadata.serialNumber.isEmpty());
+    QSet<QString> checkedReports;
+    const auto checkArtifacts = [&](bool populated) {
+        QDirIterator logs(dir.filePath("reports"), {"*.txt", "*.csv", "*.xlsx", "*.pdf"},
+                          QDir::Files, QDirIterator::Subdirectories);
+        int checked = 0;
+        while (logs.hasNext()) {
+            const auto path = logs.next();
+            if (checkedReports.contains(path)) continue;
+            checkedReports.insert(path);
+            QFile report(path);
+            QVERIFY(report.open(QIODevice::ReadOnly));
+            const auto bytes = report.readAll();
+            const auto extension = QFileInfo(path).suffix();
+            if (extension == QStringLiteral("pdf")) {
+                QVERIFY(bytes.startsWith("%PDF-"));
+                QVERIFY(bytes.size() > 10000);
+            } else {
+                QVERIFY(bytes.contains("MODEL-NEW"));
+                QVERIFY(bytes.contains(computerStationId().toUtf8()));
+                for (const auto* legacy : {"LEGACY-CUSTOMER", "LEGACY-ORDER", "LEGACY-TESTER", "LEGACY-JIG"})
+                    QVERIFY2(!bytes.contains(legacy), qPrintable(path));
+                for (const auto* current : {"CUSTOMER-NEW", "WO-001", "OPERATOR-NEW", "JIG-NEW"})
+                    QCOMPARE(bytes.contains(current), populated);
+            }
+            const auto artifacts = qEnvironmentVariable("PICOATE_RUN_INFO_ARTIFACTS");
+            if (!artifacts.isEmpty()) {
+                const auto folder = QDir(artifacts).filePath(prefix + QString("-%1-%2").arg(uutCount)
+                    .arg(populated ? "configured" : "blank"));
+                QVERIFY(QDir().mkpath(folder));
+                QVERIFY(report.copy(QDir(folder).filePath(QString::number(checked) + "." + extension)));
+            }
+            ++checked;
+        }
+        QCOMPARE(checked, uutCount * 4);
+    };
+    checkArtifacts(true);
+    window.reset();
+    window = makeWindow();
+    QVERIFY(window);
+    window->show();
+    execution = window->findChild<ExecutionViewModel*>();
+    QTRY_COMPARE(execution->state(), UiRunState::Ready);
+    QCOMPARE(label("ModelLabel")->text(), QString("MODEL-NEW"));
+    QCOMPARE(label("CustomerIdLabel")->text(), QString("--"));
+    QCOMPARE(label("OrderLabel")->text(), QString("--"));
+    bool imported = false;
+    QTimer::singleShot(0, window.get(), [&] {
+        auto* dialog = window->findChild<RunInformationDialog*>("runInformationDialog");
+        if (!dialog) return;
+        dialog->findChild<QPushButton*>("runInfoLoadPrevious")->click();
+        imported = dialog->findChild<QLineEdit*>("runInfoCustomer")->text() == "CUSTOMER-NEW" &&
+                   dialog->findChild<QLineEdit*>("runInfoModel")->text() == "MODEL-NEW";
+        dialog->reject();
+    });
+    window->findChild<QAction*>(prefix + "RunInformationAction")->trigger();
+    QVERIFY(imported);
+    QCOMPARE(label("CustomerIdLabel")->text(), QString("--"));
+    window->findChild<QAction*>(production ? "productionStartAction" : "runAction")->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(execution->report().completed, 10000);
+    const auto blank = execution->report().metadata;
+    QVERIFY(blank.customerId.isEmpty());
+    QVERIFY(blank.order.isEmpty());
+    QVERIFY(blank.tester.isEmpty());
+    QVERIFY(blank.jigNo.isEmpty());
+    QCOMPARE(blank.model, QString("MODEL-NEW"));
+    QCOMPARE(blank.stationId, computerStationId());
+    checkArtifacts(false);
 }
 
 void MainWindowLifecycleTests::uutNavigationReflectsScanningAndResults_data()

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PicoATE/Core/ExecutionReport.h"
+#include "RunInformation.h"
 
 #include <QDateTime>
 #include <QJsonObject>
@@ -8,6 +9,7 @@
 #include <QVector>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace PicoATE::Ui {
@@ -58,7 +60,8 @@ RunArtifactContext runArtifactContextFromDocuments(
     const QString& sequenceFilePath,
     const QJsonObject& station,
     const QString& stationFilePath,
-    const QString& serialNumber);
+    const QString& serialNumber,
+    const std::optional<RunInformation>& information = {});
 
 class RunArtifactWriter
 {

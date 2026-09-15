@@ -72,6 +72,8 @@ qt_add_executable(PicoATEUiWindowTests
     ../src/ParserActualDelegate.h
     ../src/ScanDialog.cpp
     ../src/ScanDialog.h
+    ../src/RunInformationDialog.cpp
+    ../src/RunInformationDialog.h
     ../src/UutNavigationStatus.cpp
     ../src/UutNavigationStatus.h
     ../src/UutSlotConfigurationDialog.cpp

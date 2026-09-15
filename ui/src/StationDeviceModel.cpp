@@ -353,7 +353,7 @@ QVector<PluginManifest> StationDeviceModel::pluginsForType(
     QVector<PluginManifest> result;
     const auto type = deviceType.trimmed().toUpper();
     for (const auto& plugin : m_plugins) {
-        if (plugin.category.trimmed().toUpper() == type) {
+        if (PluginCatalog::deviceType(plugin) == type) {
             result.push_back(plugin);
         }
     }

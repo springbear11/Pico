@@ -50,6 +50,9 @@ add_library(PicoATECore SHARED
     src/WindowsSerialPortDiscovery.cpp
 )
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/ComponentVersion.cmake")
+picoate_component_version(PicoATECore "1.0.0" "PicoATECore.dll")
+
 target_include_directories(PicoATECore
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include

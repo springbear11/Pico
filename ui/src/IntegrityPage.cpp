@@ -11,12 +11,14 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QPlainTextEdit>
 #include <QShortcut>
 #include <QStyledItemDelegate>
 #include <QTableWidget>
 #include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <algorithm>
 
 namespace PicoATE::Ui {
 namespace {
@@ -56,7 +58,7 @@ IntegrityPage::IntegrityPage(QString directory, AdminAccess access, QWidget* par
     root->addLayout(heading);
 
     auto* toolbar = new QHBoxLayout;
-    auto* baseline = new QLabel(QStringLiteral("SHA-256  |  IntegrityBaseline.json"), this);
+    auto* baseline = makeUiLabel("Component Versions / SHA-256", this);
     baseline->setToolTip(QDir(m_directory).filePath(RuntimeIntegrity::baselineFileName()));
     toolbar->addWidget(baseline);
     toolbar->addStretch();
@@ -68,7 +70,7 @@ IntegrityPage::IntegrityPage(QString directory, AdminAccess access, QWidget* par
     toolbar->addWidget(m_approve);
     root->addLayout(toolbar);
 
-    m_files = new QTableWidget(2, 4, this);
+    m_files = new QTableWidget(0, 6, this);
     m_files->setObjectName("integrityFilesTable");
     m_files->setItemDelegate(new IntegrityItemDelegate(m_files));
     m_files->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -78,10 +80,14 @@ IntegrityPage::IntegrityPage(QString directory, AdminAccess access, QWidget* par
     m_files->setAlternatingRowColors(true);
     m_files->setWordWrap(false);
     m_files->verticalHeader()->hide();
-    m_files->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_files->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_files->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_files->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    m_files->setColumnWidth(0, 270);
+    m_files->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_files->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_files->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_files->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_files->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    m_files->horizontalHeader()->setStretchLastSection(true);
     m_files->setMinimumHeight(240);
     root->addWidget(m_files, 1);
     m_error = new QLabel(this);
@@ -181,9 +187,11 @@ void IntegrityPage::updateButtons()
 
 void IntegrityPage::render()
 {
-    m_files->setHorizontalHeaderLabels({uiText("File"), uiText("Baseline SHA-256"),
-                                      uiText("Current SHA-256"), uiText("Status")});
-    const auto names = RuntimeIntegrity::fileNames();
+    m_files->setHorizontalHeaderLabels({uiText("File"), uiText("Baseline Version"), uiText("Current Version"),
+                                      uiText("Baseline SHA-256"), uiText("Current SHA-256"), uiText("Status")});
+    QStringList names;
+    for (const auto& entry : m_report.files) names.push_back(entry.path);
+    m_files->setRowCount(names.size());
     auto font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     font.setPixelSize(12);
     int matched = 0;
@@ -193,27 +201,31 @@ void IntegrityPage::render()
         const auto digestText = [](const QString& hash) {
             return hash.isEmpty() ? QStringLiteral("--") : hash.left(32) + '\n' + hash.mid(32);
         };
-        const QStringList values{names[row], digestText(entry.expected), digestText(entry.actual), integrityStatusText(entry.status)};
-        for (int column = 0; column < 4; ++column) {
+        const auto versionText = [](const QString& version) { return version.isEmpty() ? QStringLiteral("--") : version; };
+        const QStringList values{names[row], versionText(entry.expectedVersion), versionText(entry.actualVersion),
+            digestText(entry.expected), digestText(entry.actual), integrityStatusText(entry.status)};
+        for (int column = 0; column < values.size(); ++column) {
             auto* item = m_files->item(row, column);
             if (!item) { item = new QTableWidgetItem; m_files->setItem(row, column, item); }
             item->setText(values[column]);
             item->setToolTip(column == 0 ? QDir(m_directory).filePath(names[row]) :
-                             column == 1 ? entry.expected : column == 2 ? entry.actual : entry.error);
-            if (column == 1 || column == 2) item->setFont(font);
+                             column == 3 ? entry.expected : column == 4 ? entry.actual :
+                             column == 5 ? entry.error : values[column]);
+            if (column == 3 || column == 4) item->setFont(font);
             const bool bad = entry.status != IntegrityStatus::Matched;
-            item->setForeground(QColor(column == 3 ? (bad ? "#a43838" : "#2f7548") :
-                                       (column == 2 && bad ? "#a43838" : "#344048")));
+            item->setForeground(QColor(column == 5 ? (bad ? "#a43838" : "#2f7548") :
+                                       ((column == 2 || column == 4) && bad ? "#a43838" : "#344048")));
         }
-        m_files->setRowHeight(row, 84);
+        m_files->setRowHeight(row, 70);
     }
     m_summary->setText(busy() ? uiText("Verifying...") : m_report.passed()
         ? uiText("Verified %1 / %2").arg(matched).arg(names.size())
         : uiText("Attention required"));
     m_summary->setStyleSheet(busy() ? "background:#e4eef4;color:#37586d;" :
         m_report.passed() ? "background:#e3f0e7;color:#2f7548;" : "background:#f9e6e6;color:#a43838;");
-    m_error->setText(uiText(m_report.baselineError.toUtf8().constData()));
-    m_error->setVisible(!m_report.baselineError.isEmpty());
+    m_error->setText(uiText(m_report.baselineError.toUtf8().constData()) +
+                     (m_report.inventoryError.isEmpty() ? QString{} : "\n" + m_report.inventoryError));
+    m_error->setVisible(!m_report.baselineError.isEmpty() || !m_report.inventoryError.isEmpty());
     const auto updatedAt = QDateTime::fromString(m_report.baseline.value("updatedAtUtc").toString(), Qt::ISODateWithMs);
     m_metadata->setText(uiText("Runtime directory: %1").arg(m_directory) + "\n" +
         uiText("Last verified: %1").arg(m_report.checkedAt.isValid()
@@ -227,7 +239,9 @@ void IntegrityPage::requestApproval()
 {
     if (busy() || m_runActive || m_access != AdminAccess::Supervisor) return;
     QStringList files;
-    for (const auto& index : m_files->selectionModel()->selectedRows()) files.push_back(m_report.files[index.row()].path);
+    for (const auto& index : m_files->selectionModel()->selectedRows()) {
+        if (index.row() < m_report.files.size()) files.push_back(m_report.files[index.row()].path);
+    }
     if (files.isEmpty()) return;
     QDialog dialog(this);
     dialog.setObjectName("integrityApprovalDialog");
@@ -236,13 +250,25 @@ void IntegrityPage::requestApproval()
     auto* layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(24, 20, 24, 20);
     layout->setSpacing(14);
-    auto* message = new QLabel(uiText("Accept the selected files as the new baseline?") + "\n\n" + files.join('\n'), &dialog);
+    auto* message = new QLabel(uiText("Accept the selected files as the new baseline?"), &dialog);
     message->setWordWrap(true);
     layout->addWidget(message);
+    auto* fileList = new QPlainTextEdit(files.join('\n'), &dialog);
+    fileList->setReadOnly(true);
+    fileList->setMaximumHeight(140);
+    layout->addWidget(fileList);
+    const bool removesFiles = std::any_of(m_report.files.cbegin(), m_report.files.cend(), [&](const auto& entry) {
+        return files.contains(entry.path) && entry.status == IntegrityStatus::Missing;
+    });
+    if (removesFiles) {
+        auto* removal = makeUiLabel("Missing plugin entries will be removed from the approved inventory.", &dialog);
+        removal->setWordWrap(true);
+        layout->addWidget(removal);
+    }
     auto* password = new QLineEdit(&dialog);
     password->setObjectName("integrityApprovalPassword");
     password->setEchoMode(QLineEdit::Password);
-    password->setPlaceholderText(uiText("Daily administrator password"));
+    password->setPlaceholderText(uiText("Authorization password"));
     password->setMinimumHeight(34);
     layout->addWidget(password);
     auto* reason = new QLineEdit(&dialog);
@@ -264,7 +290,7 @@ void IntegrityPage::requestApproval()
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(approve, &QPushButton::clicked, &dialog, [&] {
         if (StartupSupport::adminAccessForPassword(password->text()) != AdminAccess::Supervisor) {
-            error->setText(uiText("Daily administrator password is required."));
+            error->setText(uiText("Authorization password is invalid or privileges are insufficient."));
             password->clear();
             password->setFocus();
         } else if (reason->text().trimmed().isEmpty()) {

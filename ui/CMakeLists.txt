@@ -2,12 +2,15 @@ cmake_minimum_required(VERSION 3.24)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     project(PicoATE.UI
-        VERSION 0.1.0
+        VERSION 1.0.0
         DESCRIPTION "PicoATE Qt Runner UI"
         LANGUAGES CXX
     )
 
     set(CMAKE_CXX_STANDARD 20)
+    if(WIN32)
+        enable_language(RC)
+    endif()
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
     set(CMAKE_CXX_EXTENSIONS OFF)
     set(CMAKE_AUTOMOC ON)

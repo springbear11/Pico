@@ -28,6 +28,8 @@ add_library(PicoATEUiRuntime STATIC
     ReportHistoryStore.h
     RunArtifactWriter.cpp
     RunArtifactWriter.h
+    RunInformation.cpp
+    RunInformation.h
     RunnerModels.cpp
     RunnerModels.h
     SequenceDocument.cpp
@@ -141,6 +143,8 @@ qt_add_executable(PicoATEUi WIN32
     ProportionalHeaderView.h
     ScanDialog.cpp
     ScanDialog.h
+    RunInformationDialog.cpp
+    RunInformationDialog.h
     UutNavigationStatus.cpp
     UutNavigationStatus.h
     UutSlotConfigurationDialog.cpp
@@ -182,7 +186,11 @@ target_compile_definitions(PicoATEUi
 
 if(WIN32)
     target_link_libraries(PicoATEUi PRIVATE dwmapi)
+    target_link_libraries(PicoATEUiRuntime PRIVATE Version)
 endif()
+
+include("${PICOATE_ROOT_DIR}/cmake/ComponentVersion.cmake")
+picoate_component_version(PicoATEUi "${PROJECT_VERSION}" "PicoATE.UI.exe")
 
 add_custom_command(TARGET PicoATEUi POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory

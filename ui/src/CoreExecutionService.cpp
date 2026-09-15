@@ -15,6 +15,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonParseError>
 #include <QSet>
 #include <QStringList>
@@ -44,6 +45,32 @@ QString metadataValue(const QVariantMap& metadata,
         }
     }
     return {};
+}
+
+QString verifyPluginRegistryFiles(const IntegrityReport& integrity, const QString& registrySetting,
+                                 const QString& stationPath, const QString& projectDir)
+{
+    if (!integrity.passed()) return integrityFailureText(integrity);
+    const auto path = PicoATE::Core::resolveStationPluginRegistryPath(registrySetting, stationPath, projectDir);
+    QFile file(path);
+    if (!file.exists()) return {};
+    if (!file.open(QIODevice::ReadOnly)) return file.errorString();
+    QJsonParseError parseError;
+    const auto json = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !json.object().value("plugins").isArray())
+        return uiText("Plugin registry is invalid. Scan approved plugins again.");
+    PicoATE::Core::VariableResolverOptions options;
+    options.sequenceFilePath = stationPath;
+    options.projectDir = projectDir;
+    PicoATE::Core::VariableResolver resolver(options);
+    QStringList dlls;
+    for (const auto& entry : json.object().value("plugins").toArray()) {
+        QVector<PicoATE::Core::VariableResolutionError> errors;
+        const auto dll = resolver.resolveString(entry.toObject().value("dll").toString(), errors, "pluginRegistry.dll");
+        if (!errors.isEmpty() || dll.trimmed().isEmpty()) return uiText("Plugin registry is invalid. Scan approved plugins again.");
+        dlls.push_back(QDir(QFileInfo(path).absolutePath()).absoluteFilePath(dll));
+    }
+    return RuntimeIntegrity::pluginAccessError(integrity, dlls);
 }
 
 void appendUniquePlugins(QVector<PluginManifest>& target,
@@ -164,6 +191,8 @@ CompileServiceResult CoreExecutionService::compile(const CompileRequest& request
         if (!stationReadDiagnostics.isEmpty()) {
             return result;
         }
+        if (!request.stationIdOverride.isEmpty())
+            stationObject.insert(QStringLiteral("stationId"), request.stationIdOverride);
         const auto stationResult = PicoATE::Core::parseStationConfigJson(
             stationObject, resolverOptions(request.stationPath));
         for (const auto& diagnostic : stationResult.errors) {
@@ -321,11 +350,14 @@ RunServiceResult CoreExecutionService::run(
         const auto integrity = RuntimeIntegrity::check(request.runtimeIntegrityDirectory, [&] {
             return stopToken && stopToken->isStopRequested();
         });
-        if (!integrity.passed()) {
+        const auto registrySetting = m_compiled->station ? m_compiled->station->pluginRegistryPath
+            : QStringLiteral("plugins/PluginRegistry.json");
+        const auto integrityError = verifyPluginRegistryFiles(integrity, registrySetting, m_compiled->stationPath, m_projectDir);
+        if (!integrityError.isEmpty()) {
             result.stopRequested = integrity.cancelled;
             result.diagnostics.push_back(error(RuntimeIntegrity::baselineFileName(),
-                uiText("UI/Core integrity verification failed. Test was not started.") + "\n" + integrityFailureText(integrity),
-                uiText("Ask a daily administrator to review the Integrity Check page.")));
+                uiText("Software integrity verification failed. Test was not started.") + "\n" + integrityError,
+                uiText("Ask an authorized administrator to review the Integrity Check page.")));
             return result;
         }
     }
@@ -413,8 +445,14 @@ RunServiceResult CoreExecutionService::run(
             continue;
         }
         const int slotIndex = input.slotIndex >= 0 ? input.slotIndex : index;
+        auto variables = input.variables;
+        if (request.runInformation) {
+            const auto information = request.runInformation->variables();
+            for (auto it = information.cbegin(); it != information.cend(); ++it)
+                variables.insert(it.key(), it.value());
+        }
         const auto binding = PicoATE::Core::bindSequenceVariablesForUut(
-            m_compiled->plan.variables, slotIndex, input.uutId, input.variables);
+            m_compiled->plan.variables, slotIndex, input.uutId, variables);
         for (const auto& diagnostic : binding.errors) {
             result.diagnostics.push_back(error(
                 diagnostic.variableName.isEmpty()
@@ -473,6 +511,15 @@ RunServiceResult CoreExecutionService::run(
     if (result.report.metadata.order.isEmpty() && !uutInputs.isEmpty()) {
         result.report.metadata.order = uutInputs.first()
             .variables.value(QStringLiteral("order")).toString().trimmed();
+    }
+    if (request.runInformation) {
+        const auto& information = *request.runInformation;
+        result.report.metadata.stationId = information.stationId;
+        result.report.metadata.model = information.model;
+        result.report.metadata.customerId = information.customerId;
+        result.report.metadata.order = information.order;
+        result.report.metadata.tester = information.tester;
+        result.report.metadata.jigNo = information.jigNo;
     }
     result.stopRequested = stopToken && stopToken->isStopRequested();
     return result;
@@ -552,6 +599,12 @@ DeviceConnectionTestResult CoreExecutionService::testDeviceConnection(
                       "StationReadFailed",
                       diagnostic.message,
                       diagnostic.suggestion);
+    }
+    if (!request.runtimeIntegrityDirectory.isEmpty()) {
+        const auto integrity = RuntimeIntegrity::check(request.runtimeIntegrityDirectory, cancelled);
+        const auto config = PicoATE::Core::parseStationConfigJson(stationObject, resolverOptions(request.stationPath));
+        const auto integrityError = verifyPluginRegistryFiles(integrity, config.config.pluginRegistryPath, request.stationPath, m_projectDir);
+        if (!integrityError.isEmpty()) return finish(failureOutcome(integrityError), "PluginNotApproved", integrityError);
     }
     PicoATE::Core::StationRunPreparationOptions preparationOptions;
     preparationOptions.stationFilePath = request.stationPath;

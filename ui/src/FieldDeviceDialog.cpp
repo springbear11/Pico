@@ -1,4 +1,5 @@
 #include "FieldDeviceDialog.h"
+#include "RuntimeIntegrity.h"
 #include "UiTextBinding.h"
 
 #include "PicoATE/Core/StationConfig.h"
@@ -347,7 +348,13 @@ void FieldDeviceDialog::startDiscovery(
     const QPointer<FieldDeviceDialog> guard(this);
     auto* thread = QThread::create([guard, request] {
         PicoATE::Core::SystemDeviceDiscoveryService service;
-        const auto result = service.discover(request);
+        PicoATE::Core::DeviceDiscoveryResult result;
+        if (!request.pluginDllPath.isEmpty()) {
+            result.errorMessage = RuntimeIntegrity::pluginAccessError(
+                RuntimeIntegrity::check(QCoreApplication::applicationDirPath()), {request.pluginDllPath});
+            if (!result.errorMessage.isEmpty()) result.errorCode = QStringLiteral("PluginNotApproved");
+        }
+        if (result.ok()) result = service.discover(request);
         if (guard) {
             QMetaObject::invokeMethod(guard, [guard, result] {
                 if (guard) guard->finishResourceDiscovery(result);

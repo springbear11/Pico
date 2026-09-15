@@ -1,4 +1,5 @@
 #include "PluginCatalog.h"
+#include "RuntimeIntegrity.h"
 
 #include "PicoATE/Core/DeviceDiscovery.h"
 
@@ -946,6 +947,21 @@ PluginManifestResult PluginCatalog::parseDescription(const QByteArray& json,
     return result;
 }
 
+QString PluginCatalog::deviceType(const PluginManifest& plugin)
+{
+    const auto fileName = QFileInfo(QDir::fromNativeSeparators(plugin.dllPath)).fileName();
+    const auto parts = fileName.split('.');
+    if (parts.size() >= 4 && parts.first().compare("PicoATE", Qt::CaseInsensitive) == 0 &&
+        parts.last().compare("dll", Qt::CaseInsensitive) == 0 &&
+        !parts[1].trimmed().isEmpty() && !parts[2].trimmed().isEmpty()) {
+        return parts[1].trimmed().toUpper();
+    }
+    // Keep older registry descriptions usable without treating built-in tools
+    // as instrument types.
+    return plugin.moduleId.startsWith("plugin.", Qt::CaseInsensitive)
+        ? plugin.category.trimmed().toUpper() : QString{};
+}
+
 QStringList PluginCatalog::discoverPluginFiles(const QString& rootDirectory)
 {
     QStringList result;
@@ -1005,11 +1021,19 @@ bool PluginCatalog::nativeHostSupportsDescribe(const QString& nativeHostProgram,
 PluginScanResult PluginCatalog::scanPlugins(const QString& rootDirectory,
                                             const QString& nativeHostProgram,
                                             const QString& registryFilePath,
-                                            int timeoutMs)
+                                            int timeoutMs,
+                                            const QString& integrityDirectory)
 {
     PluginScanResult result;
     const auto dllFiles = discoverPluginFiles(rootDirectory);
     result.discoveredDllCount = dllFiles.size();
+    if (!integrityDirectory.isEmpty()) {
+        const auto error = RuntimeIntegrity::pluginAccessError(RuntimeIntegrity::check(integrityDirectory), dllFiles);
+        if (!error.isEmpty()) {
+            addError(result.errors, RuntimeIntegrity::baselineFileName(), error);
+            return result;
+        }
+    }
     QString hostError;
     if (!nativeHostSupportsDescribe(nativeHostProgram, 3000, &hostError)) {
         addError(result.errors,

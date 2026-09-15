@@ -214,7 +214,8 @@ RunArtifactContext runArtifactContextFromDocuments(
     const QString& sequenceFilePath,
     const QJsonObject& station,
     const QString& stationFilePath,
-    const QString& serialNumber)
+    const QString& serialNumber,
+    const std::optional<RunInformation>& information)
 {
     RunArtifactContext context;
     if (!sequenceFilePath.trimmed().isEmpty()) {
@@ -249,6 +250,14 @@ RunArtifactContext runArtifactContextFromDocuments(
         parsed.config.metadata,
         {QStringLiteral("jigNo"), QStringLiteral("fixtureId"),
          QStringLiteral("fixture")});
+    if (information) {
+        context.stationId = information->stationId;
+        context.model = information->model;
+        context.customerId = information->customerId;
+        context.order = information->order;
+        context.tester = information->tester;
+        context.jigNo = information->jigNo;
+    }
     return context;
 }
 

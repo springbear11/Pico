@@ -37,6 +37,8 @@ public:
     QVector<PicoATE::Core::BreakpointSpec> breakpoints() const;
     DeviceConnectionTestResult deviceConnectionTestResult() const;
     QVector<RunRequest::UutInput> activeRunUuts() const;
+    std::optional<RunInformation> activeRunInformation() const;
+    void setRunInformation(const RunInformation& information);
 
     bool canChangeSources() const;
     bool canCompile() const;
@@ -111,6 +113,7 @@ private:
     UiRunState m_state = UiRunState::Empty;
     QString m_sequencePath;
     QString m_runtimeIntegrityDirectory;
+    std::optional<RunInformation> m_runInformation;
     QByteArray m_sequenceJson;
     QString m_stationPath;
     QByteArray m_stationJson;

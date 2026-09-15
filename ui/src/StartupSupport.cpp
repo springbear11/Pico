@@ -158,7 +158,6 @@ QJsonObject StartupSupport::newProjectStationTemplate()
     return QJsonObject{
         {QStringLiteral("stationId"), QStringLiteral("NA")},
         {QStringLiteral("model"), QStringLiteral("NA")},
-        {QStringLiteral("customerId"), QStringLiteral("NA")},
         {QStringLiteral("pluginRegistry"),
          QStringLiteral("plugins/PluginRegistry.json")},
         {QStringLiteral("stopOnFailure"), true},
@@ -174,10 +173,6 @@ QJsonObject StartupSupport::newProjectStationTemplate()
         {QStringLiteral("snLength"), 0},
         {QStringLiteral("snPattern"), QString{}},
         {QStringLiteral("snAllowedRegex"), QStringLiteral("^[A-Z0-9]+$")},
-        {QStringLiteral("metadata"),
-         QJsonObject{{QStringLiteral("jigNo"), QStringLiteral("NA")},
-                     {QStringLiteral("order"), QStringLiteral("NA")},
-                     {QStringLiteral("tester"), QStringLiteral("NA")}}},
         {QStringLiteral("devices"), QJsonArray{}}};
 }
 

@@ -9,12 +9,15 @@ else()
 endif()
 
 project(${PICOATE_PROJECT_NAME}
-    VERSION 0.3.2
+    VERSION 1.0.0
     DESCRIPTION "Small ATE execution runtime core"
     LANGUAGES CXX
 )
 
 set(CMAKE_CXX_STANDARD 20)
+if(WIN32)
+    enable_language(RC)
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)

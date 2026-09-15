@@ -145,6 +145,7 @@ private:
     void runScannedUut(const QString& serialNumber);
     void runScannedUuts(const QStringList& serialNumbers);
     void configureAdminUutSlots();
+    void configureRunInformation();
     void synchronizeAdminUutSlotCount(int slotCount);
     void updateAdminUutSlotAction();
     void startAdminRunWithSerial(const QString& serialNumber);
@@ -230,6 +231,8 @@ private:
     std::optional<ReportHistoryEntry> selectedHistoryEntry() const;
 
     ExecutionViewModel* m_viewModel = nullptr;
+    QAction* m_runInformationAction = nullptr;
+    RunInformation m_runInformation;
     OperatorPromptPresenter* m_operatorPromptPresenter = nullptr;
     SequenceDocument* m_sequenceDocument = nullptr;
     SequenceTreeModel* m_sequenceTreeModel = nullptr;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "RunInformation.h"
+
 #include "PicoATE/Core/ExecutionReport.h"
 
 #include <QByteArray>
@@ -7,6 +9,7 @@
 #include <QString>
 #include <QVariantMap>
 #include <QVector>
+#include <optional>
 
 namespace PicoATE::Ui {
 
@@ -53,6 +56,7 @@ struct CompileRequest {
     QByteArray sequenceJson;
     QString stationPath;
     QByteArray stationJson;
+    QString stationIdOverride;
 };
 
 struct CompileServiceResult {
@@ -81,6 +85,7 @@ struct RunRequest {
     int uutCount = 1;
     QString uutPrefix = QStringLiteral("UUT");
     QString runtimeIntegrityDirectory;
+    std::optional<RunInformation> runInformation;
     QVector<UutInput> uuts;
 };
 
@@ -100,6 +105,7 @@ struct DeviceConnectionTestRequest {
     QByteArray stationJson;
     QString deviceId;
     int timeoutMs = 5000;
+    QString runtimeIntegrityDirectory;
 };
 
 struct DeviceConnectionTestResult {
